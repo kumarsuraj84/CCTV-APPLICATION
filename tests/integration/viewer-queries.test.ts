@@ -54,4 +54,21 @@ describe('viewer queries respect access', () => {
     expect(await homeCounts(viewer.client)).toEqual({ stores: 1, cameras: 2, devices: { server: 1 } })
     expect(await homeCounts(manager.client)).toEqual({ stores: 2, cameras: 3, devices: { server: 1, footfall: 1 } })
   })
+
+  it('pages through more than 1000 visible devices without repeating or losing rows', async () => {
+    const admin = adminClient()
+    const big = (await admin.from('stores').insert({ org_id: orgId, code: 'BIG', name: 'Store BIG', city: 'Patna', zone: 'BR', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    // Half of the rows share one name, so a sort on name alone has ties across the page boundary.
+    const rows = Array.from({ length: 1001 }, (_, i) => ({
+      org_id: orgId, store_id: big, type: 'server' as const, name: i < 500 ? 'same name' : `big ${String(i).padStart(4, '0')}`, ip: '127.0.0.1',
+    }))
+    const ins = await admin.from('devices').insert(rows)
+    expect(ins.error).toBeNull()
+    const reader = await createUser(orgId, 'user')
+    await admin.rpc('replace_user_access', { p_user: reader.id, p_stores: [big], p_zones: [], p_cameras: [] })
+    const list = await listVisibleDevices(reader.client)
+    expect(list.length).toBe(1001)
+    expect(new Set(list.map((d) => d.id)).size).toBe(1001)
+    expect((await homeCounts(reader.client)).devices.server).toBe(1001)
+  })
 })

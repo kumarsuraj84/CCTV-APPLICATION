@@ -14,8 +14,8 @@ export default async function StoresPage({ searchParams }: { searchParams: Promi
     <div className="space-y-4">
       <PageHeader title="Stores" description="The stores you can see." />
       <form className="flex gap-2">
-        <input name="q" defaultValue={q ?? ''} placeholder="Search by name, code or city" className="h-8 w-full max-w-sm rounded-lg border bg-background px-2 text-sm" />
-        <button className="rounded-lg border px-3 text-sm">Search</button>
+        <input name="q" aria-label="Search stores"defaultValue={q ?? ''} placeholder="Search by name, code or city" className="h-8 w-full max-w-sm rounded-lg border bg-background px-2 text-sm" />
+        <button type="submit" className="rounded-lg border px-3 text-sm">Search</button>
       </form>
       <div className="overflow-x-auto rounded-xl border bg-card">
         <table className="w-full text-sm">

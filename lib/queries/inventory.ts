@@ -14,7 +14,7 @@ export type StoreListItem = { id: string; code: string; name: string; city: stri
 export async function listVisibleStores(supabase: Client, q?: string): Promise<StoreListItem[]> {
   const term = cleanSearch(q ?? '')
   const rows = await fetchAll((from, to) => {
-    let query = supabase.from('stores').select('id, code, name, city, zone, cameras(count)').order('code')
+    let query = supabase.from('stores').select('id, code, name, city, zone, cameras(count)').order('code').order('id')
     if (term) query = query.or(`name.ilike.%${term}%,code.ilike.%${term}%,city.ilike.%${term}%`)
     return query.range(from, to)
   })
@@ -36,7 +36,7 @@ export async function getVisibleStore(supabase: Client, id: string) {
 
 export async function listVisibleDevices(supabase: Client, type?: string) {
   return fetchAll((from, to) => {
-    let query = supabase.from('devices').select('id, store_id, type, name, ip, tcp_port, enabled, stores(code, name)').order('name')
+    let query = supabase.from('devices').select('id, store_id, type, name, ip, tcp_port, enabled, stores(code, name)').order('name').order('id')
     if (type) query = query.eq('type', type as Database['public']['Enums']['device_type'])
     return query.range(from, to)
   })
@@ -46,7 +46,7 @@ export async function homeCounts(supabase: Client): Promise<{ stores: number; ca
   const [stores, cameras, devices] = await Promise.all([
     supabase.from('stores').select('id', { count: 'exact', head: true }),
     supabase.from('cameras').select('id', { count: 'exact', head: true }),
-    fetchAll((from, to) => supabase.from('devices').select('id, type').range(from, to)),
+    fetchAll((from, to) => supabase.from('devices').select('id, type').order('id').range(from, to)),
   ])
   const byType: Record<string, number> = {}
   for (const d of devices) byType[d.type] = (byType[d.type] ?? 0) + 1

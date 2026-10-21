@@ -16,9 +16,9 @@ export default async function DevicesPage({ searchParams }: { searchParams: Prom
     <div className="space-y-4">
       <PageHeader title="Devices" description="Servers, attendance machines, footfall counters and other devices you can see." />
       <div className="flex flex-wrap gap-2 text-sm">
-        <Link href="/devices" className={!active ? 'font-medium underline' : 'underline'}>All</Link>
+        <Link href="/devices" aria-current={!active ? 'page' : undefined} className={!active ? 'font-medium underline' : 'underline'}>All</Link>
         {DEVICE_TYPES.map((t) => (
-          <Link key={t} href={`/devices?type=${t}`} className={active === t ? 'font-medium underline' : 'underline'}>{DEVICE_TYPE_LABELS[t]}</Link>
+          <Link key={t} href={`/devices?type=${t}`} aria-current={active === t ? 'page' : undefined} className={active === t ? 'font-medium underline' : 'underline'}>{DEVICE_TYPE_LABELS[t]}</Link>
         ))}
       </div>
       <div className="overflow-x-auto rounded-xl border bg-card">
