@@ -56,7 +56,7 @@ export async function importStores(admin: AdminClient, actor: Actor, rows: Store
 export async function importDevices(admin: AdminClient, actor: Actor, rows: DeviceRow[]): Promise<ImportResult> {
   const result: ImportResult = { created: 0, updated: 0, errors: [] }
   if (!isAdminRole(actor.role)) return { ...result, errors: [{ line: 1, message: 'Only administrators can import.' }] }
-  const stores = await fetchAll((from, to) => admin.from('stores').select('id, code').eq('org_id', actor.orgId).range(from, to))
+  const stores = await fetchAll((from, to) => admin.from('stores').select('id, code').eq('org_id', actor.orgId).order('id').range(from, to))
   const byCode = new Map(stores.map((s) => [s.code, s.id]))
   for (const r of rows) {
     try {

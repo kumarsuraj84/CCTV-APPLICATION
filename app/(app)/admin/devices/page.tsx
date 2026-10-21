@@ -15,7 +15,7 @@ export default async function ManageDevicesPage({ searchParams }: { searchParams
   const me = await requireAdmin()
   const admin = createAdminClient()
   const [devices, stores] = await Promise.all([
-    fetchAll((from, to) => admin.from('devices').select('id, store_id, type, name, ip, tcp_port, notes, enabled').eq('org_id', me.org_id).order('name').range(from, to)),
+    fetchAll((from, to) => admin.from('devices').select('id, store_id, type, name, ip, tcp_port, notes, enabled').eq('org_id', me.org_id).order('name').order('id').range(from, to)),
     fetchAll((from, to) => admin.from('stores').select('id, code, name').eq('org_id', me.org_id).order('code').range(from, to)),
   ])
   const editing = devices.find((d) => d.id === edit)
