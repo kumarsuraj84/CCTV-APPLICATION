@@ -1,1 +1,4 @@
--- Seed data is added once the organizations table exists (Task 4).
+-- Dev and test data only: the single organisation this app runs for.
+INSERT INTO organizations (name, slug, is_owner)
+VALUES ('CityKart', 'citykart', true)
+ON CONFLICT (slug) DO NOTHING;
