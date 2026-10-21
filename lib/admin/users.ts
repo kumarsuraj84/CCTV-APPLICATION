@@ -1,0 +1,174 @@
+import { randomInt } from 'node:crypto'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { z } from 'zod'
+import type { Database } from '@/types/database'
+import { addAudit } from '@/lib/admin/audit'
+import { canManageRole, ROLES, SEES_EVERYTHING, type Role } from '@/lib/admin/roles'
+import { sanitizeError } from '@/lib/observability/sanitize-error'
+import { assertRefsInOrg } from '@/lib/security/org-scope'
+import { fetchAll } from '@/lib/supabase/fetch-all'
+
+export type AdminClient = SupabaseClient<Database>
+export type Actor = { id: string; orgId: string; role: Role }
+export type Result<T> = ({ ok: true } & T) | { ok: false; error: string }
+
+const UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+const LOWER = 'abcdefghijkmnopqrstuvwxyz'
+const DIGIT = '23456789'
+
+/** A random one-time password with no look-alike characters. Shown once to the administrator; the person must replace it at first sign-in. */
+export function generateOneTimePassword(length = 14): string {
+  const pick = (s: string) => s[randomInt(s.length)]
+  const chars = [pick(UPPER), pick(LOWER), pick(DIGIT)]
+  const all = UPPER + LOWER + DIGIT
+  while (chars.length < length) chars.push(pick(all))
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1)
+    ;[chars[i], chars[j]] = [chars[j], chars[i]]
+  }
+  return chars.join('')
+}
+
+export const createUserSchema = z.object({
+  email: z.string().trim().toLowerCase().pipe(z.email('Enter a valid e-mail address.')),
+  full_name: z.string().trim().min(1, 'Enter the person’s name.').max(100, 'Use 100 characters or fewer for the name.'),
+  role: z.enum(ROLES),
+  store_id: z.uuid().nullable().optional(),
+})
+
+export const updateUserSchema = z.object({
+  full_name: z.string().trim().min(1).max(100).optional(),
+  role: z.enum(ROLES).optional(),
+  is_active: z.boolean().optional(),
+  store_id: z.uuid().nullable().optional(),
+})
+
+export const accessSchema = z.object({
+  storeIds: z.array(z.uuid()).max(2000),
+  zones: z.array(z.string().trim().min(1).max(100)).max(200),
+  cameraIds: z.array(z.uuid()).max(10000),
+})
+
+const firstIssue = (e: z.ZodError) => e.issues[0]?.message ?? 'Check the form and try again.'
+
+async function loadTarget(admin: AdminClient, actor: Actor, userId: string) {
+  const { data } = await admin.from('profiles').select('id, role, is_active, org_id').eq('id', userId).eq('org_id', actor.orgId).maybeSingle()
+  return data
+}
+
+export async function createUser(admin: AdminClient, actor: Actor, input: unknown): Promise<Result<{ userId: string; oneTimePassword: string }>> {
+  const parsed = createUserSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: firstIssue(parsed.error) }
+  const v = parsed.data
+  if (!canManageRole(actor.role, v.role)) return { ok: false, error: 'You are not allowed to create a user with that role.' }
+  if (v.store_id) {
+    try {
+      await assertRefsInOrg(admin, actor.orgId, [{ table: 'stores', ids: [v.store_id] }])
+    } catch {
+      return { ok: false, error: 'That store was not found.' }
+    }
+  }
+  const oneTimePassword = generateOneTimePassword()
+  const created = await admin.auth.admin.createUser({ email: v.email, password: oneTimePassword, email_confirm: true })
+  if (created.error || !created.data.user) {
+    return { ok: false, error: sanitizeError(created.error, { route: 'createUser', fallback: 'Could not create the user. The e-mail may already be in use.' }) }
+  }
+  const userId = created.data.user.id
+  const { error } = await admin.from('profiles').insert({
+    id: userId,
+    org_id: actor.orgId,
+    email: v.email,
+    full_name: v.full_name,
+    role: v.role,
+    must_reset_password: true,
+    store_id: v.store_id ?? null,
+  })
+  if (error) {
+    await admin.auth.admin.deleteUser(userId)
+    return { ok: false, error: sanitizeError(error, { route: 'createUser.profile', fallback: 'Could not create the user.' }) }
+  }
+  await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'user_created', entityType: 'profile', entityId: userId, detail: { role: v.role } })
+  return { ok: true, userId, oneTimePassword }
+}
+
+export async function updateUser(admin: AdminClient, actor: Actor, userId: string, input: unknown): Promise<Result<object>> {
+  const parsed = updateUserSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: firstIssue(parsed.error) }
+  const patch = parsed.data
+  const target = await loadTarget(admin, actor, userId)
+  if (!target) return { ok: false, error: 'User not found.' }
+  // Nobody changes their own role or status: that also means the last administrator can never lock everyone out.
+  if (target.id === actor.id && (patch.role !== undefined || patch.is_active !== undefined)) {
+    return { ok: false, error: 'You cannot change your own role or status.' }
+  }
+  if (!canManageRole(actor.role, target.role)) return { ok: false, error: 'You are not allowed to change this user.' }
+  if (patch.role && !canManageRole(actor.role, patch.role)) return { ok: false, error: 'You are not allowed to give that role.' }
+  if (patch.store_id) {
+    try {
+      await assertRefsInOrg(admin, actor.orgId, [{ table: 'stores', ids: [patch.store_id] }])
+    } catch {
+      return { ok: false, error: 'That store was not found.' }
+    }
+  }
+  const { error } = await admin.from('profiles').update(patch).eq('id', userId).eq('org_id', actor.orgId)
+  if (error) return { ok: false, error: sanitizeError(error, { route: 'updateUser', fallback: 'Could not save the changes.' }) }
+  if (patch.is_active !== undefined) {
+    // Deactivating also stops new sign-ins; reactivating lifts that.
+    await admin.auth.admin.updateUserById(userId, { ban_duration: patch.is_active ? 'none' : '876000h' })
+  }
+  await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'user_updated', entityType: 'profile', entityId: userId, detail: patch })
+  return { ok: true }
+}
+
+export async function resetUserPassword(admin: AdminClient, actor: Actor, userId: string): Promise<Result<{ oneTimePassword: string }>> {
+  const target = await loadTarget(admin, actor, userId)
+  if (!target) return { ok: false, error: 'User not found.' }
+  if (target.id === actor.id) return { ok: false, error: 'Use “Choose a new password” to change your own password.' }
+  if (!canManageRole(actor.role, target.role)) return { ok: false, error: 'You are not allowed to change this user.' }
+  const oneTimePassword = generateOneTimePassword()
+  const res = await admin.auth.admin.updateUserById(userId, { password: oneTimePassword })
+  if (res.error) return { ok: false, error: sanitizeError(res.error, { route: 'resetUserPassword', fallback: 'Could not reset the password.' }) }
+  const { error } = await admin.from('profiles').update({ must_reset_password: true }).eq('id', userId)
+  if (error) return { ok: false, error: sanitizeError(error, { route: 'resetUserPassword.flag' }) }
+  await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'user_password_reset', entityType: 'profile', entityId: userId })
+  return { ok: true, oneTimePassword }
+}
+
+export async function setUserAccess(admin: AdminClient, actor: Actor, userId: string, input: unknown): Promise<Result<object>> {
+  const parsed = accessSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: firstIssue(parsed.error) }
+  const target = await loadTarget(admin, actor, userId)
+  if (!target) return { ok: false, error: 'User not found.' }
+  if (!canManageRole(actor.role, target.role)) return { ok: false, error: 'You are not allowed to change this user.' }
+  if (SEES_EVERYTHING.includes(target.role)) return { ok: false, error: 'This role already sees everything, so it needs no access list.' }
+  const a = parsed.data
+  const { error } = await admin.rpc('replace_user_access', { p_user: userId, p_stores: a.storeIds, p_zones: a.zones, p_cameras: a.cameraIds })
+  if (error) {
+    const msg = error.message.includes('outside organisation') ? 'One of the stores or cameras was not found.' : sanitizeError(error, { route: 'setUserAccess', fallback: 'Could not save the access list.' })
+    return { ok: false, error: msg }
+  }
+  await addAudit(admin, {
+    orgId: actor.orgId, actorId: actor.id, action: 'user_access_set', entityType: 'profile', entityId: userId,
+    detail: { stores: a.storeIds.length, zones: a.zones.length, cameras: a.cameraIds.length },
+  })
+  return { ok: true }
+}
+
+export async function listUsers(admin: AdminClient, orgId: string) {
+  return fetchAll((from, to) =>
+    admin.from('profiles').select('id, email, full_name, role, is_active, must_reset_password, store_id, created_at').eq('org_id', orgId).order('full_name').range(from, to),
+  )
+}
+
+export async function getUserAccess(admin: AdminClient, orgId: string, userId: string) {
+  const [stores, zones, cameras] = await Promise.all([
+    admin.from('user_store_access').select('store_id').eq('org_id', orgId).eq('user_id', userId),
+    admin.from('user_zone_access').select('zone').eq('org_id', orgId).eq('user_id', userId),
+    fetchAll((from, to) => admin.from('user_camera_access').select('camera_id').eq('org_id', orgId).eq('user_id', userId).range(from, to)),
+  ])
+  return {
+    storeIds: (stores.data ?? []).map((r) => r.store_id),
+    zones: (zones.data ?? []).map((r) => r.zone),
+    cameraIds: cameras.map((r) => r.camera_id),
+  }
+}
