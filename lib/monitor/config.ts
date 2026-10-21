@@ -28,5 +28,6 @@ export function loadMonitorConfig(env: Record<string, string | undefined> = proc
     rtspPerStore: 4,
     tcpTimeoutMs: 3000,
     nvrTimeoutMs: 8000,
+    nvrLoginBackoffSec: interval(env.NVR_LOGIN_BACKOFF_SEC, 900, 60, DAY_SEC),
   }
 }

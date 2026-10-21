@@ -107,7 +107,7 @@ describe('a wrong or missing NVR password never makes cameras look down', () => 
       expect(db.results()).toHaveLength(0)
       expect(nvr.requests.length).toBeGreaterThan(0) // the NVR really was asked, and refused
       expect(rtsp.requests.length).toBeGreaterThan(0)
-      expect(loginLines(spy)).toHaveLength(3)
+      expect(loginLines(spy)).toHaveLength(1) // one line when the back-off starts, not one per round
     })
 
     it('a missing password sends no camera results over three rounds', async () => {

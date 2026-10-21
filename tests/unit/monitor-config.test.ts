@@ -26,6 +26,13 @@ describe('loadMonitorConfig', () => {
     expect(loadMonitorConfig({ DEVICE_CHECK_SEC: '86400', CAMERA_CHECK_SEC: '10', FAIL_THRESHOLD: '10' })).toMatchObject({ deviceCheckSec: 86400, cameraCheckSec: 10, failThreshold: 10 })
     expect(loadMonitorConfig({ FAIL_THRESHOLD: '1' }).failThreshold).toBe(1)
   })
+  it('reads the NVR login back-off, 15 minutes by default, kept between a minute and a day', () => {
+    expect(loadMonitorConfig({}).nvrLoginBackoffSec).toBe(900)
+    expect(loadMonitorConfig({ NVR_LOGIN_BACKOFF_SEC: '120' }).nvrLoginBackoffSec).toBe(120)
+    expect(loadMonitorConfig({ NVR_LOGIN_BACKOFF_SEC: '5' }).nvrLoginBackoffSec).toBe(60)
+    expect(loadMonitorConfig({ NVR_LOGIN_BACKOFF_SEC: '9999999' }).nvrLoginBackoffSec).toBe(86400)
+    expect(loadMonitorConfig({ NVR_LOGIN_BACKOFF_SEC: 'soon' }).nvrLoginBackoffSec).toBe(900)
+  })
   it('treats a negative or zero threshold as nonsense (the default), and a fraction as nonsense too', () => {
     expect(loadMonitorConfig({ FAIL_THRESHOLD: '-3' }).failThreshold).toBe(2)
     expect(loadMonitorConfig({ FAIL_THRESHOLD: '2.5' }).failThreshold).toBe(2)

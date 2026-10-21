@@ -48,4 +48,6 @@ export type Probes = {
 export type MonitorConfig = {
   deviceCheckSec: number; cameraCheckSec: number; pollSec: number; failThreshold: number
   deviceConcurrency: number; storeConcurrency: number; rtspPerStore: number; tcpTimeoutMs: number; nvrTimeoutMs: number
+  /** After an NVR refuses the login, it is left alone for this long (seconds), so a wrong password cannot lock the account. */
+  nvrLoginBackoffSec: number
 }

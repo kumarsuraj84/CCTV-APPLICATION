@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { isIP } from 'node:net'
 import { mapLimit } from '@/lib/async/pool'
 import { describeNvrError, NvrError } from '@/lib/nvr/client'
@@ -134,6 +135,43 @@ function nvrKnownDown(deps: Deps, s: StoreJob): boolean {
   return Number.isFinite(checked) && checked >= deps.clock().getTime() - nvrStateMaxAgeMs(deps.cfg)
 }
 
+/**
+ * Back-off after a refused NVR login. A recorder that keeps getting a wrong password locks the account, so after an ISAPI "auth" or
+ * "forbidden" answer the store's NVR is not asked again (no ISAPI, no RTSP) until the window is over or its saved login changes.
+ * Kept in memory only, per database object, and holds a hash of the login, never the password.
+ */
+type Backoff = { until: number; login: string }
+const backoffs = new WeakMap<object, Map<string, Backoff>>()
+const backoffOf = (db: object): Map<string, Backoff> => {
+  let m = backoffs.get(db)
+  if (!m) backoffs.set(db, (m = new Map()))
+  return m
+}
+/** Identifies the saved login (address, port, user name, password) without keeping any of it readable. */
+const loginFingerprint = (s: StoreJob): string => createHash('sha256').update(`${s.ip}|${s.http_port}|${s.username}:${s.password}`).digest('hex')
+
+/** How many stores are being left alone right now (for tests). */
+export const loginBackoffCount = (db: object): number => backoffOf(db).size
+
+/** True while the NVR of this store must not be asked. An ended back-off, or one for a login that has since changed, is removed. */
+function inBackoff(deps: Deps, s: StoreJob): boolean {
+  const map = backoffOf(deps.db)
+  const entry = map.get(s.id)
+  if (!entry) return false
+  if (deps.clock().getTime() >= entry.until || entry.login !== loginFingerprint(s)) {
+    map.delete(s.id)
+    return false
+  }
+  return true
+}
+
+/** Forgets the back-off of every store whose window is over, also for stores that are never checked again. */
+function pruneBackoffs(deps: Deps): void {
+  const map = backoffOf(deps.db)
+  const now = deps.clock().getTime()
+  for (const [id, entry] of map) if (now >= entry.until) map.delete(id)
+}
+
 /** A camera address the NVR reports is kept only when it is a plain IP address. */
 const plainIp = (ip: string | null): ip is string => typeof ip === 'string' && isIP(ip) !== 0 && !ip.includes('%')
 
@@ -161,6 +199,9 @@ async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
     return
   }
 
+  // Left alone after a refused login: nothing is sent to this NVR and nothing is recorded for its cameras.
+  if (inBackoff(deps, s)) return
+
   const online = new Map<number, boolean>()
   const rtspCode = new Map<number, number>()
   const skipped = new Set<number>()
@@ -169,6 +210,7 @@ async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
   let nvrProblem: string | undefined
   // A wrong or missing NVR password: a refused login says nothing about the cameras (see below).
   let loginProblem = s.password === ''
+  let refused = false
   const nvr = deps.probes.nvr({ host: s.ip, port: s.http_port, username: s.username, password: s.password }, { timeoutMs: deps.cfg.nvrTimeoutMs })
   if (loginProblem) {
     nvrProblem = 'The NVR has no saved password.' // nothing to log in with, so the NVR is not even asked
@@ -178,7 +220,7 @@ async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
       method = 'isapi'
     } catch (e) {
       nvrProblem = describeNvrError(e)
-      if (e instanceof NvrError && (e.kind === 'auth' || e.kind === 'forbidden')) loginProblem = true
+      if (e instanceof NvrError && (e.kind === 'auth' || e.kind === 'forbidden')) loginProblem = refused = true
     }
     if (!loginProblem) {
       try {
@@ -188,7 +230,13 @@ async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
       }
     }
   }
-  if (loginProblem) logger.warn({ event: 'nvr_login_problem', store: s.code, message: `NVR login problem for store ${s.code}` })
+  if (refused) {
+    // One line when the back-off starts, not one per round.
+    backoffOf(deps.db).set(s.id, { until: deps.clock().getTime() + deps.cfg.nvrLoginBackoffSec * 1000, login: loginFingerprint(s) })
+    logger.warn({ event: 'nvr_login_problem', store: s.code, message: `NVR login problem for store ${s.code}; it will not be asked again for ${deps.cfg.nvrLoginBackoffSec} seconds` })
+  } else if (loginProblem) {
+    logger.warn({ event: 'nvr_login_problem', store: s.code, message: `NVR login problem for store ${s.code}: no saved password` })
+  }
 
   const unconfirmed = s.cameras.filter((c) => online.get(c.channel) !== true)
   if (unconfirmed.length > 0) {
@@ -243,6 +291,7 @@ export async function checkCameras(deps: Deps, onProgress?: (done: number, total
     logger.error({ event: 'stores_load_failed', error: e })
     return 0
   }
+  pruneBackoffs(deps)
   let done = 0
   await mapLimit(stores, deps.cfg.storeConcurrency, async (s) => {
     await checkStoreCameras(deps, s)
