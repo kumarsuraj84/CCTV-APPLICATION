@@ -183,6 +183,39 @@ describe('inventory visibility (row-level security)', () => {
     expect(error?.message).toContain('outside organisation')
   })
 
+  it('the database refuses links between rows of different organisations', async () => {
+    const db = adminClient()
+    const { data: camB } = await db.from('cameras').select('id').eq('org_id', orgB).limit(1).single()
+    expect(camB?.id).toBeTruthy()
+
+    const camera = await db.from('cameras').insert({ org_id: orgA, store_id: sB, channel: 9, name: 'Cross' })
+    expect(camera.error?.code).toBe('23503')
+    const device = await db.from('devices').insert({ org_id: orgA, store_id: sB, type: 'server', name: 'Cross', ip: '127.0.0.1' })
+    expect(device.error?.code).toBe('23503')
+    const storeGrant = await db.from('user_store_access').insert({ org_id: orgA, user_id: nobody.id, store_id: sB })
+    expect(storeGrant.error?.code).toBe('23503')
+    const cameraGrant = await db.from('user_camera_access').insert({ org_id: orgA, user_id: nobody.id, camera_id: camB!.id })
+    expect(cameraGrant.error?.code).toBe('23503')
+    const zoneGrant = await db.from('user_zone_access').insert({ org_id: orgB, user_id: nobody.id, zone: 'BR' })
+    expect(zoneGrant.error?.code).toBe('23503')
+    const profile = await db.from('profiles').update({ store_id: sB }).eq('id', nobody.id)
+    expect(profile.error?.code).toBe('23503')
+
+    // A device with no store is still fine.
+    const loose = await db.from('devices').insert({ org_id: orgA, store_id: null, type: 'other', name: 'Loose', ip: '127.0.0.1' })
+    expect(loose.error).toBeNull()
+  })
+
+  it('deleting a store detaches its devices but keeps their organisation', async () => {
+    const db = adminClient()
+    const tmp = await addStore(orgA, 'TMP', 'XX')
+    const dev = await addDevice(orgA, tmp, 'server', 'Temp device')
+    const del = await db.from('stores').delete().eq('id', tmp)
+    expect(del.error).toBeNull()
+    const back = await db.from('devices').select('store_id, org_id').eq('id', dev).single()
+    expect(back.data).toEqual({ store_id: null, org_id: orgA })
+  })
+
   it('NVR passwords live in the vault and only the server can read them', async () => {
     const admin = adminClient()
     const secret = `Nvr-${randomUUID()}`

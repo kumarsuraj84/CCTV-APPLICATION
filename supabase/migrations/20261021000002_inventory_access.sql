@@ -25,31 +25,37 @@ CREATE TABLE public.stores (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT stores_org_code_key UNIQUE (org_id, code),
+  CONSTRAINT stores_id_org_key UNIQUE (id, org_id),  -- target of the same-organisation foreign keys below
   CONSTRAINT stores_code_upper CHECK (code = upper(code))
 );
 CREATE INDEX stores_org_zone_idx ON public.stores (org_id, zone);
 
+-- Child rows must belong to the same organisation as the row they point at: every link is a composite key on (id, org_id).
 ALTER TABLE public.profiles
-  ADD CONSTRAINT profiles_store_fk FOREIGN KEY (store_id) REFERENCES public.stores (id) ON DELETE SET NULL;
+  ADD CONSTRAINT profiles_id_org_key UNIQUE (id, org_id);
+ALTER TABLE public.profiles
+  ADD CONSTRAINT profiles_store_fk FOREIGN KEY (store_id, org_id) REFERENCES public.stores (id, org_id) ON DELETE SET NULL (store_id);
 
 CREATE TABLE public.cameras (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id uuid NOT NULL REFERENCES public.organizations (id),
-  store_id uuid NOT NULL REFERENCES public.stores (id) ON DELETE CASCADE,
+  store_id uuid NOT NULL,
   channel integer NOT NULL CHECK (channel > 0),
   name text NOT NULL,
   camera_ip text,
   is_active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT cameras_store_channel_key UNIQUE (store_id, channel)
+  CONSTRAINT cameras_store_channel_key UNIQUE (store_id, channel),
+  CONSTRAINT cameras_id_org_key UNIQUE (id, org_id),
+  CONSTRAINT cameras_store_fk FOREIGN KEY (store_id, org_id) REFERENCES public.stores (id, org_id) ON DELETE CASCADE
 );
 CREATE INDEX cameras_org_idx ON public.cameras (org_id);
 
 CREATE TABLE public.devices (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id uuid NOT NULL REFERENCES public.organizations (id),
-  store_id uuid REFERENCES public.stores (id) ON DELETE SET NULL,
+  store_id uuid,
   type public.device_type NOT NULL,
   name text NOT NULL,
   ip text NOT NULL,
@@ -57,28 +63,34 @@ CREATE TABLE public.devices (
   notes text,
   enabled boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT devices_store_fk FOREIGN KEY (store_id, org_id) REFERENCES public.stores (id, org_id) ON DELETE SET NULL (store_id)
 );
 CREATE INDEX devices_org_idx ON public.devices (org_id);
 CREATE INDEX devices_store_idx ON public.devices (store_id);
 
 CREATE TABLE public.user_store_access (
   org_id uuid NOT NULL REFERENCES public.organizations (id),
-  user_id uuid NOT NULL REFERENCES public.profiles (id) ON DELETE CASCADE,
-  store_id uuid NOT NULL REFERENCES public.stores (id) ON DELETE CASCADE,
-  PRIMARY KEY (user_id, store_id)
+  user_id uuid NOT NULL,
+  store_id uuid NOT NULL,
+  PRIMARY KEY (user_id, store_id),
+  FOREIGN KEY (user_id, org_id) REFERENCES public.profiles (id, org_id) ON DELETE CASCADE,
+  FOREIGN KEY (store_id, org_id) REFERENCES public.stores (id, org_id) ON DELETE CASCADE
 );
 CREATE TABLE public.user_zone_access (
   org_id uuid NOT NULL REFERENCES public.organizations (id),
-  user_id uuid NOT NULL REFERENCES public.profiles (id) ON DELETE CASCADE,
+  user_id uuid NOT NULL,
   zone text NOT NULL,
-  PRIMARY KEY (user_id, zone)
+  PRIMARY KEY (user_id, zone),
+  FOREIGN KEY (user_id, org_id) REFERENCES public.profiles (id, org_id) ON DELETE CASCADE
 );
 CREATE TABLE public.user_camera_access (
   org_id uuid NOT NULL REFERENCES public.organizations (id),
-  user_id uuid NOT NULL REFERENCES public.profiles (id) ON DELETE CASCADE,
-  camera_id uuid NOT NULL REFERENCES public.cameras (id) ON DELETE CASCADE,
-  PRIMARY KEY (user_id, camera_id)
+  user_id uuid NOT NULL,
+  camera_id uuid NOT NULL,
+  PRIMARY KEY (user_id, camera_id),
+  FOREIGN KEY (user_id, org_id) REFERENCES public.profiles (id, org_id) ON DELETE CASCADE,
+  FOREIGN KEY (camera_id, org_id) REFERENCES public.cameras (id, org_id) ON DELETE CASCADE
 );
 
 CREATE TABLE public.admin_audit_log (

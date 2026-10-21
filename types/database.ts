@@ -62,11 +62,11 @@ isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
     },{
-      foreignKeyName: "cameras_store_id_fkey"
-      columns: ["store_id"]
+      foreignKeyName: "cameras_store_fk"
+      columns: ["store_id","org_id"]
 isOneToOne: false
       referencedRelation: "stores"
-      referencedColumns: ["id"]
+      referencedColumns: ["id","org_id"]
     }
                   ]
                 },"devices": {
@@ -88,11 +88,11 @@ isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
     },{
-      foreignKeyName: "devices_store_id_fkey"
-      columns: ["store_id"]
+      foreignKeyName: "devices_store_fk"
+      columns: ["store_id","org_id"]
 isOneToOne: false
       referencedRelation: "stores"
-      referencedColumns: ["id"]
+      referencedColumns: ["id","org_id"]
     }
                   ]
                 },"organizations": {
@@ -129,10 +129,10 @@ isOneToOne: false
       referencedColumns: ["id"]
     },{
       foreignKeyName: "profiles_store_fk"
-      columns: ["store_id"]
+      columns: ["store_id","org_id"]
 isOneToOne: false
       referencedRelation: "stores"
-      referencedColumns: ["id"]
+      referencedColumns: ["id","org_id"]
     }
                   ]
                 },"stores": {
@@ -168,11 +168,11 @@ isOneToOne: false
                   }
                   Relationships: [
                     {
-      foreignKeyName: "user_camera_access_camera_id_fkey"
-      columns: ["camera_id"]
+      foreignKeyName: "user_camera_access_camera_id_org_id_fkey"
+      columns: ["camera_id","org_id"]
 isOneToOne: false
       referencedRelation: "cameras"
-      referencedColumns: ["id"]
+      referencedColumns: ["id","org_id"]
     },{
       foreignKeyName: "user_camera_access_org_id_fkey"
       columns: ["org_id"]
@@ -180,11 +180,11 @@ isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
     },{
-      foreignKeyName: "user_camera_access_user_id_fkey"
-      columns: ["user_id"]
+      foreignKeyName: "user_camera_access_user_id_org_id_fkey"
+      columns: ["user_id","org_id"]
 isOneToOne: false
       referencedRelation: "profiles"
-      referencedColumns: ["id"]
+      referencedColumns: ["id","org_id"]
     }
                   ]
                 },"user_store_access": {
@@ -206,17 +206,17 @@ isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
     },{
-      foreignKeyName: "user_store_access_store_id_fkey"
-      columns: ["store_id"]
+      foreignKeyName: "user_store_access_store_id_org_id_fkey"
+      columns: ["store_id","org_id"]
 isOneToOne: false
       referencedRelation: "stores"
-      referencedColumns: ["id"]
+      referencedColumns: ["id","org_id"]
     },{
-      foreignKeyName: "user_store_access_user_id_fkey"
-      columns: ["user_id"]
+      foreignKeyName: "user_store_access_user_id_org_id_fkey"
+      columns: ["user_id","org_id"]
 isOneToOne: false
       referencedRelation: "profiles"
-      referencedColumns: ["id"]
+      referencedColumns: ["id","org_id"]
     }
                   ]
                 },"user_zone_access": {
@@ -238,11 +238,11 @@ isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
     },{
-      foreignKeyName: "user_zone_access_user_id_fkey"
-      columns: ["user_id"]
+      foreignKeyName: "user_zone_access_user_id_org_id_fkey"
+      columns: ["user_id","org_id"]
 isOneToOne: false
       referencedRelation: "profiles"
-      referencedColumns: ["id"]
+      referencedColumns: ["id","org_id"]
     }
                   ]
                 }
