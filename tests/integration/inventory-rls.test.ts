@@ -24,10 +24,11 @@ async function addCamera(orgId: string, storeId: string, channel: number): Promi
   return data.id
 }
 
+let devicePort = 9 // devices are unique per address and port, so each fixture device gets its own port
 async function addDevice(orgId: string, storeId: string | null, type: 'server' | 'attendance', name: string): Promise<string> {
   const { data, error } = await adminClient()
     .from('devices')
-    .insert({ org_id: orgId, store_id: storeId, type, name, ip: '127.0.0.1', tcp_port: 9 })
+    .insert({ org_id: orgId, store_id: storeId, type, name, ip: '127.0.0.1', tcp_port: devicePort++ })
     .select('id')
     .single()
   if (error || !data) throw new Error(`addDevice: ${error?.message}`)

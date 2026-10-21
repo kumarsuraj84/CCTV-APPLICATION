@@ -19,8 +19,8 @@ describe('viewer queries respect access', () => {
     await admin.from('cameras').insert([1, 2].map((n) => ({ org_id: orgId, store_id: storeA, channel: n, name: `C${n}` })))
     await admin.from('cameras').insert({ org_id: orgId, store_id: storeB, channel: 1, name: 'C1' })
     await admin.from('devices').insert([
-      { org_id: orgId, store_id: storeA, type: 'server', name: 'A server', ip: '127.0.0.1' },
-      { org_id: orgId, store_id: storeB, type: 'footfall', name: 'B counter', ip: '127.0.0.1' },
+      { org_id: orgId, store_id: storeA, type: 'server', name: 'A server', ip: '127.0.0.1', tcp_port: 1 },
+      { org_id: orgId, store_id: storeB, type: 'footfall', name: 'B counter', ip: '127.0.0.1', tcp_port: 2 },
     ])
     viewer = await createUser(orgId, 'user')
     manager = await createUser(orgId, 'manager')
@@ -60,7 +60,7 @@ describe('viewer queries respect access', () => {
     const big = (await admin.from('stores').insert({ org_id: orgId, code: 'BIG', name: 'Store BIG', city: 'Patna', zone: 'BR', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
     // Half of the rows share one name, so a sort on name alone has ties across the page boundary.
     const rows = Array.from({ length: 1001 }, (_, i) => ({
-      org_id: orgId, store_id: big, type: 'server' as const, name: i < 500 ? 'same name' : `big ${String(i).padStart(4, '0')}`, ip: '127.0.0.1',
+      org_id: orgId, store_id: big, type: 'server' as const, name: i < 500 ? 'same name' : `big ${String(i).padStart(4, '0')}`, ip: '127.0.0.1', tcp_port: 1000 + i,
     }))
     const ins = await admin.from('devices').insert(rows)
     expect(ins.error).toBeNull()

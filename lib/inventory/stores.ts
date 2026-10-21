@@ -77,7 +77,9 @@ export async function deleteStore(admin: AdminClient, actor: Actor, storeId: str
   if (!isAdminRole(actor.role)) return { ok: false, error: DENIED }
   const { data: existing } = await admin.from('stores').select('id, code').eq('id', storeId).eq('org_id', actor.orgId).maybeSingle()
   if (!existing) return { ok: false, error: 'Store not found.' }
-  await admin.rpc('nvr_delete_credential', { p_store: storeId })
+  // Remove the NVR password from the vault first; if that fails the store is kept so the secret is never orphaned.
+  const secret = await admin.rpc('nvr_delete_credential', { p_store: storeId })
+  if (secret.error) return { ok: false, error: sanitizeError(secret.error, { route: 'deleteStore.credential', fallback: 'Could not remove the NVR password, so the store was not deleted. Please try again.' }) }
   const { error } = await admin.from('stores').delete().eq('id', storeId)
   if (error) return { ok: false, error: sanitizeError(error, { route: 'deleteStore', fallback: 'Could not delete the store.' }) }
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'store_deleted', entityType: 'store', entityId: storeId, detail: { code: existing.code } })

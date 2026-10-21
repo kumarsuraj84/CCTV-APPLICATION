@@ -272,6 +272,9 @@ isOneToOne: false
 "nvr_store_credential":
 { Args: { "p_secret": string,"p_store": string }; Returns: string
                            },
+"privilege_violations":
+{ Args: Record<PropertyKey, never>; Returns: string[]
+                           },
 "replace_user_access":
 { Args: { "p_cameras": (string)[],"p_stores": (string)[],"p_user": string,"p_zones": (string)[] }; Returns: undefined
                            },
