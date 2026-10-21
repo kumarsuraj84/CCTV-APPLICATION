@@ -4,6 +4,7 @@ import { z } from 'zod'
 import type { Database } from '@/types/database'
 import { addAudit } from '@/lib/admin/audit'
 import { canManageRole, ROLES, SEES_EVERYTHING, type Role } from '@/lib/admin/roles'
+import { logger } from '@/lib/observability/logger'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { assertRefsInOrg } from '@/lib/security/org-scope'
 import { fetchAll } from '@/lib/supabase/fetch-all'
@@ -84,7 +85,8 @@ export async function createUser(admin: AdminClient, actor: Actor, input: unknow
     store_id: v.store_id ?? null,
   })
   if (error) {
-    await admin.auth.admin.deleteUser(userId)
+    const undone = await admin.auth.admin.deleteUser(userId)
+    if (undone.error) logger.error({ event: 'create_user_rollback_failed', userId, error: undone.error })
     return { ok: false, error: sanitizeError(error, { route: 'createUser.profile', fallback: 'Could not create the user.' }) }
   }
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'user_created', entityType: 'profile', entityId: userId, detail: { role: v.role } })
@@ -113,8 +115,21 @@ export async function updateUser(admin: AdminClient, actor: Actor, userId: strin
   const { error } = await admin.from('profiles').update(patch).eq('id', userId).eq('org_id', actor.orgId)
   if (error) return { ok: false, error: sanitizeError(error, { route: 'updateUser', fallback: 'Could not save the changes.' }) }
   if (patch.is_active !== undefined) {
-    // Deactivating also stops new sign-ins; reactivating lifts that.
-    await admin.auth.admin.updateUserById(userId, { ban_duration: patch.is_active ? 'none' : '876000h' })
+    // Deactivating also stops sign-ins; reactivating lifts that.
+    const ban = await admin.auth.admin.updateUserById(userId, { ban_duration: patch.is_active ? 'none' : '876000h' })
+    if (ban.error) {
+      logger.error({ event: 'update_user_ban_failed', userId, error: ban.error })
+      await admin.from('profiles').update({ is_active: target.is_active }).eq('id', userId).eq('org_id', actor.orgId)
+      return { ok: false, error: 'Could not change the status. Please try again.' }
+    }
+    if (!patch.is_active) {
+      // End the sessions that exist now, so they stay dead even if the person is reactivated later.
+      const ended = await admin.rpc('revoke_user_sessions', { p_user: userId })
+      if (ended.error) {
+        logger.error({ event: 'revoke_sessions_failed', userId, error: ended.error })
+        return { ok: false, error: 'The person was deactivated, but their current sign-ins could not be ended. Please try again.' }
+      }
+    }
   }
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'user_updated', entityType: 'profile', entityId: userId, detail: patch })
   return { ok: true }
@@ -128,8 +143,14 @@ export async function resetUserPassword(admin: AdminClient, actor: Actor, userId
   const oneTimePassword = generateOneTimePassword()
   const res = await admin.auth.admin.updateUserById(userId, { password: oneTimePassword })
   if (res.error) return { ok: false, error: sanitizeError(res.error, { route: 'resetUserPassword', fallback: 'Could not reset the password.' }) }
-  const { error } = await admin.from('profiles').update({ must_reset_password: true }).eq('id', userId)
-  if (error) return { ok: false, error: sanitizeError(error, { route: 'resetUserPassword.flag' }) }
+  const { error } = await admin.from('profiles').update({ must_reset_password: true }).eq('id', userId).eq('org_id', actor.orgId)
+  if (error) return { ok: false, error: sanitizeError(error, { route: 'resetUserPassword.flag', fallback: 'Could not reset the password.' }) }
+  // The old password is gone, so end every sign-in made with it.
+  const ended = await admin.rpc('revoke_user_sessions', { p_user: userId })
+  if (ended.error) {
+    logger.error({ event: 'revoke_sessions_failed', userId, error: ended.error })
+    return { ok: false, error: 'The password was reset, but the current sign-ins could not be ended. Please try again.' }
+  }
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'user_password_reset', entityType: 'profile', entityId: userId })
   return { ok: true, oneTimePassword }
 }
@@ -156,19 +177,27 @@ export async function setUserAccess(admin: AdminClient, actor: Actor, userId: st
 
 export async function listUsers(admin: AdminClient, orgId: string) {
   return fetchAll((from, to) =>
-    admin.from('profiles').select('id, email, full_name, role, is_active, must_reset_password, store_id, created_at').eq('org_id', orgId).order('full_name').range(from, to),
+    admin.from('profiles').select('id, email, full_name, role, is_active, must_reset_password, store_id, created_at').eq('org_id', orgId).order('full_name').order('id').range(from, to),
   )
 }
 
 export async function getUserAccess(admin: AdminClient, orgId: string, userId: string) {
   const [stores, zones, cameras] = await Promise.all([
-    admin.from('user_store_access').select('store_id').eq('org_id', orgId).eq('user_id', userId),
-    admin.from('user_zone_access').select('zone').eq('org_id', orgId).eq('user_id', userId),
-    fetchAll((from, to) => admin.from('user_camera_access').select('camera_id').eq('org_id', orgId).eq('user_id', userId).range(from, to)),
+    fetchAll((from, to) => admin.from('user_store_access').select('store_id').eq('org_id', orgId).eq('user_id', userId).order('store_id').range(from, to)),
+    fetchAll((from, to) => admin.from('user_zone_access').select('zone').eq('org_id', orgId).eq('user_id', userId).order('zone').range(from, to)),
+    fetchAll((from, to) => admin.from('user_camera_access').select('camera_id').eq('org_id', orgId).eq('user_id', userId).order('camera_id').range(from, to)),
   ])
   return {
-    storeIds: (stores.data ?? []).map((r) => r.store_id),
-    zones: (zones.data ?? []).map((r) => r.zone),
+    storeIds: stores.map((r) => r.store_id),
+    zones: zones.map((r) => r.zone),
     cameraIds: cameras.map((r) => r.camera_id),
   }
+}
+
+export async function listStoresForAccess(admin: AdminClient, orgId: string) {
+  return fetchAll((from, to) => admin.from('stores').select('id, code, name, zone').eq('org_id', orgId).order('code').order('id').range(from, to))
+}
+
+export async function listCamerasForAccess(admin: AdminClient, orgId: string) {
+  return fetchAll((from, to) => admin.from('cameras').select('id, store_id, channel, name').eq('org_id', orgId).order('channel').order('id').range(from, to))
 }

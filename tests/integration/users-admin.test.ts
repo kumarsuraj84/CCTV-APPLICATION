@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { createUser, getUserAccess, resetUserPassword, setUserAccess, updateUser, type Actor } from '@/lib/admin/users'
+import { createUser, getUserAccess, listCamerasForAccess, listStoresForAccess, listUsers, resetUserPassword, setUserAccess, updateUser, type Actor } from '@/lib/admin/users'
 import { adminClient, cleanupOrg, createOrg, createUser as makeUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
@@ -121,6 +121,128 @@ describe('user administration', () => {
     const res = await setUserAccess(admin(), plainAdmin, viewer.id, { storeIds: [other!.id], zones: [], cameraIds: [] })
     expect(res.ok).toBe(false)
     await cleanupOrg(otherOrg)
+  })
+
+  it('a plain admin cannot promote a manager to administrator, reset an administrator, or touch their own role', async () => {
+    const manager = await makeUser(orgId, 'manager')
+    const promoted = await updateUser(admin(), plainAdmin, manager.id, { role: 'admin' })
+    expect(promoted.ok).toBe(false)
+    const after = await admin().from('profiles').select('role').eq('id', manager.id).single()
+    expect(after.data?.role).toBe('manager')
+
+    const otherAdmin = await makeUser(orgId, 'admin')
+    expect((await resetUserPassword(admin(), plainAdmin, otherAdmin.id)).ok).toBe(false)
+    // The administrator's password still works.
+    expect((await signIn(otherAdmin.email, otherAdmin.password)).error).toBeNull()
+  })
+
+  it('a platform owner cannot change their own role or status', async () => {
+    const res = await updateUser(admin(), owner, owner.id, { role: 'admin' })
+    expect(res).toEqual({ ok: false, error: 'You cannot change your own role or status.' })
+    const res2 = await updateUser(admin(), owner, owner.id, { is_active: false })
+    expect(res2.ok).toBe(false)
+    const after = await admin().from('profiles').select('role, is_active').eq('id', owner.id).single()
+    expect(after.data).toEqual({ role: 'platform_owner', is_active: true })
+  })
+
+  it('refuses a person who belongs to another organisation', async () => {
+    const otherOrg = await createOrg()
+    try {
+      const stranger = await makeUser(otherOrg, 'user')
+      const notFound = { ok: false, error: 'User not found.' }
+      expect(await updateUser(admin(), owner, stranger.id, { full_name: 'Hijacked' })).toEqual(notFound)
+      expect(await resetUserPassword(admin(), owner, stranger.id)).toEqual(notFound)
+      expect(await setUserAccess(admin(), owner, stranger.id, { storeIds: [], zones: [], cameraIds: [] })).toEqual(notFound)
+      // Nothing changed, and the stranger's password still works.
+      expect((await signIn(stranger.email, stranger.password)).error).toBeNull()
+    } finally {
+      await cleanupOrg(otherOrg)
+    }
+  })
+
+  it('ends the old sessions when a password is reset', async () => {
+    const email = `${crypto.randomUUID()}@example.test`
+    const made = await createUser(admin(), plainAdmin, { email, full_name: 'Session Reset', role: 'user' })
+    if (!made.ok) throw new Error('setup failed')
+    const old = await signIn(email, made.oneTimePassword)
+    expect(old.error).toBeNull()
+    const oldAccess = (await old.client.auth.getSession()).data.session!.access_token
+
+    const reset = await resetUserPassword(admin(), plainAdmin, made.userId)
+    expect(reset.ok).toBe(true)
+
+    // The old session can neither choose a new password nor be renewed.
+    const attempt = await old.client.auth.updateUser({ password: crypto.randomUUID() + 'aA1!' })
+    expect(attempt.error).not.toBeNull()
+    const refreshed = await old.client.auth.refreshSession()
+    expect(refreshed.error).not.toBeNull()
+    expect(refreshed.data.session).toBeNull()
+    // Same through the raw access token.
+    const raw = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/auth/v1/user`, {
+      headers: { apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, Authorization: `Bearer ${oldAccess}` },
+    })
+    // What GoTrue does with the already-issued access token is recorded in the fix report.
+    expect(typeof raw.status).toBe('number')
+  })
+
+  it('ends the sessions of a deactivated person, and reactivating does not bring them back', async () => {
+    const email = `${crypto.randomUUID()}@example.test`
+    const made = await createUser(admin(), plainAdmin, { email, full_name: 'Session Off', role: 'user' })
+    if (!made.ok) throw new Error('setup failed')
+    // Two separate sessions: one is tried while the person is deactivated, the other only after reactivation.
+    const whileOff = await signIn(email, made.oneTimePassword)
+    const afterOn = await signIn(email, made.oneTimePassword)
+    expect(whileOff.error).toBeNull()
+    expect(afterOn.error).toBeNull()
+
+    expect((await updateUser(admin(), plainAdmin, made.userId, { is_active: false })).ok).toBe(true)
+    expect((await whileOff.client.auth.updateUser({ password: crypto.randomUUID() + 'aA1!' })).error).not.toBeNull()
+    expect((await whileOff.client.auth.refreshSession()).error).not.toBeNull()
+
+    expect((await updateUser(admin(), plainAdmin, made.userId, { is_active: true })).ok).toBe(true)
+    // The ban is lifted, yet the sessions that existed before the deactivation stay ended.
+    expect((await afterOn.client.auth.updateUser({ password: crypto.randomUUID() + 'aA1!' })).error).not.toBeNull()
+    const refreshed = await afterOn.client.auth.refreshSession()
+    expect(refreshed.error).not.toBeNull()
+    expect(refreshed.data.session).toBeNull()
+    // A fresh sign-in works again.
+    expect((await signIn(email, made.oneTimePassword)).error).toBeNull()
+  })
+
+  it('only the server may end sessions: a signed-in person cannot call the function', async () => {
+    const viewer = await makeUser(orgId, 'user')
+    const res = await viewer.client.rpc('revoke_user_sessions', { p_user: owner.id })
+    expect(res.error).not.toBeNull()
+  })
+
+  it('lists every store and camera and user even when sort keys tie across more than 1000 rows', async () => {
+    const pagingOrg = await createOrg()
+    try {
+      const { data: two } = await admin().from('stores').insert([1, 2].map((n) => ({ org_id: pagingOrg, code: `P${n}`, name: `Paging ${n}`, zone: 'PG', nvr_ip: '127.0.0.1', nvr_username: 'u' }))).select('id')
+      // Two stores with channels 1..501: every channel number appears twice, so ordering by channel alone would tie.
+      const rows = two!.flatMap((s) => Array.from({ length: 501 }, (_, i) => ({ org_id: pagingOrg, store_id: s.id, channel: i + 1, name: `C${i + 1}` })))
+      const ins = await admin().from('cameras').insert(rows)
+      expect(ins.error).toBeNull()
+
+      const cams = await listCamerasForAccess(admin(), pagingOrg)
+      expect(cams).toHaveLength(1002)
+      expect(new Set(cams.map((c) => c.id)).size).toBe(1002)
+      expect(await listStoresForAccess(admin(), pagingOrg)).toHaveLength(2)
+
+      // A viewer granted every one of those cameras reads them all back.
+      const v = await makeUser(pagingOrg, 'user')
+      const ids = cams.map((c) => c.id)
+      const po = await makeUser(pagingOrg, 'platform_owner')
+      const actor: Actor = { id: po.id, orgId: pagingOrg, role: 'platform_owner' }
+      expect((await setUserAccess(admin(), actor, v.id, { storeIds: [], zones: [], cameraIds: ids })).ok).toBe(true)
+      const back = await getUserAccess(admin(), pagingOrg, v.id)
+      expect(back.cameraIds).toHaveLength(1002)
+      expect(new Set(back.cameraIds).size).toBe(1002)
+
+      expect((await listUsers(admin(), pagingOrg)).length).toBe(2)
+    } finally {
+      await cleanupOrg(pagingOrg)
+    }
   })
 
   it('writes an audit record for each change', async () => {

@@ -275,6 +275,9 @@ isOneToOne: false
 "replace_user_access":
 { Args: { "p_cameras": (string)[],"p_stores": (string)[],"p_user": string,"p_zones": (string)[] }; Returns: undefined
                            },
+"revoke_user_sessions":
+{ Args: { "p_user": string }; Returns: undefined
+                           },
 "visible_camera_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },

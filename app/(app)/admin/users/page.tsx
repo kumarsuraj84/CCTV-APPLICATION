@@ -2,10 +2,9 @@ import { CreateUserForm } from '@/components/admin/CreateUserForm'
 import { UserRow } from '@/components/admin/UserRow'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { canManageRole, ROLES, SEES_EVERYTHING } from '@/lib/admin/roles'
-import { listUsers } from '@/lib/admin/users'
+import { listStoresForAccess, listUsers } from '@/lib/admin/users'
 import { requireAdmin } from '@/lib/auth/profile'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { fetchAll } from '@/lib/supabase/fetch-all'
 
 export const metadata = { title: 'Users' }
 
@@ -14,7 +13,7 @@ export default async function UsersPage() {
   const admin = createAdminClient()
   const [users, stores] = await Promise.all([
     listUsers(admin, me.org_id),
-    fetchAll((from, to) => admin.from('stores').select('id, code, name').eq('org_id', me.org_id).order('code').range(from, to)),
+    listStoresForAccess(admin, me.org_id),
   ])
   const allowedRoles = ROLES.filter((r) => canManageRole(me.role, r))
   return (

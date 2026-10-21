@@ -3,10 +3,9 @@ import { notFound } from 'next/navigation'
 import { AccessEditor } from '@/components/admin/AccessEditor'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { SEES_EVERYTHING } from '@/lib/admin/roles'
-import { getUserAccess } from '@/lib/admin/users'
+import { getUserAccess, listCamerasForAccess, listStoresForAccess } from '@/lib/admin/users'
 import { requireAdmin } from '@/lib/auth/profile'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { fetchAll } from '@/lib/supabase/fetch-all'
 
 export const metadata = { title: 'Access' }
 
@@ -25,8 +24,8 @@ export default async function AccessPage({ params }: { params: Promise<{ id: str
     )
   }
   const [stores, cameras, initial] = await Promise.all([
-    fetchAll((from, to) => admin.from('stores').select('id, code, name, zone').eq('org_id', me.org_id).order('code').range(from, to)),
-    fetchAll((from, to) => admin.from('cameras').select('id, store_id, channel, name').eq('org_id', me.org_id).order('channel').range(from, to)),
+    listStoresForAccess(admin, me.org_id),
+    listCamerasForAccess(admin, me.org_id),
     getUserAccess(admin, me.org_id, id),
   ])
   return (
