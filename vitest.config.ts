@@ -7,7 +7,7 @@ export default defineConfig({
     // Integration tests share one local database; run files one after another.
     fileParallelism: false,
     include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
-    setupFiles: ['tests/setup/env.ts'],
+    setupFiles: ['tests/setup/env.ts', 'tests/setup/egress-guard.ts'],
     testTimeout: 30_000,
     hookTimeout: 60_000,
   },
