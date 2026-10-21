@@ -6,10 +6,12 @@ import { importDevices, importStores, type ImportResult } from '@/lib/import/app
 import { parseDevicesCsv } from '@/lib/import/devices-csv'
 import { parseStoresCsv, type RowError } from '@/lib/import/stores-csv'
 import { createDevice, deleteDevice, updateDevice } from '@/lib/inventory/devices'
+import { submittedValues } from '@/lib/forms/submitted-values'
 import { createStore, deleteStore, updateStore } from '@/lib/inventory/stores'
 import { createAdminClient } from '@/lib/supabase/admin'
 
-export type FormResult = { error?: string; ok?: boolean }
+/** `values` carries the submitted non-secret fields back after an error, so the form keeps what was typed. */
+export type FormResult = { error?: string; ok?: boolean; values?: Record<string, string> }
 export type ImportState = { result?: ImportResult; parseErrors?: RowError[]; error?: string }
 
 async function ctx() {
@@ -18,6 +20,9 @@ async function ctx() {
 }
 
 const text = (f: FormData, k: string) => String(f.get(k) ?? '')
+const STORE_FIELDS = ['name', 'code', 'city', 'zone', 'state', 'address', 'ip', 'rtsp_port', 'http_port', 'nvr_username', 'channels']
+const DEVICE_FIELDS = ['name', 'type', 'store_id', 'ip', 'tcp_port', 'notes']
+
 const num = (f: FormData, k: string) => (text(f, k).trim() === '' ? undefined : Number(text(f, k)))
 
 function storeInput(f: FormData) {
@@ -34,7 +39,7 @@ export async function saveStoreAction(_prev: FormResult, formData: FormData): Pr
   const id = text(formData, 'id')
   const res = id ? await updateStore(admin, actor, id, storeInput(formData)) : await createStore(admin, actor, storeInput(formData))
   revalidatePath('/admin/stores')
-  return res.ok ? { ok: true } : { error: res.error }
+  return res.ok ? { ok: true } : { error: res.error, values: submittedValues(formData, STORE_FIELDS, ['is_active']) }
 }
 
 export async function deleteStoreAction(storeId: string): Promise<FormResult> {
@@ -56,7 +61,7 @@ export async function saveDeviceAction(_prev: FormResult, formData: FormData): P
   const id = text(formData, 'id')
   const res = id ? await updateDevice(admin, actor, id, deviceInput(formData)) : await createDevice(admin, actor, deviceInput(formData))
   revalidatePath('/admin/devices')
-  return res.ok ? { ok: true } : { error: res.error }
+  return res.ok ? { ok: true } : { error: res.error, values: submittedValues(formData, DEVICE_FIELDS, ['enabled']) }
 }
 
 export async function deleteDeviceAction(deviceId: string): Promise<FormResult> {

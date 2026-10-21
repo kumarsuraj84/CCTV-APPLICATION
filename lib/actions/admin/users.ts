@@ -3,9 +3,10 @@
 import { revalidatePath } from 'next/cache'
 import { createUser, resetUserPassword, setUserAccess, updateUser } from '@/lib/admin/users'
 import { requireAdmin } from '@/lib/auth/profile'
+import { submittedValues } from '@/lib/forms/submitted-values'
 import { createAdminClient } from '@/lib/supabase/admin'
 
-export type CreateUserState = { error?: string; created?: { email: string; oneTimePassword: string } }
+export type CreateUserState = { error?: string; values?: Record<string, string>; created?: { email: string; oneTimePassword: string } }
 export type PasswordState = { error?: string; oneTimePassword?: string }
 export type SimpleState = { error?: string; ok?: boolean }
 
@@ -24,7 +25,7 @@ export async function createUserAction(_prev: CreateUserState, formData: FormDat
     store_id: String(formData.get('store_id') ?? '') || null,
   })
   revalidatePath('/admin/users')
-  return res.ok ? { created: { email, oneTimePassword: res.oneTimePassword } } : { error: res.error }
+  return res.ok ? { created: { email, oneTimePassword: res.oneTimePassword } } : { error: res.error, values: submittedValues(formData, ['full_name', 'email', 'role', 'store_id']) }
 }
 
 export async function setActiveAction(userId: string, isActive: boolean): Promise<SimpleState> {

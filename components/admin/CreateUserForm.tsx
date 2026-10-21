@@ -26,15 +26,15 @@ export function CreateUserForm({ allowedRoles, stores }: { allowedRoles: string[
         <form action={action} className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="full_name">Name</Label>
-            <Input id="full_name" name="full_name" required />
+            <Input id="full_name" name="full_name" defaultValue={state.values?.full_name ?? ''} required />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="email">E-mail</Label>
-            <Input id="email" name="email" type="email" required />
+            <Input id="email" name="email" type="email" defaultValue={state.values?.email ?? ''} required />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="role">Role</Label>
-            <select id="role" name="role" defaultValue="user" className="h-8 w-full rounded-lg border bg-background px-2 text-sm">
+            <select id="role" name="role" defaultValue={state.values?.role ?? 'user'} className="h-8 w-full rounded-lg border bg-background px-2 text-sm">
               {allowedRoles.map((r) => (
                 <option key={r} value={r}>{ROLE_LABELS[r] ?? r}</option>
               ))}
@@ -42,7 +42,7 @@ export function CreateUserForm({ allowedRoles, stores }: { allowedRoles: string[
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="store_id">Store login (optional)</Label>
-            <select id="store_id" name="store_id" defaultValue="" className="h-8 w-full rounded-lg border bg-background px-2 text-sm">
+            <select id="store_id" name="store_id" defaultValue={state.values?.store_id ?? ''} className="h-8 w-full rounded-lg border bg-background px-2 text-sm">
               <option value="">Not a store login</option>
               {stores.map((s) => (
                 <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
