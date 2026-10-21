@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import type { Actor, AdminClient } from '@/lib/admin/users'
+import type { Actor, AdminClient } from '@/lib/admin/types'
 import { createStore, updateStore } from '@/lib/inventory/stores'
 import { adminClient, cleanupOrg, createOrg, createUser } from '../setup/fixtures'
 

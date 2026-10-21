@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { navFor, type Role } from '@/lib/nav'
+import { mobileNavFor, navFor, type Role } from '@/lib/nav'
 
 const hrefs = (role: Role) => navFor(role).map((i) => i.href)
 
@@ -24,5 +24,12 @@ describe('navigation per role', () => {
 
   it('a platform owner sees what an admin sees', () => {
     expect(hrefs('platform_owner')).toEqual(hrefs('admin'))
+  })
+})
+
+describe('mobile navigation', () => {
+  it('shows only the pages everybody uses, taken from the same list as the sidebar', () => {
+    expect(mobileNavFor('user').map((i) => i.href)).toEqual(['/home', '/stores', '/devices'])
+    expect(mobileNavFor('admin').map((i) => i.href)).toEqual(['/home', '/stores', '/devices'])
   })
 })

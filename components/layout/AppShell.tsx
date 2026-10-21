@@ -1,4 +1,4 @@
-import { navFor, type Role } from '@/lib/nav'
+import { mobileNavFor, navFor, type Role } from '@/lib/nav'
 import { signOut } from '@/lib/actions/auth'
 import { Button } from '@/components/ui/button'
 import { MobileNav } from './MobileNav'
@@ -23,7 +23,7 @@ export function AppShell({ profile, children }: { profile: { full_name: string; 
         </header>
         <main className="mx-auto w-full max-w-[100rem] flex-1 p-4 pb-20 md:p-6 md:pb-6">{children}</main>
       </div>
-      <MobileNav />
+      <MobileNav items={mobileNavFor(profile.role)} />
     </div>
   )
 }

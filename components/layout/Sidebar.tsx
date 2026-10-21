@@ -1,13 +1,11 @@
 'use client'
 
-import { Building2, Home, Server, Store, Upload, Users } from 'lucide-react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import type { NavItem } from '@/lib/nav'
 import { BRAND } from '@/lib/brand'
-
-const ICONS = { home: Home, store: Store, server: Server, users: Users, upload: Upload, building: Building2 }
+import { ICONS } from './icons'
 
 export function Sidebar({ items }: { items: NavItem[] }) {
   const pathname = usePathname()

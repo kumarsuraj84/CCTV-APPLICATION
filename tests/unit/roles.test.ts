@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canManageRole } from '@/lib/admin/roles'
+import { canManageRole, canRunChecks, isAdminRole } from '@/lib/admin/roles'
 
 describe('canManageRole', () => {
   it('a platform owner may manage every role', () => {
@@ -14,5 +14,17 @@ describe('canManageRole', () => {
   })
   it('nobody else may manage anyone', () => {
     for (const a of ['user', 'agent', 'manager'] as const) expect(canManageRole(a, 'user')).toBe(false)
+  })
+})
+
+describe('isAdminRole and canRunChecks', () => {
+  it('isAdminRole is true only for admin and platform_owner', () => {
+    expect(isAdminRole('admin')).toBe(true)
+    expect(isAdminRole('platform_owner')).toBe(true)
+    for (const r of ['user', 'agent', 'manager'] as const) expect(isAdminRole(r)).toBe(false)
+  })
+  it('operators, admins and owners may request a check; viewers and managers may not', () => {
+    for (const r of ['agent', 'admin', 'platform_owner'] as const) expect(canRunChecks(r)).toBe(true)
+    for (const r of ['user', 'manager'] as const) expect(canRunChecks(r)).toBe(false)
   })
 })

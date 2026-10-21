@@ -1,8 +1,17 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { GET as health } from '@/app/api/health/route'
 import { GET as version } from '@/app/api/version/route'
 
 describe('health and version routes', () => {
+  let savedBuildId: string | undefined
+  beforeEach(() => {
+    savedBuildId = process.env.NEXT_PUBLIC_BUILD_ID
+  })
+  afterEach(() => {
+    if (savedBuildId === undefined) delete process.env.NEXT_PUBLIC_BUILD_ID
+    else process.env.NEXT_PUBLIC_BUILD_ID = savedBuildId
+  })
+
   it('health says ok', async () => {
     const res = await health()
     expect(res.status).toBe(200)

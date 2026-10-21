@@ -1,6 +1,6 @@
-import type { Actor, AdminClient, Result } from '@/lib/admin/users'
+import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { addAudit } from '@/lib/admin/audit'
-import { isAdminRole } from '@/lib/auth/roles'
+import { isAdminRole } from '@/lib/admin/roles'
 import { normalizeRegion } from '@/lib/import/regions'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { storeSchema } from '@/lib/inventory/schemas'

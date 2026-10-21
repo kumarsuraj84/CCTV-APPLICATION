@@ -1,6 +1,6 @@
-import type { Actor, AdminClient } from '@/lib/admin/users'
+import type { Actor, AdminClient } from '@/lib/admin/types'
 import { addAudit } from '@/lib/admin/audit'
-import { isAdminRole } from '@/lib/auth/roles'
+import { isAdminRole } from '@/lib/admin/roles'
 import type { DeviceRow } from '@/lib/import/devices-csv'
 import type { RowError, StoreRow } from '@/lib/import/stores-csv'
 import { ensurePlaceholderCameras } from '@/lib/inventory/stores'

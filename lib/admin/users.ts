@@ -1,17 +1,12 @@
 import { randomInt } from 'node:crypto'
-import type { SupabaseClient } from '@supabase/supabase-js'
 import { z } from 'zod'
-import type { Database } from '@/types/database'
 import { addAudit } from '@/lib/admin/audit'
-import { canManageRole, ROLES, SEES_EVERYTHING, type Role } from '@/lib/admin/roles'
+import { canManageRole, ROLES, SEES_EVERYTHING } from '@/lib/admin/roles'
+import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { logger } from '@/lib/observability/logger'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { assertRefsInOrg } from '@/lib/security/org-scope'
 import { fetchAll } from '@/lib/supabase/fetch-all'
-
-export type AdminClient = SupabaseClient<Database>
-export type Actor = { id: string; orgId: string; role: Role }
-export type Result<T> = ({ ok: true } & T) | { ok: false; error: string }
 
 const UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
 const LOWER = 'abcdefghijkmnopqrstuvwxyz'

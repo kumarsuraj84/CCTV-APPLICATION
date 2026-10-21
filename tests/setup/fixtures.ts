@@ -34,20 +34,25 @@ export async function createUser(orgId: string, role: Role, o: { storeId?: strin
   const password = randomBytes(12).toString('base64url') + 'aA1!'
   const { data, error } = await admin.auth.admin.createUser({ email, password, email_confirm: true })
   if (error || !data.user) throw new Error(`createUser failed: ${error?.message}`)
-  const { error: pErr } = await admin.from('profiles').insert({
-    id: data.user.id,
-    org_id: orgId,
-    email,
-    full_name: 'Test User',
-    role,
-    must_reset_password: o.mustReset ?? false,
-    store_id: o.storeId ?? null,
-  })
-  if (pErr) throw new Error(`profile insert failed: ${pErr.message}`)
-  const client = createClient<Database>(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, opts)
-  const { error: sErr } = await client.auth.signInWithPassword({ email, password })
-  if (sErr) throw new Error(`sign-in failed: ${sErr.message}`)
-  return { id: data.user.id, email, password, client }
+  try {
+    const { error: pErr } = await admin.from('profiles').insert({
+      id: data.user.id,
+      org_id: orgId,
+      email,
+      full_name: 'Test User',
+      role,
+      must_reset_password: o.mustReset ?? false,
+      store_id: o.storeId ?? null,
+    })
+    if (pErr) throw new Error(`profile insert failed: ${pErr.message}`)
+    const client = createClient<Database>(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, opts)
+    const { error: sErr } = await client.auth.signInWithPassword({ email, password })
+    if (sErr) throw new Error(`sign-in failed: ${sErr.message}`)
+    return { id: data.user.id, email, password, client }
+  } catch (e) {
+    await admin.auth.admin.deleteUser(data.user.id)
+    throw e
+  }
 }
 
 // Child tables first. Add new organisation-scoped tables here.
@@ -61,17 +66,25 @@ export const ORG_TABLES_IN_DELETE_ORDER: string[] = [
   'stores',
 ]
 
-export async function cleanupOrg(orgId: string): Promise<void> {
+export async function cleanupOrg(orgId: string | undefined): Promise<void> {
+  if (!orgId) return // a failed setup must not hide its own error behind a cleanup error
   const admin = adminClient()
+  const problems: string[] = []
+  const note = (what: string, error: { message: string } | null) => {
+    if (error) problems.push(`${what}: ${error.message}`)
+  }
   // Remove the NVR passwords from the vault before their stores disappear.
-  const { data: stores } = await admin.from('stores').select('id').eq('org_id', orgId)
-  for (const s of stores ?? []) await admin.rpc('nvr_delete_credential', { p_store: s.id })
+  const { data: stores, error: sErr } = await admin.from('stores').select('id').eq('org_id', orgId)
+  note('list stores', sErr)
+  for (const s of stores ?? []) note('vault', (await admin.rpc('nvr_delete_credential', { p_store: s.id })).error)
   for (const table of ORG_TABLES_IN_DELETE_ORDER) {
     // @ts-expect-error -- table names here are plain strings on purpose
-    await admin.from(table).delete().eq('org_id', orgId)
+    note(table, (await admin.from(table).delete().eq('org_id', orgId)).error)
   }
-  const { data: people } = await admin.from('profiles').select('id').eq('org_id', orgId)
-  for (const p of people ?? []) await admin.auth.admin.deleteUser(p.id)
-  await admin.from('profiles').delete().eq('org_id', orgId)
-  await admin.from('organizations').delete().eq('id', orgId)
+  const { data: people, error: pErr } = await admin.from('profiles').select('id').eq('org_id', orgId)
+  note('list profiles', pErr)
+  for (const p of people ?? []) note('auth user', (await admin.auth.admin.deleteUser(p.id)).error)
+  note('profiles', (await admin.from('profiles').delete().eq('org_id', orgId)).error)
+  note('organization', (await admin.from('organizations').delete().eq('id', orgId)).error)
+  if (problems.length) throw new Error(`cleanupOrg(${orgId}) left rows behind: ${problems.join('; ')}`)
 }

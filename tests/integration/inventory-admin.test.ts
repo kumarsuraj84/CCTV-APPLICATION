@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import type { Actor } from '@/lib/admin/users'
+import type { Actor } from '@/lib/admin/types'
 import { importDevices, importStores } from '@/lib/import/apply'
 import { parseDevicesCsv } from '@/lib/import/devices-csv'
 import { parseStoresCsv } from '@/lib/import/stores-csv'

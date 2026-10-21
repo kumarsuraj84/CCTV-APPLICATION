@@ -4,7 +4,7 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { readVerifiedUserId } from '@/lib/auth/verified-user'
 import type { Role } from '@/lib/nav'
-import { isAdminRole } from '@/lib/auth/roles'
+import { isAdminRole } from '@/lib/admin/roles'
 
 export type CurrentProfile = {
   id: string

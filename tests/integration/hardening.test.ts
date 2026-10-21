@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import type { Actor } from '@/lib/admin/users'
+import type { Actor } from '@/lib/admin/types'
 import { createDevice } from '@/lib/inventory/devices'
 import { createStore, deleteStore } from '@/lib/inventory/stores'
 import { adminClient, cleanupOrg, createOrg, createUser } from '../setup/fixtures'

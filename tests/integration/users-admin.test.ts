@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { createUser, getUserAccess, listCamerasForAccess, listStoresForAccess, listUsers, resetUserPassword, setUserAccess, updateUser, type Actor } from '@/lib/admin/users'
+import { createUser, getUserAccess, listCamerasForAccess, listStoresForAccess, listUsers, resetUserPassword, setUserAccess, updateUser } from '@/lib/admin/users'
+import type { Actor } from '@/lib/admin/types'
 import { adminClient, cleanupOrg, createOrg, createUser as makeUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
