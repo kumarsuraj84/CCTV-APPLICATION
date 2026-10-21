@@ -23,8 +23,8 @@ function cleanHeaders(request: NextRequest): Headers {
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
-  const isAsset = pathname.startsWith('/_next') || pathname.startsWith('/favicon') || /^\/[A-Za-z0-9._-]+\.(svg|png|jpg|jpeg|gif|webp|ico)$/.test(pathname)
-  if (isAsset || PUBLIC_API.has(pathname) || pathname.startsWith('/auth/callback')) {
+  const isAsset = pathname.startsWith('/_next') || pathname === '/favicon.ico' || /^\/[A-Za-z0-9._-]+\.(svg|png|jpg|jpeg|gif|webp|ico)$/.test(pathname)
+  if (isAsset || PUBLIC_API.has(pathname) || pathname === '/auth/callback') {
     return NextResponse.next({ request: { headers: cleanHeaders(request) } })
   }
 

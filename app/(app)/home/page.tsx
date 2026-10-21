@@ -11,7 +11,7 @@ export default async function HomePage() {
   const profile = await requireProfile()
   const counts = await homeCounts(await createClient())
   const tile = (label: string, value: number, href: string) => (
-    <Link href={href} className="rounded-xl border bg-card p-4 hover:bg-muted">
+    <Link key={label} href={href} className="rounded-xl border bg-card p-4 hover:bg-muted">
       <div className="text-2xl font-semibold">{value}</div>
       <div className="text-sm text-muted-foreground">{label}</div>
     </Link>

@@ -29,7 +29,8 @@ export function AccessEditor(props: {
   const [cameraStore, setCameraStore] = useState('')
   const [pending, start] = useTransition()
 
-  const allZones = useMemo(() => [...new Set(props.stores.map((s) => s.zone).filter((z): z is string => !!z))].sort(), [props.stores])
+  // Saved zones that no store has any more stay listed, so they can be unticked.
+  const allZones = useMemo(() => [...new Set([...props.stores.map((s) => s.zone).filter((z): z is string => !!z), ...props.initial.zones])].sort(), [props.stores, props.initial.zones])
   const shownStores = props.stores.filter((s) => `${s.code} ${s.name}`.toLowerCase().includes(filter.toLowerCase()))
   const storeCameras = props.cameras.filter((c) => c.store_id === cameraStore)
 
