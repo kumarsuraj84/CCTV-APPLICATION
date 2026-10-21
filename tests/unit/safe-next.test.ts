@@ -11,6 +11,16 @@ describe('safeNext', () => {
     expect(safeNext('/\\evil.test')).toBe('/home')
     expect(safeNext('javascript:alert(1)')).toBe('/home')
   })
+  it('refuses control and whitespace characters that the URL parser would strip', () => {
+    expect(safeNext('/\t/evil.test')).toBe('/home')
+    expect(safeNext('/\n/evil.test')).toBe('/home')
+    expect(safeNext('/\r/evil.test')).toBe('/home')
+    expect(safeNext('/ /evil.test')).toBe('/home')
+    expect(safeNext('/stores\u007f')).toBe('/home')
+  })
+  it('still allows percent-encoded text', () => {
+    expect(safeNext('/stores?q=a%09b')).toBe('/stores?q=a%09b')
+  })
   it('never loops back to the login page', () => {
     expect(safeNext('/login?next=/x')).toBe('/home')
   })

@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { getClientIp, isOverLimit, rateLimit, recordEvent } from '@/lib/rate-limit'
+import { getCurrentProfile } from '@/lib/auth/profile'
 import { safeNext } from '@/lib/auth/safe-next'
 import { passwordSchema } from '@/lib/validation/password'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
@@ -58,6 +59,8 @@ export async function forgotPassword(_prev: FormState, formData: FormData): Prom
 
 // Used by the forced change after first sign-in and by the reset link.
 export async function changePassword(_prev: FormState, formData: FormData): Promise<FormState> {
+  // Every action checks the caller first. A person who still has to choose a password has a profile; a deactivated person does not.
+  if (!(await getCurrentProfile())) redirect('/login')
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
