@@ -15,6 +15,19 @@ export async function ensurePlaceholderCameras(admin: AdminClient, orgId: string
   if (error) throw error
 }
 
+const CAMERAS_FAILED = 'The store was saved, but its cameras could not be created. Open the store and save it again.'
+
+/** The store is already saved when this runs, so a failure is reported without undoing anything (the audit row is still written by the caller). */
+async function tryPlaceholderCameras(admin: AdminClient, orgId: string, storeId: string, count: number, route: string): Promise<boolean> {
+  try {
+    await ensurePlaceholderCameras(admin, orgId, storeId, count)
+    return true
+  } catch (e) {
+    sanitizeError(e, { route }) // logs the real error; the person sees only the plain message above
+    return false
+  }
+}
+
 export async function createStore(admin: AdminClient, actor: Actor, input: unknown): Promise<Result<{ storeId: string }>> {
   if (!isAdminRole(actor.role)) return { ok: false, error: DENIED }
   const parsed = storeSchema.safeParse(input)
@@ -32,8 +45,9 @@ export async function createStore(admin: AdminClient, actor: Actor, input: unkno
     await admin.from('stores').delete().eq('id', data.id)
     return { ok: false, error: sanitizeError(cred.error, { route: 'createStore.credential', fallback: 'Could not save the NVR password.' }) }
   }
-  await ensurePlaceholderCameras(admin, actor.orgId, data.id, v.channels)
+  const camerasOk = await tryPlaceholderCameras(admin, actor.orgId, data.id, v.channels, 'createStore.cameras')
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'store_created', entityType: 'store', entityId: data.id, detail: { code } })
+  if (!camerasOk) return { ok: false, error: CAMERAS_FAILED }
   return { ok: true, storeId: data.id }
 }
 
@@ -53,8 +67,9 @@ export async function updateStore(admin: AdminClient, actor: Actor, storeId: str
     const cred = await admin.rpc('nvr_store_credential', { p_store: storeId, p_secret: v.nvr_password })
     if (cred.error) return { ok: false, error: sanitizeError(cred.error, { route: 'updateStore.credential', fallback: 'Could not save the NVR password.' }) }
   }
-  await ensurePlaceholderCameras(admin, actor.orgId, storeId, v.channels)
+  const camerasOk = await tryPlaceholderCameras(admin, actor.orgId, storeId, v.channels, 'updateStore.cameras')
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'store_updated', entityType: 'store', entityId: storeId })
+  if (!camerasOk) return { ok: false, error: CAMERAS_FAILED }
   return { ok: true }
 }
 
