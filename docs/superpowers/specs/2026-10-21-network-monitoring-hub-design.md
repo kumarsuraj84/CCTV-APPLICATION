@@ -200,9 +200,9 @@ Follows Desk section 18: three authorisation layers (page guard, Server Action c
 ## 14. Testing
 
 - **Unit (vitest):** digest auth, ISAPI and RTSP parsing against saved sample responses, the failure/outage state machine, uptime arithmetic, CSV parsing and region normalisation, stream-token signing, secrets audit, shared access helpers.
-- **Integration on an isolated Supabase stack:** row-level security tests (a viewer sees only granted stores, cameras and devices; the three grant cases; `must_reset_password` blocks everything; cross-organisation isolation), Vault RPC privileges, server-only table privileges.
+- **Integration on the local Supabase stack:** row-level security tests using disposable organisations (a viewer sees only granted stores, cameras and devices; the grant cases; `must_reset_password` blocks everything; cross-organisation isolation), Vault RPC privileges, server-only table privileges. A fully separate test stack arrives in the hardening plan.
 - **Worker tests** use fake NVR (HTTP), RTSP and TCP servers on localhost.
-- **Isolation gate** (a script that must pass before any integration suite): the database is the local test stack, every NVR/device IP in test data is in a loopback or documentation range, and an egress guard preloaded in the test process refuses outbound connections to any other address. A test can therefore never probe a real store.
+- **Isolation gate** (`assertLocalStack()` in the test setup): integration tests run only against the local stack on port 55321. From the monitoring plan on, an egress guard preloaded in the test process also refuses outbound connections to any address except loopback, so a test can never probe a real store.
 - **Not covered:** real Hikvision hardware, real store networks and video over the VPN. These need a check on a real store after deployment.
 - Release gates: type check clean, lint clean, unit tests, applicable integration tests, production build.
 
