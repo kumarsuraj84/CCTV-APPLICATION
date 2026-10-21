@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+httpx
+cryptography
+python-multipart
+pyodbc
+openpyxl
+websockets
