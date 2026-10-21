@@ -168,6 +168,60 @@ describe('rtsp check: safety', () => {
     expect(r.code).toBe(0)
     expect(Date.now() - started).toBeLessThan(1500)
   })
+  it('never alters the protocol token or the status code when redacting, whatever the password is', async () => {
+    const s = await rawServer((sock, got) => {
+      sock.on('data', () => {
+        if (got().includes('\r\n\r\n')) sock.end('RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n')
+      })
+    })
+    running.push(s)
+    for (const password of ['200', '1', '0', 'RTSP', 'RTSP/1.0', 'OK', '.']) {
+      const r = await rtspDescribe({ ...target(s.port), password })
+      expect(r).toEqual({ code: 200, trace: [password === 'OK' ? 'RTSP/1.0 200 ***' : 'RTSP/1.0 200 OK'] })
+    }
+  })
+  it('reads a status line that arrives in two pieces', async () => {
+    const s = await rawServer((sock, got) => {
+      sock.setNoDelay(true)
+      sock.on('data', () => {
+        if (!got().includes('\r\n\r\n')) return
+        sock.write('RTSP/1.0 2')
+        setTimeout(() => sock.end('00 OK\r\nCSeq: 1\r\n\r\n'), 40)
+      })
+    })
+    running.push(s)
+    expect(await rtspDescribe(target(s.port))).toEqual({ code: 200, trace: ['RTSP/1.0 200 OK'] })
+  })
+  it('uses Digest only, and never Basic, whichever order the camera lists them in', async () => {
+    for (const mode of ['needs-auth-basic-first', 'needs-auth-digest-first'] as const) {
+      const s = await startFakeRtsp(mode)
+      running.push(s)
+      const r = await rtspDescribe(target(s.port))
+      expect(r.code).toBe(200)
+      expect(s.authorizations).toHaveLength(1)
+      expect(s.authorizations[0]).toMatch(/^Digest /)
+      expect(s.authorizations.join('\n')).not.toMatch(/Basic/i)
+      expect(s.authorizations.join('\n')).not.toContain(Buffer.from('viewer:pw').toString('base64'))
+    }
+  })
+  it('is refused when the Digest answer is wrong (the fake checks the answer for real)', async () => {
+    const s = await startFakeRtsp('needs-auth')
+    running.push(s)
+    const r = await rtspDescribe({ ...target(s.port), password: 'not-the-password' })
+    expect(r.code).toBe(401)
+    expect(s.authorizations).toHaveLength(1)
+    expect(JSON.stringify(r)).not.toContain('not-the-password')
+  })
+  it('keeps the time limit inside 100 ms to 30 s, like the other probes', async () => {
+    const s = await rawServer(() => {})
+    running.push(s)
+    const started = Date.now()
+    const r = await rtspDescribe({ ...target(s.port), timeoutMs: 1 })
+    const took = Date.now() - started
+    expect(r.code).toBe(0)
+    expect(took).toBeGreaterThanOrEqual(90) // a 1 ms limit is raised to 100 ms
+    expect(took).toBeLessThan(1500)
+  })
   it('turns an egress-guard refusal into a plain trace line', async () => {
     const r = await rtspDescribe({ ...target(554), host: '192.0.2.1', timeoutMs: 500 })
     expect(r.code).toBe(0)

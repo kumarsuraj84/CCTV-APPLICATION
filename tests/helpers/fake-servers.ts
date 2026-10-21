@@ -92,6 +92,16 @@ function parseAuth(header: string): Record<string, string> {
   return out
 }
 
+/** Does this Authorization header carry a correct Digest answer (MD5, qop=auth) for this request? Shared by the fake NVR and the fake RTSP camera. */
+function verifyDigest(header: string, o: { user: string; pass: string; realm: string; method: string; uri: string; nonces: Set<string> }): boolean {
+  if (!/^Digest /i.test(header)) return false
+  const p = parseAuth(header)
+  const ha1 = md5(`${o.user}:${o.realm}:${o.pass}`)
+  const ha2 = md5(`${o.method}:${p.uri}`)
+  const expected = md5(`${ha1}:${p.nonce}:${p.nc}:${p.cnonce}:auth:${ha2}`)
+  return p.uri === o.uri && p.username === o.user && o.nonces.has(p.nonce) && p.response === expected
+}
+
 export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNvr> {
   const user = options.username ?? 'viewer'
   const pass = options.password ?? 'secret-pass'
@@ -123,11 +133,7 @@ export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNv
     }
     const auth = req.headers.authorization
     if (!auth || !/^Digest /i.test(auth)) return challenge()
-    const p = parseAuth(auth)
-    const ha1 = md5(`${user}:${realm}:${pass}`)
-    const ha2 = md5(`${req.method}:${p.uri}`)
-    const expected = md5(`${ha1}:${p.nonce}:${p.nc}:${p.cnonce}:auth:${ha2}`)
-    if (p.uri !== req.url || p.username !== user || !nonces.has(p.nonce) || p.response !== expected) return challenge()
+    if (!verifyDigest(auth, { user, pass, realm, method: req.method ?? 'GET', uri: req.url ?? '', nonces })) return challenge()
     if (options.mode === 'forbidden') {
       res.writeHead(403)
       return res.end()
@@ -175,11 +181,23 @@ export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNv
 }
 
 // ── Fake RTSP camera endpoint ────────────────────────────────────────────────
-export type FakeRtspMode = 'open' | 'needs-auth' | 'refuse' | 'always-401'
-export type FakeRtsp = Running & { requests: string[] }
+/**
+ * open: 200 at once. refuse: 404. always-401: always asks for a login. needs-auth: asks (Digest), then checks the Digest answer properly.
+ * needs-auth-basic-first / needs-auth-digest-first: the 401 lists both Basic and Digest, in that order (two WWW-Authenticate headers).
+ * Basic is never accepted by the fake.
+ */
+export type FakeRtspMode = 'open' | 'needs-auth' | 'refuse' | 'always-401' | 'needs-auth-basic-first' | 'needs-auth-digest-first'
+export type FakeRtsp = Running & {
+  requests: string[]
+  /** Every Authorization header received, in order. */
+  authorizations: string[]
+}
 
-export async function startFakeRtsp(mode: FakeRtspMode, fixedPort = 0): Promise<FakeRtsp> {
+export async function startFakeRtsp(mode: FakeRtspMode, fixedPort = 0, credentials: { username: string; password: string } = { username: 'viewer', password: 'pw' }): Promise<FakeRtsp> {
   const requests: string[] = []
+  const authorizations: string[] = []
+  const nonces = new Set<string>()
+  const realm = 'fake-cam'
   const sockets = new Set<net.Socket>()
   const server = net.createServer((s) => {
     sockets.add(s)
@@ -189,15 +207,26 @@ export async function startFakeRtsp(mode: FakeRtspMode, fixedPort = 0): Promise<
     s.on('data', (d) => {
       buf += d.toString()
       if (!buf.includes('\r\n\r\n')) return
-      requests.push(buf.split('\r\n')[0])
-      const challenge = `RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\nWWW-Authenticate: Digest realm="fake-cam", nonce="${randomBytes(8).toString('hex')}"\r\n\r\n`
-      const hasAuth = /\r\nAuthorization:/i.test(buf)
+      const requestLine = buf.split('\r\n')[0]
+      requests.push(requestLine)
+      const auth = /\r\nAuthorization:[ \t]*([^\r\n]*)/i.exec(buf)?.[1]
+      if (auth !== undefined) authorizations.push(auth)
+      const challenge = () => {
+        const nonce = randomBytes(8).toString('hex')
+        nonces.add(nonce)
+        const digest = `WWW-Authenticate: Digest realm="${realm}", qop="auth", nonce="${nonce}"\r\n`
+        const basic = `WWW-Authenticate: Basic realm="${realm}"\r\n`
+        const lines = mode === 'needs-auth-basic-first' ? basic + digest : mode === 'needs-auth-digest-first' ? digest + basic : digest
+        return `RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\n${lines}\r\n`
+      }
+      const [method, uri] = requestLine.split(' ')
+      const authorised = auth !== undefined && verifyDigest(auth, { user: credentials.username, pass: credentials.password, realm, method, uri, nonces })
       if (mode === 'open') s.end('RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n')
       else if (mode === 'refuse') s.end('RTSP/1.0 404 Not Found\r\nCSeq: 1\r\n\r\n')
-      else if (mode === 'always-401') s.end(challenge)
-      else s.end(hasAuth ? 'RTSP/1.0 200 OK\r\nCSeq: 2\r\n\r\n' : challenge)
+      else if (mode === 'always-401') s.end(challenge())
+      else s.end(authorised ? 'RTSP/1.0 200 OK\r\nCSeq: 2\r\n\r\n' : challenge())
     })
   })
   const port = await new Promise<number>((resolve) => server.listen(fixedPort, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port)))
-  return { port, requests, close: closer(server, sockets) }
+  return { port, requests, authorizations, close: closer(server, sockets) }
 }

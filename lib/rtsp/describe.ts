@@ -1,6 +1,6 @@
 import net, { isIP } from 'node:net'
 import { buildDigestHeader, DigestInputError, parseDigestChallenge } from '@/lib/nvr/digest'
-import { isValidHost, isValidPort } from '@/lib/probes'
+import { clampMs, isValidHost, isValidPort } from '@/lib/probes'
 
 export type RtspTarget = { host: string; port: number; username: string; password: string; channel: number; timeoutMs?: number }
 
@@ -11,11 +11,16 @@ const DEFAULT_TIMEOUT_MS = 5000
 class RtspTimeout extends Error {}
 class RtspTooLarge extends Error {}
 
-/** The status line of an answer, safe to keep: only a plain RTSP status line, no control characters, never the password. */
+/**
+ * The status line of an answer, safe to keep: only a plain RTSP status line, no control characters. The protocol token and the
+ * three-digit code are kept exactly as they are; if the password appears in the reason phrase it is replaced by "***".
+ */
 function statusLine(text: string, password: string): string {
   const first = text.split('\r\n')[0]
-  if (!/^RTSP\/1\.\d \d{3}(?: [\x20-\x7e]{0,80})?$/.test(first)) return text.length === 0 ? 'The camera sent no answer.' : 'The camera sent an answer this app does not understand.'
-  return password ? first.split(password).join('***') : first
+  const m = /^(RTSP\/1\.\d \d{3})(?: ([\x20-\x7e]{0,80}))?$/.exec(first)
+  if (!m) return text.length === 0 ? 'The camera sent no answer.' : 'The camera sent an answer this app does not understand.'
+  const reason = m[2] === undefined ? '' : password ? m[2].split(password).join('***') : m[2]
+  return reason ? `${m[1]} ${reason}` : m[1]
 }
 
 /**
@@ -28,7 +33,7 @@ export async function rtspDescribe(t: RtspTarget): Promise<{ code: number; trace
   }
   const hostInUri = isIP(t.host) === 6 ? `[${t.host}]` : t.host
   const uri = `rtsp://${hostInUri}:${t.port}/Streaming/Channels/${t.channel}02`
-  const timeout = Number.isFinite(t.timeoutMs) && (t.timeoutMs as number) > 0 ? (t.timeoutMs as number) : DEFAULT_TIMEOUT_MS
+  const timeout = t.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : clampMs(t.timeoutMs, DEFAULT_TIMEOUT_MS)
   const deadline = Date.now() + timeout // one deadline for the whole check, both requests together
 
   const ask = (auth?: string) =>

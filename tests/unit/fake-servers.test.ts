@@ -94,7 +94,7 @@ describe('fake servers', () => {
       s.once('data', (d) => { s.destroy(); resolve(d.toString().split('\r\n')[0]) })
     })
 
-  it('the fake RTSP server: open answers 200, needs-auth asks first then accepts, always-401 never accepts', async () => {
+  it('the fake RTSP server: open answers 200, needs-auth asks first and refuses a wrong Digest answer, always-401 never accepts', async () => {
     const open = await startFakeRtsp('open')
     const needsAuth = await startFakeRtsp('needs-auth')
     const always = await startFakeRtsp('always-401')
@@ -103,7 +103,7 @@ describe('fake servers', () => {
 
     expect(await describeRtsp(open.port)).toBe('RTSP/1.0 200 OK')
     expect(await describeRtsp(needsAuth.port)).toBe('RTSP/1.0 401 Unauthorized')
-    expect(await describeRtsp(needsAuth.port, auth)).toBe('RTSP/1.0 200 OK')
+    expect(await describeRtsp(needsAuth.port, auth)).toBe('RTSP/1.0 401 Unauthorized') // an invented Digest answer is checked and refused
     expect(await describeRtsp(always.port)).toBe('RTSP/1.0 401 Unauthorized')
     expect(await describeRtsp(always.port, auth)).toBe('RTSP/1.0 401 Unauthorized')
     expect(needsAuth.requests).toHaveLength(2)
