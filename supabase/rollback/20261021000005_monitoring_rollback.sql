@@ -1,0 +1,10 @@
+BEGIN;
+DROP VIEW IF EXISTS public.store_status;
+DROP FUNCTION IF EXISTS public.targets_uptime(uuid, text, uuid[], interval, timestamptz);
+DROP FUNCTION IF EXISTS public.monitor_apply_results(uuid, jsonb, integer);
+DROP TRIGGER IF EXISTS stores_forget ON public.stores;
+DROP TRIGGER IF EXISTS devices_forget ON public.devices;
+DROP TRIGGER IF EXISTS cameras_forget ON public.cameras;
+DROP FUNCTION IF EXISTS public.monitor_forget_target();
+DROP TABLE IF EXISTS public.monitor_gaps, public.worker_state, public.outages, public.check_state;
+COMMIT;

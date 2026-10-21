@@ -65,8 +65,34 @@ isOneToOne: false
       foreignKeyName: "cameras_store_fk"
       columns: ["store_id","org_id"]
 isOneToOne: false
+      referencedRelation: "store_status"
+      referencedColumns: ["store_id","org_id"]
+    },{
+      foreignKeyName: "cameras_store_fk"
+      columns: ["store_id","org_id"]
+isOneToOne: false
       referencedRelation: "stores"
       referencedColumns: ["id","org_id"]
+    }
+                  ]
+                },"check_state": {
+                  Row: {
+                    "consecutive_failures": number,"created_at": string,"down_since": string | null,"error": string | null,"first_failure_at": string | null,"id": string,"last_checked_at": string | null,"last_up_at": string | null,"method": string | null,"org_id": string,"status": string,"target_id": string,"target_type": string,"updated_at": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "consecutive_failures"?: number,"created_at"?: string,"down_since"?: string | null,"error"?: string | null,"first_failure_at"?: string | null,"id"?: string,"last_checked_at"?: string | null,"last_up_at"?: string | null,"method"?: string | null,"org_id": string,"status"?: string,"target_id": string,"target_type": string,"updated_at"?: string
+                  }
+                  Update: {
+                    "consecutive_failures"?: number,"created_at"?: string,"down_since"?: string | null,"error"?: string | null,"first_failure_at"?: string | null,"id"?: string,"last_checked_at"?: string | null,"last_up_at"?: string | null,"method"?: string | null,"org_id"?: string,"status"?: string,"target_id"?: string,"target_type"?: string,"updated_at"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "check_state_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
     }
                   ]
                 },"devices": {
@@ -91,9 +117,29 @@ isOneToOne: false
       foreignKeyName: "devices_store_fk"
       columns: ["store_id","org_id"]
 isOneToOne: false
+      referencedRelation: "store_status"
+      referencedColumns: ["store_id","org_id"]
+    },{
+      foreignKeyName: "devices_store_fk"
+      columns: ["store_id","org_id"]
+isOneToOne: false
       referencedRelation: "stores"
       referencedColumns: ["id","org_id"]
     }
+                  ]
+                },"monitor_gaps": {
+                  Row: {
+                    "ended_at": string,"id": string,"started_at": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "ended_at": string,"id"?: string,"started_at": string
+                  }
+                  Update: {
+                    "ended_at"?: string,"id"?: string,"started_at"?: string
+                  }
+                  Relationships: [
+                    
                   ]
                 },"organizations": {
                   Row: {
@@ -108,6 +154,26 @@ isOneToOne: false
                   }
                   Relationships: [
                     
+                  ]
+                },"outages": {
+                  Row: {
+                    "cause": string | null,"created_at": string,"ended_at": string | null,"id": string,"org_id": string,"started_at": string,"target_id": string,"target_type": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "cause"?: string | null,"created_at"?: string,"ended_at"?: string | null,"id"?: string,"org_id": string,"started_at": string,"target_id": string,"target_type": string
+                  }
+                  Update: {
+                    "cause"?: string | null,"created_at"?: string,"ended_at"?: string | null,"id"?: string,"org_id"?: string,"started_at"?: string,"target_id"?: string,"target_type"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outages_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
                   ]
                 },"profiles": {
                   Row: {
@@ -127,6 +193,12 @@ isOneToOne: false
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
+    },{
+      foreignKeyName: "profiles_store_fk"
+      columns: ["store_id","org_id"]
+isOneToOne: false
+      referencedRelation: "store_status"
+      referencedColumns: ["store_id","org_id"]
     },{
       foreignKeyName: "profiles_store_fk"
       columns: ["store_id","org_id"]
@@ -209,6 +281,12 @@ isOneToOne: false
       foreignKeyName: "user_store_access_store_id_org_id_fkey"
       columns: ["store_id","org_id"]
 isOneToOne: false
+      referencedRelation: "store_status"
+      referencedColumns: ["store_id","org_id"]
+    },{
+      foreignKeyName: "user_store_access_store_id_org_id_fkey"
+      columns: ["store_id","org_id"]
+isOneToOne: false
       referencedRelation: "stores"
       referencedColumns: ["id","org_id"]
     },{
@@ -245,10 +323,38 @@ isOneToOne: false
       referencedColumns: ["id","org_id"]
     }
                   ]
+                },"worker_state": {
+                  Row: {
+                    "check_requested_at": string | null,"id": number,"last_heartbeat": string | null,"progress_done": number,"progress_total": number,"run_finished_at": string | null,"run_started_at": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "check_requested_at"?: string | null,"id": number,"last_heartbeat"?: string | null,"progress_done"?: number,"progress_total"?: number,"run_finished_at"?: string | null,"run_started_at"?: string | null
+                  }
+                  Update: {
+                    "check_requested_at"?: string | null,"id"?: number,"last_heartbeat"?: string | null,"progress_done"?: number,"progress_total"?: number,"run_finished_at"?: string | null,"run_started_at"?: string | null
+                  }
+                  Relationships: [
+                    
+                  ]
                 }
           }
           Views: {
-            [_ in never]: never
+            "store_status": {
+                  Row: {
+                    "cameras_down": number | null,"cameras_live": number | null,"cameras_total": number | null,"cameras_unknown": number | null,"nvr_checked_at": string | null,"nvr_down_since": string | null,"nvr_status": string | null,"org_id": string | null,"store_id": string | null
+                  }
+                  ComputedFields: never
+                  Relationships: [
+                    {
+      foreignKeyName: "stores_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
+                  ]
+                }
           }
           Functions: {
             "current_org_id":
@@ -262,6 +368,9 @@ isOneToOne: false
                            },
 "is_staff_all":
 { Args: Record<PropertyKey, never>; Returns: boolean
+                           },
+"monitor_apply_results":
+{ Args: { "p_org": string,"p_results": Json,"p_threshold"?: number }; Returns: undefined
                            },
 "nvr_delete_credential":
 { Args: { "p_store": string }; Returns: undefined
@@ -280,6 +389,11 @@ isOneToOne: false
                            },
 "revoke_user_sessions":
 { Args: { "p_user": string }; Returns: undefined
+                           },
+"targets_uptime":
+{ Args: { "p_ids": (string)[],"p_now"?: string,"p_org": string,"p_type": string,"p_window": string }; Returns: {
+              "target_id": string,"uptime_pct": number
+            }[]
                            },
 "visible_camera_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
