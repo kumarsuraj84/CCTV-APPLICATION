@@ -1,8 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { readVerifiedUserId, signVerifiedUser, VERIFIED_USER_HEADER, VERIFIED_USER_SIG_HEADER } from '@/lib/auth/verified-user'
 
 const headers = (o: Record<string, string>) => ({ get: (n: string) => o[n] ?? null })
-afterEach(() => delete process.env.SUPABASE_SERVICE_ROLE_KEY)
+// tests/setup/env.ts loads .env.local, which defines the real local key; every test starts without it and sets its own.
+beforeEach(() => {
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY
+})
+afterEach(() => {
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY
+})
 
 describe('verified user header', () => {
   it('accepts a correctly signed id', () => {
