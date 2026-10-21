@@ -1,0 +1,3 @@
+name,city,zone,ip,port,http_port,user,password,channels
+Sample Store A,Patna,BR,192.0.2.10,554,80,viewer,change-me-A,4
+Sample Store B,Ranchi,JH,192.0.2.11,554,80,viewer,change-me-B,2
