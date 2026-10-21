@@ -10,3 +10,5 @@ dist/
 backups/
 *.part
 .DS_Store
+
+.superpowers/
