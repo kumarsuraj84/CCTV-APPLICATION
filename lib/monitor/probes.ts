@@ -8,5 +8,5 @@ export const realProbes: Probes = {
   icmp: icmpCheck,
   // Only the status code leaves this module; the trace stays behind.
   rtsp: async (t) => ({ code: (await rtspDescribe(t)).code }),
-  nvr: (ep) => new NvrClient(ep),
+  nvr: (ep, opts) => new NvrClient(ep, { timeoutMs: opts?.timeoutMs }),
 }

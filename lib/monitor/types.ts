@@ -10,6 +10,8 @@ export type NvrJob = { id: string; org_id: string; ip: string; rtsp_port: number
 export type StoreJob = {
   id: string; org_id: string; code: string; ip: string; rtsp_port: number; http_port: number; username: string; password: string
   nvr_status: 'up' | 'down' | 'unknown'
+  /** When the NVR's own reachability check last ran (ISO time); null if never. A "down" older than a few device intervals is not trusted. */
+  nvr_checked_at: string | null
   cameras: { id: string; channel: number; camera_ip: string | null }[]
 }
 export type WorkerRequest = { requestedAt: Date | null; runStartedAt: Date | null }
@@ -17,7 +19,11 @@ export type WorkerRequest = { requestedAt: Date | null; runStartedAt: Date | nul
 export interface MonitorDb {
   loadDevices(): Promise<DeviceJob[]>
   loadNvrs(): Promise<NvrJob[]>
-  loadStoreJobs(storeIds?: string[]): Promise<StoreJob[]>
+  /**
+   * staleBefore: an NVR "down" last checked before this time is out of date. The password of a store whose NVR is down and not out of
+   * date, or that has no cameras, is not read (nothing needs it) and comes back as ''.
+   */
+  loadStoreJobs(storeIds?: string[], staleBefore?: Date): Promise<StoreJob[]>
   applyResults(orgId: string, results: CheckResult[], threshold: number): Promise<void>
   saveCameraIps(orgId: string, rows: { cameraId: string; ip: string }[]): Promise<void>
   touchHeartbeat(now: Date): Promise<void>
@@ -36,7 +42,7 @@ export type Probes = {
   tcp: (host: string, port: number, timeoutMs?: number) => Promise<ProbeResult>
   icmp: (host: string, timeoutMs?: number) => Promise<ProbeResult>
   rtsp: (t: RtspTarget) => Promise<{ code: number }>
-  nvr: (ep: NvrEndpoint) => { channelStatus(): Promise<Map<number, boolean>>; channels(): Promise<NvrChannel[]> }
+  nvr: (ep: NvrEndpoint, opts?: { timeoutMs?: number }) => { channelStatus(): Promise<Map<number, boolean>>; channels(): Promise<NvrChannel[]> }
 }
 
 export type MonitorConfig = {

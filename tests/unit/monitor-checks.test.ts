@@ -1,31 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { checkCameras, checkDevices, checkNvrs, type Deps } from '@/lib/monitor/checks'
-import { loadMonitorConfig } from '@/lib/monitor/config'
+import { checkCameras, checkDevices, checkNvrs } from '@/lib/monitor/checks'
 import { NvrError } from '@/lib/nvr/client'
-import type { CheckResult, Probes, StoreJob } from '@/lib/monitor/types'
+import type { CheckResult } from '@/lib/monitor/types'
 import { MemoryDb } from '../helpers/memory-db'
-
-const NOW = new Date('2026-05-01T08:00:00Z')
-const cfg = loadMonitorConfig({})
-
-function deps(db: MemoryDb, probes: Partial<Probes> = {}, clock: () => Date = () => NOW): Deps {
-  const base: Probes = {
-    tcp: async () => ({ ok: true }),
-    icmp: async () => ({ ok: true }),
-    rtsp: async () => ({ code: 0 }),
-    nvr: () => ({ channelStatus: async () => new Map(), channels: async () => [] }),
-  }
-  return { db, probes: { ...base, ...probes }, cfg, clock }
-}
-
-/** What an RTSP check answers: 200 when the camera is live, 0 when nothing answered. */
-const rsp = (ok: boolean) => ({ code: ok ? 200 : 0 })
-
-const store = (over: Partial<StoreJob> = {}): StoreJob => ({
-  id: 's1', org_id: 'o1', code: 'S1', ip: '127.0.0.1', rtsp_port: 554, http_port: 80, username: 'viewer', password: 'pw', nvr_status: 'up',
-  cameras: [{ id: 'c1', channel: 1, camera_ip: null }, { id: 'c2', channel: 2, camera_ip: null }, { id: 'c3', channel: 3, camera_ip: null }],
-  ...over,
-})
+import { deps, NOW, rsp, store } from '../helpers/monitor-fixtures'
 
 describe('checkDevices', () => {
   it('uses TCP when a port is set and ping when it is not, and records why a device failed', async () => {
@@ -47,6 +25,7 @@ describe('checkDevices', () => {
       { type: 'device', id: 'd2', ok: true, at: NOW.toISOString(), method: 'icmp', error: undefined },
     ])
     expect(byOrg.o2[0]).toMatchObject({ id: 'd3', ok: false, error: 'The port refused the connection.' })
+    expect(db.applied).toHaveLength(2)
     expect(db.applied.every((a) => a.threshold === 2)).toBe(true)
   })
 
@@ -193,6 +172,7 @@ describe('checkCameras', () => {
       rtsp: async () => { rtsp++; return rsp(false) },
     }))
     expect(rtsp).toBe(0)
+    expect(db.results()).toHaveLength(3)
     expect(db.results().every((r) => r.ok && r.method === 'isapi')).toBe(true)
   })
 
@@ -227,7 +207,7 @@ describe('checkCameras', () => {
     }))
     const r = db.results()
     expect(r.map((x) => [x.id, x.ok])).toEqual([['c1', true], ['c2', false], ['c3', false]])
-    expect(r[1].error).toBe('The camera answered but refused the login.')
+    expect(r[1].error).toBe('The recorder refused the login.')
     expect(r[2].error).toBe('The camera gave an answer this app does not expect.')
   })
 
@@ -242,6 +222,7 @@ describe('checkCameras', () => {
     expect(asked).toBe(0)
     expect(db.applied).toHaveLength(1)
     expect(db.applied[0].threshold).toBe(1)
+    expect(db.results()).toHaveLength(3)
     expect(db.results().every((r) => !r.ok && r.cause === 'nvr_down' && r.method === 'nvr_down')).toBe(true)
   })
 

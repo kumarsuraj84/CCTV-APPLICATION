@@ -1,6 +1,6 @@
 import { isIP } from 'node:net'
 import { mapLimit } from '@/lib/async/pool'
-import { describeNvrError } from '@/lib/nvr/client'
+import { describeNvrError, NvrError } from '@/lib/nvr/client'
 import { logger } from '@/lib/observability/logger'
 import { isValidHost, isValidPort } from '@/lib/probes'
 import type { CheckResult, MonitorConfig, MonitorDb, Probes, StoreJob } from '@/lib/monitor/types'
@@ -41,7 +41,11 @@ async function applyGrouped(deps: Deps, results: WithOrg[], threshold: number): 
   const unique = new Map<string, WithOrg>()
   for (const r of results) unique.set(`${r.org}|${r.type}|${r.id}`, r)
   const byOrg = new Map<string, CheckResult[]>()
-  for (const { org, ...r } of unique.values()) byOrg.set(org, [...(byOrg.get(org) ?? []), r])
+  for (const { org, ...r } of unique.values()) {
+    const list = byOrg.get(org)
+    if (list) list.push(r)
+    else byOrg.set(org, [r])
+  }
   for (const [org, list] of byOrg) {
     for (let i = 0; i < list.length; i += CHUNK) {
       try {
@@ -114,9 +118,20 @@ export function checkNvrs(deps: Deps): Promise<number> {
 
 /** Plain wording for why a camera failed, from what its RTSP check answered (0 = nothing) and why the NVR could not be asked. */
 function cameraProblem(code: number | undefined, nvrProblem: string | undefined): string {
-  if (code === 401) return 'The camera answered but refused the login.'
+  // The RTSP check goes through the recorder, so a refused login is the recorder's, not proof about one camera.
+  if (code === 401) return 'The recorder refused the login.'
   if (code !== undefined && code !== 0) return 'The camera gave an answer this app does not expect.'
   return nvrProblem ?? 'The camera did not answer.'
+}
+
+/** How long an NVR "down" stays believable: three device-check intervals. */
+export const nvrStateMaxAgeMs = (cfg: MonitorConfig): number => 3 * cfg.deviceCheckSec * 1000
+
+/** The NVR is known to be down right now: its state says so and was written recently enough. */
+function nvrKnownDown(deps: Deps, s: StoreJob): boolean {
+  if (s.nvr_status !== 'down' || !s.nvr_checked_at) return false
+  const checked = Date.parse(s.nvr_checked_at)
+  return Number.isFinite(checked) && checked >= deps.clock().getTime() - nvrStateMaxAgeMs(deps.cfg)
 }
 
 /** A camera address the NVR reports is kept only when it is a plain IP address. */
@@ -127,7 +142,7 @@ async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
   const at = deps.clock().toISOString()
 
   // A store whose NVR is already known to be down: its cameras are down for the same reason, at once, with nothing else to ask.
-  if (s.nvr_status === 'down') {
+  if (nvrKnownDown(deps, s)) {
     await deps.db.applyResults(
       s.org_id,
       s.cameras.map((c): CheckResult => ({ type: 'camera', id: c.id, ok: false, at, method: 'nvr_down', error: 'The NVR is not reachable.', cause: 'nvr_down' })),
@@ -152,18 +167,28 @@ async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
   const addresses = new Map<number, string>()
   let method = 'rtsp'
   let nvrProblem: string | undefined
-  const nvr = deps.probes.nvr({ host: s.ip, port: s.http_port, username: s.username, password: s.password })
-  try {
-    for (const [ch, on] of await nvr.channelStatus()) online.set(ch, on)
-    method = 'isapi'
-  } catch (e) {
-    nvrProblem = describeNvrError(e)
+  // A wrong or missing NVR password: a refused login says nothing about the cameras (see below).
+  let loginProblem = s.password === ''
+  const nvr = deps.probes.nvr({ host: s.ip, port: s.http_port, username: s.username, password: s.password }, { timeoutMs: deps.cfg.nvrTimeoutMs })
+  if (loginProblem) {
+    nvrProblem = 'The NVR has no saved password.' // nothing to log in with, so the NVR is not even asked
+  } else {
+    try {
+      for (const [ch, on] of await nvr.channelStatus()) online.set(ch, on)
+      method = 'isapi'
+    } catch (e) {
+      nvrProblem = describeNvrError(e)
+      if (e instanceof NvrError && (e.kind === 'auth' || e.kind === 'forbidden')) loginProblem = true
+    }
+    if (!loginProblem) {
+      try {
+        for (const c of await nvr.channels()) if (plainIp(c.ip)) addresses.set(c.channel, c.ip)
+      } catch {
+        // Camera addresses are a bonus here; names and channels come from discovery.
+      }
+    }
   }
-  try {
-    for (const c of await nvr.channels()) if (plainIp(c.ip)) addresses.set(c.channel, c.ip)
-  } catch {
-    // Camera addresses are a bonus here; names and channels come from discovery.
-  }
+  if (loginProblem) logger.warn({ event: 'nvr_login_problem', store: s.code, message: `NVR login problem for store ${s.code}` })
 
   const unconfirmed = s.cameras.filter((c) => online.get(c.channel) !== true)
   if (unconfirmed.length > 0) {
@@ -171,6 +196,11 @@ async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
     await mapLimit(unconfirmed, deps.cfg.rtspPerStore, async (c) => {
       try {
         const { code } = await deps.probes.rtsp({ host: s.ip, port: s.rtsp_port, username: s.username, password: s.password, channel: c.channel })
+        if (code === 401 && loginProblem) {
+          // The login to the recorder is what failed. That says nothing about this camera: no result, no false down, no false up.
+          skipped.add(c.channel)
+          return
+        }
         rtspCode.set(c.channel, code)
         online.set(c.channel, code === 200)
       } catch (e) {
@@ -208,7 +238,7 @@ export function checkStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
 export async function checkCameras(deps: Deps, onProgress?: (done: number, total: number) => void, storeIds?: string[]): Promise<number> {
   let stores: StoreJob[]
   try {
-    stores = await deps.db.loadStoreJobs(storeIds)
+    stores = await deps.db.loadStoreJobs(storeIds, new Date(deps.clock().getTime() - nvrStateMaxAgeMs(deps.cfg)))
   } catch (e) {
     logger.error({ event: 'stores_load_failed', error: e })
     return 0

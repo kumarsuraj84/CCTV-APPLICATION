@@ -1,5 +1,7 @@
 import type { MonitorConfig } from '@/lib/monitor/types'
 
+const DAY_SEC = 86_400
+
 /** A whole number from the environment, or undefined when it is not set, empty or not a whole number. */
 function whole(v: string | undefined): number | undefined {
   if (v === undefined || v.trim() === '') return undefined
@@ -7,20 +9,20 @@ function whole(v: string | undefined): number | undefined {
   return Number.isInteger(n) ? n : undefined
 }
 
-// A check interval below the minimum is raised to it; nonsense gives the default.
-const interval = (v: string | undefined, fallback: number, min: number): number => {
+// Not a whole number: the default. A whole number outside the allowed range is pulled to the nearest limit.
+const interval = (v: string | undefined, fallback: number, min: number, max: number): number => {
   const n = whole(v)
-  return n === undefined ? fallback : Math.max(n, min)
+  return n === undefined ? fallback : Math.min(max, Math.max(min, n))
 }
 
 export function loadMonitorConfig(env: Record<string, string | undefined> = process.env): MonitorConfig {
   const threshold = whole(env.FAIL_THRESHOLD)
   return {
-    deviceCheckSec: interval(env.DEVICE_CHECK_SEC, 60, 10),
-    cameraCheckSec: interval(env.CAMERA_CHECK_SEC, 300, 10),
+    deviceCheckSec: interval(env.DEVICE_CHECK_SEC, 60, 10, DAY_SEC),
+    cameraCheckSec: interval(env.CAMERA_CHECK_SEC, 300, 10, DAY_SEC),
     pollSec: 5,
-    // A threshold below 1 makes no sense; it is ignored.
-    failThreshold: threshold !== undefined && threshold >= 1 ? threshold : 2,
+    // Zero or negative makes no sense and is ignored (default 2); more than 10 is pulled down to 10.
+    failThreshold: threshold !== undefined && threshold >= 1 ? Math.min(10, threshold) : 2,
     deviceConcurrency: 50,
     storeConcurrency: 10,
     rtspPerStore: 4,

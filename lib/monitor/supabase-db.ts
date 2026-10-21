@@ -47,7 +47,7 @@ export class SupabaseMonitorDb implements MonitorDb {
     ).then((rows) => rows.map((r) => ({ id: r.id, org_id: r.org_id, ip: r.nvr_ip, rtsp_port: r.rtsp_port })))
   }
 
-  async loadStoreJobs(storeIds?: string[]): Promise<StoreJob[]> {
+  async loadStoreJobs(storeIds?: string[], staleBefore?: Date): Promise<StoreJob[]> {
     const parts: (string[] | undefined)[] = storeIds ? chunks([...new Set(storeIds)], ID_CHUNK) : [undefined]
     const stores = []
     const cameras = []
@@ -70,25 +70,34 @@ export class SupabaseMonitorDb implements MonitorDb {
     if (stores.length === 0) return []
     const wanted = new Set(stores.map((s) => s.id))
     const states = await fetchAll((from, to) =>
-      this.admin.from('check_state').select('target_id, status').eq('target_type', 'nvr').order('target_id').range(from, to),
+      this.admin.from('check_state').select('target_id, status, last_checked_at').eq('target_type', 'nvr').order('target_id').range(from, to),
     )
-    const nvrStatus = new Map(states.map((s) => [s.target_id, s.status as 'up' | 'down' | 'unknown']))
+    const nvrState = new Map(states.map((s) => [s.target_id, { status: s.status as 'up' | 'down' | 'unknown', checkedAt: s.last_checked_at }]))
     const byStore = new Map<string, StoreJob['cameras']>()
     for (const c of cameras) {
       if (!wanted.has(c.store_id)) continue
-      byStore.set(c.store_id, [...(byStore.get(c.store_id) ?? []), { id: c.id, channel: c.channel, camera_ip: c.camera_ip }])
+      const row = { id: c.id, channel: c.channel, camera_ip: c.camera_ip }
+      const list = byStore.get(c.store_id)
+      if (list) list.push(row)
+      else byStore.set(c.store_id, [row])
     }
     const jobs = await mapLimit(stores, 10, async (s): Promise<StoreJob | null> => {
+      const state = nvrState.get(s.id)
+      const cameras = byStore.get(s.id) ?? []
+      const job = (password: string): StoreJob => ({
+        id: s.id, org_id: s.org_id, code: s.code, ip: s.nvr_ip, rtsp_port: s.rtsp_port, http_port: s.http_port,
+        username: s.nvr_username, password, nvr_status: state?.status ?? 'unknown', nvr_checked_at: state?.checkedAt ?? null, cameras,
+      })
+      // Nothing needs the password when there are no cameras, or when the NVR is known to be down (its cameras are then marked down without logging in).
+      const knownDown = state?.status === 'down' && (staleBefore === undefined || (!!state.checkedAt && Date.parse(state.checkedAt) >= staleBefore.getTime()))
+      if (cameras.length === 0 || knownDown) return job('')
       const { data, error } = await this.admin.rpc('nvr_read_credential', { p_store: s.id })
       if (error) {
         // Not being able to read the password says nothing about the cameras: leave this store out of this round instead of reporting a false outage.
         logger.error({ event: 'nvr_credential_read_failed', store: s.code, errorCode: error.code })
         return null
       }
-      return {
-        id: s.id, org_id: s.org_id, code: s.code, ip: s.nvr_ip, rtsp_port: s.rtsp_port, http_port: s.http_port,
-        username: s.nvr_username, password: data ?? '', nvr_status: nvrStatus.get(s.id) ?? 'unknown', cameras: byStore.get(s.id) ?? [],
-      }
+      return job(data ?? '')
     })
     return jobs.filter((j): j is StoreJob => j !== null)
   }

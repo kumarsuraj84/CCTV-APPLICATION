@@ -7,10 +7,31 @@ import { adminClient, cleanupOrg, createOrg } from '../setup/fixtures'
 
 const admin = () => adminClient()
 
+/** The service-role client, with every nvr_read_credential call counted, and optionally failing. */
+function watched(fail = false) {
+  const reads: string[] = []
+  const real = admin()
+  const client = new Proxy(real, {
+    get(target, prop) {
+      if (prop === 'rpc') {
+        return (name: string, args: { p_store?: string }) => {
+          if (name !== 'nvr_read_credential') return target.rpc(name as never, args as never)
+          reads.push(args.p_store ?? '')
+          return fail ? Promise.resolve({ data: null, error: { code: 'XX000', message: 'vault is down' } }) : target.rpc(name, args as never)
+        }
+      }
+      const value = Reflect.get(target, prop)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  }) as SupabaseClient<Database>
+  return { client, reads }
+}
+
 describe('SupabaseMonitorDb', () => {
   let orgId: string
   let storeId: string
   let bareStoreId: string
+  let noPassStoreId: string
   let camIds: string[]
   let db: SupabaseMonitorDb
   const gapIds: string[] = []
@@ -23,6 +44,8 @@ describe('SupabaseMonitorDb', () => {
     storeId = (await a.from('stores').insert({ org_id: orgId, code: 'DB1', name: 'Db1', nvr_ip: '127.0.0.1', rtsp_port: 8554, http_port: 8081, nvr_username: 'viewer' }).select('id').single()).data!.id
     await a.rpc('nvr_store_credential', { p_store: storeId, p_secret: 'secret-pass' })
     bareStoreId = (await a.from('stores').insert({ org_id: orgId, code: 'DB2', name: 'Db2', nvr_ip: '127.0.0.2', nvr_username: 'viewer' }).select('id').single()).data!.id
+    noPassStoreId = (await a.from('stores').insert({ org_id: orgId, code: 'DB3', name: 'Db3', nvr_ip: '127.0.0.3', nvr_username: 'viewer' }).select('id').single()).data!.id
+    await a.from('cameras').insert({ org_id: orgId, store_id: noPassStoreId, channel: 1, name: 'NP1' })
     camIds = (await a.from('cameras').insert([1, 2].map((n) => ({ org_id: orgId, store_id: storeId, channel: n, name: `C${n}` }))).select('id, channel').order('channel')).data!.map((c) => c.id)
     await a.from('devices').insert([
       { org_id: orgId, store_id: storeId, type: 'server', name: 'On', ip: '127.0.0.1', tcp_port: 9, enabled: true },
@@ -52,25 +75,34 @@ describe('SupabaseMonitorDb', () => {
   })
 
   it('loads a store without a saved password with an empty one, and only the stores asked for', async () => {
-    const jobs = await db.loadStoreJobs([storeId, bareStoreId, randomUUID()])
-    expect(jobs.map((j) => j.code).sort()).toEqual(['DB1', 'DB2'])
+    const jobs = await db.loadStoreJobs([storeId, bareStoreId, noPassStoreId, randomUUID()])
+    expect(jobs.map((j) => j.code).sort()).toEqual(['DB1', 'DB2', 'DB3'])
     expect(jobs.find((j) => j.id === bareStoreId)).toMatchObject({ password: '', cameras: [] })
+    expect(jobs.find((j) => j.id === noPassStoreId)).toMatchObject({ password: '' })
+    expect(jobs.find((j) => j.id === noPassStoreId)?.cameras).toHaveLength(1)
     expect(await db.loadStoreJobs([])).toEqual([])
   })
 
   it('leaves a store out of the round when its password cannot be read', async () => {
-    const real = admin()
-    const failing = new Proxy(real, {
-      get(target, prop) {
-        if (prop === 'rpc') {
-          return (name: string, args: never) =>
-            name === 'nvr_read_credential' ? Promise.resolve({ data: null, error: { code: 'XX000', message: 'vault is down' } }) : target.rpc(name as never, args)
-        }
-        const value = Reflect.get(target, prop)
-        return typeof value === 'function' ? value.bind(target) : value
-      },
-    }) as SupabaseClient<Database>
-    expect(await new SupabaseMonitorDb(failing).loadStoreJobs([storeId])).toEqual([])
+    const { client, reads } = watched(true)
+    expect(await new SupabaseMonitorDb(client).loadStoreJobs([noPassStoreId])).toEqual([])
+    expect(reads).toEqual([noPassStoreId])
+  })
+
+  it('does not read the password of a store without cameras or with a recent NVR "down", and still returns it', async () => {
+    const { client, reads } = watched(true) // a vault that is down must not matter for these stores
+    const jobs = await new SupabaseMonitorDb(client).loadStoreJobs([storeId, bareStoreId], new Date(Date.now() - 180_000))
+    expect(reads).toEqual([])
+    expect(jobs.map((j) => j.code).sort()).toEqual(['DB1', 'DB2'])
+    expect(jobs.find((j) => j.id === storeId)).toMatchObject({ password: '', nvr_status: 'down' })
+    expect(jobs.find((j) => j.id === storeId)?.nvr_checked_at).not.toBeNull()
+  })
+
+  it('reads the password again when the NVR "down" is out of date', async () => {
+    const { client, reads } = watched()
+    const [job] = await new SupabaseMonitorDb(client).loadStoreJobs([storeId], new Date(Date.now() + 60_000))
+    expect(reads).toEqual([storeId])
+    expect(job).toMatchObject({ password: 'secret-pass', nvr_status: 'down' })
   })
 
   it('applies results, records camera addresses, and surfaces database errors', async () => {

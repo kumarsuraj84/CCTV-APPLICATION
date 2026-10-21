@@ -13,10 +13,12 @@ export class MemoryDb implements MonitorDb {
   progress: [number, number][] = []
   finished: Date[] = []
   gapRecorded = false
+  staleBefore: (Date | undefined)[] = []
 
   async loadDevices() { return this.devices }
   async loadNvrs() { return this.nvrs }
-  async loadStoreJobs(ids?: string[]) { return ids ? this.stores.filter((s) => ids.includes(s.id)) : this.stores }
+  async loadStoreJobs(ids?: string[], staleBefore?: Date) { this.staleBefore.push(staleBefore); return this.pick(ids) }
+  private pick(ids?: string[]) { return ids ? this.stores.filter((s) => ids.includes(s.id)) : this.stores }
   async applyResults(orgId: string, results: CheckResult[], threshold: number) { this.applied.push({ orgId, results, threshold }) }
   async saveCameraIps(orgId: string, rows: { cameraId: string; ip: string }[]) { this.ipsSaved.push({ orgId, rows }) }
   async touchHeartbeat(now: Date) { this.heartbeats.push(now) }
