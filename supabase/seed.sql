@@ -1,0 +1,1 @@
+-- Seed data is added once the organizations table exists (Task 4).
