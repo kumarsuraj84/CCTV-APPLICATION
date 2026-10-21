@@ -1,186 +1,227 @@
-# CityKart Network Monitoring Hub: Design
+# CityKart Network Monitoring Hub: Design (Desk stack)
 
 Date: 2026-10-21
-Status: approved by the user in chat (design); this spec awaits written review.
+Status: design approved by the user in chat (revision 2, replaces the FastAPI design). This spec awaits written review.
+Source designs: the legacy `cctv-hub` (in `reference/cctv-hub-legacy/`), the camera report (`docs/reference/camera-report-2026-10-21.md`) and the Citykart Desk blueprint (`D:\ANKUR AI PROJECTS\CitykartDesk-ZOHO Alternate\docs\CITYKART-DESK-FULL-APPLICATION-DESIGN.md`, called "Desk" below).
 
 ## 1. Goal
 
 One web app that monitors every IP device on the CityKart network and lets staff watch CCTV, with each user limited to the stores and cameras they are allowed to see.
 
-Monitored device types:
+Monitored: CCTV cameras and their NVRs (uptime, live feeds, playback, backup), servers, attendance machines, footfall counters, and any other device with an IP address.
 
-- CCTV cameras and their NVRs (uptime, live feeds, playback, backup)
-- Servers
-- Attendance machines
-- Footfall counters
-- Any other device that has an IP address
+It replaces the legacy `cctv-hub` (FastAPI + SQL Server + one HTML page). It keeps that app's working NVR logic (Hikvision ISAPI, RTSP checks, playback, backup, report) and rebuilds it in Desk's stack, with Desk's conventions for security, access, UX and operations.
 
-The app replaces the existing `cctv-hub` (FastAPI + SQL Server + one `index.html`, kept for reference in `reference/cctv-hub-legacy/`). It keeps that app's working NVR/ISAPI/RTSP logic and moves it onto PostgreSQL, a React frontend and per-user access control.
-
-Scale reference (`docs/reference/camera-report-2026-10-21.md`): 215 stores, 4,609 cameras, about 16.5% offline, 4 stores with the NVR down.
+Scale reference: 215 stores, 4,609 cameras, about 16.5% offline, 4 stores with the NVR down. Design for 300 stores and 8,000 cameras.
 
 ## 2. Decisions already made
 
 | Topic | Decision |
 |---|---|
-| Features carried over from cctv-hub | Camera groups, recorded playback with timeline, recording backup, Excel/health report |
-| Platform | Docker Compose; backend FastAPI (Python), frontend React + TypeScript + Vite, PostgreSQL |
-| Public port | **3212** (the only port exposed to the office network) |
-| Device intake | CSV import plus manual add/edit in the UI. No subnet auto-discovery in v1 |
+| Stack | Desk's stack: Next.js 16.3 (App Router, Server Actions, `proxy.ts`), React 19, TypeScript 5.9, Tailwind 4, shadcn/ui (base-nova), Supabase (PostgreSQL, PostgREST, GoTrue, Storage, Vault) |
+| Carry-over features | Camera groups, recorded playback with timeline (and fast playback), recording backup, Excel/health report |
+| App port | **3212** (dev and production) |
+| Device intake | CSV import plus manual add/edit. No subnet auto-discovery in v1 |
 | Viewer access | Whole stores (optionally a whole zone), with optional per-camera restriction inside a store |
-| Source repository | https://github.com/kumarsuraj84/CCTV-APPLICATION.git (nothing is pushed until the user asks) |
-| Alerts (email, SMS, push) | Not in v1 |
+| Alerts (mail, SMS, push) | Not in v1 |
+| Repository | https://github.com/kumarsuraj84/CCTV-APPLICATION.git. Nothing is pushed until the user asks |
+| Production hosting | Decided at the hardening phase (Desk-style Windows services, or Docker). Local development uses the Supabase CLI in Docker |
 
 ## 3. Architecture
 
-Containers (Docker Compose):
+```
+Browser ──► Next.js app (port 3212)  ── RLS client (user cookie) ──► PostgREST ─► PostgreSQL (RLS, RPC, Vault)
+   │             │ service-role client (server only) ─────────────────────────────────┘      ▲
+   │             └── asks go2rtc to register streams                                         │
+   └─ video ─► Stream gateway (port 3213, WebSocket) ─► go2rtc (internal)       Worker (Node) ┘
+                    checks a signed token                                        probes NVRs/devices,
+                                                                                 runs backups, check-now
+```
 
-| Container | Role |
+Processes:
+
+| Process | Role |
 |---|---|
-| `web` | nginx. Serves the built React app and proxies `/api` and the video WebSocket to `api`. Published on host port **3212**. |
-| `api` | FastAPI. Authentication, access control, REST API, playback and backup endpoints, go2rtc WebSocket proxy. Image includes ffmpeg. |
-| `worker` | Same codebase and image as `api`, different command. Runs all periodic checks and writes results to Postgres. |
-| `go2rtc` | Turns camera RTSP streams into browser-playable streams. Reachable only from `api`. |
-| `postgres` | PostgreSQL 16 with a named volume. Not published to the host. |
+| `app` | Next.js standalone server. Pages, Server Actions, route handlers, playback streaming. Port 3212. |
+| `worker` | Long-running Node service (TypeScript, shares `lib/` code with the app). Runs all probes, outage tracking, backups and "check now" requests. Writes through the service-role client. |
+| `gateway` | Small Node WebSocket service on port 3213. Verifies a signed stream token, then proxies the browser to go2rtc. (Next.js route handlers cannot proxy WebSocket upgrades.) |
+| `go2rtc` | Turns camera RTSP streams into browser-playable streams. Reachable only from `app`, `worker` and `gateway`. |
+| Supabase | PostgreSQL 17 locally (18 in production), PostgREST, GoTrue, Storage, Vault. |
 
-The `api` and `worker` containers need outbound access to the store LAN/VPN addresses (NVR HTTP and RTSP ports, device TCP ports). On a Linux host Compose bridge networking is enough. Docker Desktop on Windows also works for outbound TCP; ICMP ping is not available there, so TCP checks are the default (see section 6).
+The app talks to the database only over HTTP (supabase-js to PostgREST), never a direct Postgres connection. The worker does the same.
 
-Repository layout:
+Local development ports (chosen not to clash with a Desk stack on the same PC, which uses 543xx and 554xx): Supabase API 55321, DB 55322, Studio 55323, mail catcher 55324, shadow DB 55320; isolated test stack 556xx; app 3212; gateway 3213; go2rtc 1984 and 8555.
+
+Repository layout (follows Desk):
 
 ```
-backend/        FastAPI app, worker, Alembic migrations, tests
-frontend/       React + TypeScript + Vite app
-deploy/         docker-compose.yml, nginx.conf, go2rtc.yaml, .env.example
-docs/           specs, plans, reference report
-reference/      legacy cctv-hub source (read-only reference)
+app/
+  (auth)/        login, forgot-password, reset-password
+  (app)/         home, stores, stores/[id], live, playback, devices, groups, reports, backup,
+                 admin/(users, access, import, logs, monitoring, settings)
+  api/           health, version, csp-report, playback/stream, reports export
+components/      layout/, ui/ (shadcn), stores/, devices/, live/, admin/
+lib/             supabase/, auth/, access/, actions/, queries/, monitor/, nvr/, rtsp/, streams/,
+                 import/, export/, observability/, security/, http/, secrets.ts, rate-limit.ts, ...
+services/        worker/, gateway/
+supabase/        config.toml, migrations/, rollback/, seed.sql
+scripts/         cron-tick / worker runners, windows/ deploy scripts (later)
+tests/           unit/, integration/, setup/
+types/           database.ts (generated, then hand-kept like Desk)
+proxy.ts  next.config.ts  vitest.config.ts
+reference/       legacy cctv-hub source (read-only)
+docs/            specs, plans, reference report
 ```
 
-Backend module boundaries (each testable alone):
+## 4. Conventions adopted from Desk
 
-- `auth`: password hashing, JWT issue/verify, current-user dependency.
-- `access`: `visible_cameras(user)` and `visible_stores(user)`. Every endpoint that returns or opens a camera goes through these.
-- `nvr`: ISAPI client (channel list, channel status, recording search, daily distribution, download). Pure functions parse XML so they can be tested with sample responses.
-- `rtsp`: RTSP DESCRIBE probe with Digest/Basic fallback.
-- `monitor`: check scheduling, state transitions, outage open/close.
-- `uptime`: uptime percentage and "down since" derived from outage periods.
-- `streams`: go2rtc registration and the authenticated WebSocket proxy.
-- `playback`, `backup`, `reports`, `groups`, `imports`, `users`: one router each.
+1. Server Actions live in `lib/actions/**` (`'use server'`). Each one checks the caller (`getCurrentProfile()`), role and organisation scope first.
+2. Two Supabase clients: `createClient()` (cookie-bound, RLS enforced) and `createAdminClient()` (service role, server only). Admin-client writes of a foreign key first prove the referenced row belongs to the caller's organisation (`assertRefsInOrg`).
+3. `proxy.ts` verifies the session once per request and forwards a signed user-id header (always overwritten, never merged). Public routes are an exact-match allow-list: `/login`, `/forgot-password`, `/reset-password`, `/api/health`, `/api/version`, `/api/csp-report`, and the secret-protected worker/cron endpoints.
+4. Time is stored UTC and shown in IST, 24-hour clock, through one helper. Business-hour logic is not needed here.
+5. Errors: never return a raw database message; `sanitizeError()` maps SQLSTATE codes to short plain messages. Structured `logger` with secret redaction. `alertOperator` for batch-level failures.
+6. One secret per purpose (`getSecret(purpose)`): `cron`, `worker`, `stream_token`, `system_log_ingest`. A missing one switches the feature off; two purposes must not share a value; minimum 16 characters.
+7. In-process `rateLimit` for login, password reset, admin actions and import.
+8. Race guards (`.eq('status', current)`) and idempotent worker writes.
+9. Simple language in every screen text. No jargon.
+10. Version bar ("new version available"), `/api/health` returns `{status, db, worker}`, `/api/version` returns the build id.
+11. Per-release migration run sheet and rollback SQL under `supabase/rollback/`; each new enum value gets its own migration.
+12. Comments explain why, above the non-obvious line.
 
-## 4. Data model (PostgreSQL, Alembic migrations)
+## 5. Data model (PostgreSQL, `public` schema)
 
-- `users`: id, username (unique), password_hash, role (`admin | viewer`), can_manage_groups, active, created_at, last_login_at.
-- `stores`: id, code (unique), name, city, zone, state (normalised: `JH` and `Jharkhand` become one value), NVR ip, rtsp_port, http_port, nvr_username, nvr_password (Fernet-encrypted), expected_channels.
-- `cameras`: id, store_id, channel, name, camera_ip, unique (store_id, channel).
-- `devices`: id, store_id (nullable), type (`nvr | server | attendance | footfall | other`), name, ip, tcp_port (nullable), notes, optional encrypted credentials, enabled.
-- `check_state`: one current row per monitored target (camera or device or store NVR): status (`up | down | unknown`), last_checked_at, last_up_at, down_since, consecutive_failures, method, error.
-- `outages`: id, target_type, target_id, started_at, ended_at (null while open). Source of truth for uptime.
-- `user_store_access`: user_id, store_id.
-- `user_zone_access`: user_id, zone. A zone grant is expanded to its stores at query time, so new stores in the zone are included automatically.
-- `user_camera_access`: user_id, store_id, channel. If a user has any rows for a store, they see only those cameras in it; otherwise they see all cameras in the store.
-- `camera_groups`, `camera_group_items`: named camera sets, as in the legacy app.
-- `backup_jobs`: id, requested_by, status, counters, errors, created_at (jobs survive an API restart).
-- `audit_log`: id, user_id, action, detail, at. Records logins, failed logins, user and access changes, imports, backups.
+Every business table has `id uuid default gen_random_uuid()`, `org_id uuid` (FK `organizations`), `created_at`, `updated_at`; row-level security is on for every table. The app is single-organisation in practice (CityKart) but keeps the multi-organisation schema, as Desk does.
 
-## 5. Access control
+| Table | Key columns |
+|---|---|
+| `organizations` | name, slug (unique), is_owner, status |
+| `profiles` | id (= `auth.users.id`), email, full_name, role (`user_role`), is_active, must_reset_password, `store_id` (store logins) |
+| `stores` | code (unique per org, upper-case), name, city, zone, state, address, is_active, nvr_ip, rtsp_port (554), http_port (80), nvr_username, nvr_secret_id (Vault), expected_channels |
+| `cameras` | store_id, channel, name, camera_ip, is_active; unique (store_id, channel) |
+| `devices` | store_id (nullable), type (`device_type`: `nvr, server, attendance, footfall, other`), name, ip, tcp_port (nullable), notes, enabled |
+| `user_store_access` | user_id, store_id |
+| `user_zone_access` | user_id, zone |
+| `user_camera_access` | user_id, camera_id |
+| `check_state` | target_type (`camera, device, nvr`; nvr id = store id), target_id, status (`up, down, unknown`), last_checked_at, last_up_at, first_failure_at, down_since, consecutive_failures, method, error. Server-only |
+| `outages` | target_type, target_id, started_at, ended_at, cause (`nvr_down` or null). Server-only |
+| `worker_state` | single row: last_heartbeat, check_requested_at, run_started_at, run_finished_at, progress. Server-only |
+| `monitor_gaps` | started_at, ended_at: periods when the worker was not running, excluded from uptime. Server-only |
+| `camera_groups`, `camera_group_items` | named camera sets |
+| `backup_jobs` | status, counters, errors, requested_by |
+| `admin_audit_log` | who did what: user, access and import changes, backups. Server-written |
+| `system_log` | hash-chained audit and error log (hardening phase), as in Desk |
 
-- Login is a username and password submitted to `/api/auth/login`; the API returns a short-lived JWT. The legacy browser Basic-auth prompt is removed.
-- A first admin is created from `ADMIN_USERNAME` / `ADMIN_PASSWORD` environment variables on first start if no admin exists. No default password ships in the repo.
-- Roles: `admin` can do everything. `viewer` can only view, within granted scope. `can_manage_groups` lets a viewer edit camera groups.
-- Visibility rules:
-  - Stores visible = granted stores plus stores in granted zones.
-  - Cameras visible in a store = the camera-level subset if one exists for that user and store, otherwise all of the store's cameras.
-  - Devices (servers, attendance, footfall) are visible for stores the user can see. Devices with no store are admin-only.
-- Enforcement is in the backend: the list, live, playback, group, report and export endpoints all call `visible_cameras` or `visible_stores`. Direct requests for a camera outside scope return 404.
-- The video WebSocket takes a token that names the user and one stream. The proxy checks the user still has access to that camera before connecting to go2rtc. (The legacy app let any logged-in user open any stream by name.)
-- Admin-only: import, add/edit/delete stores and devices, user and access management, backup, triggering a check run, report debug.
-- NVR and device passwords are encrypted with a Fernet key from `.env`. The key is never in the image or the repo.
+Status labels in the UI: Live, Offline, Not checked yet.
 
-## 6. Monitoring
+Server-only tables follow Desk's migration pattern: `ENABLE ROW LEVEL SECURITY; REVOKE ALL ... FROM PUBLIC, anon, authenticated; GRANT ALL ... TO service_role;` (read policies are added for `check_state` and `outages` so users can read the rows they may see; they can never write them).
 
-All checks run in the `worker`.
+NVR passwords live in Vault. The Vault RPCs `nvr_store_credential(store, secret)` and `nvr_read_credential(store)` are callable only by the service role.
+
+## 6. Access control
+
+### 6.1 Roles (Desk's fixed enum `user_role`)
+
+| Role | CCTV meaning |
+|---|---|
+| `user` | Viewer. Sees only what is granted (stores, zones, cameras) plus their own store if the profile has `store_id`. |
+| `agent` | Operator. Same visibility as `user`, plus "check now" and managing camera groups. |
+| `manager` | Sees every store, camera and device, read-only, with reports. |
+| `admin` | Everything: users, grants, import, devices, backup. |
+| `platform_owner` | Everything, plus owner-only functions. |
+
+A person with `must_reset_password = true` resolves to no organisation and no role in row security until they choose their own password (as in Desk migration 168).
+
+### 6.2 Visibility rules (enforced in the database)
+
+- Set-returning STABLE SECURITY DEFINER functions `visible_store_ids()`, `visible_camera_ids()`, `visible_device_ids()` hold the rules; policies use `id IN (SELECT visible_...())` so they are evaluated once per query, not once per row.
+- A store-grant set = stores granted by `user_store_access`, stores in zones granted by `user_zone_access`, and the profile's own `store_id`.
+- **Stores visible** = store-grant set, plus stores that contain a camera granted individually. `manager`, `admin`, `platform_owner`: every store of the organisation.
+- **Cameras visible** = individually granted cameras, plus cameras of stores in the store-grant set unless the user has individual camera grants in that store (then only those). This gives the three cases: all cameras of a store, several stores, some cameras of some stores.
+- **Devices visible** = devices of stores in the store-grant set (a camera-only grant does not reveal a store's servers). Devices with no store are visible only to `manager`, `admin`, `platform_owner`.
+- Direct data-API requests for anything outside scope return no rows. The app never relies on hidden navigation as a control.
+
+### 6.3 Writes
+
+Stores, cameras, devices, users, grants and imports are changed only by `admin` and `platform_owner`, through Server Actions using the admin client, each with a role check and `assertRefsInOrg`. Operators (`agent`) may request a check run and edit camera groups through their own actions. Every such action writes `admin_audit_log`.
+
+## 7. Monitoring (worker)
+
+Same rules as the approved design, written in TypeScript with pure, unit-tested modules in `lib/monitor`, `lib/nvr` and `lib/rtsp`.
 
 | Target | Method | Interval |
 |---|---|---|
 | Servers, attendance, footfall, other devices | TCP connect to `tcp_port`; if no port is set, ICMP ping | 60 s |
 | NVR reachability | TCP connect to the NVR RTSP port | 60 s |
-| Cameras of a store | ISAPI `InputProxy/channels/status` from the NVR; cameras the NVR does not report as online are re-checked with an RTSP DESCRIBE on the sub-stream | 300 s |
+| Cameras of a store | ISAPI `InputProxy/channels/status` from the NVR; cameras the NVR does not report online are re-checked with an RTSP DESCRIBE on the sub-stream | 300 s |
 
-- Concurrency is limited (about 10 stores at a time, 4 RTSP probes per store), matching the legacy defaults.
-- A target is marked `down` after 2 consecutive failures and `up` on the first success. This avoids flapping on a single dropped probe.
-- A transition to `down` opens an `outages` row; a transition to `up` closes it.
-- If the NVR is down, its cameras are `down` for the same period and the outage is attributed to the NVR, not counted again as separate camera failures in the dashboard summary.
-- Uptime % over 24h, 7d or 30d is the window minus the overlap with outages, divided by the window. The worker writes a heartbeat; windows when the worker itself was not running are excluded from the uptime calculation and shown as "no data".
-- An admin can trigger an immediate full check ("check now") and see progress.
-- Camera discovery (the legacy "find cameras" action) reads the camera names and channels from the NVR and fills `cameras`.
+- A target goes `down` after **2 consecutive failures** and `up` on the first success; the outage starts at the first failure's time.
+- If the NVR is `down`, its cameras are marked `down` at once with outage cause `nvr_down`, and the dashboard lists the NVR outage, not each camera.
+- Concurrency limits as in the legacy app (about 10 stores at once, 4 RTSP probes per store).
+- Uptime over 24h / 7d / 30d is computed in a SQL function from `outages`, excluding `monitor_gaps` and the time before a target was first checked. A worker stoppage shows as "no data", not as downtime.
+- NVR authentication uses HTTP Digest, implemented once in `lib/nvr/digest.ts` and unit-tested. NVR and RTSP errors are stored so "NVR refused the login" differs from "NVR unreachable".
+- "Check now" (operators and above) sets `worker_state.check_requested_at`; the worker picks it up within 5 seconds and reports progress.
+- Camera discovery reads channels and names from the NVR and upserts by `(store_id, channel)` so camera ids stay stable.
+- The worker writes a heartbeat; `/api/health` reports it, and an old heartbeat shows on the Monitoring page.
 
-## 7. Live feeds, playback, backup, reports
+## 8. Live feeds
 
-- **Live:** the API registers main and sub streams for the cameras a user opens in go2rtc, and the browser connects through the authenticated WebSocket proxy. Streams are named by camera id.
-- **Playback:** calendar of days with recordings, a 24-hour timeline of recorded segments, and a recorded clip window. Normal-speed playback goes through go2rtc RTSP; 2x/4x/8x goes through NVR download piped through ffmpeg to fragmented MP4. The NVR time offset setting from the legacy app is kept.
-- **Backup:** admin selects cameras and a time range; the API downloads recordings from the NVR to a mounted backup directory with one download per NVR at a time. Progress comes from `backup_jobs`.
-- **Reports:** store-wise and group-wise live/offline counts, and an offline-cameras list with "offline since" and "last seen online", exportable as `.xlsx` (same sheets as the legacy report plus a Devices sheet). Reports only include what the requesting user may see.
+1. The user opens a store or group. A Server Action reads the cameras through the RLS client (so only visible cameras come back), registers their streams in go2rtc (main and sub, named by camera id) and returns a stream token per camera.
+2. The token is signed with the `stream_token` secret, names one camera and one user, and lasts 10 minutes (the page renews it while open).
+3. The browser connects to the gateway (`ws://host:3213/stream?token=...`). The gateway verifies signature, expiry and stream name, then proxies to go2rtc. The old hub let any signed-in user open any stream by name; this does not.
 
-## 8. Frontend
+## 9. Playback, backup, reports
 
-React + TypeScript + Vite, calling the REST API under `/api`. Screens:
+- **Playback:** calendar of recorded days and a 24-hour timeline from the NVR (ISAPI search). Normal speed through go2rtc RTSP; 2x/4x/8x through an NVR download piped through ffmpeg to fragmented MP4 in a streaming route handler. The NVR time-offset setting from the legacy app is kept.
+- **Backup:** an admin selects cameras and a time range; the worker downloads recordings from the NVR to a configured directory, one download per NVR at a time. Progress is in `backup_jobs`.
+- **Reports:** fixed reports like Desk's Report Analytics: NVR down, stores with no live camera, offline cameras with "offline since" and "last seen online", store-wise and zone-wise live counts, uptime by store, devices down. Excel export through `exceljs`, CSV-injection-safe, scoped to what the user may see, and every export is audited. The workbook has the same sheets as the legacy report plus a Devices sheet.
 
-1. Login.
-2. Dashboard: totals by device type, zone and store; live vs offline; stores with the NVR down; recent outages.
-3. Stores list and store detail with a camera grid showing status and uptime.
-4. Live wall: grid of sub-streams, click for main stream, open one camera in its own window.
-5. Playback.
-6. Devices (servers, attendance, footfall, other).
-7. Camera groups.
-8. Reports with the Excel export and the offline list.
-9. Backup (admin).
-10. Users and access (admin): create users, set role, grant stores, zones and cameras.
-11. Import (admin): stores CSV and devices CSV, with row-level errors shown.
+## 10. UI
 
-The UI is responsive and usable on a laptop and a tablet. The brand name, subtitle, colour and logo come from the existing `brand.json` and `logo` convention. UI language is English by default with a Hindi option.
+Desk's shell and design system:
 
-## 9. Import formats
+- Left sidebar grouped Monitoring / Workspace / Admin; top bar with search (Ctrl+K), theme toggle and profile; mobile bottom navigation with at most four items and a More sheet; a "new version available" bar.
+- Screens: Home (counts by device type, zone and store; stores with NVR down; recent outages), Stores, Store detail (camera grid with status and uptime), Live wall, Playback, Devices, Camera groups, Reports, Backup, Admin: Users, Access (grants), Import, Logs, Monitoring (worker health), Settings (brand name, subtitle, colour and logo, as in `brand.json`).
+- Tables with sticky headers, searchable selects, toasts (sonner), skeleton loading, empty states with the next action, in-page confirmations (no browser dialogs), light and dark themes.
+- Labels in plain English; IST 24-hour times.
 
-- Stores CSV: the same columns as the legacy `stores_sample.csv` (`name, city, zone, ip, port, http_port, user, password, channels`) plus optional `code` and `state`. Re-importing updates matching stores.
-- Devices CSV: `name, type, store_code, ip, port, notes`. Rows with an unknown type or store, or an invalid IP, are reported with their line numbers and skipped; valid rows are imported.
+## 11. Import formats
 
-## 10. Error handling
+- Stores CSV: legacy `stores_sample.csv` columns (`name, city, zone, ip, port, http_port, user, password, channels`) plus optional `code` and `state`. Zone and state labels are normalised (`JH` and `Jharkhand` become one value). Re-import updates stores matched by code. The NVR password goes straight to Vault.
+- Devices CSV: `name, type, store_code, ip, port, notes`. Invalid rows are reported with their line numbers and skipped; valid rows are imported. Imports are per-row tolerant and return `{imported, errors[]}`.
 
-- Check failures are recorded on the target (`error`, `method`) and never crash the worker; one failing store does not stop the others.
-- NVR authentication and permission errors are stored and shown as such, so "NVR refused the login" is distinguishable from "NVR unreachable".
-- API errors use a consistent JSON shape with a clear message. The UI shows the message and keeps the user's input.
-- The API refuses to start without `FERNET_KEY`, `JWT_SECRET` and `DATABASE_URL`.
+## 12. Security
 
-## 11. Testing
+Follows Desk section 18: three authorisation layers (page guard, Server Action checks, row-level security and table privileges); server-only writes for check results, outages, audit and secrets; forced first password change enforced in the database; no public sign-up (admins create users and get a one-time password shown once); signed header from `proxy.ts`; per-purpose secrets; rate limits; security headers and a report-only Content-Security-Policy (connect-src allows the gateway); CSV exports neutralise leading `= + - @`; no secrets in the repository, logs or screens; hash-chained `system_log` in the hardening phase; type errors fail the production build.
 
-- **Unit (pytest):** access rules (store, zone, camera-subset, ungranted, admin), outage open/close and the 2-failure rule, uptime calculation including worker-gap exclusion, ISAPI XML parsing against saved sample responses, CSV validation, password hashing and JWT.
-- **Integration:** a fake NVR (small mock ISAPI HTTP server) and a fake TCP device in the test run, with a real Postgres in Compose. Covers discovery, status checks, playback search and a backup run.
-- **API:** endpoint tests confirming a viewer cannot read, stream, play back or export a camera outside their scope.
-- **Frontend:** component tests for the access-management screen and the dashboard; the Compose stack is run end to end and exercised in a browser.
-- **Not covered:** real Hikvision hardware, real store networks, WebRTC/RTSP behaviour over the VPN. These need a check on a real store after deployment.
+## 13. Environment variables (names only)
 
-## 12. Configuration (`deploy/.env`)
+`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_URL`, `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_STREAM_GATEWAY_URL`, `GO2RTC_URL`, `TZ`, `PORT`, `CRON_SECRET`, `WORKER_SECRET`, `STREAM_TOKEN_SECRET`, `SYSTEM_LOG_INGEST_SECRET`, `FFMPEG`, `BACKUP_DIR`, `PLAYBACK_OFFSET_MIN`, `DEVICE_CHECK_SEC=60`, `CAMERA_CHECK_SEC=300`. `.env.local` is git-ignored; `.env.example` is committed with blanks.
 
-`DATABASE_URL`, `POSTGRES_PASSWORD`, `FERNET_KEY`, `JWT_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `PUBLIC_PORT=3212`, `GO2RTC_URL`, `PLAYBACK_OFFSET_MIN`, `DEVICE_CHECK_SEC=60`, `CAMERA_CHECK_SEC=300`, `BACKUP_DIR`. `.env` is git-ignored; `.env.example` is committed with placeholders.
+## 14. Testing
 
-## 13. Build order
+- **Unit (vitest):** digest auth, ISAPI and RTSP parsing against saved sample responses, the failure/outage state machine, uptime arithmetic, CSV parsing and region normalisation, stream-token signing, secrets audit, shared access helpers.
+- **Integration on an isolated Supabase stack:** row-level security tests (a viewer sees only granted stores, cameras and devices; the three grant cases; `must_reset_password` blocks everything; cross-organisation isolation), Vault RPC privileges, server-only table privileges.
+- **Worker tests** use fake NVR (HTTP), RTSP and TCP servers on localhost.
+- **Isolation gate** (a script that must pass before any integration suite): the database is the local test stack, every NVR/device IP in test data is in a loopback or documentation range, and an egress guard preloaded in the test process refuses outbound connections to any other address. A test can therefore never probe a real store.
+- **Not covered:** real Hikvision hardware, real store networks and video over the VPN. These need a check on a real store after deployment.
+- Release gates: type check clean, lint clean, unit tests, applicable integration tests, production build.
 
-1. Repo foundations: Compose stack, Postgres, migrations, config.
-2. Auth, users, roles and access rules, with tests.
-3. Stores, cameras and devices: CRUD and CSV import.
-4. NVR/RTSP clients and the monitor worker with outages and uptime.
-5. Dashboard, stores and devices screens.
-6. Live feeds with the authenticated proxy.
-7. Playback and fast playback.
-8. Backup.
-9. Reports and Excel export.
-10. Hardening: audit log, rate limiting on login, end-to-end run in Compose.
+## 15. Build order
 
-## 14. Out of scope for v1
+Plans, each producing working, testable software:
 
-Alerts and notifications, subnet auto-discovery, non-Hikvision camera protocols (the legacy app is Hikvision ISAPI/RTSP only), mobile apps, automatic migration of data from the old SQL Server database (stores are re-imported from CSV).
+1. **Foundation, identity and inventory:** project, Supabase stack, shared libraries, shell, auth, roles, grants, users admin, stores/cameras/devices, CSV import, row-level security tests, health and version.
+2. **Monitoring:** NVR/RTSP/TCP clients, state machine, outages, uptime, worker, discovery, check-now, Home dashboard and status on Stores and Devices.
+3. **Live feeds, playback and camera groups:** go2rtc, gateway, signed tokens, playback and fast playback, groups.
+4. **Backup, reports and hardening:** backup jobs, fixed reports with Excel export, system log with hash chain, CSP, load test, production packaging.
 
-## 15. Open items to confirm on real hardware
+## 16. Out of scope for v1
 
-- Whether all NVRs expose `InputProxy/channels/status` over ISAPI (the legacy report logic assumes so, with RTSP fallback).
-- Docker host choice (Linux recommended; on Windows Docker Desktop, ICMP checks are unavailable).
-- Retention for `outages` and `audit_log` (default: keep everything; revisit after the first month of data).
+Alerts and notifications, subnet auto-discovery, non-Hikvision camera protocols, mobile apps, WhatsApp or e-mail intake, automatic migration from the old SQL Server database (stores are re-imported from CSV).
+
+## 17. Open items to confirm
+
+- Production hosting (Windows services or Docker) and where recordings are backed up.
+- Whether every NVR exposes `InputProxy/channels/status` over ISAPI; the RTSP fallback covers the rest.
+- Retention for `outages` and logs (default: keep everything; review after a month).
+- ICMP ping only works where the worker host allows it; TCP checks are the default.
