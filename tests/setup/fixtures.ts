@@ -50,11 +50,22 @@ export async function createUser(orgId: string, role: Role, o: { storeId?: strin
   return { id: data.user.id, email, password, client }
 }
 
-// Child tables first. Later tasks add their tables to this list.
-export const ORG_TABLES_IN_DELETE_ORDER: string[] = []
+// Child tables first. Add new organisation-scoped tables here.
+export const ORG_TABLES_IN_DELETE_ORDER: string[] = [
+  'admin_audit_log',
+  'user_camera_access',
+  'user_zone_access',
+  'user_store_access',
+  'devices',
+  'cameras',
+  'stores',
+]
 
 export async function cleanupOrg(orgId: string): Promise<void> {
   const admin = adminClient()
+  // Remove the NVR passwords from the vault before their stores disappear.
+  const { data: stores } = await admin.from('stores').select('id').eq('org_id', orgId)
+  for (const s of stores ?? []) await admin.rpc('nvr_delete_credential', { p_store: s.id })
   for (const table of ORG_TABLES_IN_DELETE_ORDER) {
     // @ts-expect-error -- table names here are plain strings on purpose
     await admin.from(table).delete().eq('org_id', orgId)
