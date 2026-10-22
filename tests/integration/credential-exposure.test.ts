@@ -58,6 +58,8 @@ describe('credential exposure to CCTV-only people (P2-6, AC-10)', () => {
   afterAll(() => cleanupOrg(orgId))
 
   const sensitive = () => [secret, secretId, nvrHost, nvrUser, cameraIp, assetIp]
+  /** The functions without arguments the probes called successfully (M-9: proves the function probe is not empty). */
+  const calledRpcs = new Set<string>()
 
   async function probe(u: TestUser): Promise<{ readable: string[]; leaks: string[]; sawCamera: boolean }> {
     const key = await sessionKey(u)
@@ -91,10 +93,24 @@ describe('credential exposure to CCTV-only people (P2-6, AC-10)', () => {
     }
     // The API description the person's own key gets lists only what they may read; probe those too (a view PostgREST would show).
     const described = await rest(key, '/')
+    const rpcs: string[] = []
     for (const p of Object.keys((described.body as { paths?: object }).paths ?? {})) {
-      if (p === '/' || p.startsWith('/rpc/')) continue
+      if (p === '/') continue
+      if (p.startsWith('/rpc/')) {
+        rpcs.push(p)
+        continue
+      }
       const res = await rest(key, `${p}?select=*&limit=1000`)
       if (res.status !== 200) continue
+      const text = JSON.stringify(res.body)
+      for (const s of sensitive()) if (text.includes(s)) leaks.push(`${p} shows ${s === secret ? 'the password' : s === secretId ? 'the vault pointer' : s}`)
+    }
+    // Review round 1, M-9: every function the person may call that needs no argument is called too (a SECURITY DEFINER function that
+    // returned addresses would leak them past every table check). Functions that need arguments answer an error and are skipped.
+    for (const p of rpcs) {
+      const res = await rest(key, p, { method: 'POST', body: {} })
+      if (res.status !== 200) continue
+      calledRpcs.add(p)
       const text = JSON.stringify(res.body)
       for (const s of sensitive()) if (text.includes(s)) leaks.push(`${p} shows ${s === secret ? 'the password' : s === secretId ? 'the vault pointer' : s}`)
     }
@@ -106,6 +122,8 @@ describe('credential exposure to CCTV-only people (P2-6, AC-10)', () => {
     expect(sawCamera).toBe(true) // the probe is not empty: the camera itself is visible
     expect(readable).toContain('cameras')
     expect(leaks).toEqual([])
+    // M-9: the function probe reached functions (my_access_summary needs no argument and is callable by every signed-in person).
+    expect([...calledRpcs]).toContain('/rpc/my_access_summary')
   })
 
   it('a person with CCTV rights for one location sees nothing more', async () => {

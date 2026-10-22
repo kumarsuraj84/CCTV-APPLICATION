@@ -1,8 +1,9 @@
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { forgetTargetsForTest, registerEndpoints } from '@/lib/security/targets'
 import { Go2rtcClient, pruneStreams } from '@/lib/streams/go2rtc'
+import { probeGo2rtcLogin } from '@/lib/streams/go2rtc-auth'
 import { demoSource } from '@/lib/streams/source'
 import { closedPort } from '../helpers/fake-servers'
 
@@ -626,5 +627,35 @@ describe('Go2rtcClient: API credentials and sources (P2-6, D-13)', () => {
       if (before.p === undefined) delete process.env.GO2RTC_API_PASSWORD
       else process.env.GO2RTC_API_PASSWORD = before.p
     }
+  })
+})
+
+// P2-6 review round 1, I-2 / M-12: in production the login is not optional. The client refuses to work without it, and the start-up
+// probe proves that go2rtc itself enforces it (an unauthenticated GET /api/streams must be refused), which also catches a container that
+// was never recreated with the login.
+describe('go2rtc login required in production (review I-2, M-12)', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('production mode without the login: the client refuses before any request', async () => {
+    vi.stubEnv('DRISHTI_ENV', 'production')
+    const f = await startGo2rtc(200, true)
+    expect(() => new Go2rtcClient(f.base, undefined, undefined, null)).toThrow('The video server login is not set up.')
+    expect(f.seen).toHaveLength(0)
+    expect(() => new Go2rtcClient(f.base, undefined, undefined, { username: 'drishti', password: 'g'.repeat(40) })).not.toThrow()
+  })
+
+  it('development keeps working without it (as before)', () => {
+    vi.stubEnv('DRISHTI_ENV', '')
+    expect(() => new Go2rtcClient('http://127.0.0.1:1984', undefined, undefined, null)).not.toThrow()
+  })
+
+  it('the start-up probe passes only when go2rtc refuses a request without the login', async () => {
+    const locked = await startFake((_q, res) => { res.statusCode = 401; res.end('Unauthorized') })
+    expect(await probeGo2rtcLogin(locked.base)).toEqual({ ok: true })
+    const open = await startFake((_q, res) => { res.setHeader('content-type', 'application/json'); res.end('{}') })
+    expect(await probeGo2rtcLogin(open.base)).toEqual({ ok: false, error: expect.stringContaining('without its login') })
+    expect(await probeGo2rtcLogin(`http://127.0.0.1:${await closedPort()}`)).toEqual({ ok: false, error: expect.stringContaining('could not be reached') })
+    // Never a non-loopback go2rtc.
+    expect((await probeGo2rtcLogin('http://192.168.1.5:1984')).ok).toBe(false)
   })
 })

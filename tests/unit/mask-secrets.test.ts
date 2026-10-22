@@ -37,6 +37,20 @@ describe('maskSecrets: recorder sources, URLs, Authorization headers and keys (P
     }
   })
 
+  it('review round 1, M-15: a raw (not encoded) password holding / ? # or @ is hidden whole, up to the last @ before the host', () => {
+    for (const [url, parts] of [
+      ['rtsp://admin:pa/ss@192.168.20.100:554/Streaming/Channels/102', ['pa/ss', 'ss@']],
+      ['rtsp://admin:pa?ss#1@10.0.3.4:554/x', ['pa?ss', 'ss#1']],
+      ['http://admin:p@ss@w0rd@192.168.1.64/ISAPI/System/status', ['p@ss', 'w0rd']],
+    ] as [string, string[]][]) {
+      const out = maskSecrets(`ffmpeg: ${url}: Connection refused`)
+      for (const p of parts) expect(out, url).not.toContain(p)
+      expect(out, url).toContain('[redacted]@')
+      expect(out, url).toContain('Connection refused')
+    }
+    expect(maskSecrets('see https://example.test/a/b?c=1 and write to someone@example.test')).toBe('see https://example.test/a/b?c=1 and write to someone@example.test')
+  })
+
   it('hides the whole value of Authorization headers: Basic, Digest and Bearer', () => {
     const basic = maskSecrets('request had Authorization: Basic ZHJpc2h0aTpzZWNyZXQtcGFzcw== and failed')
     expect(basic).not.toContain('ZHJpc2h0aTpzZWNyZXQtcGFzcw==')

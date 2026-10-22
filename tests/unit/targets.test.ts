@@ -36,7 +36,36 @@ describe('address classes', () => {
     ['0.0.0.0', 'unspecified'], ['::', 'unspecified'], ['224.0.0.1', 'multicast'], ['ff02::1', 'multicast'], ['255.255.255.255', 'broadcast'],
     ['192.168.1.100', 'private'], ['10.0.3.4', 'private'], ['172.16.0.1', 'private'], ['fd12:3456::1', 'private'],
     ['8.8.8.8', 'public'], ['not-an-ip', 'invalid'],
+    // Review round 1, M-6: IPv6 forms that embed an IPv4 address are judged by that address (IPv4-compatible, NAT64, 6to4).
+    ['::127.0.0.1', 'loopback'], ['::7f00:1', 'loopback'], ['64:ff9b::127.0.0.1', 'loopback'], ['64:ff9b::7f00:1', 'loopback'],
+    ['2002:7f00:1::', 'loopback'], ['64:ff9b::a9fe:a9fe', 'metadata'], ['2002:a9fe:a9fe::1', 'metadata'], ['::169.254.1.1', 'link_local'],
+    ['64:ff9b::a9fe:101', 'link_local'], ['2002:a9fe:101::', 'link_local'], ['64:ff9b::808:808', 'public'], ['2002:c0a8:101::1', 'private'],
+    // ...and the documentation and other never-routed ranges are their own class.
+    ['192.0.2.10', 'documentation'], ['198.51.100.7', 'documentation'], ['203.0.113.9', 'documentation'], ['2001:db8::1', 'documentation'],
+    ['100::1', 'reserved'], ['2001::1', 'reserved'],
   ])('%s is %s', (ip, kind) => expect(addressClass(ip)).toBe(kind))
+})
+
+describe('review round 1, M-6: documentation ranges and this computer\'s own addresses', () => {
+  it('documentation ranges are never real NVRs: refused in production, allowed in development (the tests and fakes use them)', () => {
+    for (const ip of ['192.0.2.10', '198.51.100.7', '203.0.113.9', '2001:db8::1']) {
+      expect(connectRefusal(ip, PROD), ip).toMatch(/^This address cannot be used/)
+      expect(connectRefusal(ip, DEV), ip).toBeNull()
+    }
+    expect(connectRefusal('100::1', DEV)).toMatch(/^This address cannot be used/)
+  })
+  it('in production, one of this computer\'s own interface addresses counts as this computer', async () => {
+    const os = await import('node:os')
+    const own = Object.values(os.networkInterfaces()).flat().find((i) => i && !i.internal && i.family === 'IPv4')?.address
+    if (!own) return // a machine without a network interface: nothing to check
+    expect(connectRefusal(own, PROD)).toMatch(/this computer/)
+    expect(connectRefusal(own, DEV)).toBeNull()
+  })
+  it('the embedded forms of loopback and metadata addresses are refused like the plain ones', () => {
+    expect(connectRefusal('::7f00:1', PROD)).toMatch(/this computer/)
+    expect(connectRefusal('64:ff9b::a9fe:a9fe', DEV)).toMatch(/^This address cannot be used/)
+    expect(connectRefusal('2002:a9fe:a9fe::1', DEV)).toMatch(/^This address cannot be used/)
+  })
 })
 
 describe('connectRefusal (the backstop in front of every socket)', () => {

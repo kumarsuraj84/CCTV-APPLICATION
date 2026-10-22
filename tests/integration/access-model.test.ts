@@ -647,7 +647,8 @@ describe('capability access model (P2-1)', () => {
     // read, a worker, gateway, test or diagnostic function; the worker (monitor_worker) and the video path (media_service) their own.
     const web = ['service_role', 'app_web']
     const worker = ['service_role', 'monitor_worker']
-    const limiter = ['service_role', 'app_web', 'media_service']
+    // Review round 1, M-2: only the web app counts (media_service no longer holds the limiter functions).
+    const limiter = ['service_role', 'app_web']
     const expected: Record<string, string[]> = {
       mfa_enforced: people,
       has_capability: people,
@@ -824,6 +825,14 @@ describe('capability access model (P2-1)', () => {
       set_person_active: web,
       change_person_role: web,
       access_review_self_confirm: web,
+      // P2-6 review round 1 (20261021000035): the atomic sign-in gate (I-3/I-4), the start-up check's list of organisations that
+      // did not lock the service key out (M-3), the grant snapshot (M-1), the guard that no GoTrue user carries a service role (M-5).
+      sign_in_gate: web,
+      sign_in_finish: web,
+      sign_in_delay_sec: [],
+      security_unlocked_organizations: web,
+      service_role_grants: server,
+      auth_users_role_check: [],
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)
@@ -861,6 +870,8 @@ describe('capability access model (P2-1)', () => {
       'group_member_counts',
       // P2-5c-2: the Wi-Fi inventory of the caller's own wifi.inventory.view grants (tests/integration/p2-5c-2-wifi-discover.test.ts).
       'wifi_inventory',
+      // P3-1: the caller's own session facts for the multi-factor gate (tests/integration/mfa-session-db.test.ts).
+      'my_session_status',
     ])
     for (const f of data ?? []) {
       expect(f.grantees.filter((g) => g === 'anon' || g.startsWith('PUBLIC')), `${f.name}(${f.args})`).toEqual([])

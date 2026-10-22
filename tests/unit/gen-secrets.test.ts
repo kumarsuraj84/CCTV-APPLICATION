@@ -86,4 +86,18 @@ describe('gen-secrets core', () => {
     expect(out.split('\n').slice(0, 3)).toEqual(['CRON_SECRET=new1', '# note', 'OTHER=1'])
     expect(out).toContain('WORKER_SECRET=new2')
   })
+  it('review M-14: an empty KEY= line is filled in place (no second line for the same key)', () => {
+    const text = 'CRON_SECRET=\n# note\nWORKER_SECRET=""\n'
+    const steps = plan(text, { only: ['CRON_SECRET', 'WORKER_SECRET'] })
+    expect(steps).toEqual([{ key: 'CRON_SECRET', action: 'add' }, { key: 'WORKER_SECRET', action: 'add' }])
+    const out = render(text, steps, { CRON_SECRET: 'new1', WORKER_SECRET: 'new2' })
+    expect(out).toBe('CRON_SECRET=new1\n# note\nWORKER_SECRET=new2\n')
+  })
+  it('review M-14: a file with Windows line ends keeps them', () => {
+    const text = 'CRON_SECRET=old\r\n# note\r\nOTHER=1\r\n'
+    const out = render(text, plan(text, { rotate: new Set(['CRON_SECRET']), only: ['CRON_SECRET', 'WORKER_SECRET'] }), { CRON_SECRET: 'new1', WORKER_SECRET: 'new2' })
+    expect(out.startsWith('CRON_SECRET=new1\r\n# note\r\nOTHER=1\r\n')).toBe(true)
+    expect(out.replace(/\r\n/g, '')).not.toContain('\n')
+    expect(out.endsWith('WORKER_SECRET=new2\r\n')).toBe(true)
+  })
 })

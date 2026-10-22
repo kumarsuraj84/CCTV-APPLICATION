@@ -25,8 +25,10 @@ const rawForge = (payload: unknown, secret = SECRET) => {
 }
 
 const KEYS = ['STREAM_TOKEN_SECRET']
+// Review round 1 (minor): whatever the environment held before this file is put back afterwards (not just deleted).
+const ORIGINAL = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]))
 beforeEach(() => KEYS.forEach((k) => delete process.env[k]))
-afterEach(() => KEYS.forEach((k) => delete process.env[k]))
+afterEach(() => KEYS.forEach((k) => (ORIGINAL[k] === undefined ? delete process.env[k] : (process.env[k] = ORIGINAL[k]))))
 
 describe('stream tokens', () => {
   // P2-4 (D-3, AC-14): the connect window drops from 10 minutes to 90 seconds. A token only opens a socket; it is not needed afterwards.
