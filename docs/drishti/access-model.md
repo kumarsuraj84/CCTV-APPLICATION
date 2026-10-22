@@ -36,7 +36,9 @@ Status: database layer built in P2-1 (migrations `20261021000008`…`20261021000
 | `recorders` (no `secret_id`), `recorder_status`, `recorder_endpoints` (NVR login name), `camera_endpoints` (addresses), `camera_channel_mappings`, recorder `check_state` / `outages`, the checker's recorder reasons | the **recorder-level IT view**: `it.inventory.view` or `it.monitoring.view` at organisation, region, cluster, location or recorder scope (`it_view_recorder_ids()`, `it_view_location_ids()`). Never from an asset grant on the NVR's asset — asset scope is the narrowest and shows that asset row only (review I-1) |
 | `asset_endpoints` | an ordinary asset's: the IT view of the asset; a recorder's: the recorder-level IT view (`it_view_endpoint_asset_ids()`) |
 | `assets` (with address; no `credential_ref`) | `it.inventory.view` or `it.monitoring.view` covering the asset (`it_view_asset_ids()`) |
-| `network_definitions`, `asset_dependencies` | IT view of the location / of both assets; `device_capabilities` is server-only |
+| `network_definitions`, `asset_dependencies` | IT view of the location / of both assets |
+| `device_capabilities` (documentation matrix, no place in it) | P2-5c-2: any holder of `wifi.inventory.view` at any scope (`has_capability`); nobody signed in writes it (was server-only in P2-5a) |
+| `wifi_inventory()` (access points, routers, switches with reachability; never `credential_ref`) | P2-5c-2: the assets the caller holds `wifi.inventory.view` for (`capability_asset_ids('wifi.inventory.view')`, organisation / region / cluster / location / asset scope) |
 | `check_state`, `outages` | camera: as cameras; device: as assets; recorder: IT view of the recorder (organisation, region, cluster, location or recorder grant). P2-5b: the seam's `nvr` kind is gone (contract migration `20261021000024`) |
 | `camera_groups` | at least one member camera visible; an empty group only for its creator and `admin.inventory` |
 | `camera_group_items` | the member camera is visible |

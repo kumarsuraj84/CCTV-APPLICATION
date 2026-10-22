@@ -1,0 +1,119 @@
+[
+  {
+    "shot": "import-1366.png",
+    "url": "/admin/import",
+    "title": "Import — CityKart Drishti",
+    "scrollW": 1366,
+    "vw": 1366,
+    "h": 768,
+    "storeWordInMain": false
+  },
+  {
+    "shot": "import-preview-problems-1366.png",
+    "url": "/admin/import (file with a problem)",
+    "title": "Import — CityKart Drishti",
+    "scrollW": 1351,
+    "vw": 1366,
+    "h": 1455,
+    "storeWordInMain": false
+  },
+  {
+    "shot": "import-preview-1366.png",
+    "url": "/admin/import (clean file)",
+    "title": "Import — CityKart Drishti",
+    "scrollW": 1351,
+    "vw": 1366,
+    "h": 1391,
+    "storeWordInMain": false
+  },
+  {
+    "shot": "import-result-1366.png",
+    "url": "/admin/import (after Import)",
+    "title": "Import — CityKart Drishti",
+    "scrollW": 1366,
+    "vw": 1366,
+    "h": 768,
+    "storeWordInMain": false
+  },
+  {
+    "shot": "discover-all-before-1366.png",
+    "url": "/admin/locations/discover",
+    "title": "Find cameras for all locations — CityKart Drishti",
+    "scrollW": 1366,
+    "vw": 1366,
+    "h": 768,
+    "storeWordInMain": false
+  },
+  {
+    "shot": "discover-all-running-1366.png",
+    "url": "/admin/locations/discover (running)",
+    "title": "Find cameras for all locations — CityKart Drishti",
+    "scrollW": 1366,
+    "vw": 1366,
+    "h": 768,
+    "storeWordInMain": false
+  },
+  {
+    "shot": "discover-all-results-1366.png",
+    "url": "/admin/locations/discover (finished)",
+    "title": "Find cameras for all locations — CityKart Drishti",
+    "scrollW": 1366,
+    "vw": 1366,
+    "h": 768,
+    "storeWordInMain": false
+  },
+  {
+    "shot": "wifi-inventory-1366.png",
+    "url": "/locations/wifi",
+    "title": "Wi-Fi inventory — CityKart Drishti",
+    "scrollW": 1351,
+    "vw": 1366,
+    "h": 1724,
+    "storeWordInMain": false
+  },
+  {
+    "shot": "import-375.png",
+    "url": "/admin/import",
+    "title": "Import — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 952,
+    "storeWordInMain": false
+  },
+  {
+    "shot": "import-preview-problems-375.png",
+    "url": "/admin/import (file with a problem)",
+    "title": "Import — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 1897,
+    "storeWordInMain": false
+  },
+  {
+    "shot": "import-preview-375.png",
+    "url": "/admin/import (clean file)",
+    "title": "Import — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 1792,
+    "storeWordInMain": false
+  },
+  {
+    "shot": "discover-all-results-375.png",
+    "url": "/admin/locations/discover (finished)",
+    "title": "Find cameras for all locations — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 1187,
+    "storeWordInMain": false
+  },
+  {
+    "shot": "wifi-inventory-375.png",
+    "url": "/locations/wifi",
+    "title": "Wi-Fi inventory — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 2566,
+    "storeWordInMain": false
+  }
+]
