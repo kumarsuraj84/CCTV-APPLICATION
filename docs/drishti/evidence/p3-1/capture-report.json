@@ -1,0 +1,17 @@
+{
+  "base": "http://localhost:3340",
+  "shots": [
+    {
+      "file": "SO-1-login-1366.png",
+      "url": "/",
+      "width": 1366,
+      "scrollWidth": 1366
+    },
+    {
+      "file": "SO-1-login-375.png",
+      "url": "/",
+      "width": 375,
+      "scrollWidth": 375
+    }
+  ]
+}
