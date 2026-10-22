@@ -2,6 +2,7 @@
 // the address, the source, the name or the underlying error: callers get a plain sentence and nothing that could be logged by mistake.
 
 import { logger } from '@/lib/observability/logger'
+import { isProductionMode } from '@/lib/runtime-mode'
 import { sourceRefusal } from '@/lib/security/targets'
 import { basicAuthHeader, go2rtcApiAuth, type Go2rtcAuth } from '@/lib/streams/go2rtc-auth'
 
@@ -12,6 +13,7 @@ const MSG_REGISTER = 'The video server did not accept the stream.'
 const MSG_REMOVE = 'The video server did not remove the stream.'
 const MSG_READ = 'The video server did not answer.'
 const MSG_ADDRESS = 'The video server address is not valid.'
+const MSG_NO_LOGIN = 'The video server login is not set up.'
 
 export const GO2RTC_TIMEOUT_MS = 5000
 /** One stream's entry is small; anything bigger than this is not go2rtc talking. */
@@ -61,6 +63,8 @@ export class Go2rtcClient {
   ) {
     this.base = loopbackOrigin(baseUrl)
     const a = auth === undefined ? go2rtcApiAuth() : auth
+    // Review round 1 (I-2): in production the login is required (an API without it lists NVR sources with passwords).
+    if (!a && isProductionMode()) throw new Error(MSG_NO_LOGIN)
     this.#authorization = a ? basicAuthHeader(a) : null
   }
 

@@ -13,4 +13,11 @@ rtsp:
 # WebRTC is not used (the gateway carries video over WebSocket): its listener is off (D-13).
 webrtc:
   listen: ""
+# P2-6 review round 1 (M-11): SRTP and RTMP are not used either; switched off explicitly so a later default cannot open them. Verified
+# on the pinned 1.9.9 image (a throwaway container): with this file only the API listens (:1984), and /api/streams without the login
+# answers 401. HomeKit and Home Assistant stay off because nothing configures them.
+srtp:
+  listen: ""
+rtmp:
+  listen: ""
 streams: {}

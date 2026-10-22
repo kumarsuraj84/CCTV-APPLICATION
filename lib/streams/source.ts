@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { isIP } from 'node:net'
 import { clockOffsetMs, type ClockOffset } from '@/lib/nvr/playback'
 import { isValidHost, isValidPort } from '@/lib/probes'
+import { isProductionMode } from '@/lib/runtime-mode'
 
 // The camera password is part of what these functions return. Keep the result on the server: it goes to go2rtc and nowhere else.
 // Errors are plain and never echo the host, the credentials or the URL.
@@ -69,5 +70,6 @@ const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1'])
 
 /** True only on a development machine with DEMO_VIDEO=1 and a recorder (NVR) whose address is this machine (P2-5b: per recorder). */
 export function isDemoRecorder(o: { host: string | null }, env: Record<string, string | undefined> = process.env): boolean {
-  return env.DEMO_VIDEO === '1' && env.NODE_ENV !== 'production' && typeof o.host === 'string' && LOOPBACK.has(o.host)
+  // P2-6 review round 1 (I-1): the shared production switch, not NODE_ENV alone.
+  return env.DEMO_VIDEO === '1' && !isProductionMode(env) && typeof o.host === 'string' && LOOPBACK.has(o.host)
 }

@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
 import { logger } from '@/lib/observability/logger'
 import { processSingleton } from '@/lib/process-singleton'
+import { isProductionMode } from '@/lib/runtime-mode'
 import { resilientFetch } from '@/lib/supabase/resilient-fetch'
 
 // Per-service database identities (P2-6, decision D-14 / D-14a; spike: docs/drishti/adr-service-roles.md). Each server process talks
@@ -14,7 +15,8 @@ import { resilientFetch } from '@/lib/supabase/resilient-fetch'
 //   video_gateway  the gateway (three registry functions only)
 //
 // Compatibility: when a role's key is missing, development falls back to SUPABASE_SERVICE_ROLE_KEY with a loud warning (once per role
-// and process) so running processes keep working until the keys are added; production refuses (the feature or process does not start).
+// and process) so running processes keep working until the keys are added; production (lib/runtime-mode.ts: DRISHTI_ENV=production or
+// NODE_ENV=production) refuses, and lib/startup-checks.ts stops each process at start-up before it serves anything.
 // Keys go only into request headers: never into a URL, an error message or a log line.
 
 export type ServiceRole = 'app_web' | 'media_service' | 'monitor_worker' | 'video_gateway'
@@ -50,7 +52,7 @@ export function serviceKeyFor(role: ServiceRole, env: Env = process.env): KeyAns
     if (claimed !== role) return { ok: false, error: `${name} is not a key for the ${role} database role. Make it again with: node scripts/gen-secrets.mjs` }
     return { ok: true, key: own, fallback: false }
   }
-  if (env.NODE_ENV === 'production') return { ok: false, error: `${name} is required in production (its own database key; make it with: node scripts/gen-secrets.mjs).` }
+  if (isProductionMode(env)) return { ok: false, error: `${name} is required in production (its own database key; make it with: node scripts/gen-secrets.mjs).` }
   const service = env.SUPABASE_SERVICE_ROLE_KEY?.trim()
   if (!service) return { ok: false, error: `${name} (or, in development only, SUPABASE_SERVICE_ROLE_KEY) is not set.` }
   return { ok: true, key: service, fallback: true }

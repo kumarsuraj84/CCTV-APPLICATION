@@ -7,7 +7,9 @@
 export function maskSecrets(text: string): string {
   return text
     // scheme://user:password@host  →  scheme://[redacted]@host (the user name too: it is half of the login)
-    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]+@/gi, '$1[redacted]@')
+    // Review round 1 (M-15): up to the LAST @ of the address, so a raw password holding / ? # or @ is hidden whole (hiding a little
+    // too much of an odd path is the safe side). It stops at white space and quotes, so the next field of a JSON text is left alone.
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s"'<>]*@/gi, '$1[redacted]@')
     // Authorization: <scheme> <credentials> — a quoted value, or everything to the end of the line (a Digest answer holds quotes)
     .replace(/\b(authorization)(\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\r\n]+)/gi, '$1$2[redacted]')
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')

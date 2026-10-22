@@ -1,6 +1,8 @@
 import { promises as dnsPromises } from 'node:dns'
 import { BlockList, isIP } from 'node:net'
+import { networkInterfaces } from 'node:os'
 import { processSingleton } from '@/lib/process-singleton'
+import { isProductionMode } from '@/lib/runtime-mode'
 
 // The same host rule as lib/probes.ts isValidHost (kept here so that the probes can use this module without a cycle): a canonical IP
 // or a plain host name; never a numeric/hex spelling of an address, a credential, a path, a port or a leading "-".
@@ -31,7 +33,8 @@ export type TargetPurpose =
   | 'device_tcp' | 'device_icmp' | 'nvr_http' | 'nvr_rtsp' | 'discovery' | 'connection_test' | 'stream_source' | 'recording_download'
   | 'snmp' | 'winrm' | 'ssh' | 'vnc'
 
-export type AddressClass = 'loopback' | 'metadata' | 'link_local' | 'unspecified' | 'multicast' | 'broadcast' | 'reserved' | 'private' | 'public' | 'invalid'
+export type AddressClass =
+  | 'loopback' | 'metadata' | 'link_local' | 'unspecified' | 'multicast' | 'broadcast' | 'reserved' | 'documentation' | 'private' | 'public' | 'invalid'
 export type TargetDecision = { ok: true; address: string } | { ok: false; error: string }
 type Env = Record<string, string | undefined>
 
@@ -62,25 +65,80 @@ const CLASSES: [AddressClass, BlockList][] = [
   ['unspecified', block([['0.0.0.0', 8, 'ipv4'], ['::', 128, 'ipv6']])],
   ['broadcast', block([['255.255.255.255', 32, 'ipv4']])],
   ['multicast', block([['224.0.0.0', 4, 'ipv4'], ['ff00::', 8, 'ipv6']])],
-  ['reserved', block([['240.0.0.0', 4, 'ipv4'], ['192.0.0.0', 24, 'ipv4'], ['198.18.0.0', 15, 'ipv4']])],
+  // Review round 1 (M-6): IPv6 discard-only 100::/64 and the IETF protocol block 2001::/23 (Teredo, benchmarking, ...).
+  ['reserved', block([['240.0.0.0', 4, 'ipv4'], ['192.0.0.0', 24, 'ipv4'], ['198.18.0.0', 15, 'ipv4'], ['100::', 64, 'ipv6'], ['2001::', 23, 'ipv6']])],
+  // Review round 1 (M-6): documentation ranges are never a real NVR; refused in production, allowed in development (tests and fakes).
+  ['documentation', block([['192.0.2.0', 24, 'ipv4'], ['198.51.100.0', 24, 'ipv4'], ['203.0.113.0', 24, 'ipv4'], ['2001:db8::', 32, 'ipv6']])],
   ['private', block([['10.0.0.0', 8, 'ipv4'], ['172.16.0.0', 12, 'ipv4'], ['192.168.0.0', 16, 'ipv4'], ['100.64.0.0', 10, 'ipv4'], ['fc00::', 7, 'ipv6']])],
 ]
 const MAPPED = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i
 
-/** What kind of address an IP literal is (an IPv4-mapped IPv6 address counts as its IPv4 address). */
+/** The eight 16-bit groups of an IPv6 literal (an embedded dotted IPv4 tail included), or null. */
+function ipv6Groups(addr: string): number[] | null {
+  let a = addr.toLowerCase()
+  const dotted = /(\d{1,3}(?:\.\d{1,3}){3})$/.exec(a)
+  if (dotted) {
+    const p = dotted[1].split('.').map(Number)
+    if (p.some((n) => n > 255)) return null
+    a = `${a.slice(0, -dotted[1].length)}${((p[0] << 8) | p[1]).toString(16)}:${((p[2] << 8) | p[3]).toString(16)}`
+  }
+  const [head, tail, extra] = a.split('::')
+  if (extra !== undefined) return null
+  const h = head ? head.split(':') : []
+  const t = tail !== undefined ? (tail ? tail.split(':') : []) : null
+  const groups = t === null ? h : [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t]
+  if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return null
+  return groups.map((g) => parseInt(g, 16))
+}
+
+/**
+ * Review round 1 (M-6): the IPv4 address an IPv6 literal carries in one of the forms that reach it — IPv4-mapped (::ffff:a.b.c.d, also
+ * in hex), IPv4-compatible (::a.b.c.d, never :: or ::1), NAT64 (64:ff9b::/96) and 6to4 (2002:AABB:CCDD::/48) — or null.
+ */
+function embeddedIpv4(addr: string): string | null {
+  if (isIP(addr) !== 6) return null
+  const g = ipv6Groups(addr)
+  if (!g) return null
+  const v4 = (hi: number, lo: number) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`
+  const zero = (from: number, to: number) => g.slice(from, to).every((x) => x === 0)
+  if (zero(0, 5) && g[5] === 0xffff) return v4(g[6], g[7])
+  if (zero(0, 6) && g[6] !== 0) return v4(g[6], g[7])
+  if (g[0] === 0x64 && g[1] === 0xff9b && zero(2, 6)) return v4(g[6], g[7])
+  if (g[0] === 0x2002) return v4(g[1], g[2])
+  return null
+}
+
+/** What kind of address an IP literal is (an IPv6 form that embeds an IPv4 address counts as that IPv4 address). */
 export function addressClass(ip: string): AddressClass {
   if (typeof ip !== 'string') return 'invalid'
   const bare = ip.replace(/^\[|\]$/g, '')
   const mapped = MAPPED.exec(bare)
-  const addr = mapped ? mapped[1] : bare
+  let addr = mapped ? mapped[1] : bare
+  if (isIP(addr) === 0 || addr.includes('%')) return 'invalid'
+  addr = embeddedIpv4(addr) ?? addr
   const family = isIP(addr)
-  if (family === 0 || addr.includes('%')) return 'invalid'
+  if (family === 0) return 'invalid'
   const type = family === 4 ? 'ipv4' : 'ipv6'
   for (const [kind, list] of CLASSES) if (list.check(addr, type)) return kind
   return 'public'
 }
 
-const isProduction = (env: Env) => env.NODE_ENV === 'production'
+/** Review round 1 (M-6): this computer's own interface addresses (production treats them as "this computer"), read once a minute. */
+let own: { at: number; addresses: Set<string> } | null = null
+function ownAddresses(now = Date.now()): Set<string> {
+  if (own && now - own.at < 60_000) return own.addresses
+  const addresses = new Set<string>()
+  try {
+    for (const list of Object.values(networkInterfaces())) for (const i of list ?? []) addresses.add(i.address.toLowerCase().replace(/%.*$/, ''))
+  } catch {
+    // no interface list: only the loopback ranges count
+  }
+  own = { at: now, addresses }
+  return addresses
+}
+
+// Review round 1 (I-1): the shared production switch (DRISHTI_ENV=production or NODE_ENV=production), not NODE_ENV alone.
+const isProduction = (env: Env) => isProductionMode(env)
 const normHost = (h: string) => h.trim().replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase()
 const METADATA_NAMES = new Set(['metadata', 'metadata.google.internal', 'instance-data', 'instance-data.ec2.internal', 'metadata.azure.internal'])
 
@@ -88,8 +146,22 @@ const METADATA_NAMES = new Set(['metadata', 'metadata.google.internal', 'instanc
 function classRefusal(kind: AddressClass, env: Env): string | null {
   if (kind === 'invalid') return MSG_BAD_TARGET
   if (kind === 'loopback') return isProduction(env) ? MSG_THIS_COMPUTER : null
+  if (kind === 'documentation') return isProduction(env) ? MSG_SPECIAL_ADDRESS : null
   if (kind === 'private' || kind === 'public') return null
   return MSG_SPECIAL_ADDRESS
+}
+
+/** The refusal for one IP literal: its class, and in production this computer's own interface addresses as well. */
+function addressRefusal(ip: string, env: Env): string | null {
+  const byClass = classRefusal(addressClass(ip), env)
+  if (byClass) return byClass
+  if (isProduction(env)) {
+    const bare = ip.replace(/^\[|\]$/g, '').toLowerCase()
+    const mapped = MAPPED.exec(bare)
+    const mine = ownAddresses()
+    if (mine.has(bare) || (mapped && mine.has(mapped[1])) || mine.has(embeddedIpv4(bare) ?? '')) return MSG_THIS_COMPUTER
+  }
+  return null
 }
 
 /**
@@ -99,7 +171,7 @@ function classRefusal(kind: AddressClass, env: Env): string | null {
 export function connectRefusal(host: string, env: Env = process.env): string | null {
   if (typeof host !== 'string' || host.trim() === '') return MSG_BAD_TARGET
   const h = normHost(host)
-  if (isIP(h) !== 0 || MAPPED.test(h)) return classRefusal(addressClass(h), env)
+  if (isIP(h) !== 0 || MAPPED.test(h)) return addressRefusal(h, env)
   if (!isValidHost(h)) return MSG_BAD_TARGET
   if (h === 'localhost' || h.endsWith('.localhost')) return classRefusal('loopback', env)
   if (METADATA_NAMES.has(h)) return MSG_SPECIAL_ADDRESS
@@ -180,7 +252,7 @@ export async function checkTarget(
   }
   if (answers.length === 0) return { ok: false, error: MSG_NAME_NOT_FOUND }
   for (const a of answers) {
-    const r = classRefusal(addressClass(a), env)
+    const r = addressRefusal(a, env)
     if (r) return { ok: false, error: r }
   }
   const pin = state.pins.get(host)

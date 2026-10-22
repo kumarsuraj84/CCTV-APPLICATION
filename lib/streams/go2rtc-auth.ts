@@ -18,3 +18,29 @@ export function go2rtcApiAuth(env: Record<string, string | undefined> = process.
 }
 
 export const basicAuthHeader = (a: Go2rtcAuth): string => `Basic ${Buffer.from(`${a.username}:${a.password}`, 'utf8').toString('base64')}`
+
+const LOOPBACK = new Set(['127.0.0.1', '[::1]', 'localhost'])
+
+/**
+ * Review round 1 (I-2, M-12): does go2rtc itself ask for its login? One unauthenticated GET /api/streams must be refused (401). Used at
+ * start-up in production by the gateway and the web app: it proves the container was recreated with the login (a go2rtc that answers
+ * without it would hand its stream list — NVR sources with passwords — to anything on this computer). Never sends a credential.
+ */
+export async function probeGo2rtcLogin(baseUrl: string, fetchImpl: typeof fetch = fetch, timeoutMs = 3000): Promise<{ ok: true } | { ok: false; error: string }> {
+  let u: URL
+  try {
+    u = new URL(baseUrl)
+  } catch {
+    return { ok: false, error: 'The video server address (GO2RTC_URL) is not valid.' }
+  }
+  if ((u.protocol !== 'http:' && u.protocol !== 'https:') || !LOOPBACK.has(u.hostname)) return { ok: false, error: 'The video server address (GO2RTC_URL) must be on this computer.' }
+  let res: Response
+  try {
+    res = await fetchImpl(`${u.origin}/api/streams`, { method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) })
+  } catch {
+    return { ok: false, error: 'The video server (go2rtc) could not be reached to check that it asks for its login.' }
+  }
+  await res.body?.cancel().catch(() => {})
+  if (res.status === 401) return { ok: true }
+  return { ok: false, error: 'The video server (go2rtc) answers without its login: recreate it with GO2RTC_API_USERNAME and GO2RTC_API_PASSWORD (npm run stack:up).' }
+}

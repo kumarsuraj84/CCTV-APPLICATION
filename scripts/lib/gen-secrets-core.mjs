@@ -47,21 +47,32 @@ export function valueFor(key, o = {}) {
 }
 
 /**
- * The new file text: lines of rotated keys are replaced in place, added keys are appended under one comment line, everything else
- * (other keys, comments, blank lines, line order) stays exactly as it was.
+ * The new file text: lines of rotated keys are replaced in place, and so is the first empty `KEY=` line of an added key (review M-14);
+ * the other added keys are appended under one comment line. Everything else (other keys, comments, blank lines, line order) stays
+ * exactly as it was, and so do the file's line ends (CRLF on Windows).
  */
 export function render(text, steps, values) {
-  const lines = String(text ?? '').split(/\r?\n/)
+  const source = String(text ?? '')
+  const eol = source.includes('\r\n') ? '\r\n' : '\n'
+  const lines = source.split(/\r?\n/)
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
-  const rotate = new Map(steps.filter((s) => s.action === 'rotate').map((s) => [s.key, values[s.key]]))
+  const inPlace = new Map(steps.filter((s) => s.action === 'rotate' || s.action === 'add').map((s) => [s.key, values[s.key]]))
+  const added = new Set(steps.filter((s) => s.action === 'add').map((s) => s.key))
+  const filled = new Set()
   const out = lines.map((raw) => {
     const m = LINE.exec(raw)
-    return m && rotate.has(m[1]) ? `${m[1]}=${rotate.get(m[1])}` : raw
+    if (!m || !inPlace.has(m[1])) return raw
+    if (added.has(m[1])) {
+      // An added key is not set (presentKeys): its first empty line takes the value, any later empty one stays as it was.
+      if (filled.has(m[1])) return raw
+      filled.add(m[1])
+    }
+    return `${m[1]}=${inPlace.get(m[1])}`
   })
-  const added = steps.filter((s) => s.action === 'add')
-  if (added.length > 0) {
+  const appended = [...added].filter((k) => !filled.has(k))
+  if (appended.length > 0) {
     out.push('# Added by scripts/gen-secrets.mjs (P2-6). Keep this file private; rotation: docs/drishti/runbooks/secret-rotation.md')
-    for (const s of added) out.push(`${s.key}=${values[s.key]}`)
+    for (const k of appended) out.push(`${k}=${values[k]}`)
   }
-  return out.join('\n') + '\n'
+  return out.join(eol) + eol
 }

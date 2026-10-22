@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { getClientIp } from '@/lib/rate-limit'
-import { refusalFor, sharedLimiter } from '@/lib/rate-limit-shared'
+import { MSG_SIGN_IN_BUSY, refusalFor, sharedLimiter, signInOutcomeOf, signInRefusalMessage, type SignInOutcome } from '@/lib/rate-limit-shared'
 import { getCurrentProfile } from '@/lib/auth/profile'
 import { safeNext } from '@/lib/auth/safe-next'
 import { passwordSchema } from '@/lib/validation/password'
@@ -18,9 +18,6 @@ const signInSchema = z.object({
   password: z.string().min(1, 'Enter your password.'),
 })
 
-/** The plain words for a sign-in that must wait (D-11: a rising delay, never a lockout). Not exported: a 'use server' file exports actions only. */
-const signInWaitMessage =(sec: number) => `Too many wrong tries. Please wait ${sec} ${sec === 1 ? 'second' : 'seconds'} and try again.`
-
 export async function signIn(_prev: FormState, formData: FormData): Promise<FormState> {
   const parsed = signInSchema.safeParse({ email: formData.get('email'), password: formData.get('password') })
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? 'Check the form and try again.' }
@@ -29,19 +26,23 @@ export async function signIn(_prev: FormState, formData: FormData): Promise<Form
   // P2-6 (D-11): failures are counted for this e-mail address AND client IP in the shared limiter (every app instance); from the third,
   // the next try must wait 5 s, 10 s, 20 s ... at most 5 minutes; a successful sign-in clears them. No hard lockout: nobody can lock
   // somebody else out. The IP is known only behind TRUSTED_PROXY_HOPS trusted proxies (otherwise "noip": the delay is then per address).
-  const ip = (await getClientIp()) ?? 'noip'
-  const who = `${ip}|${email}`
-  const limiter = sharedLimiter()
-  const wait = await limiter.signInWait(who)
-  if (wait > 0) return { error: signInWaitMessage(wait) }
+  // Review round 1 (I-3, I-4): the gate counts the try atomically BEFORE the password is checked; only a refusal of the e-mail address
+  // and password stays counted — "busy" (429), a server error or no answer is given back and answered "try again in a moment".
+  const gate = await sharedLimiter().signInGate(email, await getClientIp())
+  if (!gate.allowed) return { error: signInRefusalMessage(gate) }
 
-  const supabase = await createClient()
-  const { error } = await supabase.auth.signInWithPassword({ email, password })
-  if (error) {
-    await limiter.signInFailed(who)
-    return { error: 'Wrong e-mail or password.' }
+  let outcome: SignInOutcome = 'not_counted'
+  try {
+    const supabase = await createClient()
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    outcome = signInOutcomeOf(error)
+  } catch {
+    outcome = 'not_counted' // no answer at all (network): not a wrong password
+  } finally {
+    await gate.finish(outcome)
   }
-  await limiter.signInSucceeded(who)
+  if (outcome === 'not_counted') return { error: MSG_SIGN_IN_BUSY }
+  if (outcome === 'refused') return { error: 'Wrong e-mail or password.' }
   redirect(safeNext(String(formData.get('next') ?? '')))
 }
 

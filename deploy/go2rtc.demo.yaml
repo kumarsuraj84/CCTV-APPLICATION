@@ -8,7 +8,11 @@ api:
   local_auth: true
 rtsp:
   listen: "127.0.0.1:8554"
-# WebRTC is not used: its listener is off (D-13).
+# WebRTC is not used: its listener is off (D-13). SRTP and RTMP neither (review round 1, M-11).
 webrtc:
+  listen: ""
+srtp:
+  listen: ""
+rtmp:
   listen: ""
 streams: {}

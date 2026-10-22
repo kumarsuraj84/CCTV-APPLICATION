@@ -2,6 +2,7 @@
 //   - the proxy deletes any client-supplied copy of these headers, and
 //   - the value it sets is signed with a server-only key, so a copy that did not come from the proxy fails verification.
 import { createHmac, timingSafeEqual } from 'node:crypto'
+import { isProductionMode } from '@/lib/runtime-mode'
 import { getSecret } from '@/lib/secrets'
 
 export const VERIFIED_USER_HEADER = 'x-verified-user-id'
@@ -11,7 +12,7 @@ export const VERIFIED_USER_SIG_HEADER = 'x-verified-user-sig'
 // key; development without the new secret still falls back to it so the running app keeps working, production never does. Without a key
 // nothing is signed and every page checks the session itself (the safe default).
 const key = (): string | null =>
-  getSecret('verified_user') ?? (process.env.NODE_ENV === 'production' ? null : process.env.SUPABASE_SERVICE_ROLE_KEY || null)
+  getSecret('verified_user') ?? (isProductionMode() ? null : process.env.SUPABASE_SERVICE_ROLE_KEY || null)
 const mac = (k: string, userId: string) => createHmac('sha256', k).update(`verified-user:${userId}`).digest('hex')
 
 /** Signature for a verified user id ('' = verified as signed out). Null when no server key is configured. */

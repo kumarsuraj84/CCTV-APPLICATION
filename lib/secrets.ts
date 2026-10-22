@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { processSingleton } from '@/lib/process-singleton'
+import { isProductionMode } from '@/lib/runtime-mode'
 
 // One secret per purpose. A missing one means "not available" (the feature is off and says so), never "use another secret".
 // access_preview (P2-3 review M-5): the key of the access editor's preview token (an HMAC binding a save to the preview shown).
@@ -56,7 +57,7 @@ const processKeys = processSingleton('secrets.processKeys', () => new Map<Secret
 export function sharedSecret(purpose: SecretPurpose, env: Record<string, string | undefined> = process.env): string | null {
   const configured = getSecret(purpose, env)
   if (configured) return configured
-  if (env.NODE_ENV === 'production') return null
+  if (isProductionMode(env)) return null
   let k = processKeys.get(purpose)
   if (!k) {
     k = randomBytes(32).toString('base64url')

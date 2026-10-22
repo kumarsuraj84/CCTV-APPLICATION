@@ -7,6 +7,7 @@ import { MonitorRunner } from '@/lib/monitor/runner'
 import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
 import { HOUSEKEEPING_EVERY_MS, runHousekeeping } from '@/lib/monitor/housekeeping'
 import { logger } from '@/lib/observability/logger'
+import { refusalMessage, startupProblems } from '@/lib/startup-checks'
 import { createServiceClient, serviceKeyFor } from '@/lib/supabase/service-clients'
 
 /** How long a stop request waits for the checks in progress before the process exits anyway. */
@@ -39,6 +40,14 @@ async function main() {
   if (existsSync('.env.local')) process.loadEnvFile('.env.local') // development; in production the service sets the environment
   // P2-6 (D-14): the worker's own database role (monitor_worker, key SUPABASE_MONITOR_WORKER_KEY). Development without the key falls
   // back to the service key with a warning; production does not start without it.
+  // P2-6 review round 1 (I-1, M-4): production mode (DRISHTI_ENV=production; tsx sets no NODE_ENV) refuses to start without the
+  // worker's own key, with the old service key in its environment, or with an ended key.
+  const startup = startupProblems('worker')
+  for (const w of startup.warnings) logger.warn({ event: 'worker_startup_warning', message: w })
+  if (startup.problems.length > 0) {
+    logger.error({ event: 'worker_config_refused', message: refusalMessage('worker', startup.problems) })
+    process.exit(1)
+  }
   const key = serviceKeyFor('monitor_worker')
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !key.ok) {
     logger.error({ event: 'worker_config_missing', message: key.ok ? 'NEXT_PUBLIC_SUPABASE_URL is required' : key.error })

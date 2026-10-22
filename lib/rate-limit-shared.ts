@@ -12,9 +12,17 @@ import { createAdminClient } from '@/lib/supabase/admin'
 // merges) are refused ("try again in a moment"); video opening (a read) is allowed within the in-process limit.
 //
 // Sign-in: no hard lockout any more (the old 15-minute lockout per e-mail let anybody lock anybody out). Failures are counted per e-mail
-// address AND client IP; from the third failure in 15 minutes the next try must wait 5 s, then 10, 20, ... up to 5 minutes, and a
-// successful sign-in clears the count. The client IP is known only behind a configured number of trusted reverse proxies
-// (TRUSTED_PROXY_HOPS, lib/rate-limit.ts getClientIp); without it every client shares "noip" and the delays then apply per e-mail address.
+// address AND client IP; from the third failure the next try must wait 5 s, then 10, 20, ... up to 5 minutes, and a successful sign-in
+// clears the count (the count is forgotten after 15 minutes without a try). The client IP is known only behind a configured number of
+// trusted reverse proxies (TRUSTED_PROXY_HOPS, lib/rate-limit.ts getClientIp); without it every client shares "noip" and the delays then
+// apply per e-mail address.
+//
+// Review round 1 (I-3, I-4): the check and the count are ONE atomic step in the database (sign_in_gate, migration 20261021000035): every
+// try that is let through is counted as a failure BEFORE the password is checked, so simultaneous tries cannot all pass the same check;
+// a success clears the count, and a try the sign-in service could not answer (429 "busy", a server error, no answer) is given back —
+// only a refusal of the e-mail address and password counts. In front of it, per app instance: one try in flight per e-mail address + IP,
+// and a known wait is answered without asking the database. A known client IP also has a ceiling of tries over all addresses
+// (SIGN_IN_IP_LIMIT per 15 minutes); "noip" has none, because one ceiling shared by every client would lock everybody out.
 
 export type LimitName =
   | 'forgot_password' | 'change_password' | 'admin_action' | 'users_change' | 'access_preview' | 'access_apply' | 'access_keep'
@@ -58,9 +66,16 @@ export const LIMITS: Record<LimitName, { limit: number; windowSec: number; failC
 export const MSG_SLOW_DOWN = 'Too many requests in a short time. Wait a minute and try again.'
 export const MSG_LIMITER_UNAVAILABLE = 'This cannot be done right now. Please try again in a moment.'
 
-const SIGN_IN_WINDOW_SEC = 900
-/** When the database cannot be asked, a sign-in waits this long (fail closed, but never a lockout). */
+export const MSG_SIGN_IN_BUSY = 'Sign-in is busy, please try again in a moment.'
+
+/** A sign-in count is forgotten after this long without a try; a client IP's ceiling counts in windows of this length. */
+export const SIGN_IN_WINDOW_SEC = 900
+/** Tries from one known client IP over all e-mail addresses per window (an office behind one address stays far below). */
+export const SIGN_IN_IP_LIMIT = 100
+/** When the database cannot be asked, a sign-in is refused for now (fail closed, but never a lockout). */
 const SIGN_IN_UNAVAILABLE_WAIT_SEC = 30
+/** A try in flight longer than this (a lost finish) no longer blocks the next one in this instance. */
+const SIGN_IN_IN_FLIGHT_MS = 30_000
 
 /** Seconds to wait before the next sign-in after `failures` failures in 15 minutes: 0, 0, 0, 5, 10, 20, ... at most 300. */
 export function signInDelaySec(failures: number): number {
@@ -77,8 +92,41 @@ export type LimiterStore = {
   hit(key: string, limit: number, windowSec: number): Promise<{ allowed: boolean; hits: number; resetAt: number }>
   state(key: string, windowSec: number): Promise<{ hits: number; lastHitAt: number | null }>
   clear(key: string): Promise<void>
+  /** One atomic step: refuses while the delay of the key's failures runs (or the IP's ceiling is reached), else counts the try. */
+  signInGate(key: string, ipKey: string | null, ipLimit: number): Promise<{ allowed: boolean; waitSec: number; reason: 'wait' | 'ip' | null }>
+  /** After the password check: a success clears the key; a try the sign-in service could not answer is given back. */
+  signInFinish(key: string, ipKey: string | null, outcome: 'succeeded' | 'not_counted'): Promise<void>
 }
 export type HitAnswer = { allowed: true } | { allowed: false; reason: 'limit' | 'unavailable'; retryAfterSec: number }
+
+/** What the sign-in service's answer means for the count: only a refusal of the e-mail address and password counts. */
+export type SignInOutcome = 'succeeded' | 'refused' | 'not_counted'
+export type SignInRefusal = { allowed: false; reason: 'wait' | 'ip' | 'busy' | 'unavailable'; waitSec: number }
+export type SignInGate = { allowed: true; finish(outcome: SignInOutcome): Promise<void> } | SignInRefusal
+
+/**
+ * Review I-4: the sign-in service's answer. A 429 ("busy"; GoTrue limits per address and sees every sign-in as the web server's), a
+ * server error or no answer at all (network, timeout) is NOT a wrong password. Every other refusal (400 invalid_credentials, an
+ * unconfirmed or blocked account) counts and gets the same words as a wrong password, so nobody learns which accounts exist.
+ */
+export function signInOutcomeOf(error: { status?: number; code?: string; name?: string } | null | undefined): SignInOutcome {
+  if (!error) return 'succeeded'
+  const status = typeof error.status === 'number' ? error.status : 0
+  if (status === 429 || error.code === 'over_request_rate_limit') return 'not_counted'
+  if (status === 0 || status >= 500) return 'not_counted'
+  return 'refused'
+}
+
+/** The plain words for a refused sign-in. */
+export function signInRefusalMessage(r: SignInRefusal): string {
+  if (r.reason === 'busy') return MSG_SIGN_IN_BUSY
+  if (r.reason === 'unavailable') return MSG_LIMITER_UNAVAILABLE
+  if (r.reason === 'ip') {
+    const min = Math.max(1, Math.ceil(r.waitSec / 60))
+    return `Too many sign-in attempts from this network. Please wait ${min} ${min === 1 ? 'minute' : 'minutes'} and try again.`
+  }
+  return `Too many wrong tries. Please wait ${r.waitSec} ${r.waitSec === 1 ? 'second' : 'seconds'} and try again.`
+}
 
 export function createSharedLimiter(store: LimiterStore, now: () => number = Date.now) {
   const local = new Map<LimitName, ReturnType<typeof createWindowLimiter>>()
@@ -91,6 +139,10 @@ export function createSharedLimiter(store: LimiterStore, now: () => number = Dat
     return l
   }
   const failed = (what: string, e: unknown) => logger.warn({ event: 'rate_limit_store_failed', what, errorName: e instanceof Error ? e.name : 'error' })
+  /** Sign-in keys with a try in flight in this instance (since when). */
+  const inFlight = new Map<string, number>()
+  /** Sign-in keys the database said must wait, until when (answered here without asking again). */
+  const knownWait = new Map<string, number>()
 
   return {
     /** Counts one request of `subject` for `name` (in this instance first, then for every instance) and says whether it may go ahead. */
@@ -106,32 +158,49 @@ export function createSharedLimiter(store: LimiterStore, now: () => number = Dat
       }
     },
 
-    /** Seconds this e-mail address + IP must still wait before trying to sign in (0 = may try now). */
-    async signInWait(subject: string): Promise<number> {
+    /**
+     * Review I-3: may this e-mail address (lower case) from this client IP (null = not known) try a password now? When it may, the try
+     * is already counted as a failure; call `finish` with the sign-in service's answer (signInOutcomeOf). Never throws.
+     */
+    async signInGate(email: string, ip: string | null): Promise<SignInGate> {
+      const key = limitKey('sign_in', `${ip ?? 'noip'}|${email}`)
+      const ipKey = ip ? limitKey('sign_in_ip', ip) : null
+      // The in-process first filter, decided before the first await (so simultaneous calls in this instance see each other).
+      const t = now()
+      const started = inFlight.get(key)
+      if (started !== undefined && started > t - SIGN_IN_IN_FLIGHT_MS) return { allowed: false, reason: 'busy', waitSec: 1 }
+      const until = knownWait.get(key)
+      if (until !== undefined && until > t) return { allowed: false, reason: 'wait', waitSec: Math.max(1, Math.ceil((until - t) / 1000)) }
+      if (knownWait.size > 10_000) knownWait.clear() // bounded: a cleared entry only means one more question to the database
+      inFlight.set(key, t)
+      let answer: Awaited<ReturnType<LimiterStore['signInGate']>>
       try {
-        const s = await store.state(limitKey('sign_in_failures', subject), SIGN_IN_WINDOW_SEC)
-        const delay = signInDelaySec(s.hits)
-        if (delay === 0 || s.lastHitAt === null) return 0
-        return Math.max(0, Math.ceil((s.lastHitAt + delay * 1000 - now()) / 1000))
+        answer = await store.signInGate(key, ipKey, SIGN_IN_IP_LIMIT)
       } catch (e) {
+        inFlight.delete(key)
         failed('sign_in', e)
-        return SIGN_IN_UNAVAILABLE_WAIT_SEC
+        return { allowed: false, reason: 'unavailable', waitSec: SIGN_IN_UNAVAILABLE_WAIT_SEC }
       }
-    },
-    /** Notes a failed sign-in of this e-mail address + IP. Never throws. */
-    async signInFailed(subject: string): Promise<void> {
-      try {
-        await store.hit(limitKey('sign_in_failures', subject), 100_000, SIGN_IN_WINDOW_SEC)
-      } catch (e) {
-        failed('sign_in', e)
+      if (!answer.allowed) {
+        inFlight.delete(key)
+        const waitSec = Math.max(1, answer.waitSec)
+        if (answer.reason !== 'ip') knownWait.set(key, now() + waitSec * 1000)
+        return { allowed: false, reason: answer.reason === 'ip' ? 'ip' : 'wait', waitSec }
       }
-    },
-    /** A successful sign-in forgets the failures. Never throws. */
-    async signInSucceeded(subject: string): Promise<void> {
-      try {
-        await store.clear(limitKey('sign_in_failures', subject))
-      } catch (e) {
-        failed('sign_in', e)
+      let finished = false
+      return {
+        allowed: true,
+        finish: async (outcome) => {
+          if (finished) return
+          finished = true
+          inFlight.delete(key)
+          if (outcome === 'refused') return // already counted by the gate
+          try {
+            await store.signInFinish(key, ipKey, outcome)
+          } catch (e) {
+            failed('sign_in', e)
+          }
+        },
       }
     },
   }
@@ -141,8 +210,9 @@ export type SharedLimiter = ReturnType<typeof createSharedLimiter>
 
 type Row = { allowed: boolean; hits: number; reset_at: string }
 type StateRow = { hits: number; last_hit_at: string | null }
+type GateRow = { allowed: boolean; wait_sec: number; reason: string | null }
 
-/** The database store: rate_limit_hit / rate_limit_state / rate_limit_clear through the web app's own role (app_web). */
+/** The database store: rate_limit_hit / _state / _clear and sign_in_gate / _finish through the web app's own role (app_web). */
 export const databaseStore = (client: () => ReturnType<typeof createAdminClient> = createAdminClient): LimiterStore => ({
   async hit(key, limit, windowSec) {
     const { data, error } = await client().rpc('rate_limit_hit', { p_key: key, p_limit: limit, p_window_sec: windowSec })
@@ -159,6 +229,16 @@ export const databaseStore = (client: () => ReturnType<typeof createAdminClient>
   async clear(key) {
     const { error } = await client().rpc('rate_limit_clear', { p_key: key })
     if (error) throw new Error(`the shared rate limit could not be cleared (${error.code ?? 'error'})`)
+  },
+  async signInGate(key, ipKey, ipLimit) {
+    const { data, error } = await client().rpc('sign_in_gate', { p_key: key, p_ip_key: ipKey ?? undefined, p_ip_limit: ipLimit })
+    const r = (Array.isArray(data) ? data[0] : data) as GateRow | undefined
+    if (error || !r) throw new Error(`the sign-in count could not be read (${error?.code ?? 'no answer'})`)
+    return { allowed: r.allowed === true, waitSec: Number(r.wait_sec) || 0, reason: r.reason === 'ip' ? 'ip' : r.reason === 'wait' ? 'wait' : null }
+  },
+  async signInFinish(key, ipKey, outcome) {
+    const { error } = await client().rpc('sign_in_finish', { p_key: key, p_ip_key: ipKey ?? undefined, p_outcome: outcome })
+    if (error) throw new Error(`the sign-in count could not be updated (${error.code ?? 'error'})`)
   },
 })
 
