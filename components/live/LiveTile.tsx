@@ -125,12 +125,12 @@ export function LiveTile({
           className="absolute inset-0 z-10 cursor-zoom-in focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
         />
       )}
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-2 bg-gradient-to-b from-black/70 to-transparent p-2">
-        <div className="min-w-0 text-xs leading-tight">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-20 bg-gradient-to-b from-black/70 to-transparent p-2 text-xs leading-tight">
+        <div className="flex items-start justify-between gap-2">
           <span translate="no" className="font-mono font-semibold">{camera.storeCode}</span>
-          <span className="block truncate">{camera.name}</span>
+          {camera.state ? <CameraStateBadge state={camera.state} className="min-w-0 shrink" /> : <StatusBadge status={camera.status} stale={camera.stale} className="shrink-0" />}
         </div>
-        {camera.state ? <CameraStateBadge state={camera.state} className="shrink-0" /> : <StatusBadge status={camera.status} stale={camera.stale} className="shrink-0" />}
+        <span className="mt-0.5 block truncate">{camera.name}</span>
       </div>
       {shown !== 'playing' && (
         <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center p-3 text-center text-xs text-white/90">

@@ -152,7 +152,7 @@ export default async function HomePage() {
           <div className="space-y-1">
             <h2 id="home-rollups" className="font-medium">By region and cluster</h2>
             <p className="text-sm text-muted-foreground">
-              &ldquo;Recorder not reachable&rdquo; means the NVR the cameras are on cannot be reached, so whether the cameras themselves work is not known.
+              &ldquo;Recorder not reachable&rdquo; means the recorder the cameras are on cannot be reached, so whether the cameras themselves work is not known.
             </p>
           </div>
           <RollupCards title="Regions" level="region" rows={rollups.regions} liveLinks={liveLinks} />

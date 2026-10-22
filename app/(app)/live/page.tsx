@@ -9,7 +9,7 @@ import { buttonVariants } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { PageHeader, type Breadcrumb } from '@/components/ui/PageHeader'
 import { hasGroupEditingAuthority } from '@/lib/admin/roles'
-import { holds } from '@/lib/auth/capabilities'
+import { holds, holdsItView } from '@/lib/auth/capabilities'
 import { requireCapability } from '@/lib/auth/profile'
 import { CAMERA_STATE_LABEL, countsText, LIVE_STATUS_REFRESH_MS } from '@/lib/live/rollups'
 import { getVisibleGroup, listVisibleGroups } from '@/lib/queries/groups'
@@ -78,7 +78,8 @@ export default async function LivePage({ searchParams }: {
       <AutoRefresh busy={false} everyMs={LIVE_STATUS_REFRESH_MS} />
       <PageHeader
         title="Live"
-        description="Choose a region, cluster, location, NVR, camera group or camera to watch."
+        // NVRs are IT information (AC-4): named only to people with the IT view.
+        description={`Choose a region, cluster, location, ${holdsItView(profile.capabilities) ? 'NVR, ' : ''}camera group or camera to watch.`}
         actions={
           <Link href="/groups" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}>
             <LayoutGrid aria-hidden="true" /> Camera groups
