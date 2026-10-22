@@ -124,7 +124,7 @@ All database access is over HTTP through supabase-js and PostgREST; there is no 
 | Process | Start | Port / bind | Status | Notes |
 |---|---|---|---|---|
 | Web app | `npm run dev` / `npm run start` | **3212**, all interfaces, plain HTTP | BUILT | No `--hostname` in `package.json`, so it listens on all interfaces (risk R10); `output: 'standalone'` |
-| Video gateway | `npm run gateway` (`services/gateway/index.ts`) | **3412**, `0.0.0.0`, plain HTTP/WS | BUILT | The only video endpoint a browser reaches; serves `/g/ws`, `/g/video-stream.js`, `/g/video-rtc.js`, `/g/health`; no database connection today |
+| Video gateway | `npm run gateway` (`services/gateway/index.ts`) | **3412**, `0.0.0.0`, plain HTTP/WS | BUILT | The only video endpoint a browser reaches; serves `/g/ws`, `/g/video-stream.js`, `/g/video-rtc.js`, `/g/health` (JSON); asks the media session registry in the database (PostgREST, service key) when a socket arrives and every 15 s (P2-4) |
 | go2rtc | `npm run stack:up` (`deploy/docker-compose.dev.yml`, `deploy/go2rtc.yaml`) | **1984** API and **8555** WebRTC tcp/udp, both published on `127.0.0.1` only | BUILT | `cap_drop: ALL`, `no-new-privileges`, config mounted read-only, RTSP server off. API has no credentials; WebRTC listener is unused but still enabled (D-13 removes it) |
 | go2rtc demo override | `npm run stack:up:demo` (+ `deploy/docker-compose.demo.yml`, `go2rtc.demo.yaml`) | adds RTSP **8554** on the container's own `127.0.0.1` (not published) | BUILT (dev only) | Needed only for the generated test picture (`DEMO_VIDEO=1`, non-production, loopback NVR address) |
 | Worker | `npm run worker` (`services/worker/index.ts`) | none | BUILT | Service-role key; heartbeat-based single-worker guard (`lib/monitor/guard.ts`) — to be replaced by a lease (P2-7) |
@@ -598,11 +598,11 @@ NVR passwords live only in Vault (`nvr_store_credential` / `nvr_read_credential`
 
 ### 8.2 Tokens
 
-Stream tokens: HMAC-SHA256, domain-separated (`stream.v1.`), one person / camera / kind, 10-minute connect window (+60 s skew), exact key set, constant-time comparison, never throws (`lib/streams/token.ts`). Planned: `sid` claim and 90 s window (P2-4); key ids for rotation. The tokens travel in the WebSocket query string over plain WS today (TLS planned). Job-engine lease tokens are stored as hashes. Agent and command tokens: section 6.9 (PLANNED).
+Stream tokens: HMAC-SHA256, domain-separated (`stream.v1.`), one media session (`sid`, required since P2-4) / person / camera / kind, 90 s connect window (+60 s skew; 10 minutes before P2-4), exact key set, constant-time comparison, never throws (`lib/streams/token.ts`). Planned: key ids for rotation. The tokens travel in the WebSocket query string over plain WS today (TLS planned). Job-engine lease tokens are stored as hashes. Agent and command tokens: section 6.9 (PLANNED).
 
 ### 8.3 Gateway
 
-Exact path and Origin allow-list (`GATEWAY_ALLOWED_ORIGINS`), token check before any upstream connection, stream name derived only from the token, message-type allow-list, per-IP and total limits, slow-request timeouts, security headers, CORS only for allowed origins on the two player scripts, fixed error sentences. Binds `0.0.0.0` over plain HTTP/WS; performs **no database or permission check** and has no revocation path (P2-4).
+Exact path and Origin allow-list (`GATEWAY_ALLOWED_ORIGINS`), token check before any upstream connection, stream name derived only from the token, message-type allow-list, per-IP and total limits, slow-request timeouts, security headers, CORS only for allowed origins on the two player scripts, fixed error sentences. Binds `0.0.0.0` over plain HTTP/WS. **P2-4 (D-3):** before anything is connected upstream the token's media session must open in the database registry (`media_session_open`: the token's person, camera, kind and stream, once, in the 90 s window, still allowed; 1008 otherwise, 1013 when the registry cannot be asked); every 15 s one batched `media_sessions_still_valid` call re-checks every open socket and closes the invalid ones with 4403 "Access changed"; a socket without a good check for 45 s is closed ("Cannot verify access", fail closed). The registry client uses the service key from the environment (D-14: a least-privilege role in P2-6). `/g/health` is JSON (open sessions, age of the last check). Details and measured latencies: `docs/drishti/access-model.md` "Revoking open video (P2-4)".
 
 ### 8.4 go2rtc review (SO-9 partial; D-13 PLANNED)
 
