@@ -1,6 +1,8 @@
 import { auditAccess } from '@/lib/auth/access-audit'
 import { holds } from '@/lib/auth/capabilities'
-import { getCurrentProfile } from '@/lib/auth/profile'
+import { requireFreshFor } from '@/lib/auth/fresh'
+import { MSG_CODE_FIRST } from '@/lib/auth/mfa'
+import { getCurrentProfile, mfaGateOf } from '@/lib/auth/profile'
 import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { logger } from '@/lib/observability/logger'
 import { exportRequestLimiter, MSG_TOO_MANY_REQUESTS } from '@/lib/streams/request-limit'
@@ -27,6 +29,8 @@ export async function GET(request: Request) {
     const profile = await getCurrentProfile()
     if (!profile) return error(401, 'Please sign in.')
     if (profile.must_reset_password) return error(403, 'Choose your own password first.')
+    // P3-1 review M-1: the same sign-in gate as every page: a person with an authenticator app finishes the code first.
+    if (mfaGateOf(profile) !== 'ok') return error(403, MSG_CODE_FIRST)
     // cctv.export somewhere, or nothing else is read or asked (it also covers ?probe=1). The refusal is recorded (counted first, so a
     // flood of refusals cannot flood the log).
     // Fast playback is a recording: cctv.export AND cctv.playback (fix M-3). An unreadable summary is the plain access-check failure (M-4).
@@ -36,6 +40,10 @@ export async function GET(request: Request) {
       await auditAccess(createAdminClient(), { orgId: profile.org_id, actorId: profile.id, action: 'cctv_export_denied', capability: FAST_PLAYBACK_CAPABILITY, detail: { reason: failedCheck ? 'access_check_failed' : 'no_capability' } })
       return failedCheck ? error(503, MSG_ACCESS_CHECK_FAILED) : error(403, MSG_FAST_NOT_FOR_YOU)
     }
+
+    // P3-1 review I-3 (D-10 "exports"): fast playback is a downloadable recording, so it goes through the fresh-sign-in guard too.
+    const stale = requireFreshFor(profile)
+    if (stale) return error(403, stale)
 
     const parsed = parseVodQuery(new URL(request.url).searchParams)
     if (!parsed.ok) return error(parsed.error === 'Camera not found.' ? 404 : 400, parsed.error)

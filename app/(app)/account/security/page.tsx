@@ -6,6 +6,8 @@ import { sessionPolicy } from '@/lib/auth/session-policy'
 import { isAdminRole, ROLE_LABELS } from '@/lib/admin/roles'
 import { FreshAuthNotice } from '@/components/auth/FreshAuthNotice'
 import { formatDateTime } from '@/lib/time'
+import { twoStepSummary } from '@/lib/admin/sessions'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Button } from '@/components/ui/button'
 import { RemoveFactorButton } from './RemoveFactorButton'
@@ -16,6 +18,9 @@ export const metadata = { title: 'Security' }
 // signing out everywhere.
 export default async function SecurityPage() {
   const me = await requireProfile()
+  const summary = me.session?.hasFactor ? await twoStepSummary(createAdminClient(), me.org_id).catch(() => null) : null
+  const own = summary?.get(me.id)
+  const mine = own?.enrolledAt ? { enrolledAt: own.enrolledAt, enrolledIp: own.enrolledIp } : null
   const s = me.session
   const p = sessionPolicy()
   const required = !!s && s.mfaEnforced && s.privileged
@@ -36,6 +41,12 @@ export default async function SecurityPage() {
               ? 'It is required for your account.'
               : 'Optional for your account. With it, a stolen password alone is not enough to sign in as you.'}
         </p>
+        {s?.hasFactor && mine && (
+          // Review I-4: the person sees when and from where their app was set up; an administrator sees the same on the Users page.
+          <p className="text-sm" translate="no">
+            Set up {formatDateTime(mine.enrolledAt)} IST{mine.enrolledIp ? ` from ${mine.enrolledIp}` : ''}. If that was not you, ask a super administrator to reset it now.
+          </p>
+        )}
         {s?.hasFactor ? (
           required ? (
             <p className="text-sm">It is required for your account, so it cannot be removed here. If you have a new phone, ask a super administrator to reset it.</p>

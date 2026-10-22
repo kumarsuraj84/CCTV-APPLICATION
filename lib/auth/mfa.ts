@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
 import { recordAuthEvent } from '@/lib/auth/auth-events'
@@ -5,6 +6,7 @@ import { authRefusal } from '@/lib/auth/auth-limits'
 import type { CurrentProfile } from '@/lib/auth/profile'
 import { freshAuthRefusal } from '@/lib/auth/session-policy'
 import { logger } from '@/lib/observability/logger'
+import { MSG_SIGN_IN_BUSY, sharedLimiter, signInOutcomeOf, signInRefusalMessage, type SignInOutcome } from '@/lib/rate-limit-shared'
 import { createAdminClient } from '@/lib/supabase/admin'
 
 // Multi-factor sign-in with an authenticator app (TOTP through the auth server's MFA API; P3-1 brief item 1, decision D-10) and
@@ -17,7 +19,8 @@ type Me = Pick<CurrentProfile, 'id' | 'email' | 'session'>
 export type Done<T = object> = ({ ok: true } & T) | { ok: false; error: string }
 
 export const ISSUER = 'CityKart Drishti'
-export const MSG_BAD_CODE = 'That code is not right. Check that the time on your phone is correct, then enter the newest code.'
+export const MSG_CODE_USED = 'That code was used already. Wait for the next code in your authenticator app.'
+export const MSG_BAD_CODE ='That code is not right. Check that the time on your phone is correct, then enter the newest code.'
 export const MSG_CODE_FORMAT = 'Enter the 6-digit code from your authenticator app.'
 export const MSG_NOT_ENABLED = 'Two-step sign-in is not switched on for this server yet. Ask an administrator.'
 export const MSG_CODE_FIRST = 'Enter the code from your authenticator app first.'
@@ -36,18 +39,40 @@ async function verifiedTotp(client: Client): Promise<string[] | null> {
   return (data?.totp ?? []).filter((f) => f.status === 'verified').map((f) => f.id)
 }
 
-async function check(client: Client, me: Me, factorId: string, code: string, ok: 'mfa_enrolled' | 'mfa_verified' | 'reauth'): Promise<Done> {
+/**
+ * Review M-9: each code counts once per person. The auth server (GoTrue 2.197) accepts the same code again within its window — measured:
+ * a second session and the first one both accepted a code already used — so the code is claimed in the database (mfa_code_claim: a
+ * hash of person and code, kept three minutes) before the auth server is asked. True = first use; false = used already; null = the
+ * claim could not be made (refused: fail closed).
+ */
+async function claimCode(userId: string, code: string, web: () => Client): Promise<boolean | null> {
+  const hash = createHash('sha256').update(`drishti-mfa-code-v1\u0000${userId}\u0000${code}`).digest('hex')
+  const { data, error } = await web().rpc('mfa_code_claim', { p_user: userId, p_hash: hash })
+  if (error) {
+    logger.warn({ event: 'mfa_code_claim_failed', code: error.code })
+    return null
+  }
+  return data === true
+}
+
+async function check(client: Client, me: Me, factorId: string, code: string, ok: 'mfa_enrolled' | 'mfa_verified' | 'reauth', o: { ip?: string | null; web?: () => Client } = {}): Promise<Done> {
   if (!CODE.test(code)) return { ok: false, error: MSG_CODE_FORMAT }
   const slow = await authRefusal('mfa_verify', me.id)
   if (slow) return { ok: false, error: slow }
+  const fresh = await claimCode(me.id, code, o.web ?? createAdminClient)
+  if (fresh === null) return { ok: false, error: MSG_TRY_AGAIN }
+  if (!fresh) {
+    await recordAuthEvent({ event: ok === 'reauth' ? 'reauth_failed' : 'mfa_failed', userId: me.id, ip: o.ip, detail: { step: ok, reason: 'code_reused' } })
+    return { ok: false, error: MSG_CODE_USED }
+  }
   const { error } = await client.auth.mfa.challengeAndVerify({ factorId, code })
   if (error) {
     const wrong = (error as { code?: string }).code === 'mfa_verification_failed' || /invalid totp/i.test(error.message)
-    await recordAuthEvent({ event: ok === 'reauth' ? 'reauth_failed' : 'mfa_failed', userId: me.id, detail: { step: ok } })
+    await recordAuthEvent({ event: ok === 'reauth' ? 'reauth_failed' : 'mfa_failed', userId: me.id, ip: o.ip, detail: { step: ok } })
     if (!wrong) logger.warn({ event: 'mfa_verify_failed', code: (error as { code?: string }).code ?? 'error' })
     return { ok: false, error: wrong ? MSG_BAD_CODE : MSG_TRY_AGAIN }
   }
-  await recordAuthEvent({ event: ok, userId: me.id, detail: { method: 'totp' } })
+  await recordAuthEvent({ event: ok, userId: me.id, ip: o.ip, detail: { method: 'totp' } })
   return { ok: true }
 }
 
@@ -71,44 +96,60 @@ export async function startEnrolment(client: Client, me: Me): Promise<Done<{ fac
 }
 
 /** Step 2: the first code proves the app works; the session becomes aal2. */
-export async function confirmEnrolment(client: Client, me: Me, factorId: unknown, code: unknown): Promise<Done> {
+/** Review I-4: the set-up is recorded with when and from which address (auth_events mfa_enrolled; shown on the people screen). */
+export async function confirmEnrolment(client: Client, me: Me, factorId: unknown, code: unknown, o: { ip?: string | null } = {}): Promise<Done> {
   if (typeof factorId !== 'string' || !/^[0-9a-f-]{36}$/i.test(factorId)) return { ok: false, error: MSG_TRY_AGAIN }
-  return check(client, me, factorId, cleanCode(code), 'mfa_enrolled')
+  return check(client, me, factorId, cleanCode(code), 'mfa_enrolled', { ip: o.ip })
 }
 
 /** The sign-in step: the code of the person's authenticator app. */
-export async function verifySignInCode(client: Client, me: Me, code: unknown): Promise<Done> {
+export async function verifySignInCode(client: Client, me: Me, code: unknown, o: { ip?: string | null } = {}): Promise<Done> {
   const factors = await verifiedTotp(client)
   if (!factors) return { ok: false, error: MSG_TRY_AGAIN }
   if (factors.length === 0) return { ok: true } // nothing to finish (reset meanwhile): the gate decides what is next
-  return check(client, me, factors[0], cleanCode(code), 'mfa_verified')
+  return check(client, me, factors[0], cleanCode(code), 'mfa_verified', { ip: o.ip })
 }
 
 /**
  * "Confirm it's you" (fresh sign-in, D-10): with an authenticator app, a new code (the session's last authentication moves to now);
  * without one, the password again — a new sign-in replaces this one (the auth server stamps it now) and the old session is ended.
  */
-export async function confirmIdentity(client: Client, me: Me, input: { code?: unknown; password?: unknown }, web: () => Client = createAdminClient): Promise<Done> {
+export async function confirmIdentity(
+  client: Client, me: Me, input: { code?: unknown; password?: unknown }, web: () => Client = createAdminClient, o: { ip?: string | null } = {},
+): Promise<Done> {
   if (me.session?.hasFactor) {
     const factors = await verifiedTotp(client)
     if (!factors?.length) return { ok: false, error: MSG_TRY_AGAIN }
-    return check(client, me, factors[0], cleanCode(input.code), 'reauth')
+    return check(client, me, factors[0], cleanCode(input.code), 'reauth', { ip: o.ip, web })
   }
   const password = typeof input.password === 'string' ? input.password : ''
   if (!password) return { ok: false, error: 'Enter your password.' }
   const slow = await authRefusal('reauth', me.id)
   if (slow) return { ok: false, error: slow }
+  // Review M-10: a password here is a sign-in like any other, so it also goes through P2-6's sign-in gate (rising delay per e-mail
+  // address and IP, counted before the password is checked).
+  const gate = await sharedLimiter().signInGate(me.email.toLowerCase(), o.ip ?? null)
+  if (!gate.allowed) return { ok: false, error: signInRefusalMessage(gate) }
   const before = me.session?.sessionId ?? null
-  const { error } = await client.auth.signInWithPassword({ email: me.email, password })
-  if (error) {
-    await recordAuthEvent({ event: 'reauth_failed', userId: me.id, detail: { method: 'password' } })
+  let outcome: SignInOutcome = 'not_counted'
+  let failed = true
+  try {
+    const { error } = await client.auth.signInWithPassword({ email: me.email, password })
+    outcome = signInOutcomeOf(error)
+    failed = !!error
+  } finally {
+    await gate.finish(outcome)
+  }
+  if (outcome === 'not_counted' && failed) return { ok: false, error: MSG_SIGN_IN_BUSY }
+  if (failed) {
+    await recordAuthEvent({ event: 'reauth_failed', userId: me.id, ip: o.ip, detail: { method: 'password' } })
     return { ok: false, error: MSG_WRONG_PASSWORD }
   }
   if (before) {
     const ended = await web().rpc('auth_session_end', { p_user: me.id, p_session: before })
     if (ended.error) logger.warn({ event: 'reauth_old_session_not_ended', code: ended.error.code })
   }
-  await recordAuthEvent({ event: 'reauth', userId: me.id, detail: { method: 'password' } })
+  await recordAuthEvent({ event: 'reauth', userId: me.id, ip: o.ip, detail: { method: 'password' } })
   return { ok: true }
 }
 

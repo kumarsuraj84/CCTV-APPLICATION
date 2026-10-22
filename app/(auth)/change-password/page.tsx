@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import { signOut } from '@/lib/actions/auth'
 import { getCurrentProfile, mfaGateOf } from '@/lib/auth/profile'
 import { Button } from '@/components/ui/button'
+import { FreshAuthNotice } from '@/components/auth/FreshAuthNotice'
 import { AuthCard } from '../AuthCard'
 import { ChangePasswordForm } from './ChangePasswordForm'
 
@@ -27,6 +28,8 @@ export default async function ChangePasswordPage() {
         </form>
       }
     >
+      {/* Review M-10: changing a password one already has needs a fresh sign-in (not the forced first change). */}
+      {!profile.must_reset_password && <FreshAuthNotice session={profile.session} what="Changing your password" />}
       <ChangePasswordForm />
     </AuthCard>
   )

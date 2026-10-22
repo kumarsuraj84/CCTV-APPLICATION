@@ -8,8 +8,7 @@ import { canManageRole, ROLES } from '@/lib/admin/roles'
 import { listStoresForAccess, listUsers } from '@/lib/admin/users'
 import { mayAdminister, requireAdministration } from '@/lib/auth/profile'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { factorCounts } from '@/lib/admin/sessions'
-import { FreshAuthNotice } from '@/components/auth/FreshAuthNotice'
+import { twoStepSummary } from '@/lib/admin/sessions'
 
 export const metadata = { title: 'Users' }
 
@@ -25,7 +24,7 @@ export default async function UsersPage() {
     accessEditable ? accessSummaries(admin, me.org_id).catch(() => null) : Promise.resolve(null),
     accessEditable ? listReview(admin, me.org_id).catch(() => null) : Promise.resolve(null),
     // P3-1: who has an authenticator app (nothing about the app itself).
-    factorCounts(admin, me.org_id).catch(() => null),
+    twoStepSummary(admin, me.org_id).catch(() => null),
   ])
   const allowedRoles = ROLES.filter((r) => canManageRole(me.role, r))
   const showSummary = summaries !== null
@@ -36,7 +35,6 @@ export default async function UsersPage() {
         description="Add people and give them access."
         actions={accessEditable ? <Link href="/admin/access-review" className={`text-sm underline ${FOCUS}`}>Access review{review ? ` (${review.openCount})` : ''}</Link> : undefined}
       />
-      <FreshAuthNotice session={me.session} what="Changes of people" />
       {review && review.openCount > 0 && (
         <p role="note" className={NOTE}>
           {review.openCount} {review.openCount === 1 ? 'grant moved over from the old access rules is' : 'grants moved over from the old access rules are'} waiting for review.{' '}
@@ -70,7 +68,8 @@ export default async function UsersPage() {
                 allowedRoles={[...allowedRoles]}
                 u={{
                   ...u, manageable: canManageRole(me.role, u.role), is_self: u.id === me.id, access_editable: accessEditable, summary: summaries?.get(u.id) ?? null,
-                  two_step: twoStep ? (twoStep.get(u.id) ?? 0) > 0 : null, can_reset_two_step: me.role === 'platform_owner',
+                  two_step: twoStep ? (twoStep.get(u.id)?.factors ?? 0) > 0 : null, can_reset_two_step: me.role === 'platform_owner',
+                  two_step_since: twoStep?.get(u.id)?.enrolledAt ?? null, two_step_from: twoStep?.get(u.id)?.enrolledIp ?? null,
                 }}
               />
             ))}

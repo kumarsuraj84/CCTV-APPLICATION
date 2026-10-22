@@ -4,6 +4,7 @@ import { signOut } from '@/lib/actions/auth'
 import { getCurrentProfile, mfaGateOf } from '@/lib/auth/profile'
 import { safeNext } from '@/lib/auth/safe-next'
 import { Button } from '@/components/ui/button'
+import { FreshAuthNotice } from '@/components/auth/FreshAuthNotice'
 import { AuthCard } from '../../AuthCard'
 import { EnrolForm } from './EnrolForm'
 
@@ -31,6 +32,8 @@ export default async function MfaEnrolPage({ searchParams }: { searchParams: Pro
         </form>
       }
     >
+      {/* Review I-4: setting up an app needs a fresh sign-in (the password within the last few minutes). */}
+      <FreshAuthNotice session={profile.session} what="Setting up an authenticator app" />
       <EnrolForm next={next} />
     </AuthCard>
   )

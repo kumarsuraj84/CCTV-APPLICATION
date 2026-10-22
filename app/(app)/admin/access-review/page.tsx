@@ -6,7 +6,6 @@ import { listReview } from '@/lib/admin/access'
 import { istDate, manageRefusal } from '@/lib/admin/access-rules'
 import type { Role } from '@/lib/admin/roles'
 import { requireAdministration } from '@/lib/auth/profile'
-import { FreshAuthNotice } from '@/components/auth/FreshAuthNotice'
 import { createAdminClient } from '@/lib/supabase/admin'
 
 export const metadata = { title: 'Access review' }
@@ -33,7 +32,6 @@ export default async function AccessReviewPage() {
         description="Access that was moved over from the old rules (home location, manager role, administrator role). Keep it, remove it, or replace it with narrower grants."
         breadcrumbs={[{ label: 'Users', href: '/admin/users' }, { label: 'Access review' }]}
       />
-      <FreshAuthNotice session={me.session} what="Keeping or removing access" />
       <p className={STATUS} role="status">
         {review.openCount === 0 ? 'Nothing is waiting for review.' : `${review.openCount} ${review.openCount === 1 ? 'grant is' : 'grants are'} waiting for review, for ${groups.size} ${groups.size === 1 ? 'person' : 'people'}.`}
       </p>

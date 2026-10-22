@@ -42,6 +42,15 @@ drishti.citykart.local {
 		}
 	}
 
+	# Only if NEXT_PUBLIC_STREAM_GATEWAY_URL=/video instead of "/" (review M-11): the gateway under /video, prefix removed:
+	# handle_path /video/* {
+	# 	reverse_proxy 127.0.0.1:3412 {
+	# 		flush_interval -1
+	# 	}
+	# }
+
+	# The Supabase API is NOT routed here: it stays on 127.0.0.1 / the private network (runbook-tls.md section 3, review I-5).
+
 	# Everything else: the web app. X-Forwarded-For is set by Caddy (TRUSTED_PROXY_HOPS=1 tells the app to believe one hop).
 	handle {
 		reverse_proxy 127.0.0.1:3212
@@ -52,7 +61,8 @@ drishti.citykart.local {
 			roll_size 20MiB
 			roll_keep 10
 		}
-		# Video tokens travel in the socket address; never write query strings to the log.
+		# Video tokens travel in the socket address; never write query strings to the log. Not validated by Caddy yet: newer Caddy versions
+		# accept the field filters without the `fields` block; run `caddy validate` and adjust (runbook-tls.md section 6).
 		format filter {
 			wrap json
 			fields {

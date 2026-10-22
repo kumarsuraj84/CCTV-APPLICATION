@@ -3,7 +3,8 @@
 // Server Actions of the asset inventory (P2-5c-1 brief item 4). Caller first (requireAdministration: signed in, active, password chosen,
 // administrative role AND admin.inventory), then the service (role and capability again, organisation scope). Plain results only.
 import { revalidatePath } from 'next/cache'
-import { requireAdministration } from '@/lib/auth/profile'
+import { requireFreshAdministration } from '@/lib/auth/fresh'
+import type { CurrentProfile } from '@/lib/auth/profile'
 import { addDependency, addEndpoint, removeDependency, retireEndpoint, saveAsset } from '@/lib/inventory/assets'
 import { submittedValues } from '@/lib/forms/submitted-values'
 import { refusalFor } from '@/lib/rate-limit-shared'
@@ -11,8 +12,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import type { AdminActionState } from '@/lib/actions/admin/locations'
 
-async function ctx() {
-  const p = await requireAdministration('admin.inventory')
+// P3-1 review I-3: every asset change goes through the one fresh-sign-in guard (requireFreshAdministration) first.
+async function ctx(p: CurrentProfile) {
   // P2-6 (D-11): every administration action counts against the shared administration limit.
   const slow = await refusalFor('admin_action', p.id)
   return { clients: { admin: createAdminClient(), rls: await createClient() }, actor: { id: p.id, orgId: p.org_id, role: p.role }, slow }
@@ -25,7 +26,9 @@ const refresh = () => {
 const FIELDS = ['name', 'type', 'location_id', 'ip', 'tcp_port', 'serial', 'mac', 'vendor', 'model', 'firmware', 'role', 'owner', 'criticality', 'lifecycle_state', 'warranty_until', 'management_mode', 'notes', 'address_space_id']
 
 export async function saveAssetAction(_prev: AdminActionState, f: FormData): Promise<AdminActionState> {
-  const { clients, actor, slow } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return { error: g.error }
+  const { clients, actor, slow } = await ctx(g.profile)
   if (slow) return { error: slow }
   const res = await saveAsset(clients, actor, {
     id: text(f, 'id') || null, name: text(f, 'name'), type: text(f, 'type'), locationId: text(f, 'location_id') || null, ip: text(f, 'ip'), tcpPort: text(f, 'tcp_port'),
@@ -38,7 +41,9 @@ export async function saveAssetAction(_prev: AdminActionState, f: FormData): Pro
 }
 
 export async function addDependencyAction(input: { childId: string; parentId: string; kind: string }): Promise<AdminActionState> {
-  const { clients, actor, slow } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return { error: g.error }
+  const { clients, actor, slow } = await ctx(g.profile)
   if (slow) return { error: slow }
   const res = await addDependency(clients, actor, { childId: String(input?.childId ?? ''), parentId: String(input?.parentId ?? ''), kind: String(input?.kind ?? '') })
   refresh()
@@ -46,7 +51,9 @@ export async function addDependencyAction(input: { childId: string; parentId: st
 }
 
 export async function removeDependencyAction(dependencyId: string): Promise<AdminActionState> {
-  const { clients, actor, slow } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return { error: g.error }
+  const { clients, actor, slow } = await ctx(g.profile)
   if (slow) return { error: slow }
   const res = await removeDependency(clients, actor, String(dependencyId))
   refresh()
@@ -54,7 +61,9 @@ export async function removeDependencyAction(dependencyId: string): Promise<Admi
 }
 
 export async function addEndpointAction(assetId: string, input: { spaceId: string; host: string; port: string; purpose: string }): Promise<AdminActionState> {
-  const { clients, actor, slow } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return { error: g.error }
+  const { clients, actor, slow } = await ctx(g.profile)
   if (slow) return { error: slow }
   const res = await addEndpoint(clients, actor, String(assetId), { spaceId: String(input?.spaceId ?? ''), host: String(input?.host ?? ''), port: String(input?.port ?? ''), purpose: String(input?.purpose ?? '') })
   refresh()
@@ -62,7 +71,9 @@ export async function addEndpointAction(assetId: string, input: { spaceId: strin
 }
 
 export async function retireEndpointAction(endpointId: string): Promise<AdminActionState> {
-  const { clients, actor, slow } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return { error: g.error }
+  const { clients, actor, slow } = await ctx(g.profile)
   if (slow) return { error: slow }
   const res = await retireEndpoint(clients, actor, String(endpointId))
   refresh()

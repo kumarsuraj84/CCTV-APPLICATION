@@ -4,9 +4,8 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { MSG_CONFLICT, reviewBeforeReactivation, revokeAll, type GrantView } from '@/lib/admin/access'
 import { createUser, resetUserPassword, updateUser } from '@/lib/admin/users'
-import type { AdminCapability } from '@/lib/auth/capabilities'
-import { mayAdminister, requireAdministration } from '@/lib/auth/profile'
-import { freshAuthRefusal } from '@/lib/auth/session-policy'
+import { requireFreshAdministration } from '@/lib/auth/fresh'
+import { mayAdminister, requireAdministration, type CurrentProfile } from '@/lib/auth/profile'
 import { submittedValues } from '@/lib/forms/submitted-values'
 import { adminRefusalFor } from '@/lib/rate-limit-shared'
 import { createUserAdminClient } from '@/lib/supabase/admin'
@@ -20,20 +19,19 @@ export type ReactivationState =
 
 // P2-2: people are managed with an administrative role AND admin.users; access with admin.access. canManageRole (in the service)
 // still decides which roles an actor may manage (only a super administrator manages super administrators, ruling P-1).
-async function ctx(cap: AdminCapability = 'admin.users') {
-  const p = await requireAdministration(cap)
-  // P2-6: the web app's own role for the database; GoTrue's admin API (auth.admin) only through the service key (ADR, risk 1).
-  return { profile: p, admin: createUserAdminClient(), actor: { id: p.id, orgId: p.org_id, role: p.role } }
-}
+// P2-6: the web app's own role for the database; GoTrue's admin API (auth.admin) only through the service key (ADR, risk 1).
+const ctxOf = (p: CurrentProfile) => ({ profile: p, admin: createUserAdminClient(), actor: { id: p.id, orgId: p.org_id, role: p.role } })
 // P2-6 (D-11): 30 changes a minute per administrator, shared by every app instance, on top of the overall administration count;
 // refused when the count cannot be read. Null when the action may go ahead, else the words to show.
-// P3-1 (D-10): every change of people also needs a fresh sign-in (freshAuthRefusal: a sign-in or code within FRESH_AUTH_MINUTES).
-const limited = async (profile: Parameters<typeof freshAuthRefusal>[0], actorId: string) => freshAuthRefusal(profile) ?? adminRefusalFor('users_change', actorId)
+// P3-1 (D-10, review I-3): every change of people goes through the one fresh-sign-in guard (requireFreshAdministration).
+const limited = (actorId: string) => adminRefusalFor('users_change', actorId)
 
 export async function createUserAction(_prev: CreateUserState, formData: FormData): Promise<CreateUserState> {
-  const { profile, admin, actor } = await ctx()
   const values = submittedValues(formData, ['full_name', 'email', 'role', 'store_id'])
-  const slow = await limited(profile, actor.id)
+  const g = await requireFreshAdministration('admin.users')
+  if (!g.ok) return { error: g.error, values }
+  const { admin, actor } = ctxOf(g.profile)
+  const slow = await limited(actor.id)
   if (slow) return { error: slow, values }
   const email = String(formData.get('email') ?? '')
   const res = await createUser(admin, actor, {
@@ -51,8 +49,10 @@ export async function createUserAction(_prev: CreateUserState, formData: FormDat
  * reactivationReviewAction, at that access version); that needs admin.access too.
  */
 export async function setActiveAction(userId: string, isActive: boolean, opts?: { revokeAll?: { grantIds: string[]; reason: string; expectedVersion: number } }): Promise<SimpleState> {
-  const { profile, admin, actor } = await ctx()
-  const slow = await limited(profile, actor.id)
+  const g = await requireFreshAdministration('admin.users')
+  if (!g.ok) return { error: g.error }
+  const { profile, admin, actor } = ctxOf(g.profile)
+  const slow = await limited(actor.id)
   if (slow) return { error: slow }
   if (opts?.revokeAll) {
     if (!isActive) return { error: 'Removing access is offered only when reactivating.' }
@@ -73,7 +73,7 @@ const listed = (grants: GrantView[]): ListedGrant[] => grants.map((g) => ({ id: 
  * administrator who may manage the person, and — without admin.access — only while the person is deactivated).
  */
 export async function reactivationReviewAction(userId: string): Promise<ReactivationState> {
-  const { profile, admin, actor } = await ctx()
+  const { profile, admin, actor } = ctxOf(await requireAdministration('admin.users'))
   if (!z.uuid().safeParse(userId).success) return { ok: false, error: 'User not found.' }
   // Reading the list changes nothing: the shared count only, no fresh sign-in.
   const slow = await adminRefusalFor('users_change', actor.id)
@@ -91,8 +91,10 @@ export type RoleState = { error?: string; ok?: boolean; revoked?: number; remain
  * access is returned for review when the administrator may read access (admin.access).
  */
 export async function setRoleAction(userId: string, role: string, expectedVersion?: number | null): Promise<RoleState> {
-  const { profile, admin, actor } = await ctx()
-  const slow = await limited(profile, actor.id)
+  const g = await requireFreshAdministration('admin.users')
+  if (!g.ok) return { error: g.error }
+  const { profile, admin, actor } = ctxOf(g.profile)
+  const slow = await limited(actor.id)
   if (slow) return { error: slow }
   const version = typeof expectedVersion === 'number' && Number.isInteger(expectedVersion) && expectedVersion >= 0 ? expectedVersion : null
   const res = await updateUser(admin, actor, userId, { role }, { expectedVersion: version })
@@ -103,8 +105,10 @@ export async function setRoleAction(userId: string, role: string, expectedVersio
 }
 
 export async function resetPasswordAction(userId: string): Promise<PasswordState> {
-  const { profile, admin, actor } = await ctx()
-  const slow = await limited(profile, actor.id)
+  const g = await requireFreshAdministration('admin.users')
+  if (!g.ok) return { error: g.error }
+  const { admin, actor } = ctxOf(g.profile)
+  const slow = await limited(actor.id)
   if (slow) return { error: slow }
   const res = await resetUserPassword(admin, actor, userId)
   revalidatePath('/admin/users')

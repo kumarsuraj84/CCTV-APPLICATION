@@ -4,7 +4,6 @@ import { Section } from '@/components/admin/inventory/fields'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { importDevicesAction } from '@/lib/actions/admin/inventory'
 import { requireAdministration } from '@/lib/auth/profile'
-import { FreshAuthNotice } from '@/components/auth/FreshAuthNotice'
 import { DEVICES_IMPORT_HELP } from '@/lib/import/help'
 
 export const metadata = { title: 'Import' }
@@ -12,12 +11,10 @@ export const metadata = { title: 'Import' }
 const LINK = 'font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring'
 
 export default async function ImportPage() {
-  const me = await requireAdministration('admin.inventory') // P2-2: an administrative role AND admin.inventory
+  await requireAdministration('admin.inventory') // P2-2: an administrative role AND admin.inventory
   return (
     <div className="space-y-6">
       <PageHeader title="Import" description="Add or update many locations, NVRs or devices from a CSV file." />
-      {/* P3-1: importing writes NVR passwords, so the import needs a fresh sign-in (checking the file does not). */}
-      <FreshAuthNotice session={me.session} what="Importing locations and NVR passwords" />
       {/* P2-5c-2: the validated location import (check first, then import in one go). The guide: docs/drishti/admin-guide-import.md. */}
       <Section
         id="import-locations"

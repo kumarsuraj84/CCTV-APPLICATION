@@ -6,6 +6,7 @@ import { reactivationReviewAction, resetPasswordAction, setActiveAction, setRole
 import { ROLE_CHANGE_EFFECT, ROLE_LABELS, type Role } from '@/lib/admin/roles'
 import { resetFactorsAction, signOutEverywhereAction } from '@/lib/actions/admin/sessions'
 import { Select } from '@/components/ui/select'
+import { formatDateTime } from '@/lib/time'
 import { formatDay, SOURCE_LABELS, STATE_LABELS } from './access-labels'
 import { FIELD, FOCUS, NOTE, RT, STATUS } from './fields'
 
@@ -26,6 +27,9 @@ export type UserRowData = {
   two_step?: boolean | null
   /** P3-1: the viewer is a super administrator, who may reset a person's two-step sign-in. */
   can_reset_two_step?: boolean
+  /** Review I-4: when (ISO) and from which address the app was set up (the sign-in audit), so an unexpected set-up stands out. */
+  two_step_since?: string | null
+  two_step_from?: string | null
 }
 
 type Listed = { id: string; capabilityLabel: string; scopeLabel: string; lastDay: string | null; state: string; source: string }
@@ -195,7 +199,12 @@ export function UserRow({ u, showSummary = false, allowedRoles = [] }: { u: User
         <td className={RT.td}>
           <span className={RT.label}>Status:</span>{!u.is_active ? 'Deactivated' : u.must_reset_password ? 'Waiting for first sign-in' : 'Active'}
           {u.two_step !== undefined && u.two_step !== null && (
-            <span className="block text-xs text-muted-foreground">{u.two_step ? 'Two-step sign-in: on' : 'Two-step sign-in: off'}</span>
+            <span className="block text-xs text-muted-foreground">
+              {u.two_step ? 'Two-step sign-in: on' : 'Two-step sign-in: off'}
+              {u.two_step && u.two_step_since && (
+                <span className="block" translate="no">set up {formatDateTime(u.two_step_since)} IST{u.two_step_from ? ` from ${u.two_step_from}` : ''}</span>
+              )}
+            </span>
           )}
         </td>
         {showSummary && <td className={RT.td}><span className={RT.label}>Access:</span>{u.summary ?? 'Live: none, Playback: none, IT: none'}</td>}

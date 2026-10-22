@@ -1,4 +1,5 @@
 import { LogOut } from 'lucide-react'
+import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { signOut } from '@/lib/actions/auth'
 import { getCurrentProfile, mfaGateOf } from '@/lib/auth/profile'
@@ -17,6 +18,19 @@ export default async function MfaPage({ searchParams }: { searchParams: Promise<
   const gate = mfaGateOf(profile)
   if (gate === 'enrol') redirect(`/mfa/enrol?next=${encodeURIComponent(next)}`)
   if (gate === 'ok') redirect(next)
+  if (gate === 'unknown') {
+    // Review M-2: the sign-in facts could not be read just now; nothing goes on until they can (fail closed).
+    return (
+      <AuthCard title="Your sign-in could not be checked" description="This happens when the server is busy for a moment.">
+        <div className="flex flex-col items-center gap-3">
+          <Link href={`/mfa?next=${encodeURIComponent(next)}`} className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted">Try again</Link>
+          <form action={signOut}>
+            <Button type="submit" variant="outline"><LogOut aria-hidden="true" />Sign out</Button>
+          </form>
+        </div>
+      </AuthCard>
+    )
+  }
   return (
     <AuthCard
       title="Enter your code"

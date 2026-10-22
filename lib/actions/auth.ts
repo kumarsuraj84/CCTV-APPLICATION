@@ -6,7 +6,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { getClientIp } from '@/lib/rate-limit'
 import { MSG_SIGN_IN_BUSY, refusalFor, sharedLimiter, signInOutcomeOf, signInRefusalMessage, type SignInOutcome } from '@/lib/rate-limit-shared'
-import { getCurrentProfile } from '@/lib/auth/profile'
+import { requireFreshProfile } from '@/lib/auth/fresh'
 import { recordAuthEvent } from '@/lib/auth/auth-events'
 import { safeNext } from '@/lib/auth/safe-next'
 import { passwordSchema } from '@/lib/validation/password'
@@ -82,7 +82,10 @@ export async function forgotPassword(_prev: FormState, formData: FormData): Prom
 // Used by the forced change after first sign-in and by the reset link.
 export async function changePassword(_prev: FormState, formData: FormData): Promise<FormState> {
   // Every action checks the caller first. A person who still has to choose a password has a profile; a deactivated person does not.
-  if (!(await getCurrentProfile())) redirect('/login')
+  // P3-1 review M-10 / I-3: changing a password one already has needs a fresh sign-in (a stolen session alone must not take the
+  // account over); the forced first change right after signing in with a one-time password does not.
+  const g = await requireFreshProfile({ unless: (p) => p.must_reset_password })
+  if (!g.ok) return { error: g.error }
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
@@ -100,5 +103,9 @@ export async function changePassword(_prev: FormState, formData: FormData): Prom
   const admin = createAdminClient()
   const { error: flagError } = await admin.from('profiles').update({ must_reset_password: false }).eq('id', user.id)
   if (flagError) return { error: sanitizeError(flagError, { route: 'changePassword.flag' }) }
+  // Review M-10: every other sign-in made with the old password ends (this one stays).
+  const others = await supabase.auth.signOut({ scope: 'others' })
+  if (others.error) await recordAuthEvent({ event: 'sign_out_everywhere', userId: user.id, actorId: user.id, detail: { after: 'password_change', ended: false } })
+  else await recordAuthEvent({ event: 'sign_out_everywhere', userId: user.id, actorId: user.id, detail: { after: 'password_change', scope: 'others' } })
   redirect('/home')
 }

@@ -1,4 +1,5 @@
-import { createHash } from 'node:crypto'
+import { createHash, createHmac } from 'node:crypto'
+import { activityKey } from '@/lib/auth/session-activity'
 import type { Json } from '@/types/database'
 import { logger } from '@/lib/observability/logger'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -27,8 +28,16 @@ export type AuthEvent = {
   detail?: Json
 }
 
-/** sha256 of the lower-cased address with a fixed label (the same address always gives the same value). */
-export const emailHash = (email: string) => createHash('sha256').update(`drishti-auth-event-v1\u0000${email.trim().toLowerCase()}`).digest('hex')
+/**
+ * Review M-4: an HMAC of the lower-cased address with the server key (the verified-user secret, its own label; development falls back
+ * like the verified-user header), so the table cannot be matched against a list of company addresses. Without any key (should not
+ * happen: production requires the secret) a labelled plain hash is used.
+ */
+export function emailHash(email: string): string {
+  const key = activityKey()
+  const text = `drishti-auth-event-v2\u0000${email.trim().toLowerCase()}`
+  return key ? createHmac('sha256', `auth-event-email:${key}`).update(text).digest('hex') : createHash('sha256').update(text).digest('hex')
+}
 
 /** Writes one event. Returns false (and logs, without values) when it could not be written; never throws. */
 export async function recordAuthEvent(e: AuthEvent, client: () => ReturnType<typeof createAdminClient> = createAdminClient): Promise<boolean> {

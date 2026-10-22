@@ -6,6 +6,10 @@ import { claimsOf, idleMinutesFor, sessionExpiry, sessionPolicy } from '@/lib/au
 import { VERIFIED_USER_HEADER, VERIFIED_USER_SIG_HEADER, signVerifiedUser } from '@/lib/auth/verified-user'
 import { buildCsp, cspHeaderName, cspReportOnly, makeNonce, REDIRECT_CSP } from '@/lib/web/csp'
 import { legacyRedirect } from '@/lib/web/legacy-redirects'
+import { authCookieOptions } from '@/lib/supabase/cookie-options'
+import { createAdminClient } from '@/lib/supabase/admin'
+import { revokeMediaSessions } from '@/lib/streams/registry'
+import { isProductionMode } from '@/lib/runtime-mode'
 import type { PageAddress } from '@/lib/streams/wall'
 
 // Public pages and routes are an exact-match list. Every other path needs a signed-in person.
@@ -17,6 +21,8 @@ const RENEW_ACTIVITY_AFTER_SEC = 60
 function stamp(headers: Headers, request: NextRequest) {
   headers.set('x-request-id', crypto.randomUUID())
   headers.set('x-request-path', request.nextUrl.pathname)
+  // Review M-14: the query too, so the code step brings the person back to exactly the page they asked for.
+  headers.set('x-request-search', request.nextUrl.search.slice(0, 2000))
   headers.set('x-request-method', request.method)
 }
 
@@ -36,8 +42,21 @@ function cleanHeaders(request: NextRequest, csp: { name: string; value: string; 
 
 const HOST = /^[A-Za-z0-9.-]+(?::\d{1,5})?$|^\[[0-9A-Fa-f:.]+\](?::\d{1,5})?$/
 
+/** Production with NEXT_PUBLIC_APP_URL: that address (review M-7); otherwise null (development follows the Host: localhost, 10.0.0.47). */
+function pinnedApp(): URL | null {
+  if (!isProductionMode()) return null
+  try {
+    return process.env.NEXT_PUBLIC_APP_URL ? new URL(process.env.NEXT_PUBLIC_APP_URL) : null
+  } catch {
+    return null
+  }
+}
+
 /** Where the browser opened the page: the Host it asked for, and https when the site is served over https (behind the proxy too). */
 function pageOf(request: NextRequest, https: boolean): PageAddress {
+  // Review M-7: in production the configured app address is the page's address, whatever Host the request names.
+  const pinned = pinnedApp()
+  if (pinned) return { protocol: pinned.protocol, host: pinned.host, hostname: pinned.hostname }
   const given = request.headers.get('host') ?? ''
   const host = HOST.test(given) ? given : request.nextUrl.host
   let hostname = request.nextUrl.hostname
@@ -104,32 +123,49 @@ export async function proxy(request: NextRequest) {
     const sid = claims.sessionId ?? 'none'
     const record = decodeActivity(request.cookies.get(ACTIVITY_COOKIE)?.value, key)
     const known = record && record.sid === sid ? record : null
+    // The person's role sets the idle limit. Read when there is no record yet and again at every renewal of the record (review M-6: a
+    // person made administrator gets the shorter limit within a minute); the limit of the record is used in between.
+    const renewDue = !known || now - known.seen >= RENEW_ACTIVITY_AFTER_SEC
     let idle = known?.idle
-    if (idle === undefined) {
-      const { data } = await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle()
-      idle = idleMinutesFor((data as { role?: string } | null)?.role, policy)
+    let orgId: string | null = null
+    const readPerson = async () => {
+      const { data } = await supabase.from('profiles').select('role, org_id').eq('id', user!.id).maybeSingle()
+      const row = data as { role?: string; org_id?: string } | null
+      orgId = row?.org_id ?? null
+      return idleMinutesFor(row?.role, policy)
     }
+    if (idle === undefined || renewDue) idle = await readPerson()
     const expiry = sessionExpiry({ now, signedInAt: claims.signedInAt, lastSeen: known?.seen ?? null, idleMinutes: idle, maxHours: policy.maxHours })
     if (expiry) {
       await supabase.auth.signOut({ scope: 'local' })
       await recordAuthEvent({ event: expiry === 'idle' ? 'session_expired_idle' : 'session_expired_absolute', userId: user.id, detail: { idle_minutes: idle, max_hours: policy.maxHours } })
+      // Review M-3: and the person's open video (the registry stops it within a minute anyway; this stops it now).
+      if (orgId === null) await readPerson()
+      if (orgId) await revokeMediaSessions(createAdminClient(), orgId, user.id, 'session_expired')
       ended = expiry === 'idle' ? 'idle' : 'expired'
       user = null
       activity = { value: '', maxAge: 0 }
-    } else if (!known || now - known.seen >= RENEW_ACTIVITY_AFTER_SEC) {
+    } else if (renewDue) {
       activity = { value: encodeActivity({ sid, seen: now, idle }, key), maxAge: policy.maxHours * 3600 }
     }
   }
 
   // Auth cookies: http-only (no browser code reads them; P3-1) and secure when the site is https.
   const finish = <T extends NextResponse>(res: T): T => {
-    refreshed.forEach(({ name, value, options }) => res.cookies.set(name, value, { ...options, httpOnly: true, ...(https ? { secure: true } : {}) }))
+    refreshed.forEach(({ name, value, options }) => res.cookies.set(name, value, authCookieOptions(options, https)))
     if (activity) res.cookies.set(ACTIVITY_COOKIE, activity.value, { path: '/', httpOnly: true, sameSite: 'lax', maxAge: activity.maxAge, ...(https ? { secure: true } : {}) })
     return res
   }
 
   if (!user && !PUBLIC_PAGES.has(pathname) && pathname !== '/reset-password') {
     const url = request.nextUrl.clone()
+    // Review M-7: the configured app address in production, not the Host the request names.
+    const pinned = pinnedApp()
+    if (pinned) {
+      url.protocol = pinned.protocol
+      url.hostname = pinned.hostname
+      url.port = pinned.port
+    }
     url.pathname = '/login'
     url.search = ''
     url.searchParams.set('next', pathname + request.nextUrl.search)

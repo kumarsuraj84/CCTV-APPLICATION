@@ -46,15 +46,20 @@ export const getCurrentProfile = cache(async (): Promise<CurrentProfile | null> 
   return { ...(data as Omit<CurrentProfile, 'capabilities' | 'session'>), capabilities, session }
 })
 
-/** Where the multi-factor gate sends this person (lib/auth/session-policy.ts mfaGate); `ok` when the facts could not be read. */
-export const mfaGateOf = (profile: Pick<CurrentProfile, 'session'>) =>
+/**
+ * Where the multi-factor gate sends this person (lib/auth/session-policy.ts mfaGate). Review M-2: `unknown` (fail closed) when the facts
+ * could not be read — the code step page then says the sign-in could not be checked and offers to try again.
+ */
+export const mfaGateOf = (profile: Pick<CurrentProfile, 'session'>): 'ok' | 'challenge' | 'enrol' | 'unknown' =>
   profile.session
     ? mfaGate({ enforced: profile.session.mfaEnforced, privileged: profile.session.privileged, aal2: profile.session.aal2, hasFactor: profile.session.hasFactor })
-    : 'ok'
+    : 'unknown'
 
-/** The page this request is for (set by proxy.ts), as a safe place to come back to. */
+/** The page this request is for (set by proxy.ts: path and, review M-14, its query), as a safe place to come back to. */
 async function hereForNext(): Promise<string> {
-  return encodeURIComponent(safeNext((await headers()).get('x-request-path') ?? ''))
+  const h = await headers()
+  const search = h.get('x-request-search') ?? ''
+  return encodeURIComponent(safeNext((h.get('x-request-path') ?? '') + (search.startsWith('?') ? search : '')))
 }
 
 /**
@@ -66,7 +71,7 @@ export async function requireProfile(): Promise<CurrentProfile> {
   const profile = await getCurrentProfile()
   if (!profile) redirect('/login')
   const gate = mfaGateOf(profile)
-  if (gate === 'challenge') redirect(`/mfa?next=${await hereForNext()}`)
+  if (gate === 'challenge' || gate === 'unknown') redirect(`/mfa?next=${await hereForNext()}`)
   if (profile.must_reset_password) redirect('/change-password')
   if (gate === 'enrol') redirect(`/mfa/enrol?next=${await hereForNext()}`)
   return profile

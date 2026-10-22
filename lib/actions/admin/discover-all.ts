@@ -4,6 +4,7 @@
 // administrative role AND admin.inventory for the organisation), then the service asks again from the person's own summary. The run
 // itself goes to Next's `after`, so the button gets its answer at once; the page polls the progress.
 import { after } from 'next/server'
+import { requireFreshAdministration } from '@/lib/auth/fresh'
 import { requireAdministration } from '@/lib/auth/profile'
 import type { Result } from '@/lib/admin/types'
 import { discoverAllStatus, startDiscoverAll, stopDiscoverAll, type RunView } from '@/lib/inventory/discover-all'
@@ -15,7 +16,10 @@ import { createClient } from '@/lib/supabase/server'
 import { createMediaClient } from '@/lib/supabase/service-clients'
 
 export async function startDiscoverAllAction(): Promise<Result<{ runId: string; total: number }>> {
-  const p = await requireAdministration('admin.inventory')
+  // P3-1 review I-3: asks every NVR and saves the cameras it finds: the one fresh-sign-in guard first.
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return { ok: false, error: g.error }
+  const p = g.profile
   // P2-6 (D-11): three starts per administrator in ten minutes, shared by every app instance (plus the overall administration count).
   const slow = await adminRefusalFor('discover_all', p.id)
   if (slow) return { ok: false, error: slow }

@@ -6,10 +6,14 @@
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { getCurrentProfile } from '@/lib/auth/profile'
+import { requireFreshProfile } from '@/lib/auth/fresh'
+import { getClientIp } from '@/lib/rate-limit'
 import { safeNext } from '@/lib/auth/safe-next'
 import { confirmEnrolment, confirmIdentity, removeOwnFactor, startEnrolment, verifySignInCode } from '@/lib/auth/mfa'
 import { recordAuthEvent } from '@/lib/auth/auth-events'
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
+import { revokeMediaSessions } from '@/lib/streams/registry'
 
 export type CodeState = { error?: string }
 export type EnrolStart = { ok: true; factorId: string; qrCode: string; secret: string } | { ok: false; error: string }
@@ -22,14 +26,19 @@ async function me() {
   return profile
 }
 
+/**
+ * Review I-4: setting up an authenticator app binds the account to that phone, so it needs a fresh sign-in (the password within the
+ * last few minutes, or "Confirm it's you"): a stolen session alone cannot bind an attacker's phone.
+ */
 export async function startEnrolmentAction(): Promise<EnrolStart> {
-  const profile = await me()
-  return startEnrolment(await createClient(), profile)
+  const g = await requireFreshProfile()
+  if (!g.ok) return { ok: false, error: g.error }
+  return startEnrolment(await createClient(), g.profile)
 }
 
 export async function confirmEnrolmentAction(factorId: string, code: string): Promise<SimpleResult> {
   const profile = await me()
-  const res = await confirmEnrolment(await createClient(), profile, factorId, code)
+  const res = await confirmEnrolment(await createClient(), profile, factorId, code, { ip: await getClientIp() })
   if (res.ok) revalidatePath('/', 'layout')
   return res
 }
@@ -37,7 +46,7 @@ export async function confirmEnrolmentAction(factorId: string, code: string): Pr
 /** The sign-in step: the code, then on to `next`. */
 export async function verifyCodeAction(_prev: CodeState, formData: FormData): Promise<CodeState> {
   const profile = await me()
-  const res = await verifySignInCode(await createClient(), profile, formData.get('code'))
+  const res = await verifySignInCode(await createClient(), profile, formData.get('code'), { ip: await getClientIp() })
   if (!res.ok) return { error: res.error }
   redirect(safeNext(String(formData.get('next') ?? '')))
 }
@@ -45,7 +54,7 @@ export async function verifyCodeAction(_prev: CodeState, formData: FormData): Pr
 /** "Confirm it's you": a code (with an authenticator app) or the password; then back to `next`, or "done" for a separate tab. */
 export async function confirmIdentityAction(_prev: ConfirmState, formData: FormData): Promise<ConfirmState> {
   const profile = await me()
-  const res = await confirmIdentity(await createClient(), profile, { code: formData.get('code'), password: formData.get('password') })
+  const res = await confirmIdentity(await createClient(), profile, { code: formData.get('code'), password: formData.get('password') }, undefined, { ip: await getClientIp() })
   if (!res.ok) return { error: res.error }
   const next = String(formData.get('next') ?? '')
   if (next) redirect(safeNext(next))
@@ -53,8 +62,9 @@ export async function confirmIdentityAction(_prev: ConfirmState, formData: FormD
 }
 
 export async function removeOwnFactorAction(): Promise<SimpleResult> {
-  const profile = await me()
-  const res = await removeOwnFactor(await createClient(), profile)
+  const g = await requireFreshProfile()
+  if (!g.ok) return { ok: false, error: g.error }
+  const res = await removeOwnFactor(await createClient(), g.profile)
   if (res.ok) revalidatePath('/account/security')
   return res
 }
@@ -65,5 +75,7 @@ export async function signOutEverywhereSelfAction(): Promise<void> {
   const supabase = await createClient()
   await recordAuthEvent({ event: 'sign_out_everywhere', userId: profile.id, actorId: profile.id })
   await supabase.auth.signOut({ scope: 'global' })
+  // Review M-3: and every open video of theirs.
+  await revokeMediaSessions(createAdminClient(), profile.org_id, profile.id, 'signed_out_everywhere')
   redirect('/login')
 }

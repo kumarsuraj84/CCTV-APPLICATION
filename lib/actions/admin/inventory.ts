@@ -1,7 +1,8 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireAdministration } from '@/lib/auth/profile'
+import { requireFreshAdministration } from '@/lib/auth/fresh'
+import type { CurrentProfile } from '@/lib/auth/profile'
 import { importDevices, type ImportResult } from '@/lib/import/apply'
 import { parseDevicesCsv } from '@/lib/import/devices-csv'
 import type { RowError } from '@/lib/import/stores-csv'
@@ -21,8 +22,8 @@ export type FormResult = { error?: string; ok?: boolean; warning?: string; value
 export type ImportState = { result?: ImportResult; parseErrors?: RowError[]; error?: string }
 
 // P2-2: devices, archiving and imports need an administrative role AND admin.inventory (the services still check the role as authority).
-async function ctx() {
-  const p = await requireAdministration('admin.inventory')
+// P3-1 review I-3: every one of them is a change, so each goes through the one fresh-sign-in guard (requireFreshAdministration).
+async function ctx(p: CurrentProfile) {
   // P2-6 (D-11): every administration action counts against the shared administration limit.
   const slow = await refusalFor('admin_action', p.id)
   return { admin: createAdminClient(), actor: { id: p.id, orgId: p.org_id, role: p.role }, slow }
@@ -41,7 +42,9 @@ function deviceInput(f: FormData) {
 }
 
 export async function saveDeviceAction(_prev: FormResult, formData: FormData): Promise<FormResult> {
-  const { admin, actor, slow } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return { error: g.error, values: submittedValues(formData, DEVICE_FIELDS, ['enabled']) }
+  const { admin, actor, slow } = await ctx(g.profile)
   if (slow) return { error: slow }
   const id = text(formData, 'id')
   const res = id ? await updateDevice(admin, actor, id, deviceInput(formData)) : await createDevice(admin, actor, deviceInput(formData))
@@ -50,7 +53,9 @@ export async function saveDeviceAction(_prev: FormResult, formData: FormData): P
 }
 
 export async function deleteDeviceAction(deviceId: string): Promise<FormResult> {
-  const { admin, actor, slow } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return { error: g.error }
+  const { admin, actor, slow } = await ctx(g.profile)
   if (slow) return { error: slow }
   const res = await deleteDevice(admin, actor, deviceId)
   revalidatePath('/admin/devices')
@@ -59,7 +64,9 @@ export async function deleteDeviceAction(deviceId: string): Promise<FormResult> 
 
 /** P2-5b: archive / restore a location, NVR, camera, asset, cluster or region (the screens arrive with P2-5c). */
 export async function archiveInventoryAction(kind: ArchiveKind, id: string): Promise<FormResult> {
-  const p = await requireAdministration('admin.inventory')
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return { error: g.error }
+  const p = g.profile
   const slow = await refusalFor('admin_action', p.id)
   if (slow) return { error: slow }
   const res = await archiveInventory({ admin: createAdminClient(), rls: await createClient(), go2rtc: localGo2rtc() }, { id: p.id, orgId: p.org_id, role: p.role }, kind, String(id))
@@ -68,7 +75,9 @@ export async function archiveInventoryAction(kind: ArchiveKind, id: string): Pro
 }
 
 export async function restoreInventoryAction(kind: ArchiveKind, id: string): Promise<FormResult> {
-  const p = await requireAdministration('admin.inventory')
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return { error: g.error }
+  const p = g.profile
   const slow = await refusalFor('admin_action', p.id)
   if (slow) return { error: slow }
   const res = await restoreInventory({ admin: createAdminClient(), rls: await createClient() }, { id: p.id, orgId: p.org_id, role: p.role }, kind, String(id))
@@ -85,7 +94,9 @@ async function readFile(formData: FormData): Promise<string | null> {
 }
 
 export async function importDevicesAction(_prev: ImportState, formData: FormData): Promise<ImportState> {
-  const { admin, actor, slow } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return { error: g.error }
+  const { admin, actor, slow } = await ctx(g.profile)
   if (slow) return { error: slow }
   const body = await readFile(formData)
   if (body === null) return { error: 'Choose a CSV file smaller than 5 MB.' }

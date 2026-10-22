@@ -2,8 +2,13 @@ import type { NextConfig } from 'next'
 
 // One stamp per production build (set by the build script); "dev" locally. Open pages compare it with /api/version.
 const BUILD_ID = process.env.CK_BUILD_ID || 'dev'
+// P3-1 review round 1: a build or a second server beside the running dev server goes into its own folder (NEXT_DIST_DIR=.next-<name>):
+// a production build in .next knocked over the dev server on 3212. Accepted: ".next<suffix>" or ".next/<name>" (inside the ignored .next/,
+// for example NEXT_DIST_DIR=.next/build-p31); anything else is the default.
+const DIST_DIR = /^\.next(?:[A-Za-z0-9._-]*|\/(?!dev$)[A-Za-z0-9._-]+)$/.test(process.env.NEXT_DIST_DIR ?? '') ? (process.env.NEXT_DIST_DIR as string) : '.next'
 
 const nextConfig: NextConfig = {
+  distDir: DIST_DIR,
   poweredByHeader: false,
   env: { NEXT_PUBLIC_BUILD_ID: BUILD_ID },
   generateBuildId: async () => BUILD_ID,

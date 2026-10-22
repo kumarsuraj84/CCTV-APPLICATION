@@ -6,8 +6,8 @@
 // everybody else is sent home before anything else happens); the service then checks the role and the capability again from the
 // person's own summary and scopes every write to the person's organisation. They return plain results and never throw to the client.
 import { revalidatePath } from 'next/cache'
-import { requireAdministration } from '@/lib/auth/profile'
-import { freshAuthRefusal } from '@/lib/auth/session-policy'
+import { requireFreshAdministration } from '@/lib/auth/fresh'
+import { requireAdministration, type CurrentProfile } from '@/lib/auth/profile'
 import { archiveInventory, restoreInventory, type ArchiveKind } from '@/lib/inventory/archive'
 import { dismissFinding, linkFinding } from '@/lib/inventory/findings'
 import { mergeSentence, MSG_OPEN_VIDEO, type MergePreview } from '@/lib/inventory/forms'
@@ -32,8 +32,11 @@ import { createMediaClient } from '@/lib/supabase/service-clients'
 /** What the forms and buttons get back. `values`: the submitted non-secret fields after an error (never a password). */
 export type AdminActionState = { ok?: boolean; error?: string; message?: string; warning?: string; id?: string; details?: string[]; values?: Record<string, string> }
 
-async function ctx(withStreams = false) {
-  const p = await requireAdministration('admin.inventory')
+// P3-1 review I-3: every change below goes through the one fresh-sign-in guard first (requireFreshAdministration) and hands the
+// checked person in as `given`; reads (previews, search, the connection test) only check the caller (allow-list in
+// tests/unit/fresh-auth-guard.test.ts).
+async function ctx(withStreams = false, given?: CurrentProfile) {
+  const p = given ?? (await requireAdministration('admin.inventory'))
   const clients: InventoryClients = { admin: createAdminClient(), rls: await createClient(), ...(withStreams ? { go2rtc: localGo2rtc() } : {}) }
   // P2-6 (D-14): the web app's own role cannot read an NVR login; the connection test and "Find cameras" read it through the media
   // path's client, made only when one is needed.
@@ -55,7 +58,9 @@ const done = <T extends { ok: true } | { ok: false; error: string }>(res: T, okS
 
 // ── Regions and clusters ────────────────────────────────────────────────────────────────────────────────────────────────────
 export async function saveRegionAction(_prev: AdminActionState, f: FormData): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return refused(g.error)
+  const { clients, actor, slow: busy } = await ctx(false, g.profile)
   if (busy) return refused(busy)
   const res = await saveRegion(clients, actor, { id: text(f, 'id') || null, code: text(f, 'code'), name: text(f, 'name') })
   refresh()
@@ -63,7 +68,9 @@ export async function saveRegionAction(_prev: AdminActionState, f: FormData): Pr
 }
 
 export async function saveClusterAction(_prev: AdminActionState, f: FormData): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return refused(g.error)
+  const { clients, actor, slow: busy } = await ctx(false, g.profile)
   if (busy) return refused(busy)
   const res = await saveCluster(clients, actor, { id: text(f, 'id') || null, code: text(f, 'code'), name: text(f, 'name'), regionId: text(f, 'region_id') || null })
   refresh()
@@ -80,7 +87,9 @@ export async function previewMoveAction(input: MoveInput): Promise<PreviewMoveSt
 }
 
 export async function moveNodeAction(input: MoveInput): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return refused(g.error)
+  const { clients, actor, slow: busy } = await ctx(false, g.profile)
   if (busy) return refused(busy)
   const res = await moveNode(clients, actor, input)
   refresh()
@@ -98,7 +107,9 @@ export async function previewProposalsAction(items: ProposalChoice[]): Promise<P
 }
 
 export async function applyProposalsAction(items: ProposalChoice[]): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return refused(g.error)
+  const { clients, actor, slow: busy } = await ctx(false, g.profile)
   if (busy) return refused(busy)
   const res = await applyProposals(clients, actor, Array.isArray(items) ? items : [])
   refresh()
@@ -108,7 +119,9 @@ export async function applyProposalsAction(items: ProposalChoice[]): Promise<Adm
 // ── Locations ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 const LOCATION_FIELDS = ['code', 'kind', 'name', 'city', 'address', 'zone', 'state', 'cluster_id']
 export async function saveLocationAction(_prev: AdminActionState, f: FormData): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return refused(g.error)
+  const { clients, actor, slow: busy } = await ctx(false, g.profile)
   if (busy) return refused(busy)
   const res = await saveLocation(clients, actor, {
     id: text(f, 'id') || null, code: text(f, 'code'), kind: text(f, 'kind'), name: text(f, 'name'), city: text(f, 'city'), address: text(f, 'address'),
@@ -120,7 +133,9 @@ export async function saveLocationAction(_prev: AdminActionState, f: FormData): 
 
 const NETWORK_FIELDS = ['management_cidr', 'gateway', 'dns', 'management_vlan', 'vlan_staff', 'vlan_guest', 'vlan_device', 'vlan_other', 'discovery_ranges', 'sdwan_context']
 export async function saveNetworkAction(locationId: string, _prev: AdminActionState, f: FormData): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return refused(g.error)
+  const { clients, actor, slow: busy } = await ctx(false, g.profile)
   if (busy) return refused(busy)
   const res = await saveNetworkDefinition(clients, actor, String(locationId), {
     managementCidr: text(f, 'management_cidr'), gateway: text(f, 'gateway'), dns: text(f, 'dns'), managementVlan: text(f, 'management_vlan'),
@@ -135,11 +150,11 @@ export async function saveNetworkAction(locationId: string, _prev: AdminActionSt
 // ── NVRs ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 const RECORDER_FIELDS = ['name', 'host', 'http_port', 'rtsp_port', 'username', 'expected_channels', 'clock_offset_sec']
 export async function saveRecorderAction(locationId: string, _prev: AdminActionState, f: FormData): Promise<AdminActionState> {
-  const { clients, actor, profile, slow: busy } = await ctx()
+  // P3-1 (D-10, review I-3): every NVR save (address, login, password) goes through the fresh-sign-in guard; the typed values come back.
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return { error: g.error, values: submittedValues(f, RECORDER_FIELDS) }
+  const { clients, actor, slow: busy } = await ctx(false, g.profile)
   if (busy) return refused(busy)
-  // P3-1 (D-10): writing an NVR password is a credential write and needs a fresh sign-in (saving other fields does not).
-  const stale = text(f, 'password') ? freshAuthRefusal(profile) : null
-  if (stale) return { error: stale, values: submittedValues(f, RECORDER_FIELDS) }
   const res = await saveRecorder(clients, actor, String(locationId), {
     id: text(f, 'id') || null, name: text(f, 'name'), host: text(f, 'host'), httpPort: text(f, 'http_port'), rtspPort: text(f, 'rtsp_port'),
     username: text(f, 'username'), password: text(f, 'password') || null, expectedChannels: text(f, 'expected_channels'), clockOffsetSec: text(f, 'clock_offset_sec'),
@@ -151,7 +166,9 @@ export async function saveRecorderAction(locationId: string, _prev: AdminActionS
 }
 
 export async function setMonitoringAction(recorderId: string, input: { enabled: boolean; reason: string }): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return refused(g.error)
+  const { clients, actor, slow: busy } = await ctx(false, g.profile)
   if (busy) return refused(busy)
   const res = await setRecorderMonitoring(clients, actor, String(recorderId), { enabled: input?.enabled === true, reason: String(input?.reason ?? '') })
   refresh()
@@ -173,7 +190,9 @@ export async function testConnectionAction(recorderId: string): Promise<AdminAct
 
 /** "Find cameras" for ONE NVR (P2-5b discovery, per recorder): what it could not place lands in the reconciliation list. */
 export async function discoverRecorderAction(recorderId: string): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx(true)
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return refused(g.error)
+  const { clients, actor, slow: busy } = await ctx(true, g.profile)
   if (busy) return refused(busy)
   const slow = await limited('discovery', actor.id)
   if (slow) return { error: slow }
@@ -188,7 +207,9 @@ export async function discoverRecorderAction(recorderId: string): Promise<AdminA
 
 // ── Mapping editor, merge and reconciliation ───────────────────────────────────────────────────────────────────────────────
 export async function remapCameraAction(input: { cameraId: string; recorderId: string; channel: number | string }): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx(true)
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return refused(g.error)
+  const { clients, actor, slow: busy } = await ctx(true, g.profile)
   if (busy) return refused(busy)
   const res = await remapCamera(clients, actor, { cameraId: String(input?.cameraId ?? ''), recorderId: String(input?.recorderId ?? ''), channel: input?.channel ?? '' })
   refresh()
@@ -225,7 +246,9 @@ export async function searchCamerasAction(query: string): Promise<SearchCamerasS
 
 /** Merges exactly the pair the person confirmed (fix round 2, A-N1): without a matching confirmation from previewMergeAction, nothing happens. */
 export async function mergeCamerasAction(input: { keepId: string; duplicateId: string; confirmation: string }): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx(true)
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return refused(g.error)
+  const { clients, actor, slow: busy } = await ctx(true, g.profile)
   if (busy) return refused(busy)
   const keepId = cleanId(input?.keepId)
   const duplicateId = cleanId(input?.duplicateId)
@@ -244,7 +267,9 @@ export async function mergeCamerasAction(input: { keepId: string; duplicateId: s
 }
 
 export async function dismissFindingAction(findingId: string, note: string): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return refused(g.error)
+  const { clients, actor, slow: busy } = await ctx(false, g.profile)
   if (busy) return refused(busy)
   const res = await dismissFinding(clients, actor, String(findingId), String(note ?? ''))
   refresh()
@@ -252,7 +277,9 @@ export async function dismissFindingAction(findingId: string, note: string): Pro
 }
 
 export async function linkFindingAction(findingId: string): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx(true)
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return refused(g.error)
+  const { clients, actor, slow: busy } = await ctx(true, g.profile)
   if (busy) return refused(busy)
   const res = await linkFinding(clients, actor, String(findingId))
   refresh()
@@ -261,7 +288,9 @@ export async function linkFindingAction(findingId: string): Promise<AdminActionS
 
 // ── Archive and restore from the new screens ───────────────────────────────────────────────────────────────────────────────
 export async function archiveNodeAction(kind: ArchiveKind, id: string): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx(true)
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return refused(g.error)
+  const { clients, actor, slow: busy } = await ctx(true, g.profile)
   if (busy) return refused(busy)
   const res = await archiveInventory(clients, actor, kind, String(id))
   refresh()
@@ -269,7 +298,9 @@ export async function archiveNodeAction(kind: ArchiveKind, id: string): Promise<
 }
 
 export async function restoreNodeAction(kind: ArchiveKind, id: string): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx()
+  const g = await requireFreshAdministration('admin.inventory')
+  if (!g.ok) return refused(g.error)
+  const { clients, actor, slow: busy } = await ctx(false, g.profile)
   if (busy) return refused(busy)
   const res = await restoreInventory({ admin: clients.admin, rls: clients.rls }, actor, kind, String(id))
   refresh()

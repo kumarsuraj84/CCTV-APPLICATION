@@ -76,14 +76,26 @@ export async function resetFactors(admin: AdminClient, actor: Actor, userId: str
     }
     removed++
   }
-  await endEverything(admin, actor, userId, 'mfa_reset')
+  // Review M-3: an existing (perhaps an attacker's) aal2 session must not survive the reset unnoticed.
+  if (!(await endEverything(admin, actor, userId, 'mfa_reset'))) {
+    await recordAuthEvent({ event: 'mfa_factor_reset', userId, actorId: actor.id, detail: { removed, sessions_ended: false } })
+    return { ok: false, error: 'The authenticator apps were removed, but the current sign-ins could not be ended. Use "Sign out everywhere…" now.' }
+  }
   await recordAuthEvent({ event: 'mfa_factor_reset', userId, actorId: actor.id, detail: { removed } })
   return { ok: true, removed }
 }
 
-/** Who in the organisation has an authenticator app (for the people screen): user id → number of apps. */
-export async function factorCounts(admin: AdminClient, orgId: string): Promise<Map<string, number> | null> {
-  const { data, error } = await admin.rpc('mfa_factor_people', { p_org: orgId })
-  if (error) return null
-  return new Map(((data ?? []) as { user_id: string; factors: number }[]).map((r) => [r.user_id, r.factors]))
+export type TwoStep = { factors: number; enrolledAt: string | null; enrolledIp: string | null }
+
+/**
+ * Who in the organisation has an authenticator app, and (review I-4) when and from which address it was set up (the latest
+ * mfa_enrolled sign-in event), for the people screen: user id → summary. Nothing about the app itself.
+ */
+export async function twoStepSummary(admin: AdminClient, orgId: string): Promise<Map<string, TwoStep> | null> {
+  const [factors, events] = await Promise.all([admin.rpc('mfa_factor_people', { p_org: orgId }), admin.rpc('mfa_enrolment_events', { p_org: orgId })])
+  if (factors.error) return null
+  const when = new Map(((events.data ?? []) as { user_id: string; enrolled_at: string; enrolled_ip: string | null }[]).map((r) => [r.user_id, r]))
+  return new Map(((factors.data ?? []) as { user_id: string; factors: number }[]).map((r) => [
+    r.user_id, { factors: r.factors, enrolledAt: when.get(r.user_id)?.enrolled_at ?? null, enrolledIp: when.get(r.user_id)?.enrolled_ip ?? null },
+  ]))
 }

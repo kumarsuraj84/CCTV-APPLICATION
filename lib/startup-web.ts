@@ -1,5 +1,6 @@
 import { isProductionMode } from '@/lib/runtime-mode'
 import { startupProblems } from '@/lib/startup-checks'
+import { authUrlProblem } from '@/lib/web/tls'
 
 // The web app's start-up check (P2-6 review round 1: M-16, M-3, I-2), run once by instrumentation.ts when the Node.js server starts.
 // Production mode only: the static checks of lib/startup-checks.ts, then go2rtc must refuse a request without its login, then every
@@ -17,6 +18,9 @@ export async function webStartupProblems(env: Env, deps: WebStartupDeps): Promis
   if (!isProductionMode(env)) return []
   const { problems } = startupProblems('web', env)
   if (problems.length > 0) return problems
+  // P3-1 review I-5: the auth server must not be reachable from outside (the app's sign-in and code limits would be bypassed).
+  const auth = authUrlProblem(env)
+  if (auth) problems.push(auth)
   const probe = await deps.probeGo2rtc().catch(() => ({ ok: false as const, error: 'The video server (go2rtc) could not be checked.' }))
   if (!probe.ok) problems.push(probe.error)
   try {
