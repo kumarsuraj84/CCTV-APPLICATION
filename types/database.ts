@@ -1272,6 +1272,9 @@ isOneToOne: false
 "current_user_role":
 { Args: Record<PropertyKey, never>; Returns: Database["public"]['Enums']["user_role"]
                            },
+"discovery_apply":
+{ Args: { "p_actor"?: string,"p_ops": Json,"p_org": string,"p_recorder": string,"p_to_reconcile"?: number }; Returns: Json
+                           },
 "function_privileges":
 { Args: Record<PropertyKey, never>; Returns: {
               "args": string,"grantees": (string)[],"name": string,"search_path": string,"security_definer": boolean
