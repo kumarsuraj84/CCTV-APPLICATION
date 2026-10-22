@@ -51,6 +51,26 @@ browser ──https/wss──► Caddy (443, the only listener on the network)
 
 The web app must listen on loopback: start it with `next start -H 127.0.0.1 --port 3212` (the Windows service of WP-5.4 does this).
 
+**The Supabase API / auth server stays private (review I-5).** The app's sign-in delay (P2-6), its count of codes (6 per person in
+5 minutes), "one app per person", the code-once rule and the idle limit all live in the web app. Anybody who can reach the auth server
+(GoTrue, `/auth/v1` of the Supabase API) directly could sign in, ask for and try codes, and refresh sessions around them. So:
+
+- `NEXT_PUBLIC_SUPABASE_URL` / `SUPABASE_URL` point to this computer (`http://127.0.0.1:<port>`) or the private network; the Supabase
+  API port is closed in the Windows firewall for every other computer (`New-NetFirewallRule -DisplayName "Supabase API local only"
+  -Direction Inbound -LocalPort <port> -Protocol TCP -RemoteAddress Any -Action Block`, then allow only the app host if it is another
+  machine). Caddy does not route it (see the Caddyfile).
+- The web app **refuses to start in production** (`DRISHTI_ENV=production`) when that address is public (`lib/web/tls.ts`
+  `authUrlProblem`, called by the start-up check). A hosted project with its network restrictions switched on (only the app host may
+  connect) is accepted with `DRISHTI_AUTH_URL_PUBLIC_OK=network-restricted` — set it only after checking the restriction.
+- The auth server's own limits as a second line: `[auth.mfa] max_enrolled_factors = 1`, `[auth.sessions] timebox = "12h"` and
+  `inactivity_timeout = "8h"` (local: `supabase/config.toml`; self-hosted production: `GOTRUE_MFA_MAX_ENROLLED_FACTORS=1`,
+  `GOTRUE_SESSIONS_TIMEBOX=12h`, `GOTRUE_SESSIONS_INACTIVITY_TIMEOUT=8h`). GoTrue 2.197 also limits code checks per IP with
+  `GOTRUE_MFA_RATE_LIMIT_CHALLENGE_AND_VERIFY` (requests per second, default 15); the Supabase CLI's `config.toml` has no key for it,
+  so it can be set only on a self-hosted GoTrue (production): `GOTRUE_MFA_RATE_LIMIT_CHALLENGE_AND_VERIFY=0.1` (one every 10 s per IP).
+  Check from another PC that `http://<server>:<supabase port>/auth/v1/health` does NOT answer (record it with the first Caddy run).
+- HSTS (review M-12) is decided when the app is built: `NEXT_PUBLIC_APP_URL` must already be the https address at build time. Do not add
+  `includeSubDomains` unless every name under the company domain is https.
+
 Without Caddy (today, on the company network over plain http) nothing needs setting: with `NEXT_PUBLIC_STREAM_GATEWAY_URL` unset or
 `auto`, a page opened at `http://10.0.0.47:3212` uses the gateway `http://10.0.0.47:3412`, one opened at `http://localhost:3212` uses
 `http://localhost:3412` (an explicit `http://localhost:3412` is also turned into the page's host when the page is opened from another
@@ -72,7 +92,17 @@ PC). `GATEWAY_ALLOWED_ORIGINS` must still list every address people type (for ex
 
 1. Make sure TOTP is on in the auth server: `[auth.mfa.totp] enroll_enabled = true, verify_enabled = true` (`supabase/config.toml`
    for the local stack, the project's auth settings when hosted). The local stack picks it up after `npm run db:stop` / `npm run db:start`.
-2. Every administrator sets up an authenticator app first (Security page → "Set up two-step sign-in"), so nobody is locked out.
+2. Every administrator sets up an authenticator app first (Security page → "Set up two-step sign-in"), so nobody is locked out, and
+   **before** the switch (review I-4): count who still has none — the Users page shows "Two-step sign-in: on, set up <date> IST from
+   <address>" per person — or as the database owner:
+   `SELECT p.email FROM public.profiles p WHERE p.org_id = '<org>' AND p.is_active AND p.role IN ('admin','platform_owner')
+   AND p.id NOT IN (SELECT user_id FROM public.mfa_factor_people('<org>'));` must return no row.
+   Setting up an app needs a fresh sign-in (the password within the last 10 minutes), so a stolen session alone cannot bind a phone.
+   **Remaining risk:** whoever knows a privileged person's password before that person has set up an app (a new account's one-time
+   password, a promoted person, anyone not yet enrolled when the switch goes on) can sign in and bind their own phone first. Mitigations:
+   enrol everybody before the switch; give one-time passwords in person and have the new administrator sign in and set up the app at
+   once; look at the set-up date and address on the Users page after creating or promoting someone (each set-up is in `auth_events` as
+   `mfa_enrolled` with the address; there is no e-mail notice: the app has no mail path of its own); reset at once what you did not expect.
 3. As the database owner (psql on the database host; never through the API — not even the service key may write this table):
 
 ```sql
@@ -108,8 +138,17 @@ ON CONFLICT (org_id) DO UPDATE SET mfa_enforced = true, updated_at = now();
   (`lib/auth/session-activity.ts`). Requests the open Live wall makes by itself (token renewal every minute) count as activity.
   An ended sign-in is signed out at the auth server and audited (`session_expired_idle` / `session_expired_absolute`). The auth server's
   own backstop is `[auth.sessions] timebox = "12h"` (keep it at or above `SESSION_MAX_HOURS`).
-- **Fresh sign-in** (`FRESH_AUTH_MINUTES`, default 10): changes of people and access, keeping review items, NVR passwords and the
-  location import need a sign-in or code within that time; the pages show "Confirm it's you" (opens in a new tab).
+- **Fresh sign-in** (`FRESH_AUTH_MINUTES`, default 10; review I-3: one guard, `lib/auth/fresh.ts`): every change on the administration
+  pages (people, access, review, locations, regions, clusters, moves, NVRs and their monitoring switch, mappings, merges, findings,
+  archive and restore, assets, devices, imports, "find cameras"), setting up or removing one's own authenticator app, changing one's own
+  password (not the forced first change) and fast playback (an export) need a sign-in or code within that time.
+  `tests/unit/fresh-auth-guard.test.ts` lists every Server Action and route handler and fails for one that is neither guarded nor on its
+  reasoned allow-list (reads, the sign-in steps themselves, camera groups, video viewing). The administration pages, the set-up page and
+  the password page show "Confirm it's you" (opens in a new tab).
+- **Codes count once** (review M-9): GoTrue 2.197 accepts the same code again within its window (measured), so the app claims each code
+  per person in the database (`mfa_code_claim`, three minutes) before asking the auth server.
+- **Cookies** (review I-1): every sign-in cookie, whoever writes it (sign-in, code step, set-up, "Confirm it's you", password change,
+  reset link, the proxy's refresh), is HttpOnly, SameSite=Lax and, on https, Secure (`lib/supabase/cookie-options.ts`).
 - **Audit** of sign-ins, failed sign-ins (a hash of the typed address, never the password), sign-outs, expired sessions, two-step
   set-up, codes, resets and confirmations: `public.auth_events` (append-only; readable with `admin.audit.read`).
 - An administrator can sign a person out everywhere (Users → "Sign out everywhere…"); everybody can do it for themselves (Security).
