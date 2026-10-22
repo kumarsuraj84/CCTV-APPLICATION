@@ -16,7 +16,9 @@
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",
     "db:types": "supabase gen types typescript --local > types/database.ts",
-    "env:local": "node scripts/env-from-supabase.mjs"
+    "env:local": "node scripts/env-from-supabase.mjs",
+    "worker": "tsx services/worker/index.ts",
+    "worker:dev": "tsx watch services/worker/index.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",
@@ -44,6 +46,7 @@
     "shadcn": "^4.11.0",
     "supabase": "^2.111.0",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7",
     "ws": "^8.21.3"
