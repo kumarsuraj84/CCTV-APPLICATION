@@ -23,7 +23,7 @@
     "title": "Location — CityKart Drishti",
     "scrollW": 1351,
     "vw": 1366,
-    "h": 1691,
+    "h": 1707,
     "store": false
   },
   {
@@ -32,7 +32,7 @@
     "title": "Location — CityKart Drishti",
     "scrollW": 375,
     "vw": 375,
-    "h": 2981,
+    "h": 2997,
     "store": false
   },
   {
@@ -41,7 +41,7 @@
     "title": "NVR — CityKart Drishti",
     "scrollW": 1351,
     "vw": 1366,
-    "h": 2432,
+    "h": 2530,
     "store": false
   },
   {
@@ -50,7 +50,7 @@
     "title": "NVR — CityKart Drishti",
     "scrollW": 375,
     "vw": 375,
-    "h": 4206,
+    "h": 4352,
     "store": false
   },
   {
@@ -104,7 +104,7 @@
     "title": "Reconciliation — CityKart Drishti",
     "scrollW": 375,
     "vw": 375,
-    "h": 812,
+    "h": 882,
     "store": false
   },
   {
@@ -149,7 +149,7 @@
     "title": "Camera group — CityKart Drishti",
     "scrollW": 1351,
     "vw": 1366,
-    "h": 1050,
+    "h": 1070,
     "store": true
   },
   {
@@ -158,7 +158,7 @@
     "title": "Camera group — CityKart Drishti",
     "scrollW": 375,
     "vw": 375,
-    "h": 1584,
+    "h": 1604,
     "store": true
   },
   {
@@ -178,5 +178,26 @@
     "vw": 375,
     "h": 2421,
     "store": false
+  },
+  {
+    "shot": "location-detail-375-end.png",
+    "url": "/admin/locations/<id>",
+    "navTop": 757,
+    "lastButtonBottom": 707,
+    "lastButton": "Save network definition"
+  },
+  {
+    "shot": "nvr-detail-375-end.png",
+    "url": "/admin/locations/<id>/nvrs/<id>",
+    "navTop": 757,
+    "lastButtonBottom": 694,
+    "lastButton": "Take off the list"
+  },
+  {
+    "shot": "asset-detail-375-end.png",
+    "url": "/admin/assets/<id>",
+    "navTop": 757,
+    "lastButtonBottom": 703,
+    "lastButton": "Add address"
   }
 ]
