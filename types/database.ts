@@ -1454,9 +1454,6 @@ isOneToOne: false
 "recorder_credential_status":
 { Args: { "p_org": string,"p_recorder": string }; Returns: Json
                            },
-"recorder_credentials_match":
-{ Args: { "p_items": Json,"p_org": string }; Returns: string[]
-                           },
 "recorder_delete_credential":
 { Args: { "p_recorder": string }; Returns: undefined
                            },
