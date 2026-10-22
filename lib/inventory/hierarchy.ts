@@ -198,9 +198,9 @@ export type ProposalPreview = {
 }
 
 /**
- * Before applying ticked proposals (review M-1): who gains or loses which cameras (existing clusters: preview_hierarchy_change; a new
- * cluster in an existing region: that region's CCTV grant holders gain the location), which clusters and regions would be created, and
- * where an existing cluster is in another region than proposed. Writes nothing.
+ * Before applying ticked proposals (review M-1): who gains or loses which cameras, which clusters and regions would be created, and
+ * where an existing cluster is in another region than proposed. Writes nothing. Fix round 2: the effect on access is ONE database call
+ * for all rows (preview_hierarchy_proposals), exact for a new cluster in an existing region, and only live grants count.
  */
 export async function previewProposals(clients: InventoryClients, actor: Actor, items: ProposalChoice[]): Promise<Result<ProposalPreview>> {
   const may = await inventoryAdmin(clients.rls, actor)
@@ -208,9 +208,6 @@ export async function previewProposals(clients: InventoryClients, actor: Actor, 
   const parsed = cleanChoices(items)
   if (!parsed.ok) return parsed
   const admin = clients.admin
-  const ids = parsed.clean.map((c) => c.locationId)
-  const { data: locs } = await admin.from('locations').select('id').eq('org_id', actor.orgId).is('archived_at', null).in('id', ids)
-  if ((locs ?? []).length !== new Set(ids).size) return { ok: false, error: 'Location not found.' }
   const [{ data: clusters }, { data: regions }] = await Promise.all([
     admin.from('clusters').select('id, code, region_id').eq('org_id', actor.orgId).is('archived_at', null),
     admin.from('regions').select('id, code').eq('org_id', actor.orgId).is('archived_at', null),
@@ -218,43 +215,28 @@ export async function previewProposals(clients: InventoryClients, actor: Actor, 
   const clusterByCode = new Map((clusters ?? []).map((c) => [c.code, c]))
   const regionByCode = new Map((regions ?? []).map((r) => [r.code, r]))
   const regionCode = new Map((regions ?? []).map((r) => [r.id, r.code]))
-  const totals = new Map<string, { userId: string; capability: string; before: number; after: number }>()
-  const add = (userId: string, capability: string, before: number, after: number) => {
-    const k = `${userId}|${capability}`
-    const t = totals.get(k) ?? { userId, capability, before: 0, after: 0 }
-    t.before += before
-    t.after += after
-    totals.set(k, t)
-  }
   const newClusters = new Set<string>()
   const newRegions = new Set<string>()
   const mismatches = new Map<string, ProposalPreview['regionMismatches'][number]>()
-  for (const c of parsed.clean) {
+  const rows = parsed.clean.map((c) => {
     const existing = clusterByCode.get(c.cluster)
     if (c.region && !regionByCode.has(c.region)) newRegions.add(c.region)
     if (existing) {
       const actual = existing.region_id ? regionCode.get(existing.region_id) ?? null : null
       if (c.region && actual !== c.region) mismatches.set(c.cluster, { clusterCode: c.cluster, proposedRegion: c.region, actualRegion: actual })
-      const { data, error } = await admin.rpc('preview_hierarchy_change', { p_org: actor.orgId, p_kind: 'location', p_id: c.locationId, p_new_parent: existing.id })
-      if (error) return { ok: false, error: sanitizeError(error, { route: 'previewProposals', fallback: 'Could not work out the effect on access.' }) }
-      for (const p of (data as { people: { user_id: string; capability: string; before: number; after: number }[] }).people ?? []) add(p.user_id, p.capability, Number(p.before), Number(p.after))
-      continue
+      return { location_id: c.locationId, cluster_id: existing.id, region_id: null }
     }
+    // A cluster that would be created, in the proposed region when that region exists already (a new region has no holders yet).
     newClusters.add(c.cluster)
-    const region = c.region ? regionByCode.get(c.region) : undefined
-    if (!region) continue
-    // A new cluster in an existing region: that region's CCTV grant holders gain the whole location.
-    const { data: holders } = await admin.from('access_grants').select('user_id, capability').eq('org_id', actor.orgId).eq('scope_kind', 'region').eq('scope_id', region.id)
-      .in('capability', ['cctv.live', 'cctv.playback', 'cctv.export']).is('revoked_at', null)
-    const { data: cams } = await admin.from('cameras').select('id').eq('org_id', actor.orgId).eq('location_id', c.locationId).is('archived_at', null)
-    const camIds = new Set((cams ?? []).map((x) => x.id))
-    for (const h of new Map((holders ?? []).map((x) => [`${x.user_id}|${x.capability}`, x])).values()) {
-      const { data: seen } = await admin.rpc('report_effective_camera_ids', { p_user: h.user_id, p_cap: h.capability })
-      const before = ((seen as string[] | null) ?? []).filter((id) => camIds.has(id)).length
-      add(h.user_id, h.capability, before, camIds.size)
-    }
+    return { location_id: c.locationId, cluster_id: null, region_id: (c.region && regionByCode.get(c.region)?.id) || null }
+  })
+  const { data, error } = await admin.rpc('preview_hierarchy_proposals', { p_org: actor.orgId, p_items: rows })
+  if (error) {
+    if (error.code === 'P0002') return { ok: false, error: 'Location not found.' }
+    return { ok: false, error: sanitizeError(error, { route: 'previewProposals', fallback: 'Could not work out the effect on access.' }) }
   }
-  const people = [...totals.values()].filter((t) => t.before !== t.after)
+  const out = data as { people: { user_id: string; capability: string; before: number; after: number }[] }
+  const people = (out.people ?? []).map((p) => ({ userId: p.user_id, capability: p.capability, before: Number(p.before), after: Number(p.after) })).filter((t) => t.before !== t.after)
   const { data: names } = people.length ? await admin.from('profiles').select('id, full_name, email').eq('org_id', actor.orgId).in('id', [...new Set(people.map((p) => p.userId))]) : { data: [] }
   const name = new Map((names ?? []).map((p) => [p.id, p.full_name || p.email]))
   return {
@@ -274,6 +256,8 @@ function cleanChoices(items: ProposalChoice[]): { ok: true; clean: { locationId:
     const region = i?.regionCode ? normaliseCode(i.regionCode) : null
     if (!locationId) return { ok: false, error: 'Location not found.' }
     if (!cluster || (i?.regionCode && !region)) return { ok: false, error: MSG_CODE }
+    // Fix round 2 (review note on M-1): a location ticked twice would be moved twice (and counted twice); refused before anything.
+    if (clean.some((c) => c.locationId === locationId)) return { ok: false, error: 'Each location can be applied once.' }
     clean.push({ locationId, cluster, region })
   }
   return { ok: true, clean }

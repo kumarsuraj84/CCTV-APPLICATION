@@ -62,7 +62,7 @@ export function DiscoverAll({ initial, counts }: { initial: RunView | null; coun
         </p>
         <p>
           {skipped === 0 ? 'No NVR is skipped.' : `${counts.switchedOff === 1 ? '1 NVR is' : `${counts.switchedOff} NVRs are`} switched off and ${plural(counts.locationOff, 'NVR is', 'NVRs are')} at a switched-off location: they are skipped without being contacted.`}{' '}
-          An NVR that refused its login a short while ago is not asked again until the wait is over, so its account cannot be locked.
+          An NVR that refused a login a short while ago is not asked again until the wait is over, and one that refused several is left alone for longer, to protect its account.
         </p>
       </div>
       <Button type="button" onClick={onStart} disabled={pending || running || counts.recorders === 0}>

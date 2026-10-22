@@ -8,7 +8,7 @@ import { loadRecorders, MSG_MONITORING_OFF, readRecorderPassword, recordersOfLoc
 import { realProbes } from '@/lib/monitor/probes'
 import type { Probes } from '@/lib/monitor/types'
 import { describeNvrError } from '@/lib/nvr/client'
-import { inLoginBackoff, loginFingerprint, MSG_LOGIN_BACKOFF, noteLoginResult } from '@/lib/monitor/login-backoff'
+import { loginBlock, loginFingerprint, noteLoginResult } from '@/lib/monitor/login-backoff'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { dropLiveStreams, type Go2rtcClient } from '@/lib/streams/go2rtc'
 import { fetchAll } from '@/lib/supabase/fetch-all'
@@ -120,9 +120,11 @@ async function discoverOne(clients: Clients, actor: Actor, rec: Recorder, deps: 
   }
 
   // Review I-3 (P2-5c-1): the web server's one login back-off, shared with the connection test and "find cameras for all": after a
-  // refused login this NVR is not asked again with the same login until the window is over (R9), so it cannot be locked from here.
+  // refused login this NVR is not asked again with the same login until the window is over (R9), and after several refused logins not
+  // with any login for a while (fix round 2, A-N3).
   const login = loginFingerprint(rec.host, rec.http_port, rec.username, read.password)
-  if (inLoginBackoff(rec.id, login)) return { ok: false, error: MSG_LOGIN_BACKOFF }
+  const blocked = loginBlock(rec.id, login)
+  if (blocked) return { ok: false, error: blocked }
   let channels
   try {
     channels = await deps.nvr({ host: rec.host, port: rec.http_port, username: rec.username, password: read.password }).channels()

@@ -115,8 +115,8 @@ async function placeOf(admin: AdminClient, orgId: string, cam: { location_id: st
 }
 
 /**
- * What a merge would do, before it is done (review I-5): both names, the duplicate's place, and how many people have access to the
- * duplicate through a grant on it alone (that access ends with it). Writes nothing.
+ * What a merge would do, before it is done (review I-5): the exact pair (fix round 2, A-N1), both names, the duplicate's place and
+ * whether it shows an NVR channel, and how many people lose this camera's video (A-N2). Writes nothing.
  */
 export async function previewMerge(clients: InventoryClients, actor: Actor, input: { keepId: string; duplicateId: string }): Promise<Result<MergePreview>> {
   const keep = cleanId(input?.keepId)
@@ -131,25 +131,75 @@ export async function previewMerge(clients: InventoryClients, actor: Actor, inpu
   const d = (cams ?? []).find((x) => x.id === dup)
   if (!k || !d || d.archived_at) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
   if (k.archived_at) return { ok: false, error: 'Restore the camera to keep first.' }
-  const now = new Date().toISOString()
-  const { data: grants, error: gErr } = await clients.admin.from('access_grants').select('user_id').eq('org_id', actor.orgId).eq('scope_kind', 'camera').eq('scope_id', dup)
-    .is('revoked_at', null).or(`valid_until.is.null,valid_until.gt.${now}`)
-  if (gErr) return { ok: false, error: sanitizeError(gErr, { route: 'previewMerge', fallback: 'Could not count the people.' }) }
-  return { ok: true, keepName: k.name, duplicateName: d.name, duplicatePlace: await placeOf(clients.admin, actor.orgId, d), peopleLosing: new Set((grants ?? []).map((g) => g.user_id)).size }
+  const losing = await peopleLosingVideo(clients.admin, actor.orgId, k, d)
+  if (!losing.ok) return losing
+  return {
+    ok: true, keepId: keep, duplicateId: dup, keepName: k.name, duplicateName: d.name, duplicatePlace: await placeOf(clients.admin, actor.orgId, d),
+    duplicateLinked: !!d.recorder_id, peopleLosing: losing.count,
+  }
 }
 
-/** Cameras of the whole organisation whose name or location code contains the words (review M-2: merge across locations). At most 20. */
+/**
+ * Fix round 2 (A-N2): the people who see the duplicate through a grant on it and would NOT see the kept camera after the merge, for at
+ * least one CCTV right. After the merge the kept camera is at the duplicate's location, on the duplicate's NVR (or, for an unlinked
+ * duplicate at the same location, on its own); a live grant of the same right on the organisation, that location, its cluster or
+ * region, that NVR, or the kept camera itself keeps the video. Ended, future and revoked grants count for nothing.
+ */
+async function peopleLosingVideo(
+  admin: AdminClient, orgId: string, k: { id: string; recorder_id: string | null }, d: { id: string; location_id: string; recorder_id: string | null },
+): Promise<{ ok: true; count: number } | { ok: false; error: string }> {
+  const now = new Date().toISOString()
+  const liveNow = `valid_until.is.null,valid_until.gt.${now}`
+  const fail = (e: unknown) => ({ ok: false as const, error: sanitizeError(e, { route: 'previewMerge', fallback: 'Could not count the people.' }) })
+  const { data: held, error } = await admin.from('access_grants').select('user_id, capability').eq('org_id', orgId).eq('scope_kind', 'camera').eq('scope_id', d.id)
+    .is('revoked_at', null).lte('valid_from', now).or(liveNow)
+  if (error) return fail(error)
+  if (!held?.length) return { ok: true, count: 0 }
+  const { data: loc } = await admin.from('locations').select('cluster_id').eq('id', d.location_id).eq('org_id', orgId).maybeSingle()
+  const { data: cluster } = loc?.cluster_id
+    ? await admin.from('clusters').select('id, region_id').eq('id', loc.cluster_id).eq('org_id', orgId).is('archived_at', null).maybeSingle()
+    : { data: null }
+  const { data: region } = cluster?.region_id
+    ? await admin.from('regions').select('id').eq('id', cluster.region_id).eq('org_id', orgId).is('archived_at', null).maybeSingle()
+    : { data: null }
+  const clusterId = cluster?.id ?? null
+  const regionId = region?.id ?? null
+  const recorderAfter = d.recorder_id ?? k.recorder_id
+  const users = [...new Set(held.map((g) => g.user_id))]
+  const wider: { user_id: string; capability: string; scope_kind: string; scope_id: string | null }[] = []
+  for (let i = 0; i < users.length; i += 150) {
+    const { data, error: wErr } = await admin.from('access_grants').select('user_id, capability, scope_kind, scope_id').eq('org_id', orgId).in('user_id', users.slice(i, i + 150))
+      .in('scope_kind', ['organization', 'region', 'cluster', 'location', 'recorder', 'camera']).is('revoked_at', null).lte('valid_from', now).or(liveNow)
+    if (wErr) return fail(wErr)
+    wider.push(...(data ?? []))
+  }
+  const keeps = (g: { scope_kind: string; scope_id: string | null }) =>
+    g.scope_kind === 'organization'
+    || (g.scope_kind === 'location' && g.scope_id === d.location_id)
+    || (g.scope_kind === 'cluster' && !!clusterId && g.scope_id === clusterId)
+    || (g.scope_kind === 'region' && !!regionId && g.scope_id === regionId)
+    || (g.scope_kind === 'recorder' && !!recorderAfter && g.scope_id === recorderAfter)
+    || (g.scope_kind === 'camera' && g.scope_id === k.id)
+  const covered = new Set(wider.filter(keeps).map((g) => `${g.user_id}|${g.capability}`))
+  return { ok: true, count: new Set(held.filter((g) => !covered.has(`${g.user_id}|${g.capability}`)).map((g) => g.user_id)).size }
+}
+
+/** Cameras of the whole organisation whose name contains the words (review M-2: merge across locations). At most 20. */
 export async function searchCameras(clients: InventoryClients, actor: Actor, query: string): Promise<Result<{ cameras: { id: string; label: string }[] }>> {
   const may = await inventoryAdmin(clients.rls, actor)
   if (!may.ok) return may
   const q = typeof query === 'string' ? query.trim() : ''
   if (q.length < 2) return { ok: false, error: 'Type at least two letters.' }
   if (q.length > 100) return { ok: false, error: 'Use 100 characters or fewer.' }
-  const pattern = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
+  // LIKE's own wildcards are escaped. PostgREST also reads "*" as a wildcard and offers no escape for it, so a "*" is sent as "_" (any
+  // one character) and the rows are then kept only when the name really contains the words (fix round 2 note).
+  const pattern = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`).replace(/\*/g, '_')}%`
   const { data, error } = await clients.admin.from('cameras').select('id, name, channel, recorder_id, location_id, locations!cameras_location_fk!inner(code)')
-    .eq('org_id', actor.orgId).is('archived_at', null).ilike('name', pattern).order('name').order('id').limit(20)
+    .eq('org_id', actor.orgId).is('archived_at', null).ilike('name', pattern).order('name').order('id').limit(q.includes('*') ? 200 : 20)
   if (error) return { ok: false, error: sanitizeError(error, { route: 'searchCameras', fallback: 'Could not look for cameras.' }) }
-  const rows = (data ?? []) as unknown as { id: string; name: string; channel: number; recorder_id: string | null; locations: { code: string } }[]
+  const words = q.toLowerCase()
+  const rows = ((data ?? []) as unknown as { id: string; name: string; channel: number; recorder_id: string | null; locations: { code: string } }[])
+    .filter((r) => !q.includes('*') || r.name.toLowerCase().includes(words)).slice(0, 20)
   const names = await recorderNames(clients.admin, actor.orgId, rows.map((r) => r.recorder_id).filter((x): x is string => !!x))
   return {
     ok: true,

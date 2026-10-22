@@ -34,11 +34,16 @@ export const MSG_OPEN_VIDEO = 'Video that is already open is not cut off yet: it
 /** "PTN1 - Patna" stays as it is; "Head office, Patna" gets its code in front (review M-12: no "PTN1 · PTN1 - Patna"). */
 export const locationTitle = (code: string, name: string): string => (name.toUpperCase().startsWith(code.toUpperCase()) ? name : `${code} · ${name}`)
 
-export type MergePreview = { keepName: string; duplicateName: string; duplicatePlace: string; peopleLosing: number }
+/**
+ * What a merge would do (review I-5 / M-3; fix round 2 A-N1 / A-N2): the exact pair described, both names, the duplicate's place and
+ * whether it shows an NVR channel, and how many people would lose that camera's video (their only access is a grant on the duplicate).
+ */
+export type MergePreview = {
+  keepId: string; duplicateId: string; keepName: string; duplicateName: string; duplicatePlace: string; duplicateLinked: boolean; peopleLosing: number
+}
 /** The confirmation of a merge, naming both cameras, the duplicate's place and who loses access (review I-5 / M-3). */
-export function mergeSentence(p: MergePreview): string {
-  const linked = p.duplicatePlace.includes(', channel ')
-  const first = linked
+export function mergeSentence(p: Omit<MergePreview, 'keepId' | 'duplicateId'>): string {
+  const first = p.duplicateLinked
     ? `“${p.keepName}” keeps its identity, access, groups and history and takes over the NVR channel of “${p.duplicateName}” (${p.duplicatePlace}), which is archived.`
     : `“${p.keepName}” keeps its identity, access, groups and history; “${p.duplicateName}” (${p.duplicatePlace}) is archived.`
   const second = p.peopleLosing === 0

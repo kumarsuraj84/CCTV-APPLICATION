@@ -15,6 +15,8 @@ import {
 } from '@/lib/inventory/hierarchy'
 import { saveLocation, saveNetworkDefinition } from '@/lib/inventory/locations'
 import { mergeCameras, previewMerge, remapCamera, searchCameras } from '@/lib/inventory/mapping'
+import { checkMergeConfirmation, mergeConfirmation, MSG_MERGE_CONFIRM_AGAIN } from '@/lib/inventory/merge-confirm'
+import { cleanId } from '@/lib/inventory/admin-gate'
 import { saveRecorder, setRecorderMonitoring, testRecorderConnection } from '@/lib/inventory/recorder-admin'
 import { discoverRecorderCameras } from '@/lib/monitor/discovery'
 import { discoverySummary } from '@/lib/monitor/discovery-summary'
@@ -165,12 +167,17 @@ export async function remapCameraAction(input: { cameraId: string; recorderId: s
   return done(res, () => ({ ok: true, message: 'The camera now shows that NVR channel. Its access, groups and history stay.' }))
 }
 
-export type MergePreviewState = ({ ok: true } & MergePreview & { sentence: string }) | { ok: false; error: string }
-/** What a merge would do, named, before the person confirms it (review I-5). */
+export type MergePreviewState = ({ ok: true } & MergePreview & { sentence: string; confirmation: string }) | { ok: false; error: string }
+/**
+ * What a merge would do, named, before the person confirms it (review I-5). The answer names the exact pair it describes and carries
+ * a confirmation for that pair only (fix round 2, A-N1): the merge action refuses any other pair.
+ */
 export async function previewMergeAction(input: { keepId: string; duplicateId: string }): Promise<MergePreviewState> {
   const { clients, actor } = await ctx()
+  if (await limited('preview', actor.id, 30)) return { ok: false, error: MSG_SLOW_DOWN }
   const res = await previewMerge(clients, actor, { keepId: String(input?.keepId ?? ''), duplicateId: String(input?.duplicateId ?? '') })
-  return res.ok ? { ...res, sentence: mergeSentence(res) } : res
+  if (!res.ok) return res
+  return { ...res, sentence: mergeSentence(res), confirmation: mergeConfirmation({ actorId: actor.id, orgId: actor.orgId, keepId: res.keepId, duplicateId: res.duplicateId }) }
 }
 
 export type SearchCamerasState = { ok: true; cameras: { id: string; label: string }[] } | { ok: false; error: string }
@@ -181,14 +188,22 @@ export async function searchCamerasAction(query: string): Promise<SearchCamerasS
   return searchCameras(clients, actor, String(query ?? ''))
 }
 
-export async function mergeCamerasAction(input: { keepId: string; duplicateId: string }): Promise<AdminActionState> {
+/** Merges exactly the pair the person confirmed (fix round 2, A-N1): without a matching confirmation from previewMergeAction, nothing happens. */
+export async function mergeCamerasAction(input: { keepId: string; duplicateId: string; confirmation: string }): Promise<AdminActionState> {
   const { clients, actor } = await ctx(true)
-  const res = await mergeCameras(clients, actor, { keepId: String(input?.keepId ?? ''), duplicateId: String(input?.duplicateId ?? '') })
+  const keepId = cleanId(input?.keepId)
+  const duplicateId = cleanId(input?.duplicateId)
+  if (!keepId || !duplicateId || !checkMergeConfirmation(input?.confirmation, { actorId: actor.id, orgId: actor.orgId, keepId, duplicateId })) {
+    return { error: MSG_MERGE_CONFIRM_AGAIN }
+  }
+  const res = await mergeCameras(clients, actor, { keepId, duplicateId })
   refresh()
   return done(res, (r) => ({
     ok: true,
     message: `Merged. The kept camera now shows ${r.channel ? `channel ${r.channel} of that NVR` : 'its own channel'}; the other camera was archived.`,
-    ...(r.duplicateCameraGrants > 0 ? { warning: `${r.duplicateCameraGrants} ${r.duplicateCameraGrants === 1 ? 'person had' : 'people had'} access to the archived camera only; give them access to the kept camera if they still need it.` } : {}),
+    // Fix round 2 (A-N2): the database counts every holder of a grant on the archived camera; some of them may see the kept camera
+    // through a wider grant, so the warning says what is certain.
+    ...(r.duplicateCameraGrants > 0 ? { warning: `${r.duplicateCameraGrants} ${r.duplicateCameraGrants === 1 ? 'person had a grant' : 'people had grants'} on the archived camera itself; such grants are not moved. Give access to the kept camera to anyone who still needs it.` } : {}),
   }))
 }
 

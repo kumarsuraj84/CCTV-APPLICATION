@@ -4,7 +4,7 @@ import { cleanId, inventoryAdmin, type InventoryClients } from '@/lib/inventory/
 import { ensurePlaceholderCameras } from '@/lib/inventory/cameras'
 import { isHostOrIp, optionalText, parseClockOffset, parseWhole } from '@/lib/inventory/forms'
 import { isMonitored, MSG_MONITORING_OFF, readRecorderPassword } from '@/lib/inventory/recorders'
-import { inLoginBackoff, loginFingerprint, MSG_LOGIN_BACKOFF, noteLoginResult } from '@/lib/monitor/login-backoff'
+import { loginBlock, loginFingerprint, MSG_LOGIN_BACKOFF, noteLoginResult } from '@/lib/monitor/login-backoff'
 import { realProbes } from '@/lib/monitor/probes'
 import type { Probes } from '@/lib/monitor/types'
 import { describeNvrError, NvrError } from '@/lib/nvr/client'
@@ -165,7 +165,8 @@ export async function testRecorderConnection(clients: InventoryClients, actor: A
   const username = row.username ?? ''
   const login = loginFingerprint(host, row.http_port, username, read.password)
   const now = (deps.now ?? Date.now)()
-  if (inLoginBackoff(id, login, now)) return { ok: false, error: MSG_LOGIN_BACKOFF }
+  const blocked = loginBlock(id, login, now)
+  if (blocked) return { ok: false, error: blocked }
   let outcome: string
   try {
     const status = await deps.nvr({ host, port: row.http_port, username, password: read.password }, { timeoutMs: 8000 }).channelStatus()
