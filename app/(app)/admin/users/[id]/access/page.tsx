@@ -5,6 +5,7 @@ import { AccessEditor, type EditorPrefill } from '@/components/admin/AccessEdito
 import { PageHeader } from '@/components/ui/PageHeader'
 import { loadEditor, type EditorData } from '@/lib/admin/access'
 import { requireAdministration } from '@/lib/auth/profile'
+import { FreshAuthNotice } from '@/components/auth/FreshAuthNotice'
 import { createAdminClient } from '@/lib/supabase/admin'
 
 export const metadata = { title: 'Access' }
@@ -53,6 +54,7 @@ export default async function AccessPage({ params, searchParams }: { params: Pro
         breadcrumbs={[{ label: 'Users', href: '/admin/users' }, { label: 'Access' }]}
         actions={<Link href="/admin/access-review" className="text-sm underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]">Access review</Link>}
       />
+      <FreshAuthNotice session={me.session} what="Saving changes of access" />
       <AccessEditor key={data.person.id} userId={data.person.id} data={data} prefill={prefill} />
     </div>
   )

@@ -7,6 +7,7 @@
 // person's own summary and scopes every write to the person's organisation. They return plain results and never throw to the client.
 import { revalidatePath } from 'next/cache'
 import { requireAdministration } from '@/lib/auth/profile'
+import { freshAuthRefusal } from '@/lib/auth/session-policy'
 import { archiveInventory, restoreInventory, type ArchiveKind } from '@/lib/inventory/archive'
 import { dismissFinding, linkFinding } from '@/lib/inventory/findings'
 import { mergeSentence, MSG_OPEN_VIDEO, type MergePreview } from '@/lib/inventory/forms'
@@ -39,7 +40,7 @@ async function ctx(withStreams = false) {
   Object.defineProperty(clients, 'credentials', { enumerable: false, get: () => createMediaClient() })
   // P2-6 (D-11): every administration action counts against the shared administration limit (each action may add its own count).
   const slow = await refusalFor('admin_action', p.id)
-  return { clients, actor: { id: p.id, orgId: p.org_id, role: p.role }, slow }
+  return { clients, actor: { id: p.id, orgId: p.org_id, role: p.role }, profile: p, slow }
 }
 /** The answer of an action that was not done because of a rate limit (fits every state type of this file). */
 const refused = (error: string) => ({ ok: false as const, error })
@@ -134,8 +135,11 @@ export async function saveNetworkAction(locationId: string, _prev: AdminActionSt
 // ── NVRs ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 const RECORDER_FIELDS = ['name', 'host', 'http_port', 'rtsp_port', 'username', 'expected_channels', 'clock_offset_sec']
 export async function saveRecorderAction(locationId: string, _prev: AdminActionState, f: FormData): Promise<AdminActionState> {
-  const { clients, actor, slow: busy } = await ctx()
+  const { clients, actor, profile, slow: busy } = await ctx()
   if (busy) return refused(busy)
+  // P3-1 (D-10): writing an NVR password is a credential write and needs a fresh sign-in (saving other fields does not).
+  const stale = text(f, 'password') ? freshAuthRefusal(profile) : null
+  if (stale) return { error: stale, values: submittedValues(f, RECORDER_FIELDS) }
   const res = await saveRecorder(clients, actor, String(locationId), {
     id: text(f, 'id') || null, name: text(f, 'name'), host: text(f, 'host'), httpPort: text(f, 'http_port'), rtspPort: text(f, 'rtsp_port'),
     username: text(f, 'username'), password: text(f, 'password') || null, expectedChannels: text(f, 'expected_channels'), clockOffsetSec: text(f, 'clock_offset_sec'),

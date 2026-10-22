@@ -6,6 +6,7 @@ import { DEVICE_TYPES, DEVICE_TYPE_LABELS } from '@/lib/inventory/device-types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select } from '@/components/ui/select'
 
 export type DeviceFormValues = { id?: string; name?: string; type?: string; store_id?: string | null; ip?: string | null; tcp_port?: number | null; notes?: string | null; enabled?: boolean }
 
@@ -22,16 +23,16 @@ export function DeviceForm({ device, stores }: { device?: DeviceFormValues; stor
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="type">Type</Label>
-        <select id="type" name="type" defaultValue={v('type', device?.type ?? 'server')} className="h-8 w-full rounded-lg border bg-background px-2 text-sm">
+        <Select id="type" name="type" defaultValue={v('type', device?.type ?? 'server')}>
           {DEVICE_TYPES.map((t) => (<option key={t} value={t}>{DEVICE_TYPE_LABELS[t]}</option>))}
-        </select>
+        </Select>
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="store_id">Location</Label>
-        <select id="store_id" name="store_id" defaultValue={v('store_id', device?.store_id)} className="h-8 w-full rounded-lg border bg-background px-2 text-sm">
+        <Select id="store_id" name="store_id" defaultValue={v('store_id', device?.store_id)}>
           <option value="">Not at a location</option>
           {stores.map((s) => (<option key={s.id} value={s.id}>{s.code} · {s.name}</option>))}
-        </select>
+        </Select>
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="ip">IP address</Label>

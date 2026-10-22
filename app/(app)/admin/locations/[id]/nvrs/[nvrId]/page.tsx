@@ -7,6 +7,7 @@ import { DiscoverNvrButton, MonitoringSwitch, RecorderForm, TestConnectionButton
 import { Section } from '@/components/admin/inventory/fields'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { requireAdministration } from '@/lib/auth/profile'
+import { FreshAuthNotice } from '@/components/auth/FreshAuthNotice'
 import { listFindings } from '@/lib/inventory/findings'
 import { recorderDetail } from '@/lib/queries/admin-inventory'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -37,6 +38,7 @@ export default async function RecorderPage({ params }: { params: Promise<{ id: s
         breadcrumbs={[{ label: 'Locations and NVRs', href: '/admin/locations' }, { label: loc.data.code, href: `/admin/locations/${id}` }, { label: r.name }]}
         actions={<ArchiveButton kind="recorder" id={r.id} archived={archived} name={r.name} />}
       />
+      {!archived && <FreshAuthNotice session={me.session} what="Saving a new NVR password" />}
       {archived ? (
         <p role="status" className="rounded-md border bg-muted/40 px-3 py-2 text-sm">This NVR is archived: nothing contacts it. Restore it to change it.</p>
       ) : (

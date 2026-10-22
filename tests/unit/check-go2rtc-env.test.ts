@@ -16,12 +16,13 @@ const dir = mkdtempSync(path.join(os.tmpdir(), 'drishti-go2rtc-env-'))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 const PASSWORD = 'Pw-0123456789-abcdefghij-0123456789-XYZ'
 
+/** A minimal child environment (no NODE_ENV on purpose: production must come from DRISHTI_ENV or the file). */
+const childEnv = (env: Record<string, string>) => ({ PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? '', ...env }) as unknown as NodeJS.ProcessEnv
+
 function run(fileLines: string[], env: Record<string, string> = {}) {
   const file = path.join(dir, `env-${Math.random().toString(36).slice(2)}`)
   writeFileSync(file, fileLines.join('\r\n'))
-  const r = spawnSync(process.execPath, [SCRIPT, '--compose-env', file], {
-    encoding: 'utf8', env: { PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? '', ...env }, windowsHide: true,
-  })
+  const r = spawnSync(process.execPath, [SCRIPT, '--compose-env', file], { encoding: 'utf8', env: childEnv(env), windowsHide: true })
   return { code: r.status, out: `${r.stdout}${r.stderr}` }
 }
 
@@ -69,9 +70,9 @@ describe('go2rtc login check before the stack starts (review I-2)', () => {
 
   it('no env file: production refuses, development goes ahead', () => {
     const missing = path.join(dir, 'does-not-exist')
-    const prod = spawnSync(process.execPath, [SCRIPT, '--compose-env', missing], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', DRISHTI_ENV: 'production' } })
+    const prod = spawnSync(process.execPath, [SCRIPT, '--compose-env', missing], { encoding: 'utf8', env: childEnv({ DRISHTI_ENV: 'production' }) })
     expect(prod.status).toBe(1)
-    const dev = spawnSync(process.execPath, [SCRIPT, '--compose-env', missing], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } })
+    const dev = spawnSync(process.execPath, [SCRIPT, '--compose-env', missing], { encoding: 'utf8', env: childEnv({}) })
     expect(dev.status).toBe(0)
   })
 })

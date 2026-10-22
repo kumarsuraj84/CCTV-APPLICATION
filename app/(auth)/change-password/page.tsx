@@ -1,7 +1,7 @@
 import { LogOut } from 'lucide-react'
 import { redirect } from 'next/navigation'
 import { signOut } from '@/lib/actions/auth'
-import { getCurrentProfile } from '@/lib/auth/profile'
+import { getCurrentProfile, mfaGateOf } from '@/lib/auth/profile'
 import { Button } from '@/components/ui/button'
 import { AuthCard } from '../AuthCard'
 import { ChangePasswordForm } from './ChangePasswordForm'
@@ -11,6 +11,8 @@ export const metadata = { title: 'Choose a password' }
 export default async function ChangePasswordPage() {
   const profile = await getCurrentProfile()
   if (!profile) redirect('/login')
+  // P3-1: with an authenticator app the auth server changes a password only after the code (aal2), so ask for it first.
+  if (mfaGateOf(profile) === 'challenge') redirect('/mfa?next=%2Fchange-password')
   return (
     <AuthCard
       title="Choose your own password"

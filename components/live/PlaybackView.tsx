@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select } from '@/components/ui/select'
 import { listDaySegmentsAction, listRecordedDaysAction, openPlaybackAction } from '@/lib/actions/playback'
 import { clampDay, dayLabel, monthInBounds, shiftMonth } from '@/lib/streams/calendar'
 import { fastMinutes, isSpeed, MAX_FAST_MINUTES, SPEEDS, speedLabel, vodUrl, type Speed } from '@/lib/streams/speed'
@@ -249,26 +250,21 @@ export function PlaybackView({ camera, today, initialDay, fastPlayback = 'hidden
             </div>
             <div className="space-y-1">
               <Label htmlFor={`${ids}-length`}>Length</Label>
-              <select
-                id={`${ids}-length`}
-                value={length}
-                onChange={(e) => setLength(Number(e.target.value))}
-                className="h-8 rounded-lg border border-input bg-transparent px-2 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm dark:bg-input/30"
-              >
+              <Select id={`${ids}-length`} value={length} onChange={(e) => setLength(Number(e.target.value))} wrapperClassName="w-auto">
                 {LENGTH_CHOICES.map((n) => <option key={n} value={n}>{n} minutes</option>)}
-              </select>
+              </Select>
             </div>
             <div className="space-y-1">
               <Label htmlFor={`${ids}-speed`}>Speed</Label>
-              <select
+              <Select
                 id={`${ids}-speed`}
                 value={playSpeed}
                 onChange={(e) => { const n = Number(e.target.value); if (isSpeed(n)) setSpeed(n) }}
                 aria-describedby={fastHelp === null ? undefined : `${ids}-speed-help`}
-                className="h-8 rounded-lg border border-input bg-transparent px-2 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm dark:bg-input/30"
+                wrapperClassName="w-auto"
               >
                 {(fast ? SPEEDS : SPEEDS.filter((s) => s === 1)).map((s) => <option key={s} value={s}>{speedLabel(s)}</option>)}
-              </select>
+              </Select>
             </div>
             <Button ref={playButton} type="button" onClick={play} disabled={busy || (minute === null && draft === null)}>
               <Play aria-hidden="true" /> {busy ? 'Opening…' : playLabel}

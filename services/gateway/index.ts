@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import { createGateway, normalizeOrigin } from '@/lib/streams/gateway'
+import { gatewayBindHost } from '@/lib/web/tls'
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 import { isProductionMode } from '@/lib/runtime-mode'
@@ -109,7 +110,9 @@ async function main() {
     logger.error({ event: 'gateway_listen_failed', error: e })
     process.exit(1)
   })
-  gateway.listen(port, '0.0.0.0', () => logger.info({ event: 'gateway_started', port, allowedOrigins: valid.length }))
+  // P3-1 (runbook-tls.md): GATEWAY_HOST=127.0.0.1 behind the one https address (Caddy); every address otherwise, as before.
+  const host = gatewayBindHost()
+  gateway.listen(port, host, () => logger.info({ event: 'gateway_started', port, host, allowedOrigins: valid.length }))
 }
 
 main().catch((e) => {

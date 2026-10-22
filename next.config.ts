@@ -1,4 +1,6 @@
 import type { NextConfig } from 'next'
+// The policy text only (no other import: next.config is loaded by Node before the app's path aliases exist).
+const REDIRECT_CSP = "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 // One stamp per production build (set by the build script); "dev" locally. Open pages compare it with /api/version.
 const BUILD_ID = process.env.CK_BUILD_ID || 'dev'
@@ -29,12 +31,15 @@ const nextConfig: NextConfig = {
       { source: '/stores/:id', destination: '/locations/:id', permanent: true },
     ]
   },
+  // P3-1 (D-12, SO-8): the Content Security Policy of pages, API routes and the proxy's own redirects is set per request in proxy.ts
+  // (with its nonce). The redirects above are answered before the proxy runs, so they get the policy that allows nothing here.
+  // X-Frame-Options DENY matches the policy's frame-ancestors 'none' for browsers that read only the older header.
   async headers() {
-    return [{
+    return [...['/stores', '/stores/:id', '/admin/stores'].map((source) => ({ source, headers: [{ key: 'Content-Security-Policy', value: REDIRECT_CSP }] })), {
       source: '/:path*',
       headers: [
         { key: 'X-Content-Type-Options', value: 'nosniff' },
-        { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+        { key: 'X-Frame-Options', value: 'DENY' },
         { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
         { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
         // only when the site really is served over https

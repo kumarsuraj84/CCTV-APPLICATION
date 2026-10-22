@@ -6,6 +6,9 @@ import { readVerifiedUserId } from '@/lib/auth/verified-user'
 import type { Role } from '@/lib/nav'
 import { isAdminRole } from '@/lib/admin/roles'
 import { holdsAny, holdsOrgWide, readCapabilities, type AdminCapability, type Capabilities, type Capability } from '@/lib/auth/capabilities'
+import { safeNext } from '@/lib/auth/safe-next'
+import { mfaGate } from '@/lib/auth/session-policy'
+import { readSessionStatus, type SessionStatus } from '@/lib/auth/session-status'
 
 export type CurrentProfile = {
   id: string
@@ -18,6 +21,8 @@ export type CurrentProfile = {
   store_id: string | null
   /** What this person may do right now, read once per request from the database (P2-2; lib/auth/capabilities.ts). */
   capabilities: Capabilities
+  /** P3-1: this session as the database reads it (multi-factor, sign-in times); null when it could not be read. */
+  session: SessionStatus | null
 }
 
 // P2-5a: profiles.store_id is now location_id (the home location: information only); read under the old field name until P2-5b.
@@ -37,15 +42,33 @@ export const getCurrentProfile = cache(async (): Promise<CurrentProfile | null> 
   if (!userId) return null
   const { data } = await supabase.from('profiles').select(COLUMNS).eq('id', userId).maybeSingle()
   if (!data || !data.is_active) return null
-  const capabilities = await readCapabilities(supabase)
-  return { ...(data as Omit<CurrentProfile, 'capabilities'>), capabilities }
+  const [capabilities, session] = await Promise.all([readCapabilities(supabase), readSessionStatus(supabase)])
+  return { ...(data as Omit<CurrentProfile, 'capabilities' | 'session'>), capabilities, session }
 })
 
-/** For pages and actions that need a signed-in person who has already chosen their own password. */
+/** Where the multi-factor gate sends this person (lib/auth/session-policy.ts mfaGate); `ok` when the facts could not be read. */
+export const mfaGateOf = (profile: Pick<CurrentProfile, 'session'>) =>
+  profile.session
+    ? mfaGate({ enforced: profile.session.mfaEnforced, privileged: profile.session.privileged, aal2: profile.session.aal2, hasFactor: profile.session.hasFactor })
+    : 'ok'
+
+/** The page this request is for (set by proxy.ts), as a safe place to come back to. */
+async function hereForNext(): Promise<string> {
+  return encodeURIComponent(safeNext((await headers()).get('x-request-path') ?? ''))
+}
+
+/**
+ * For pages and actions that need a signed-in person who has finished signing in: the code of their authenticator app when they have
+ * one (P3-1, before anything else: the auth server refuses a password change without it), a password of their own, and an
+ * authenticator app when one is required for them (multi-factor switched on, administrator or MFA capability; ruling D-10a).
+ */
 export async function requireProfile(): Promise<CurrentProfile> {
   const profile = await getCurrentProfile()
   if (!profile) redirect('/login')
+  const gate = mfaGateOf(profile)
+  if (gate === 'challenge') redirect(`/mfa?next=${await hereForNext()}`)
   if (profile.must_reset_password) redirect('/change-password')
+  if (gate === 'enrol') redirect(`/mfa/enrol?next=${await hereForNext()}`)
   return profile
 }
 

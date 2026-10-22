@@ -660,7 +660,7 @@ function cameraFailure(error: string): Response {
  * or the same JSON error: the Playback screen uses it to find out why a video did not play, because a <video> element cannot read the
  * reason. It takes no place and ignores the person's own running conversion.
  */
-export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string }, query: VodQuery, signal?: AbortSignal): Promise<Response> {
+export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string; aal2?: boolean }, query: VodQuery, signal?: AbortSignal): Promise<Response> {
   const env = deps.env ?? process.env
   const now = deps.now ?? Date.now
   if (!startInBounds(query.start.getTime(), now())) return fail(400, MSG_BAD_START)
@@ -694,7 +694,8 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
   let sid: string | null = null
   if (!query.probe) {
     try {
-      sid = (await createMediaSessions(deps.admin, { orgId: actor.orgId, userId: actor.id, kind: 'vod', cameras: [{ id: camera.id, stream: null }], maxSec: Math.ceil(MAX_DOWNLOAD_MS / 1000) + 60 })).get(camera.id) ?? null
+      // P3-1: cctv.export requires MFA; the session records the verified level so the registry's checks count it while the switch is on.
+      sid = (await createMediaSessions(deps.admin, { orgId: actor.orgId, userId: actor.id, kind: 'vod', cameras: [{ id: camera.id, stream: null }], maxSec: Math.ceil(MAX_DOWNLOAD_MS / 1000) + 60, aal2: actor.aal2 === true })).get(camera.id) ?? null
       const opened = sid ? await registry.open(sid, { user: actor.id, camera: camera.id, kind: 'vod', stream: null }) : null
       if (!opened?.ok) {
         if (sid) void registry.close(sid)

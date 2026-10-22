@@ -45,6 +45,70 @@ export function gatewayBase(value: string | undefined): string | null {
   }
 }
 
+/** The gateway port when the address is derived from the page (NEXT_PUBLIC_STREAM_GATEWAY_PORT, else 3412: ruling PORTS-1). */
+export const DEFAULT_GATEWAY_PORT = 3412
+
+/** Where a page was opened: `location` in a browser; the request's scheme and Host header on the server (the CSP). */
+export type PageAddress = { protocol: string; host: string; hostname: string }
+
+const LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i
+const isLoopback = (hostname: string) => LOOPBACK.test(hostname)
+/** A plain path: segments of unreserved characters, no `..`, no empty segment, no query, fragment, backslash or percent sign. */
+const SAFE_PATH = /^\/(?:[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*)?\/?$/
+
+function portOf(port: string | number | undefined): number {
+  const n = typeof port === 'number' ? port : /^\d{1,5}$/.test(String(port ?? '').trim()) ? Number(String(port).trim()) : NaN
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : DEFAULT_GATEWAY_PORT
+}
+
+/**
+ * The gateway's address for a page (P3-1 brief item 3), without a trailing slash, or null when it cannot be known.
+ *   - unset, empty or `auto`: the page's own host on the gateway port (`opts.port`, default 3412): http://10.0.0.47:3212 → http://10.0.0.47:3412
+ *   - a path such as `/` or `/video`: the gateway sits behind the same address as the app (one reverse proxy; wss when the page is https)
+ *   - an http(s) address: used as it is, except that an address on "this computer" (localhost, 127.x, ::1) seen from a page opened on
+ *     another computer means that other computer, so the page's host is used instead (keeping the configured port and path)
+ * Without a page (server code), only an explicit address is known.
+ */
+export function resolveGatewayBase(configured: string | undefined, page: PageAddress | null, opts: { port?: string | number } = {}): string | null {
+  const value = (configured ?? '').trim()
+  if (value === '' || value.toLowerCase() === 'auto') {
+    if (!page || !page.hostname) return null
+    return `${page.protocol}//${page.hostname}:${portOf(opts.port)}`
+  }
+  if (value.startsWith('/')) {
+    if (!page || !SAFE_PATH.test(value) || value.split('/').some((s) => s === '..' || s === '.')) return null
+    return `${page.protocol}//${page.host}${value.replace(/\/+$/, '')}`
+  }
+  const base = gatewayBase(value)
+  if (!base || !page || !page.hostname || isLoopback(page.hostname)) return base
+  const u = new URL(base)
+  if (!isLoopback(u.hostname)) return base
+  return `${u.protocol}//${page.hostname}${u.port ? `:${u.port}` : ''}${u.pathname.replace(/\/+$/, '')}`
+}
+
+/**
+ * The address the web server itself uses for the gateway (the health panel): GATEWAY_HEALTH_URL, else an explicit
+ * NEXT_PUBLIC_STREAM_GATEWAY_URL, else (unset, `auto` or a path: the gateway runs next to the app) this computer on the gateway port.
+ */
+export function serverGatewayBase(env: Record<string, string | undefined> = process.env): string | null {
+  if (env.GATEWAY_HEALTH_URL?.trim()) return gatewayBase(env.GATEWAY_HEALTH_URL.trim())
+  const configured = (env.NEXT_PUBLIC_STREAM_GATEWAY_URL ?? '').trim()
+  if (configured !== '' && configured.toLowerCase() !== 'auto' && !configured.startsWith('/')) return gatewayBase(configured)
+  return `http://127.0.0.1:${portOf(env.GATEWAY_PORT || env.NEXT_PUBLIC_STREAM_GATEWAY_PORT)}`
+}
+
+/** The origins a page must be allowed to reach for this gateway (CSP connect-src): its http(s) origin and the matching ws(s) one. */
+export function gatewayConnectOrigins(base: string | null): string[] {
+  if (!base) return []
+  try {
+    const u = new URL(base)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return []
+    return [u.origin, u.origin.replace(/^http/, 'ws')]
+  } catch {
+    return []
+  }
+}
+
 /** The video socket address for a token. The token is the only thing in the query. */
 export function gatewaySocketUrl(base: string, token: string): string {
   return `${base.replace(/^http/, 'ws')}/g/ws?token=${encodeURIComponent(token)}`

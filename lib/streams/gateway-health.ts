@@ -1,6 +1,6 @@
 import type { AdminClient } from '@/lib/admin/types'
 import type { GatewayHealth } from '@/lib/streams/gateway'
-import { gatewayBase } from '@/lib/streams/wall'
+import { serverGatewayBase } from '@/lib/streams/wall'
 
 // P2-4 brief item 3: the Monitoring page shows the video gateway's health. The web server reads the gateway's /g/health JSON (counts and
 // ages only: no session id, person, camera or address) at the address browsers use (NEXT_PUBLIC_STREAM_GATEWAY_URL), or
@@ -24,7 +24,8 @@ function parse(o: unknown): GatewayHealth | null {
 
 /** The gateway's own health, or `{ ok: false }` when it is not configured, not answering (2 s) or answers something else. */
 export async function readGatewayHealth(
-  base: string | null = gatewayBase(process.env.GATEWAY_HEALTH_URL || process.env.NEXT_PUBLIC_STREAM_GATEWAY_URL),
+  // P3-1: with a derived browser address (unset, `auto` or a path) the server asks the gateway on this computer (serverGatewayBase).
+  base: string | null = serverGatewayBase(),
   fetchImpl: typeof fetch = fetch,
   timeoutMs = 2000,
 ): Promise<GatewayHealthView> {

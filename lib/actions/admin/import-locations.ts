@@ -6,6 +6,7 @@
 // return plain results; the preview and the result never hold a password.
 import { revalidatePath } from 'next/cache'
 import { requireAdministration } from '@/lib/auth/profile'
+import { freshAuthRefusal } from '@/lib/auth/session-policy'
 import { applyLocationImport, checkLocationImport, type ImportOutcome } from '@/lib/import/locations-import'
 import type { ImportPreview } from '@/lib/import/locations-plan'
 import { adminRefusalFor } from '@/lib/rate-limit-shared'
@@ -40,6 +41,9 @@ export async function checkLocationImportAction(f: FormData): Promise<ImportChec
 
 export async function applyLocationImportAction(f: FormData): Promise<ImportApplyState> {
   const p = await requireAdministration('admin.inventory')
+  // P3-1 (D-10): an import writes NVR passwords (credential writes): a fresh sign-in first.
+  const stale = freshAuthRefusal(p)
+  if (stale) return { ok: false, error: stale }
   // P2-6 (D-11): five imports per administrator in ten minutes, shared by every app instance (plus the overall administration count).
   const slow = await adminRefusalFor('import_apply', p.id)
   if (slow) return { ok: false, error: slow }

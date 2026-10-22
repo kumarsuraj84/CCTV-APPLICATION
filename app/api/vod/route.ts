@@ -41,7 +41,7 @@ export async function GET(request: Request) {
     if (!parsed.ok) return error(parsed.error === 'Camera not found.' ? 404 : 400, parsed.error)
 
     // P2-6 (D-14): the video path's own database role (route, media session, NVR login for `vod`, its access audit rows).
-    return await serveVod({ rls: await createClient(), admin: createMediaClient(), limiter: exportRequestLimiter }, { id: profile.id, orgId: profile.org_id }, parsed.query, request.signal)
+    return await serveVod({ rls: await createClient(), admin: createMediaClient(), limiter: exportRequestLimiter }, { id: profile.id, orgId: profile.org_id, aal2: profile.session?.aal2 === true }, parsed.query, request.signal)
   } catch (e) {
     // The kind of error only: its text can carry an address or a password.
     logger.error({ event: 'vod_route_failed', errorName: e instanceof Error ? e.name : typeof e })

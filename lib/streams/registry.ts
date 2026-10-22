@@ -145,13 +145,15 @@ export function adminRegistry(admin: AdminClient, timeoutMs = REGISTRY_TIMEOUT_M
  */
 export async function createMediaSessions(
   admin: AdminClient,
-  o: { orgId: string; userId: string; kind: SessionKind; cameras: { id: string; stream: string | null }[]; connectSec?: number; maxSec?: number },
+  o: { orgId: string; userId: string; kind: SessionKind; cameras: { id: string; stream: string | null }[]; connectSec?: number; maxSec?: number; aal2?: boolean },
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>()
   if (o.cameras.length === 0) return out
   const { data, error } = await admin.rpc('media_session_create', {
     p_org: o.orgId, p_user: o.userId, p_kind: o.kind, p_cameras: o.cameras.map((c) => c.id),
     p_streams: o.cameras.map((c) => c.stream) as string[],
+    // P3-1: the session's verified level (my_session_status), so a capability that requires MFA counts for it while the switch is on.
+    ...(o.aal2 ? { p_aal2: true } : {}),
     ...(o.connectSec ? { p_connect_sec: o.connectSec } : {}), ...(o.maxSec ? { p_max_sec: o.maxSec } : {}),
   })
   if (error) throw new Error(`Could not register the video sessions (${error.code ?? 'error'}).`)

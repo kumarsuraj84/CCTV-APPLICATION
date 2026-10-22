@@ -1,6 +1,7 @@
 import { WifiInventoryTable } from '@/components/wifi/WifiInventoryTable'
 import { FormAlert } from '@/components/ui/form-alert'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { Select } from '@/components/ui/select'
 import { requireCapability } from '@/lib/auth/profile'
 import { createClient } from '@/lib/supabase/server'
 import { wifiInventory } from '@/lib/wifi/inventory'
@@ -38,17 +39,17 @@ export default async function WifiInventoryPage({ searchParams }: { searchParams
         </div>
         <div className="space-y-1.5">
           <label htmlFor="wifi-location" className="block text-sm font-medium">Location</label>
-          <select id="wifi-location" name="location" defaultValue={location} className={FIELD}>
+          <Select id="wifi-location" name="location" defaultValue={location} className="h-10">
             <option value="">Every location</option>
             {locations.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
-          </select>
+          </Select>
         </div>
         <div className="space-y-1.5">
           <label htmlFor="wifi-kind" className="block text-sm font-medium">Kind</label>
-          <select id="wifi-kind" name="kind" defaultValue={kind} className={FIELD}>
+          <Select id="wifi-kind" name="kind" defaultValue={kind} className="h-10">
             <option value="">Every kind</option>
             {kinds.map((k) => <option key={k} value={k}>{k}</option>)}
-          </select>
+          </Select>
         </div>
         <button type="submit" className="h-10 rounded-md border border-field-border bg-background px-3 text-sm font-medium hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring">Show</button>
       </form>

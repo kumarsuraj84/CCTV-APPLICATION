@@ -3,15 +3,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
 import type { Status } from '@/lib/queries/status'
-import { gatewayBase, gatewaySocketUrl, QUICK_RETRY_MS, RETRY_EVERY_MS } from '@/lib/streams/wall'
+import { gatewaySocketUrl, QUICK_RETRY_MS, RETRY_EVERY_MS } from '@/lib/streams/wall'
 import { cn } from '@/lib/utils'
 import { loadPlayer, startPlayer } from './player'
+import { useGatewayBase } from './useGatewayBase'
 
 /** `canPlayback`: the person may play back this camera's recordings (P2-2); the large picture offers Playback only then. */
 export type TileCamera = { id: string; name: string; storeCode: string; channel: number; status: Status | null; stale: boolean; canPlayback?: boolean }
-
-// Read here so the build inlines it for the browser (only NEXT_PUBLIC_ names reach client code).
-const GATEWAY = gatewayBase(process.env.NEXT_PUBLIC_STREAM_GATEWAY_URL)
 
 /** Give up on a connection that has shown no picture after this long, and try again later. */
 const CONNECT_TIMEOUT_MS = 25_000
@@ -51,6 +49,8 @@ export function LiveTile({
   onOpen?: () => void
 }) {
   const host = useRef<HTMLDivElement>(null)
+  // P3-1: derived from the page's own address when NEXT_PUBLIC_STREAM_GATEWAY_URL is unset, `auto` or a path (undefined until hydrated).
+  const GATEWAY = useGatewayBase()
   const tokenRef = useRef(token)
   const playedAt = useRef(0)
   const [player, setPlayer] = useState<PlayerState>('connecting')
@@ -75,11 +75,12 @@ export function LiveTile({
       setPlayer(playedAt.current > 0 && Date.now() - playedAt.current >= NORMAL_RUN_MS ? 'reconnecting' : 'unavailable')
       playedAt.current = 0
     }
-    loadPlayer(GATEWAY)
+    const gateway = GATEWAY
+    loadPlayer(gateway)
       .then(() => {
         const t = tokenRef.current
         if (cancelled || !t || !host.current) return
-        stop = startPlayer(host.current, gatewaySocketUrl(GATEWAY, t), {
+        stop = startPlayer(host.current, gatewaySocketUrl(gateway, t), {
           onPlaying: () => {
             clearTimeout(watchdog)
             if (playedAt.current === 0) playedAt.current = Date.now()
@@ -99,16 +100,16 @@ export function LiveTile({
       playedAt.current = 0
       setPlayer('connecting')
     }
-  }, [hasToken, paused, attempt])
+  }, [GATEWAY, hasToken, paused, attempt])
 
   // Not working: try again later (soon, if it only reached the end of its session).
   useEffect(() => {
     if ((player !== 'unavailable' && player !== 'reconnecting') || paused || !hasToken || !GATEWAY) return
     const timer = setTimeout(() => setAttempt((n) => n + 1), player === 'reconnecting' ? QUICK_RETRY_MS : RETRY_EVERY_MS)
     return () => clearTimeout(timer)
-  }, [player, paused, hasToken])
+  }, [GATEWAY, player, paused, hasToken])
 
-  const shown: keyof typeof MESSAGES | 'playing' = !GATEWAY || failed ? 'unavailable' : paused ? 'paused' : !hasToken ? 'connecting' : player
+  const shown: keyof typeof MESSAGES | 'playing' = GATEWAY === null || failed ? 'unavailable' : paused ? 'paused' : !hasToken || GATEWAY === undefined ? 'connecting' : player
   const label = `${camera.storeCode}, ${camera.name}`
 
   return (
@@ -124,7 +125,7 @@ export function LiveTile({
       )}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-2 bg-gradient-to-b from-black/70 to-transparent p-2">
         <div className="min-w-0 text-xs leading-tight">
-          <span className="font-mono font-semibold">{camera.storeCode}</span>
+          <span translate="no" className="font-mono font-semibold">{camera.storeCode}</span>
           <span className="block truncate">{camera.name}</span>
         </div>
         <StatusBadge status={camera.status} stale={camera.stale} className="shrink-0" />

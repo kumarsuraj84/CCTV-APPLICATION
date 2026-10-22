@@ -5,6 +5,7 @@ import { useActionState } from 'react'
 import { createUserAction, type CreateUserState } from '@/lib/actions/admin/users'
 import { MSG_ROLES_GIVE_NO_ACCESS, ROLE_HELP, ROLE_LABELS, type Role } from '@/lib/admin/roles'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Select } from '@/components/ui/select'
 import { FIELD, FOCUS, HELP, LABEL, NOTE } from './fields'
 
 // A role says what a person may administer, never what they may see: that comes only from the access they are given (P2-1, AC-8).
@@ -30,23 +31,23 @@ export function CreateUserForm({ allowedRoles, stores, canAssignAccess = true }:
           </div>
           <div className="space-y-1.5">
             <label htmlFor="role" className={LABEL}>Role</label>
-            <select id="role" name="role" defaultValue={state.values?.role ?? 'user'} className={FIELD} aria-describedby="role-help">
+            <Select id="role" name="role" defaultValue={state.values?.role ?? 'user'} className="h-10" aria-describedby="role-help">
               {allowedRoles.map((r) => (
                 <option key={r} value={r}>{ROLE_LABELS[r as Role] ?? r}</option>
               ))}
-            </select>
+            </Select>
             <ul id="role-help" className={`${HELP} list-disc space-y-0.5 pl-4`}>
               {allowedRoles.map((r) => <li key={r}><span className="font-medium">{ROLE_LABELS[r as Role] ?? r}:</span> {ROLE_HELP[r as Role]}</li>)}
             </ul>
           </div>
           <div className="space-y-1.5">
             <label htmlFor="store_id" className={LABEL}>Home location (optional, for information: gives no access)</label>
-            <select id="store_id" name="store_id" defaultValue={state.values?.store_id ?? ''} className={FIELD}>
+            <Select id="store_id" name="store_id" defaultValue={state.values?.store_id ?? ''} className="h-10">
               <option value="">No home location</option>
               {stores.map((s) => (
                 <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
               ))}
-            </select>
+            </Select>
           </div>
           <div className="sm:col-span-2">
             <button type="submit" disabled={pending} className={`rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/85 disabled:cursor-not-allowed disabled:bg-[#EAF1F8] disabled:text-[#5B646F] ${FOCUS}`}>

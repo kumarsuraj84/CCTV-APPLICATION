@@ -1,0 +1,67 @@
+# CityKart Drishti — one HTTPS address for the web app and the video gateway (P3-1, docs/drishti/runbook-tls.md).
+# Copy to C:\Drishti\caddy\Caddyfile, replace the host name and the certificate paths, never commit the real file or any key.
+#
+#   https://drishti.citykart.local/          -> the web app      (Next.js, 127.0.0.1:3212, listening on loopback only)
+#   https://drishti.citykart.local/g/*       -> the video gateway (127.0.0.1:3412, GATEWAY_HOST=127.0.0.1): wss://…/g/ws, player scripts
+#
+# The app must then be configured with (production env file, see the runbook):
+#   NEXT_PUBLIC_APP_URL=https://drishti.citykart.local
+#   NEXT_PUBLIC_STREAM_GATEWAY_URL=/
+#   GATEWAY_ALLOWED_ORIGINS=https://drishti.citykart.local
+#   TRUSTED_PROXY_HOPS=1
+#   GATEWAY_HOST=127.0.0.1
+
+{
+	# No automatic public certificates: this is a company-network address. The certificate comes from the company CA (or a lab one).
+	auto_https disable_redirects
+	admin localhost:2019
+}
+
+# Plain http on the same name only sends people to https.
+http://drishti.citykart.local {
+	redir https://{host}{uri} permanent
+}
+
+drishti.citykart.local {
+	# Certificate and key issued by the company CA (PEM). Keep the key readable only by the service account that runs Caddy.
+	tls C:\Drishti\certs\drishti.crt C:\Drishti\certs\drishti.key
+	# Lab only, instead of the line above: Caddy's own local CA (self-signed; trust its root on the test PCs).
+	# tls internal
+
+	encode zstd gzip
+
+	# The app sets its own security headers (CSP with a nonce, HSTS on https, X-Frame-Options, nosniff): Caddy adds none of its own
+	# and removes the one that names the server.
+	header -Server
+
+	# The video gateway: WebSocket upgrade and the two player scripts, path kept (/g/ws, /g/video-stream.js, /g/video-rtc.js).
+	handle /g/* {
+		reverse_proxy 127.0.0.1:3412 {
+			# The gateway checks the Origin header against GATEWAY_ALLOWED_ORIGINS; Caddy passes it on unchanged.
+			flush_interval -1
+		}
+	}
+
+	# Everything else: the web app. X-Forwarded-For is set by Caddy (TRUSTED_PROXY_HOPS=1 tells the app to believe one hop).
+	handle {
+		reverse_proxy 127.0.0.1:3212
+	}
+
+	log {
+		output file C:\Drishti\logs\caddy-access.log {
+			roll_size 20MiB
+			roll_keep 10
+		}
+		# Video tokens travel in the socket address; never write query strings to the log.
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete token
+				}
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}

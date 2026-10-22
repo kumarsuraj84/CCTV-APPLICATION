@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { AssetForm } from '@/components/admin/inventory/AssetForm'
 import { Section } from '@/components/admin/inventory/fields'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { Select } from '@/components/ui/select'
 import { requireAdministration } from '@/lib/auth/profile'
 import { ASSET_TYPE_LABELS, LIFECYCLE_LABELS, type AssetType } from '@/lib/inventory/forms'
 import { assetList } from '@/lib/queries/admin-inventory'
@@ -37,10 +38,10 @@ export default async function AssetsPage({ searchParams }: { searchParams: Promi
         </div>
         <div className="space-y-1.5">
           <label htmlFor="asset-type" className="block text-sm font-medium">Type</label>
-          <select id="asset-type" name="type" defaultValue={type} className="h-10 w-full rounded-sm border border-field-border bg-field px-3 text-base md:text-sm">
+          <Select id="asset-type" name="type" defaultValue={type} className="h-10">
             <option value="">Any type</option>
             {Object.entries(ASSET_TYPE_LABELS).filter(([k]) => k !== 'nvr').map(([k, label]) => <option key={k} value={k}>{label}</option>)}
-          </select>
+          </Select>
         </div>
         <label className="flex items-center gap-2 pb-2 text-sm"><input type="checkbox" name="archived" value="1" defaultChecked={archived} className="size-4 accent-primary" /> Archived ones</label>
         <button type="submit" className="h-10 rounded-md border border-field-border bg-background px-3 text-sm font-medium hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring">Show</button>

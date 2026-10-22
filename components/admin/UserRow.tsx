@@ -4,6 +4,8 @@ import Link from 'next/link'
 import { useState, useTransition } from 'react'
 import { reactivationReviewAction, resetPasswordAction, setActiveAction, setRoleAction, type ReactivationState } from '@/lib/actions/admin/users'
 import { ROLE_CHANGE_EFFECT, ROLE_LABELS, type Role } from '@/lib/admin/roles'
+import { resetFactorsAction, signOutEverywhereAction } from '@/lib/actions/admin/sessions'
+import { Select } from '@/components/ui/select'
 import { formatDay, SOURCE_LABELS, STATE_LABELS } from './access-labels'
 import { FIELD, FOCUS, NOTE, RT, STATUS } from './fields'
 
@@ -20,6 +22,10 @@ export type UserRowData = {
   access_editable?: boolean
   /** P2-3: "Live: 3 locations, Playback: 3 locations, IT: none" — shown only to administrators with admin.access. */
   summary?: string | null
+  /** P3-1: the person has an authenticator app (null: not known). */
+  two_step?: boolean | null
+  /** P3-1: the viewer is a super administrator, who may reset a person's two-step sign-in. */
+  can_reset_two_step?: boolean
 }
 
 type Listed = { id: string; capabilityLabel: string; scopeLabel: string; lastDay: string | null; state: string; source: string }
@@ -101,9 +107,9 @@ export function RoleChangePanel(p: {
     <div className="space-y-2">
       <div className="max-w-sm space-y-1.5">
         <label htmlFor={id} className="block text-sm font-medium">New role for {p.name}</label>
-        <select id={id} value={role} onChange={(e) => setRole(e.target.value)} className={FIELD}>
+        <Select id={id} value={role} onChange={(e) => setRole(e.target.value)}>
           {p.allowedRoles.map((r) => <option key={r} value={r}>{ROLE_LABELS[r as Role] ?? r}</option>)}
-        </select>
+        </Select>
       </div>
       <p>{ROLE_CHANGE_EFFECT(p.currentRole as Role, role as Role)}</p>
       <div className="flex flex-wrap gap-2">
@@ -117,7 +123,8 @@ export function RoleChangePanel(p: {
 export function UserRow({ u, showSummary = false, allowedRoles = [] }: { u: UserRowData; showSummary?: boolean; allowedRoles?: string[] }) {
   const [pending, start] = useTransition()
   const [otp, setOtp] = useState<string | null>(null)
-  const [panel, setPanel] = useState<'deactivate' | 'reactivate' | 'role' | null>(null)
+  const [panel, setPanel] = useState<'deactivate' | 'reactivate' | 'role' | 'signout' | 'two-step' | null>(null)
+  const [resetReason, setResetReason] = useState('')
   const [review, setReview] = useState<ReactivationState | null>(null)
   const [roleResult, setRoleResult] = useState<{ revoked: number; remaining: Listed[] | null } | null>(null)
   const [reason, setReason] = useState('Old access reviewed on reactivation')
@@ -164,16 +171,33 @@ export function UserRow({ u, showSummary = false, allowedRoles = [] }: { u: User
       if (res.error) setMessage({ ok: false, text: res.error })
       else setOtp(res.oneTimePassword ?? null)
     })
+  // P3-1: end every sign-in; reset the authenticator app (super administrators).
+  const signOutAll = () =>
+    start(async () => {
+      const res = await signOutEverywhereAction(u.id)
+      done(res.ok ? {} : { error: res.error }, `${name} is signed out everywhere. Their open video stops within a minute.`)
+    })
+  const resetTwoStep = () =>
+    start(async () => {
+      const res = await resetFactorsAction(u.id, resetReason)
+      done(res.ok ? {} : { error: res.error }, `Two-step sign-in of ${name} was reset and they are signed out everywhere.${res.ok && res.removed === 0 ? ' They had no authenticator app.' : ''}`)
+      if (res.ok) setResetReason('')
+    })
 
   return (
     <>
       <tr className={RT.tr}>
         <td className={RT.td}>
           <div className="font-medium">{u.full_name || '—'}</div>
-          <div className="text-xs text-muted-foreground">{u.email}</div>
+          <div className="text-xs text-muted-foreground" translate="no">{u.email}</div>
         </td>
         <td className={RT.td}><span className={RT.label}>Role:</span>{ROLE_LABELS[u.role as Role] ?? u.role}</td>
-        <td className={RT.td}><span className={RT.label}>Status:</span>{!u.is_active ? 'Deactivated' : u.must_reset_password ? 'Waiting for first sign-in' : 'Active'}</td>
+        <td className={RT.td}>
+          <span className={RT.label}>Status:</span>{!u.is_active ? 'Deactivated' : u.must_reset_password ? 'Waiting for first sign-in' : 'Active'}
+          {u.two_step !== undefined && u.two_step !== null && (
+            <span className="block text-xs text-muted-foreground">{u.two_step ? 'Two-step sign-in: on' : 'Two-step sign-in: off'}</span>
+          )}
+        </td>
         {showSummary && <td className={RT.td}><span className={RT.label}>Access:</span>{u.summary ?? 'Live: none, Playback: none, IT: none'}</td>}
         <td className={RT.tdAction}>
           <div className="flex flex-wrap gap-2 md:justify-end">
@@ -188,7 +212,11 @@ export function UserRow({ u, showSummary = false, allowedRoles = [] }: { u: User
                 {u.is_active
                   ? <button type="button" className={BTN} disabled={pending} onClick={() => { setMessage(null); setPanel('deactivate') }}>Deactivate…</button>
                   : <button type="button" className={BTN} disabled={pending} onClick={openReactivate}>Activate…</button>}
+                {u.is_active && <button type="button" className={BTN} disabled={pending} onClick={() => { setMessage(null); setPanel('signout') }}>Sign out everywhere…</button>}
               </>
+            )}
+            {u.can_reset_two_step && !u.is_self && u.two_step && (
+              <button type="button" className={BTN} disabled={pending} onClick={() => { setMessage(null); setPanel('two-step') }}>Reset two-step sign-in…</button>
             )}
           </div>
         </td>
@@ -199,6 +227,35 @@ export function UserRow({ u, showSummary = false, allowedRoles = [] }: { u: User
             <p><span className="font-medium">Deactivate {name}?</span> {MSG_DEACTIVATE}</p>
             <div className="flex flex-wrap gap-2">
               <button type="button" className={DANGER} disabled={pending} onClick={deactivate}>Deactivate</button>
+              <button type="button" className={BTN} disabled={pending} onClick={() => setPanel(null)}>Cancel</button>
+            </div>
+          </td>
+        </tr>
+      )}
+      {panel === 'signout' && (
+        <tr className="bg-muted/40">
+          <td colSpan={cols} className="space-y-2 px-3 py-3 text-sm">
+            <p><span className="font-medium">Sign {name} out everywhere?</span> Every computer and phone they are signed in on must sign in again, and their open video stops within a minute. Nothing else changes.</p>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className={DANGER} disabled={pending} onClick={signOutAll}>Sign out everywhere</button>
+              <button type="button" className={BTN} disabled={pending} onClick={() => setPanel(null)}>Cancel</button>
+            </div>
+          </td>
+        </tr>
+      )}
+      {panel === 'two-step' && (
+        <tr className="bg-muted/40">
+          <td colSpan={cols} className="space-y-2 px-3 py-3 text-sm">
+            <p>
+              <span className="font-medium">Reset the two-step sign-in of {name}?</span> Their authenticator app stops working, they are signed out
+              everywhere, and they set up a new app the next time they sign in (where it is required). Use this when they lost their phone.
+            </p>
+            <div className="max-w-xl space-y-1.5">
+              <label htmlFor={`mfa-reason-${u.id}`} className="block text-sm font-medium">Reason (kept in the audit log)</label>
+              <input id={`mfa-reason-${u.id}`} value={resetReason} onChange={(e) => setResetReason(e.target.value)} maxLength={500} className={FIELD} placeholder="Lost phone, confirmed by call" />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className={DANGER} disabled={pending || resetReason.trim().length < 3} onClick={resetTwoStep}>Reset two-step sign-in</button>
               <button type="button" className={BTN} disabled={pending} onClick={() => setPanel(null)}>Cancel</button>
             </div>
           </td>

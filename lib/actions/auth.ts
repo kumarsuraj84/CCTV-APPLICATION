@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/server'
 import { getClientIp } from '@/lib/rate-limit'
 import { MSG_SIGN_IN_BUSY, refusalFor, sharedLimiter, signInOutcomeOf, signInRefusalMessage, type SignInOutcome } from '@/lib/rate-limit-shared'
 import { getCurrentProfile } from '@/lib/auth/profile'
+import { recordAuthEvent } from '@/lib/auth/auth-events'
 import { safeNext } from '@/lib/auth/safe-next'
 import { passwordSchema } from '@/lib/validation/password'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
@@ -32,22 +33,33 @@ export async function signIn(_prev: FormState, formData: FormData): Promise<Form
   if (!gate.allowed) return { error: signInRefusalMessage(gate) }
 
   let outcome: SignInOutcome = 'not_counted'
+  let userId: string | null = null
   try {
     const supabase = await createClient()
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
     outcome = signInOutcomeOf(error)
+    userId = data?.user?.id ?? null
   } catch {
     outcome = 'not_counted' // no answer at all (network): not a wrong password
   } finally {
     await gate.finish(outcome)
   }
   if (outcome === 'not_counted') return { error: MSG_SIGN_IN_BUSY }
-  if (outcome === 'refused') return { error: 'Wrong e-mail or password.' }
+  // P3-1 (brief item 7): durable sign-in audit (auth_events; never the password; a typed address only as a hash).
+  const ip = await getClientIp()
+  if (outcome === 'refused') {
+    await recordAuthEvent({ event: 'sign_in_failed', email, ip })
+    return { error: 'Wrong e-mail or password.' }
+  }
+  await recordAuthEvent({ event: 'sign_in', userId, ip, detail: { method: 'password' } })
+  // A person with an authenticator app then enters its code (/mfa): every page sends them there first (lib/auth/profile.ts).
   redirect(safeNext(String(formData.get('next') ?? '')))
 }
 
 export async function signOut(): Promise<void> {
   const supabase = await createClient()
+  const { data } = await supabase.auth.getUser()
+  if (data?.user) await recordAuthEvent({ event: 'sign_out', userId: data.user.id })
   await supabase.auth.signOut()
   redirect('/login')
 }

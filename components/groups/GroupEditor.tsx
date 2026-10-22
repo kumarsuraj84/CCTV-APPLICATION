@@ -6,6 +6,7 @@ import { addByKeywordAction, addCamerasAction, removeCameraAction, type GroupAct
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select } from '@/components/ui/select'
 import type { GroupCamera, StoreCameraChoice } from '@/lib/queries/groups'
 
 export type GroupEditorProps = {
@@ -97,12 +98,12 @@ export function GroupEditor({ groupId, cameras, canManage, stores, selectedStore
             <form method="get" className="flex flex-col gap-2 sm:flex-row sm:items-end">
               <div className="min-w-0 flex-1 space-y-1.5 sm:max-w-sm">
                 <Label htmlFor="location-pick">Location</Label>
-                <select id="location-pick" name="location" defaultValue={selectedStoreId ?? ''} className="h-8 w-full rounded-lg border bg-background px-2 text-sm">
+                <Select id="location-pick" name="location" defaultValue={selectedStoreId ?? ''}>
                   <option value="">Choose a location</option>
                   {stores.map((s) => (
                     <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
                   ))}
-                </select>
+                </Select>
               </div>
               <Button type="submit" variant="outline">Show cameras</Button>
             </form>

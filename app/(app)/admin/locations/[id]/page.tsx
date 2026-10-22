@@ -9,6 +9,7 @@ import { RecorderForm } from '@/components/admin/inventory/RecorderForm'
 import { Section } from '@/components/admin/inventory/fields'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { requireAdministration } from '@/lib/auth/profile'
+import { FreshAuthNotice } from '@/components/auth/FreshAuthNotice'
 import { LOCATION_KIND_LABELS, locationTitle, type LocationKind } from '@/lib/inventory/forms'
 import { listFindings } from '@/lib/inventory/findings'
 import { locationDetail, regionsAndClusters } from '@/lib/queries/admin-inventory'
@@ -40,6 +41,7 @@ export default async function LocationPage({ params }: { params: Promise<{ id: s
         breadcrumbs={[{ label: 'Locations and NVRs', href: '/admin/locations' }, { label: l.code }]}
         actions={<ArchiveButton kind="location" id={l.id} archived={archived} name={locationTitle(l.code, l.name)} />}
       />
+      {!archived && <FreshAuthNotice session={me.session} what="Saving an NVR password" />}
       {archived ? (
         <p role="status" className="rounded-md border bg-muted/40 px-3 py-2 text-sm">This location is archived: nobody sees it, nothing contacts its NVRs. Restore it to change it.</p>
       ) : (

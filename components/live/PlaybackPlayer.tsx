@@ -2,11 +2,9 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { gatewayBase, gatewaySocketUrl } from '@/lib/streams/wall'
+import { gatewaySocketUrl } from '@/lib/streams/wall'
 import { loadPlayer, startPlayer } from './player'
-
-// Read here so the build inlines it for the browser (only NEXT_PUBLIC names reach client code).
-const GATEWAY = gatewayBase(process.env.NEXT_PUBLIC_STREAM_GATEWAY_URL)
+import { useGatewayBase } from './useGatewayBase'
 
 /** Give up on a connection that has shown no picture after this long. */
 const CONNECT_TIMEOUT_MS = 25_000
@@ -48,11 +46,15 @@ export function PlaybackPlayer({
   const host = useRef<HTMLDivElement>(null)
   const playedAt = useRef(0)
   const video = useRef<HTMLVideoElement | null>(null)
-  const [state, setState] = useState<State>(GATEWAY ? 'connecting' : 'unavailable')
+  // P3-1: derived from the page's own address when NEXT_PUBLIC_STREAM_GATEWAY_URL is unset, `auto` or a path (undefined until hydrated).
+  const GATEWAY = useGatewayBase()
+  const [playerState, setState] = useState<State>('connecting')
+  const state: State = GATEWAY === null ? 'unavailable' : playerState
   const [played, setPlayed] = useState(0)
 
   useEffect(() => {
     if (!GATEWAY) return
+    const gateway = GATEWAY
     let cancelled = false
     let stop: (() => void) | undefined
     let watchdog: ReturnType<typeof setTimeout> | undefined
@@ -75,10 +77,10 @@ export function PlaybackPlayer({
       else if (reason === 'timer' || Date.now() - playedAt.current >= minutes * 60_000 - NEAR_END_MS) setState('finished')
       else setState('stopped-early')
     }
-    loadPlayer(GATEWAY)
+    loadPlayer(gateway)
       .then(() => {
         if (cancelled || !host.current) return
-        stop = startPlayer(host.current, gatewaySocketUrl(GATEWAY, token), {
+        stop = startPlayer(host.current, gatewaySocketUrl(gateway, token), {
           onPlaying: () => {
             clearTimeout(watchdog)
             if (playedAt.current === 0) {
@@ -101,7 +103,7 @@ export function PlaybackPlayer({
       cancelled = true
       halt()
     }
-  }, [token, minutes])
+  }, [GATEWAY, token, minutes])
 
   return (
     <div className="space-y-2">

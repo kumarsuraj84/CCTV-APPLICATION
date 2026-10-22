@@ -6,6 +6,7 @@ import { MSG_CONFLICT, reviewBeforeReactivation, revokeAll, type GrantView } fro
 import { createUser, resetUserPassword, updateUser } from '@/lib/admin/users'
 import type { AdminCapability } from '@/lib/auth/capabilities'
 import { mayAdminister, requireAdministration } from '@/lib/auth/profile'
+import { freshAuthRefusal } from '@/lib/auth/session-policy'
 import { submittedValues } from '@/lib/forms/submitted-values'
 import { adminRefusalFor } from '@/lib/rate-limit-shared'
 import { createUserAdminClient } from '@/lib/supabase/admin'
@@ -26,12 +27,13 @@ async function ctx(cap: AdminCapability = 'admin.users') {
 }
 // P2-6 (D-11): 30 changes a minute per administrator, shared by every app instance, on top of the overall administration count;
 // refused when the count cannot be read. Null when the action may go ahead, else the words to show.
-const limited = (actorId: string) => adminRefusalFor('users_change', actorId)
+// P3-1 (D-10): every change of people also needs a fresh sign-in (freshAuthRefusal: a sign-in or code within FRESH_AUTH_MINUTES).
+const limited = async (profile: Parameters<typeof freshAuthRefusal>[0], actorId: string) => freshAuthRefusal(profile) ?? adminRefusalFor('users_change', actorId)
 
 export async function createUserAction(_prev: CreateUserState, formData: FormData): Promise<CreateUserState> {
-  const { admin, actor } = await ctx()
+  const { profile, admin, actor } = await ctx()
   const values = submittedValues(formData, ['full_name', 'email', 'role', 'store_id'])
-  const slow = await limited(actor.id)
+  const slow = await limited(profile, actor.id)
   if (slow) return { error: slow, values }
   const email = String(formData.get('email') ?? '')
   const res = await createUser(admin, actor, {
@@ -50,7 +52,7 @@ export async function createUserAction(_prev: CreateUserState, formData: FormDat
  */
 export async function setActiveAction(userId: string, isActive: boolean, opts?: { revokeAll?: { grantIds: string[]; reason: string; expectedVersion: number } }): Promise<SimpleState> {
   const { profile, admin, actor } = await ctx()
-  const slow = await limited(actor.id)
+  const slow = await limited(profile, actor.id)
   if (slow) return { error: slow }
   if (opts?.revokeAll) {
     if (!isActive) return { error: 'Removing access is offered only when reactivating.' }
@@ -73,7 +75,8 @@ const listed = (grants: GrantView[]): ListedGrant[] => grants.map((g) => ({ id: 
 export async function reactivationReviewAction(userId: string): Promise<ReactivationState> {
   const { profile, admin, actor } = await ctx()
   if (!z.uuid().safeParse(userId).success) return { ok: false, error: 'User not found.' }
-  const slow = await limited(actor.id)
+  // Reading the list changes nothing: the shared count only, no fresh sign-in.
+  const slow = await adminRefusalFor('users_change', actor.id)
   if (slow) return { ok: false, error: slow }
   const mayReadAccess = mayAdminister(profile, 'admin.access')
   const r = await reviewBeforeReactivation(admin, actor, userId, { mayReadAccess })
@@ -89,7 +92,7 @@ export type RoleState = { error?: string; ok?: boolean; revoked?: number; remain
  */
 export async function setRoleAction(userId: string, role: string, expectedVersion?: number | null): Promise<RoleState> {
   const { profile, admin, actor } = await ctx()
-  const slow = await limited(actor.id)
+  const slow = await limited(profile, actor.id)
   if (slow) return { error: slow }
   const version = typeof expectedVersion === 'number' && Number.isInteger(expectedVersion) && expectedVersion >= 0 ? expectedVersion : null
   const res = await updateUser(admin, actor, userId, { role }, { expectedVersion: version })
@@ -100,8 +103,8 @@ export async function setRoleAction(userId: string, role: string, expectedVersio
 }
 
 export async function resetPasswordAction(userId: string): Promise<PasswordState> {
-  const { admin, actor } = await ctx()
-  const slow = await limited(actor.id)
+  const { profile, admin, actor } = await ctx()
+  const slow = await limited(profile, actor.id)
   if (slow) return { error: slow }
   const res = await resetUserPassword(admin, actor, userId)
   revalidatePath('/admin/users')
