@@ -1,6 +1,7 @@
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { mapLimit } from '@/lib/async/pool'
 import { camerasFor } from '@/lib/auth/resource'
+import { legacyReachable, MSG_MONITORING_OFF } from '@/lib/inventory/recorders'
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 import type { Go2rtcClient } from '@/lib/streams/go2rtc'
@@ -24,7 +25,7 @@ const REGISTER_PARALLEL = 6
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 type StoreRow = { code: string; nvr_ip: string; rtsp_port: number; nvr_username: string }
-type CameraRow = { id: string; name: string; channel: number; store_id: string; stores: StoreRow | null }
+type CameraRow = { id: string; name: string; channel: number; store_id: string; recorder_id: string | null; stores: StoreRow | null }
 
 export type OpenDeps = {
   admin: AdminClient
@@ -61,18 +62,28 @@ export async function openStreams(
   if (mayWatch.length === 0) return { ok: true, streams: [] }
   const found = await deps.admin
     .from('cameras')
-    .select('id, name, channel, store_id, stores!inner(code, nvr_ip, rtsp_port, nvr_username, is_active)')
+    .select('id, name, channel, store_id:location_id, recorder_id, stores:locations!inner(code, nvr_ip, rtsp_port, nvr_username, is_active)')
     .eq('org_id', actor.orgId)
     .in('id', mayWatch)
     .eq('is_active', true)
+    .is('archived_at', null)
     .eq('stores.is_active', true)
   if (found.error) {
     logger.error({ event: 'open_streams_read_failed', errorCode: found.error.code })
     return { ok: false, error: MSG_FAILED }
   }
-  const byId = new Map((found.data as unknown as CameraRow[]).filter((c) => c.stores !== null).map((c) => [c.id, c]))
-  const cameras = wanted.map((id) => byId.get(id)).filter((c): c is CameraRow => c !== undefined)
-  if (cameras.length === 0) return { ok: true, streams: [] }
+  const byId = new Map((found.data as unknown as CameraRow[]).filter((c) => c.stores !== null && c.stores.nvr_ip).map((c) => [c.id, c]))
+  const listed = wanted.map((id) => byId.get(id)).filter((c): c is CameraRow => c !== undefined)
+  if (listed.length === 0) return { ok: true, streams: [] }
+  // Owner addition: nothing is opened towards an NVR whose monitoring is switched off (no credential read, no go2rtc call).
+  let route
+  try {
+    route = await legacyReachable(deps.admin, actor.orgId, listed.map((c) => ({ id: c.id, location_id: c.store_id, recorder_id: c.recorder_id })))
+  } catch {
+    return { ok: false, error: MSG_FAILED }
+  }
+  const cameras = listed.filter((c) => route.usable.has(c.id))
+  if (cameras.length === 0) return route.off.size > 0 ? { ok: false, error: MSG_MONITORING_OFF } : { ok: true, streams: [] }
 
   const env = deps.env ?? process.env
   // One password read per store, and only for stores that need one (a demo store has no real camera behind it).

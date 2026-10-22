@@ -51,21 +51,21 @@ isOneToOne: false
                   ]
                 },"access_grants": {
                   Row: {
-                    "asset_id": string | null,"camera_id": string | null,"capability": string,"granted_at": string,"granted_by": string | null,"id": string,"location_id": string | null,"needs_review": boolean,"org_id": string,"reason": string | null,"revoke_reason": string | null,"revoked_at": string | null,"revoked_by": string | null,"scope_id": string | null,"scope_kind": string,"source": string,"user_id": string,"valid_from": string,"valid_until": string | null
+                    "asset_id": string | null,"camera_id": string | null,"capability": string,"cluster_id": string | null,"granted_at": string,"granted_by": string | null,"id": string,"location_id": string | null,"needs_review": boolean,"org_id": string,"reason": string | null,"recorder_id": string | null,"region_id": string | null,"revoke_reason": string | null,"revoked_at": string | null,"revoked_by": string | null,"scope_id": string | null,"scope_kind": string,"source": string,"user_id": string,"valid_from": string,"valid_until": string | null
                   }
                   ComputedFields: never
                   Insert: {
-                    "asset_id"?: string | null,"camera_id"?: string | null,"capability": string,"granted_at"?: string,"granted_by"?: string | null,"id"?: string,"location_id"?: string | null,"needs_review"?: boolean,"org_id": string,"reason"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"revoked_by"?: string | null,"scope_id"?: string | null,"scope_kind": string,"source"?: string,"user_id": string,"valid_from"?: string,"valid_until"?: string | null
+                    "asset_id"?: string | null,"camera_id"?: string | null,"capability": string,"cluster_id"?: string | null,"granted_at"?: string,"granted_by"?: string | null,"id"?: string,"location_id"?: string | null,"needs_review"?: boolean,"org_id": string,"reason"?: string | null,"recorder_id"?: string | null,"region_id"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"revoked_by"?: string | null,"scope_id"?: string | null,"scope_kind": string,"source"?: string,"user_id": string,"valid_from"?: string,"valid_until"?: string | null
                   }
                   Update: {
-                    "asset_id"?: string | null,"camera_id"?: string | null,"capability"?: string,"granted_at"?: string,"granted_by"?: string | null,"id"?: string,"location_id"?: string | null,"needs_review"?: boolean,"org_id"?: string,"reason"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"revoked_by"?: string | null,"scope_id"?: string | null,"scope_kind"?: string,"source"?: string,"user_id"?: string,"valid_from"?: string,"valid_until"?: string | null
+                    "asset_id"?: string | null,"camera_id"?: string | null,"capability"?: string,"cluster_id"?: string | null,"granted_at"?: string,"granted_by"?: string | null,"id"?: string,"location_id"?: string | null,"needs_review"?: boolean,"org_id"?: string,"reason"?: string | null,"recorder_id"?: string | null,"region_id"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"revoked_by"?: string | null,"scope_id"?: string | null,"scope_kind"?: string,"source"?: string,"user_id"?: string,"valid_from"?: string,"valid_until"?: string | null
                   }
                   Relationships: [
                     {
       foreignKeyName: "access_grants_asset_fk"
       columns: ["asset_id","org_id"]
 isOneToOne: false
-      referencedRelation: "devices"
+      referencedRelation: "assets"
       referencedColumns: ["id","org_id"]
     },{
       foreignKeyName: "access_grants_camera_fk"
@@ -86,22 +86,28 @@ isOneToOne: false
       referencedRelation: "capabilities"
       referencedColumns: ["key"]
     },{
-      foreignKeyName: "access_grants_location_fk"
-      columns: ["location_id","org_id"]
+      foreignKeyName: "access_grants_cluster_fk"
+      columns: ["cluster_id","org_id"]
 isOneToOne: false
-      referencedRelation: "store_nvr_endpoints"
-      referencedColumns: ["store_id","org_id"]
+      referencedRelation: "clusters"
+      referencedColumns: ["id","org_id"]
     },{
       foreignKeyName: "access_grants_location_fk"
       columns: ["location_id","org_id"]
 isOneToOne: false
-      referencedRelation: "store_status"
-      referencedColumns: ["store_id","org_id"]
+      referencedRelation: "location_hierarchy"
+      referencedColumns: ["location_id","org_id"]
     },{
       foreignKeyName: "access_grants_location_fk"
       columns: ["location_id","org_id"]
 isOneToOne: false
-      referencedRelation: "stores"
+      referencedRelation: "location_status"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "access_grants_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "locations"
       referencedColumns: ["id","org_id"]
     },{
       foreignKeyName: "access_grants_org_fk"
@@ -109,6 +115,30 @@ isOneToOne: false
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
+    },{
+      foreignKeyName: "access_grants_recorder_fk"
+      columns: ["recorder_id","org_id"]
+isOneToOne: false
+      referencedRelation: "recorder_endpoints"
+      referencedColumns: ["recorder_id","org_id"]
+    },{
+      foreignKeyName: "access_grants_recorder_fk"
+      columns: ["recorder_id","org_id"]
+isOneToOne: false
+      referencedRelation: "recorder_status"
+      referencedColumns: ["recorder_id","org_id"]
+    },{
+      foreignKeyName: "access_grants_recorder_fk"
+      columns: ["recorder_id","org_id"]
+isOneToOne: false
+      referencedRelation: "recorders"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "access_grants_region_fk"
+      columns: ["region_id","org_id"]
+isOneToOne: false
+      referencedRelation: "regions"
+      referencedColumns: ["id","org_id"]
     }
                   ]
                 },"access_migration_report": {
@@ -125,6 +155,44 @@ isOneToOne: false
                   Relationships: [
                     {
       foreignKeyName: "access_migration_report_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"address_spaces": {
+                  Row: {
+                    "created_at": string,"id": string,"kind": string,"location_id": string | null,"name": string,"notes": string | null,"org_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_at"?: string,"id"?: string,"kind": string,"location_id"?: string | null,"name": string,"notes"?: string | null,"org_id": string
+                  }
+                  Update: {
+                    "created_at"?: string,"id"?: string,"kind"?: string,"location_id"?: string | null,"name"?: string,"notes"?: string | null,"org_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "address_spaces_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_hierarchy"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "address_spaces_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_status"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "address_spaces_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "locations"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "address_spaces_org_id_fkey"
       columns: ["org_id"]
 isOneToOne: false
       referencedRelation: "organizations"
@@ -149,6 +217,164 @@ isOneToOne: false
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
+    }
+                  ]
+                },"asset_dependencies": {
+                  Row: {
+                    "child_asset_id": string,"created_at": string,"id": string,"kind": string,"org_id": string,"parent_asset_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "child_asset_id": string,"created_at"?: string,"id"?: string,"kind": string,"org_id": string,"parent_asset_id": string
+                  }
+                  Update: {
+                    "child_asset_id"?: string,"created_at"?: string,"id"?: string,"kind"?: string,"org_id"?: string,"parent_asset_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "asset_dependencies_child_fk"
+      columns: ["child_asset_id","org_id"]
+isOneToOne: false
+      referencedRelation: "assets"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "asset_dependencies_parent_fk"
+      columns: ["parent_asset_id","org_id"]
+isOneToOne: false
+      referencedRelation: "assets"
+      referencedColumns: ["id","org_id"]
+    }
+                  ]
+                },"asset_endpoints": {
+                  Row: {
+                    "address_space_id": string,"asset_id": string,"created_at": string,"host": string,"id": string,"org_id": string,"port": number | null,"purpose": string,"retired_at": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "address_space_id": string,"asset_id": string,"created_at"?: string,"host": string,"id"?: string,"org_id": string,"port"?: number | null,"purpose": string,"retired_at"?: string | null
+                  }
+                  Update: {
+                    "address_space_id"?: string,"asset_id"?: string,"created_at"?: string,"host"?: string,"id"?: string,"org_id"?: string,"port"?: number | null,"purpose"?: string,"retired_at"?: string | null
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "asset_endpoints_asset_fk"
+      columns: ["asset_id","org_id"]
+isOneToOne: false
+      referencedRelation: "assets"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "asset_endpoints_space_fk"
+      columns: ["address_space_id","org_id"]
+isOneToOne: false
+      referencedRelation: "address_spaces"
+      referencedColumns: ["id","org_id"]
+    }
+                  ]
+                },"assets": {
+                  Row: {
+                    "address_space_id": string | null,"archived_at": string | null,"assigned_profile_id": string | null,"attached_recorder_id": string | null,"capability_discovered_at": string | null,"config_owner": string | null,"created_at": string,"credential_ref": string | null,"criticality": string | null,"enabled": boolean,"firmware": string | null,"id": string,"ip": string | null,"is_recorder": boolean,"last_inventory_at": string | null,"lifecycle_state": string,"location_id": string | null,"mac": string | null,"management_mode": string | null,"model": string | null,"name": string,"notes": string | null,"org_id": string,"owner": string | null,"role": string | null,"serial": string | null,"tcp_port": number | null,"type": Database["public"]['Enums']["device_type"],"updated_at": string,"vendor": string | null,"warranty_until": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "address_space_id"?: string | null,"archived_at"?: string | null,"assigned_profile_id"?: string | null,"attached_recorder_id"?: string | null,"capability_discovered_at"?: string | null,"config_owner"?: string | null,"created_at"?: string,"credential_ref"?: string | null,"criticality"?: string | null,"enabled"?: boolean,"firmware"?: string | null,"id"?: string,"ip"?: string | null,"is_recorder"?: boolean,"last_inventory_at"?: string | null,"lifecycle_state"?: string,"location_id"?: string | null,"mac"?: string | null,"management_mode"?: string | null,"model"?: string | null,"name": string,"notes"?: string | null,"org_id": string,"owner"?: string | null,"role"?: string | null,"serial"?: string | null,"tcp_port"?: number | null,"type": Database["public"]['Enums']["device_type"],"updated_at"?: string,"vendor"?: string | null,"warranty_until"?: string | null
+                  }
+                  Update: {
+                    "address_space_id"?: string | null,"archived_at"?: string | null,"assigned_profile_id"?: string | null,"attached_recorder_id"?: string | null,"capability_discovered_at"?: string | null,"config_owner"?: string | null,"created_at"?: string,"credential_ref"?: string | null,"criticality"?: string | null,"enabled"?: boolean,"firmware"?: string | null,"id"?: string,"ip"?: string | null,"is_recorder"?: boolean,"last_inventory_at"?: string | null,"lifecycle_state"?: string,"location_id"?: string | null,"mac"?: string | null,"management_mode"?: string | null,"model"?: string | null,"name"?: string,"notes"?: string | null,"org_id"?: string,"owner"?: string | null,"role"?: string | null,"serial"?: string | null,"tcp_port"?: number | null,"type"?: Database["public"]['Enums']["device_type"],"updated_at"?: string,"vendor"?: string | null,"warranty_until"?: string | null
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "assets_attached_recorder_fk"
+      columns: ["attached_recorder_id","org_id"]
+isOneToOne: false
+      referencedRelation: "recorder_endpoints"
+      referencedColumns: ["recorder_id","org_id"]
+    },{
+      foreignKeyName: "assets_attached_recorder_fk"
+      columns: ["attached_recorder_id","org_id"]
+isOneToOne: false
+      referencedRelation: "recorder_status"
+      referencedColumns: ["recorder_id","org_id"]
+    },{
+      foreignKeyName: "assets_attached_recorder_fk"
+      columns: ["attached_recorder_id","org_id"]
+isOneToOne: false
+      referencedRelation: "recorders"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "assets_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_hierarchy"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "assets_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_status"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "assets_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "locations"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "assets_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "assets_space_fk"
+      columns: ["address_space_id","org_id"]
+isOneToOne: false
+      referencedRelation: "address_spaces"
+      referencedColumns: ["id","org_id"]
+    }
+                  ]
+                },"camera_channel_mappings": {
+                  Row: {
+                    "camera_id": string,"channel": number,"created_at": string,"created_by": string | null,"id": string,"org_id": string,"recorder_id": string,"valid_from": string,"valid_to": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "camera_id": string,"channel": number,"created_at"?: string,"created_by"?: string | null,"id"?: string,"org_id": string,"recorder_id": string,"valid_from"?: string,"valid_to"?: string | null
+                  }
+                  Update: {
+                    "camera_id"?: string,"channel"?: number,"created_at"?: string,"created_by"?: string | null,"id"?: string,"org_id"?: string,"recorder_id"?: string,"valid_from"?: string,"valid_to"?: string | null
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "camera_channel_mappings_camera_fk"
+      columns: ["camera_id","org_id"]
+isOneToOne: false
+      referencedRelation: "camera_endpoints"
+      referencedColumns: ["camera_id","org_id"]
+    },{
+      foreignKeyName: "camera_channel_mappings_camera_fk"
+      columns: ["camera_id","org_id"]
+isOneToOne: false
+      referencedRelation: "cameras"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "camera_channel_mappings_recorder_fk"
+      columns: ["recorder_id","org_id"]
+isOneToOne: false
+      referencedRelation: "recorder_endpoints"
+      referencedColumns: ["recorder_id","org_id"]
+    },{
+      foreignKeyName: "camera_channel_mappings_recorder_fk"
+      columns: ["recorder_id","org_id"]
+isOneToOne: false
+      referencedRelation: "recorder_status"
+      referencedColumns: ["recorder_id","org_id"]
+    },{
+      foreignKeyName: "camera_channel_mappings_recorder_fk"
+      columns: ["recorder_id","org_id"]
+isOneToOne: false
+      referencedRelation: "recorders"
+      referencedColumns: ["id","org_id"]
     }
                   ]
                 },"camera_group_items": {
@@ -205,39 +431,57 @@ isOneToOne: false
                   ]
                 },"cameras": {
                   Row: {
-                    "camera_ip": string | null,"channel": number,"created_at": string,"id": string,"is_active": boolean,"name": string,"org_id": string,"store_id": string,"updated_at": string
+                    "archived_at": string | null,"camera_ip": string | null,"channel": number,"created_at": string,"id": string,"is_active": boolean,"location_id": string,"name": string,"org_id": string,"recorder_id": string | null,"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "camera_ip"?: string | null,"channel": number,"created_at"?: string,"id"?: string,"is_active"?: boolean,"name": string,"org_id": string,"store_id": string,"updated_at"?: string
+                    "archived_at"?: string | null,"camera_ip"?: string | null,"channel": number,"created_at"?: string,"id"?: string,"is_active"?: boolean,"location_id": string,"name": string,"org_id": string,"recorder_id"?: string | null,"updated_at"?: string
                   }
                   Update: {
-                    "camera_ip"?: string | null,"channel"?: number,"created_at"?: string,"id"?: string,"is_active"?: boolean,"name"?: string,"org_id"?: string,"store_id"?: string,"updated_at"?: string
+                    "archived_at"?: string | null,"camera_ip"?: string | null,"channel"?: number,"created_at"?: string,"id"?: string,"is_active"?: boolean,"location_id"?: string,"name"?: string,"org_id"?: string,"recorder_id"?: string | null,"updated_at"?: string
                   }
                   Relationships: [
                     {
+      foreignKeyName: "cameras_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_hierarchy"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "cameras_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_status"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "cameras_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "locations"
+      referencedColumns: ["id","org_id"]
+    },{
       foreignKeyName: "cameras_org_id_fkey"
       columns: ["org_id"]
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
     },{
-      foreignKeyName: "cameras_store_fk"
-      columns: ["store_id","org_id"]
+      foreignKeyName: "cameras_recorder_fk"
+      columns: ["recorder_id","org_id"]
 isOneToOne: false
-      referencedRelation: "store_nvr_endpoints"
-      referencedColumns: ["store_id","org_id"]
+      referencedRelation: "recorder_endpoints"
+      referencedColumns: ["recorder_id","org_id"]
     },{
-      foreignKeyName: "cameras_store_fk"
-      columns: ["store_id","org_id"]
+      foreignKeyName: "cameras_recorder_fk"
+      columns: ["recorder_id","org_id"]
 isOneToOne: false
-      referencedRelation: "store_status"
-      referencedColumns: ["store_id","org_id"]
+      referencedRelation: "recorder_status"
+      referencedColumns: ["recorder_id","org_id"]
     },{
-      foreignKeyName: "cameras_store_fk"
-      columns: ["store_id","org_id"]
+      foreignKeyName: "cameras_recorder_fk"
+      columns: ["recorder_id","org_id"]
 isOneToOne: false
-      referencedRelation: "stores"
+      referencedRelation: "recorders"
       referencedColumns: ["id","org_id"]
     }
                   ]
@@ -275,41 +519,121 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
-                },"devices": {
+                },"clusters": {
                   Row: {
-                    "created_at": string,"enabled": boolean,"id": string,"ip": string,"name": string,"notes": string | null,"org_id": string,"store_id": string | null,"tcp_port": number | null,"type": Database["public"]['Enums']["device_type"],"updated_at": string
+                    "archived_at": string | null,"code": string,"created_at": string,"id": string,"name": string,"org_id": string,"region_id": string | null,"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "created_at"?: string,"enabled"?: boolean,"id"?: string,"ip": string,"name": string,"notes"?: string | null,"org_id": string,"store_id"?: string | null,"tcp_port"?: number | null,"type": Database["public"]['Enums']["device_type"],"updated_at"?: string
+                    "archived_at"?: string | null,"code": string,"created_at"?: string,"id"?: string,"name": string,"org_id": string,"region_id"?: string | null,"updated_at"?: string
                   }
                   Update: {
-                    "created_at"?: string,"enabled"?: boolean,"id"?: string,"ip"?: string,"name"?: string,"notes"?: string | null,"org_id"?: string,"store_id"?: string | null,"tcp_port"?: number | null,"type"?: Database["public"]['Enums']["device_type"],"updated_at"?: string
+                    "archived_at"?: string | null,"code"?: string,"created_at"?: string,"id"?: string,"name"?: string,"org_id"?: string,"region_id"?: string | null,"updated_at"?: string
                   }
                   Relationships: [
                     {
-      foreignKeyName: "devices_org_id_fkey"
+      foreignKeyName: "clusters_org_id_fkey"
       columns: ["org_id"]
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
     },{
-      foreignKeyName: "devices_store_fk"
-      columns: ["store_id","org_id"]
+      foreignKeyName: "clusters_region_fk"
+      columns: ["region_id","org_id"]
 isOneToOne: false
-      referencedRelation: "store_nvr_endpoints"
-      referencedColumns: ["store_id","org_id"]
+      referencedRelation: "regions"
+      referencedColumns: ["id","org_id"]
+    }
+                  ]
+                },"device_capabilities": {
+                  Row: {
+                    "adapter_state": string,"created_at": string,"firmware_max": string | null,"firmware_min": string | null,"id": string,"management_mode": string,"model": string,"notes": string | null,"operation": string,"source_ref": string,"support": string,"vendor": string,"verified_at": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "adapter_state"?: string,"created_at"?: string,"firmware_max"?: string | null,"firmware_min"?: string | null,"id"?: string,"management_mode": string,"model": string,"notes"?: string | null,"operation": string,"source_ref": string,"support": string,"vendor": string,"verified_at"?: string | null
+                  }
+                  Update: {
+                    "adapter_state"?: string,"created_at"?: string,"firmware_max"?: string | null,"firmware_min"?: string | null,"id"?: string,"management_mode"?: string,"model"?: string,"notes"?: string | null,"operation"?: string,"source_ref"?: string,"support"?: string,"vendor"?: string,"verified_at"?: string | null
+                  }
+                  Relationships: [
+                    
+                  ]
+                },"inventory_migration_report": {
+                  Row: {
+                    "detail": NonNullable<Json>,"id": string,"kind": string,"location_id": string | null,"org_id": string,"recorder_id": string | null,"run_at": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "detail"?: NonNullable<Json>,"id"?: string,"kind": string,"location_id"?: string | null,"org_id": string,"recorder_id"?: string | null,"run_at"?: string
+                  }
+                  Update: {
+                    "detail"?: NonNullable<Json>,"id"?: string,"kind"?: string,"location_id"?: string | null,"org_id"?: string,"recorder_id"?: string | null,"run_at"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "inventory_migration_report_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"inventory_migration_snapshot": {
+                  Row: {
+                    "assets": (string)[],"cameras": (string)[],"capability": string,"id": number,"locations": (string)[],"org_id": string,"taken_at": string,"user_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "assets": (string)[],"cameras": (string)[],"capability": string,"id"?: number,"locations": (string)[],"org_id": string,"taken_at": string,"user_id": string
+                  }
+                  Update: {
+                    "assets"?: (string)[],"cameras"?: (string)[],"capability"?: string,"id"?: number,"locations"?: (string)[],"org_id"?: string,"taken_at"?: string,"user_id"?: string
+                  }
+                  Relationships: [
+                    
+                  ]
+                },"locations": {
+                  Row: {
+                    "address": string | null,"archived_at": string | null,"city": string | null,"cluster_id": string | null,"code": string,"created_at": string,"expected_channels": number,"http_port": number,"id": string,"is_active": boolean,"kind": string,"name": string,"nvr_ip": string | null,"nvr_secret_id": string | null,"nvr_username": string | null,"org_id": string,"parent_location_id": string | null,"rtsp_port": number,"state": string | null,"updated_at": string,"uplink_asset_id": string | null,"zone": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "address"?: string | null,"archived_at"?: string | null,"city"?: string | null,"cluster_id"?: string | null,"code": string,"created_at"?: string,"expected_channels"?: number,"http_port"?: number,"id"?: string,"is_active"?: boolean,"kind"?: string,"name": string,"nvr_ip"?: string | null,"nvr_secret_id"?: string | null,"nvr_username"?: string | null,"org_id": string,"parent_location_id"?: string | null,"rtsp_port"?: number,"state"?: string | null,"updated_at"?: string,"uplink_asset_id"?: string | null,"zone"?: string | null
+                  }
+                  Update: {
+                    "address"?: string | null,"archived_at"?: string | null,"city"?: string | null,"cluster_id"?: string | null,"code"?: string,"created_at"?: string,"expected_channels"?: number,"http_port"?: number,"id"?: string,"is_active"?: boolean,"kind"?: string,"name"?: string,"nvr_ip"?: string | null,"nvr_secret_id"?: string | null,"nvr_username"?: string | null,"org_id"?: string,"parent_location_id"?: string | null,"rtsp_port"?: number,"state"?: string | null,"updated_at"?: string,"uplink_asset_id"?: string | null,"zone"?: string | null
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "locations_cluster_fk"
+      columns: ["cluster_id","org_id"]
+isOneToOne: false
+      referencedRelation: "clusters"
+      referencedColumns: ["id","org_id"]
     },{
-      foreignKeyName: "devices_store_fk"
-      columns: ["store_id","org_id"]
+      foreignKeyName: "locations_org_id_fkey"
+      columns: ["org_id"]
 isOneToOne: false
-      referencedRelation: "store_status"
-      referencedColumns: ["store_id","org_id"]
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
     },{
-      foreignKeyName: "devices_store_fk"
-      columns: ["store_id","org_id"]
+      foreignKeyName: "locations_parent_fk"
+      columns: ["parent_location_id","org_id"]
 isOneToOne: false
-      referencedRelation: "stores"
+      referencedRelation: "location_hierarchy"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "locations_parent_fk"
+      columns: ["parent_location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_status"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "locations_parent_fk"
+      columns: ["parent_location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "locations"
       referencedColumns: ["id","org_id"]
     }
                   ]
@@ -326,6 +650,38 @@ isOneToOne: false
                   }
                   Relationships: [
                     
+                  ]
+                },"network_definitions": {
+                  Row: {
+                    "created_at": string,"discovery_ranges": (unknown)[],"dns": (unknown)[],"gateway": unknown,"id": string,"location_id": string,"management_cidr": unknown,"management_vlan": number | null,"org_id": string,"sdwan_context": string | null,"updated_at": string,"vlan_map": NonNullable<Json>
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_at"?: string,"discovery_ranges"?: (unknown)[],"dns"?: (unknown)[],"gateway"?: unknown,"id"?: string,"location_id": string,"management_cidr": unknown,"management_vlan"?: number | null,"org_id": string,"sdwan_context"?: string | null,"updated_at"?: string,"vlan_map"?: NonNullable<Json>
+                  }
+                  Update: {
+                    "created_at"?: string,"discovery_ranges"?: (unknown)[],"dns"?: (unknown)[],"gateway"?: unknown,"id"?: string,"location_id"?: string,"management_cidr"?: unknown,"management_vlan"?: number | null,"org_id"?: string,"sdwan_context"?: string | null,"updated_at"?: string,"vlan_map"?: NonNullable<Json>
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "network_definitions_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_hierarchy"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "network_definitions_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_status"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "network_definitions_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "locations"
+      referencedColumns: ["id","org_id"]
+    }
                   ]
                 },"organizations": {
                   Row: {
@@ -363,56 +719,100 @@ isOneToOne: false
                   ]
                 },"profiles": {
                   Row: {
-                    "access_version": number,"created_at": string,"email": string,"full_name": string,"id": string,"is_active": boolean,"must_reset_password": boolean,"org_id": string,"role": Database["public"]['Enums']["user_role"],"store_id": string | null,"updated_at": string
+                    "access_version": number,"created_at": string,"email": string,"full_name": string,"id": string,"is_active": boolean,"location_id": string | null,"must_reset_password": boolean,"org_id": string,"role": Database["public"]['Enums']["user_role"],"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "access_version"?: number,"created_at"?: string,"email": string,"full_name"?: string,"id": string,"is_active"?: boolean,"must_reset_password"?: boolean,"org_id": string,"role"?: Database["public"]['Enums']["user_role"],"store_id"?: string | null,"updated_at"?: string
+                    "access_version"?: number,"created_at"?: string,"email": string,"full_name"?: string,"id": string,"is_active"?: boolean,"location_id"?: string | null,"must_reset_password"?: boolean,"org_id": string,"role"?: Database["public"]['Enums']["user_role"],"updated_at"?: string
                   }
                   Update: {
-                    "access_version"?: number,"created_at"?: string,"email"?: string,"full_name"?: string,"id"?: string,"is_active"?: boolean,"must_reset_password"?: boolean,"org_id"?: string,"role"?: Database["public"]['Enums']["user_role"],"store_id"?: string | null,"updated_at"?: string
+                    "access_version"?: number,"created_at"?: string,"email"?: string,"full_name"?: string,"id"?: string,"is_active"?: boolean,"location_id"?: string | null,"must_reset_password"?: boolean,"org_id"?: string,"role"?: Database["public"]['Enums']["user_role"],"updated_at"?: string
                   }
                   Relationships: [
                     {
+      foreignKeyName: "profiles_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_hierarchy"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "profiles_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_status"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "profiles_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "locations"
+      referencedColumns: ["id","org_id"]
+    },{
       foreignKeyName: "profiles_org_id_fkey"
       columns: ["org_id"]
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
-    },{
-      foreignKeyName: "profiles_store_fk"
-      columns: ["store_id","org_id"]
-isOneToOne: false
-      referencedRelation: "store_nvr_endpoints"
-      referencedColumns: ["store_id","org_id"]
-    },{
-      foreignKeyName: "profiles_store_fk"
-      columns: ["store_id","org_id"]
-isOneToOne: false
-      referencedRelation: "store_status"
-      referencedColumns: ["store_id","org_id"]
-    },{
-      foreignKeyName: "profiles_store_fk"
-      columns: ["store_id","org_id"]
-isOneToOne: false
-      referencedRelation: "stores"
-      referencedColumns: ["id","org_id"]
     }
                   ]
-                },"stores": {
+                },"recorders": {
                   Row: {
-                    "address": string | null,"city": string | null,"code": string,"created_at": string,"expected_channels": number,"http_port": number,"id": string,"is_active": boolean,"name": string,"nvr_ip": string,"nvr_secret_id": string | null,"nvr_username": string,"org_id": string,"rtsp_port": number,"state": string | null,"updated_at": string,"zone": string | null
+                    "clock_offset_sec": number | null,"clock_offset_source": string | null,"created_asset": boolean,"created_at": string,"expected_channels": number,"http_port": number,"id": string,"location_id": string,"migrated_from_location_id": string | null,"monitoring_disabled_at": string | null,"monitoring_disabled_by": string | null,"monitoring_disabled_reason": string | null,"monitoring_enabled": boolean,"org_id": string,"rtsp_port": number,"secret_id": string | null,"updated_at": string,"username": string | null,"vendor_capabilities": NonNullable<Json>
                   }
                   ComputedFields: never
                   Insert: {
-                    "address"?: string | null,"city"?: string | null,"code": string,"created_at"?: string,"expected_channels"?: number,"http_port"?: number,"id"?: string,"is_active"?: boolean,"name": string,"nvr_ip": string,"nvr_secret_id"?: string | null,"nvr_username": string,"org_id": string,"rtsp_port"?: number,"state"?: string | null,"updated_at"?: string,"zone"?: string | null
+                    "clock_offset_sec"?: number | null,"clock_offset_source"?: string | null,"created_asset"?: boolean,"created_at"?: string,"expected_channels"?: number,"http_port"?: number,"id": string,"location_id": string,"migrated_from_location_id"?: string | null,"monitoring_disabled_at"?: string | null,"monitoring_disabled_by"?: string | null,"monitoring_disabled_reason"?: string | null,"monitoring_enabled"?: boolean,"org_id": string,"rtsp_port"?: number,"secret_id"?: string | null,"updated_at"?: string,"username"?: string | null,"vendor_capabilities"?: NonNullable<Json>
                   }
                   Update: {
-                    "address"?: string | null,"city"?: string | null,"code"?: string,"created_at"?: string,"expected_channels"?: number,"http_port"?: number,"id"?: string,"is_active"?: boolean,"name"?: string,"nvr_ip"?: string,"nvr_secret_id"?: string | null,"nvr_username"?: string,"org_id"?: string,"rtsp_port"?: number,"state"?: string | null,"updated_at"?: string,"zone"?: string | null
+                    "clock_offset_sec"?: number | null,"clock_offset_source"?: string | null,"created_asset"?: boolean,"created_at"?: string,"expected_channels"?: number,"http_port"?: number,"id"?: string,"location_id"?: string,"migrated_from_location_id"?: string | null,"monitoring_disabled_at"?: string | null,"monitoring_disabled_by"?: string | null,"monitoring_disabled_reason"?: string | null,"monitoring_enabled"?: boolean,"org_id"?: string,"rtsp_port"?: number,"secret_id"?: string | null,"updated_at"?: string,"username"?: string | null,"vendor_capabilities"?: NonNullable<Json>
                   }
                   Relationships: [
                     {
-      foreignKeyName: "stores_org_id_fkey"
+      foreignKeyName: "recorders_asset_fk"
+      columns: ["id","org_id"]
+isOneToOne: true
+      referencedRelation: "assets"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "recorders_asset_location_fk"
+      columns: ["id","location_id"]
+isOneToOne: false
+      referencedRelation: "assets"
+      referencedColumns: ["id","location_id"]
+    },{
+      foreignKeyName: "recorders_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_hierarchy"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "recorders_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_status"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "recorders_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "locations"
+      referencedColumns: ["id","org_id"]
+    }
+                  ]
+                },"regions": {
+                  Row: {
+                    "archived_at": string | null,"code": string,"created_at": string,"id": string,"name": string,"org_id": string,"updated_at": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "archived_at"?: string | null,"code": string,"created_at"?: string,"id"?: string,"name": string,"org_id": string,"updated_at"?: string
+                  }
+                  Update: {
+                    "archived_at"?: string | null,"code"?: string,"created_at"?: string,"id"?: string,"name"?: string,"org_id"?: string,"updated_at"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "regions_org_id_fkey"
       columns: ["org_id"]
 isOneToOne: false
       referencedRelation: "organizations"
@@ -479,19 +879,19 @@ isOneToOne: false
       foreignKeyName: "user_store_access_store_id_org_id_fkey"
       columns: ["store_id","org_id"]
 isOneToOne: false
-      referencedRelation: "store_nvr_endpoints"
-      referencedColumns: ["store_id","org_id"]
+      referencedRelation: "location_hierarchy"
+      referencedColumns: ["location_id","org_id"]
     },{
       foreignKeyName: "user_store_access_store_id_org_id_fkey"
       columns: ["store_id","org_id"]
 isOneToOne: false
-      referencedRelation: "store_status"
-      referencedColumns: ["store_id","org_id"]
+      referencedRelation: "location_status"
+      referencedColumns: ["location_id","org_id"]
     },{
       foreignKeyName: "user_store_access_store_id_org_id_fkey"
       columns: ["store_id","org_id"]
 isOneToOne: false
-      referencedRelation: "stores"
+      referencedRelation: "locations"
       referencedColumns: ["id","org_id"]
     },{
       foreignKeyName: "user_store_access_user_id_org_id_fkey"
@@ -546,74 +946,150 @@ isOneToOne: false
           Views: {
             "camera_endpoints": {
                   Row: {
-                    "camera_id": string | null,"camera_ip": string | null,"org_id": string | null,"store_id": string | null
+                    "camera_id": string | null,"camera_ip": string | null,"location_id": string | null,"org_id": string | null
                   }
                   ComputedFields: never
                   Insert: {
-                           "camera_id"?: string | null,"camera_ip"?: string | null,"org_id"?: string | null,"store_id"?: string | null
+                           "camera_id"?: string | null,"camera_ip"?: string | null,"location_id"?: string | null,"org_id"?: string | null
                          }
                         Update: {
-                           "camera_id"?: string | null,"camera_ip"?: string | null,"org_id"?: string | null,"store_id"?: string | null
+                           "camera_id"?: string | null,"camera_ip"?: string | null,"location_id"?: string | null,"org_id"?: string | null
                          }
                         Relationships: [
                     {
+      foreignKeyName: "cameras_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_hierarchy"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "cameras_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_status"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "cameras_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "locations"
+      referencedColumns: ["id","org_id"]
+    },{
       foreignKeyName: "cameras_org_id_fkey"
       columns: ["org_id"]
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
-    },{
-      foreignKeyName: "cameras_store_fk"
-      columns: ["store_id","org_id"]
-isOneToOne: false
-      referencedRelation: "store_nvr_endpoints"
-      referencedColumns: ["store_id","org_id"]
-    },{
-      foreignKeyName: "cameras_store_fk"
-      columns: ["store_id","org_id"]
-isOneToOne: false
-      referencedRelation: "store_status"
-      referencedColumns: ["store_id","org_id"]
-    },{
-      foreignKeyName: "cameras_store_fk"
-      columns: ["store_id","org_id"]
-isOneToOne: false
-      referencedRelation: "stores"
-      referencedColumns: ["id","org_id"]
     }
                   ]
-                },"store_nvr_endpoints": {
+                },"location_hierarchy": {
                   Row: {
-                    "http_port": number | null,"nvr_ip": string | null,"nvr_username": string | null,"org_id": string | null,"rtsp_port": number | null,"store_id": string | null
-                  }
-                  ComputedFields: never
-                  Insert: {
-                           "http_port"?: number | null,"nvr_ip"?: string | null,"nvr_username"?: string | null,"org_id"?: string | null,"rtsp_port"?: number | null,"store_id"?: string | null
-                         }
-                        Update: {
-                           "http_port"?: number | null,"nvr_ip"?: string | null,"nvr_username"?: string | null,"org_id"?: string | null,"rtsp_port"?: number | null,"store_id"?: string | null
-                         }
-                        Relationships: [
-                    {
-      foreignKeyName: "stores_org_id_fkey"
-      columns: ["org_id"]
-isOneToOne: false
-      referencedRelation: "organizations"
-      referencedColumns: ["id"]
-    }
-                  ]
-                },"store_status": {
-                  Row: {
-                    "cameras_down": number | null,"cameras_live": number | null,"cameras_stale": number | null,"cameras_total": number | null,"cameras_unknown": number | null,"nvr_checked_at": string | null,"nvr_down_since": string | null,"nvr_stale": boolean | null,"nvr_status": string | null,"org_id": string | null,"store_id": string | null
+                    "cluster_code": string | null,"cluster_id": string | null,"cluster_name": string | null,"code": string | null,"kind": string | null,"location_id": string | null,"name": string | null,"org_id": string | null,"region_code": string | null,"region_id": string | null,"region_name": string | null,"unassigned": boolean | null
                   }
                   ComputedFields: never
                   Relationships: [
                     {
-      foreignKeyName: "stores_org_id_fkey"
+      foreignKeyName: "locations_cluster_fk"
+      columns: ["cluster_id","org_id"]
+isOneToOne: false
+      referencedRelation: "clusters"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "locations_org_id_fkey"
       columns: ["org_id"]
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
+    }
+                  ]
+                },"location_status": {
+                  Row: {
+                    "cameras_down": number | null,"cameras_live": number | null,"cameras_monitoring_off": number | null,"cameras_stale": number | null,"cameras_total": number | null,"cameras_unknown": number | null,"location_id": string | null,"nvr_checked_at": string | null,"nvr_down_since": string | null,"nvr_stale": boolean | null,"nvr_status": string | null,"org_id": string | null,"recorders_down": number | null,"recorders_monitoring_off": number | null,"recorders_total": number | null,"recorders_unknown": number | null,"recorders_up": number | null
+                  }
+                  ComputedFields: never
+                  Relationships: [
+                    {
+      foreignKeyName: "locations_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"recorder_endpoints": {
+                  Row: {
+                    "host": string | null,"http_port": number | null,"location_id": string | null,"monitoring_enabled": boolean | null,"org_id": string | null,"recorder_id": string | null,"rtsp_port": number | null,"username": string | null
+                  }
+                  ComputedFields: never
+                  Relationships: [
+                    {
+      foreignKeyName: "recorders_asset_fk"
+      columns: ["recorder_id","org_id"]
+isOneToOne: true
+      referencedRelation: "assets"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "recorders_asset_location_fk"
+      columns: ["recorder_id","location_id"]
+isOneToOne: false
+      referencedRelation: "assets"
+      referencedColumns: ["id","location_id"]
+    },{
+      foreignKeyName: "recorders_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_hierarchy"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "recorders_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_status"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "recorders_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "locations"
+      referencedColumns: ["id","org_id"]
+    }
+                  ]
+                },"recorder_status": {
+                  Row: {
+                    "checked_at": string | null,"down_since": string | null,"location_id": string | null,"monitoring_enabled": boolean | null,"name": string | null,"org_id": string | null,"recorder_id": string | null,"stale": boolean | null,"status": string | null
+                  }
+                  ComputedFields: never
+                  Relationships: [
+                    {
+      foreignKeyName: "recorders_asset_fk"
+      columns: ["recorder_id","org_id"]
+isOneToOne: true
+      referencedRelation: "assets"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "recorders_asset_location_fk"
+      columns: ["recorder_id","location_id"]
+isOneToOne: false
+      referencedRelation: "assets"
+      referencedColumns: ["id","location_id"]
+    },{
+      foreignKeyName: "recorders_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_hierarchy"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "recorders_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "location_status"
+      referencedColumns: ["location_id","org_id"]
+    },{
+      foreignKeyName: "recorders_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "locations"
+      referencedColumns: ["id","org_id"]
     }
                   ]
                 }
@@ -622,6 +1098,17 @@ isOneToOne: false
             "access_aal2_of":
 { Args: { "p_claims": Json }; Returns: boolean
                            },
+"access_ancestry":
+{ Args: { "p_id": string,"p_kind": string,"p_org": string }; Returns: {
+              "asset_id": string,"camera_id": string,"cluster_id": string,"location_id": string,"recorder_id": string,"region_id": string
+            }[]
+                           },
+"access_asset_set":
+{ Args: { "p_assets": (string)[],"p_clusters": (string)[],"p_locations": (string)[],"p_org": string,"p_org_wide": boolean,"p_recorders": (string)[],"p_regions": (string)[] }; Returns: string[]
+                           },
+"access_assets_for":
+{ Args: { "p_aal2": boolean,"p_at": string,"p_caps": (string)[],"p_ignore_status": boolean,"p_user": string }; Returns: string[]
+                           },
 "access_bump_version":
 { Args: { "p_user": string }; Returns: number
                            },
@@ -629,7 +1116,7 @@ isOneToOne: false
 { Args: Record<PropertyKey, never>; Returns: boolean
                            },
 "access_camera_set":
-{ Args: { "p_cameras": (string)[],"p_locations": (string)[],"p_org": string,"p_org_wide": boolean }; Returns: string[]
+{ Args: { "p_cameras": (string)[],"p_clusters": (string)[],"p_locations": (string)[],"p_org": string,"p_org_wide": boolean,"p_recorders": (string)[],"p_regions": (string)[] }; Returns: string[]
                            },
 "access_cameras_for":
 { Args: { "p_aal2": boolean,"p_at": string,"p_caps": (string)[],"p_ignore_status": boolean,"p_user": string }; Returns: string[]
@@ -652,12 +1139,6 @@ isOneToOne: false
 "access_check_spec":
 { Args: { "p_org": string,"p_spec": Json }; Returns: undefined
                            },
-"access_device_set":
-{ Args: { "p_assets": (string)[],"p_locations": (string)[],"p_org": string,"p_org_wide": boolean }; Returns: string[]
-                           },
-"access_devices_for":
-{ Args: { "p_aal2": boolean,"p_at": string,"p_caps": (string)[],"p_ignore_status": boolean,"p_user": string }; Returns: string[]
-                           },
 "access_expiring":
 { Args: { "p_org": string,"p_within": string }; Returns: {
               "capability": string,"grant_id": string,"org_id": string,"scope_id": string,"scope_kind": string,"user_id": string,"valid_until": string
@@ -665,7 +1146,7 @@ isOneToOne: false
                            },
 "access_grant_summary":
 { Args: { "p_org": string }; Returns: {
-              "assets": number,"cameras": number,"capability": string,"locations": number,"next_expiry": string,"organization_wide": boolean,"user_id": string
+              "assets": number,"cameras": number,"capability": string,"clusters": number,"locations": number,"next_expiry": string,"organization_wide": boolean,"recorders": number,"regions": number,"user_id": string
             }[]
                            },
 "access_grants_eval":
@@ -695,6 +1176,15 @@ isOneToOne: false
 "access_legacy_store_ids":
 { Args: { "p_ignore_status"?: boolean,"p_user": string }; Returns: string[]
                            },
+"access_location_expand":
+{ Args: { "p_clusters": (string)[],"p_locations": (string)[],"p_org": string,"p_regions": (string)[] }; Returns: string[]
+                           },
+"access_location_set":
+{ Args: { "p_clusters": (string)[],"p_locations": (string)[],"p_org": string,"p_org_wide": boolean,"p_regions": (string)[] }; Returns: string[]
+                           },
+"access_locations_for":
+{ Args: { "p_aal2": boolean,"p_at": string,"p_caps": (string)[],"p_ignore_status": boolean,"p_user": string }; Returns: string[]
+                           },
 "access_lock_person":
 { Args: { "p_expected": number,"p_org": string,"p_user": string }; Returns: number
                            },
@@ -722,37 +1212,57 @@ isOneToOne: false
 "access_review_self_confirm":
 { Args: { "p_actor": string,"p_grant_ids": (string)[],"p_org": string,"p_reason": string }; Returns: number
                            },
+"access_scope_covers":
+{ Args: { "p_held_id": string,"p_held_kind": string,"p_id": string,"p_kind": string,"p_org": string }; Returns: boolean
+                           },
 "access_session_capabilities":
 { Args: { "p_claims": Json,"p_mfa_enforced": boolean,"p_user": string }; Returns: string[]
                            },
-"access_store_set":
-{ Args: { "p_locations": (string)[],"p_org": string,"p_org_wide": boolean }; Returns: string[]
-                           },
-"access_stores_for":
-{ Args: { "p_aal2": boolean,"p_at": string,"p_caps": (string)[],"p_ignore_status": boolean,"p_user": string }; Returns: string[]
+"access_target_ancestry":
+{ Args: { "p_org": string,"p_targets": Json }; Returns: {
+              "cluster_id": string,"id": string,"kind": string,"location_id": string,"recorder_id": string,"region_id": string
+            }[]
                            },
 "access_teardown_test_org_people":
 { Args: { "p_org": string }; Returns: number
                            },
+"address_space_global":
+{ Args: { "p_org": string }; Returns: string
+                           },
 "any_cctv_camera_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },
-"any_grant_store_ids":
+"any_grant_cluster_ids":
+{ Args: Record<PropertyKey, never>; Returns: string[]
+                           },
+"any_grant_location_ids":
+{ Args: Record<PropertyKey, never>; Returns: string[]
+                           },
+"any_grant_region_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },
 "apply_access_change":
 { Args: { "p_actor": string,"p_changes": Json,"p_expected_version"?: number,"p_org": string,"p_user": string }; Returns: Json
                            },
+"asset_sync_endpoints":
+{ Args: { "p_asset": string }; Returns: undefined
+                           },
+"camera_remap":
+{ Args: { "p_actor"?: string,"p_at"?: string,"p_camera": string,"p_channel": number,"p_org": string,"p_recorder": string }; Returns: string
+                           },
+"cameras_monitoring_off":
+{ Args: { "p_ids": (string)[] }; Returns: string[]
+                           },
 "cameras_with_capability":
 { Args: { "p_cap": string,"p_ids": (string)[] }; Returns: string[]
+                           },
+"capability_asset_ids":
+{ Args: { "p_cap": string }; Returns: string[]
                            },
 "capability_camera_ids":
 { Args: { "p_cap": string }; Returns: string[]
                            },
-"capability_device_ids":
-{ Args: { "p_cap": string }; Returns: string[]
-                           },
-"capability_store_ids":
+"capability_location_ids":
 { Args: { "p_cap": string }; Returns: string[]
                            },
 "cctv_visible_group_ids":
@@ -784,10 +1294,61 @@ isOneToOne: false
 "has_capability_for":
 { Args: { "p_cap": string,"p_id": string,"p_kind": string }; Returns: boolean
                            },
-"it_view_device_ids":
+"inventory_archive":
+{ Args: { "p_actor"?: string,"p_id": string,"p_kind": string,"p_org": string }; Returns: Json
+                           },
+"inventory_effective_snapshot":
+{ Args: { "p_at"?: string,"p_org": string }; Returns: {
+              "assets": (string)[],"cameras": (string)[],"capability": string,"locations": (string)[],"user_id": string
+            }[]
+                           },
+"inventory_migrate_org":
+{ Args: { "p_fail_at"?: string,"p_org": string }; Returns: Json
+                           },
+"inventory_migrate_org_test":
+{ Args: { "p_fail_at"?: string,"p_org": string }; Returns: Json
+                           },
+"inventory_move_cluster":
+{ Args: { "p_actor"?: string,"p_cluster": string,"p_org": string,"p_region": string }; Returns: Json
+                           },
+"inventory_move_location":
+{ Args: { "p_actor"?: string,"p_cluster": string,"p_location": string,"p_org": string }; Returns: Json
+                           },
+"inventory_propose_hierarchy":
+{ Args: { "p_org": string }; Returns: {
+              "code": string,"existing_cluster_id": string,"existing_region_id": string,"location_id": string,"proposed_cluster_code": string,"proposed_region_code": string,"state": string,"zone": string
+            }[]
+                           },
+"inventory_purge_test_org":
+{ Args: { "p_org": string }; Returns: Json
+                           },
+"inventory_require_test_org":
+{ Args: { "p_org": string }; Returns: undefined
+                           },
+"inventory_restore":
+{ Args: { "p_actor"?: string,"p_id": string,"p_kind": string,"p_org": string }; Returns: Json
+                           },
+"inventory_secret_fingerprint_test":
+{ Args: { "p_org": string }; Returns: {
+              "ciphertext_sha256": string,"location_id": string,"name": string,"secret_id": string
+            }[]
+                           },
+"inventory_stale_name_scan":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },
-"it_view_store_ids":
+"inventory_unmigrate_org":
+{ Args: { "p_org": string }; Returns: number
+                           },
+"inventory_unmigrate_org_test":
+{ Args: { "p_org": string }; Returns: number
+                           },
+"it_view_asset_ids":
+{ Args: Record<PropertyKey, never>; Returns: string[]
+                           },
+"it_view_location_ids":
+{ Args: Record<PropertyKey, never>; Returns: string[]
+                           },
+"it_view_recorder_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },
 "mfa_enforced":
@@ -807,8 +1368,16 @@ isOneToOne: false
                            },
 "my_access_summary":
 { Args: Record<PropertyKey, never>; Returns: {
-              "asset_ids": (string)[],"camera_ids": (string)[],"capability": string,"location_ids": (string)[],"organization_wide": boolean
+              "asset_ids": (string)[],"camera_ids": (string)[],"capability": string,"cluster_ids": (string)[],"covered_location_ids": (string)[],"location_ids": (string)[],"organization_wide": boolean,"recorder_camera_ids": (string)[],"recorder_ids": (string)[],"region_ids": (string)[]
             }[]
+                           },
+"network_address_conflicts":
+{ Args: { "p_org": string }; Returns: {
+              "asset_id": string,"host": string,"location_id": string,"other_location_id": string,"status": string
+            }[]
+                           },
+"network_validate_address":
+{ Args: { "p_asset": string,"p_host": string,"p_org": string }; Returns: string
                            },
 "nvr_delete_credential":
 { Args: { "p_store": string }; Returns: undefined
@@ -822,16 +1391,40 @@ isOneToOne: false
 "preview_access_change":
 { Args: { "p_at"?: string,"p_changes": Json,"p_org": string,"p_sample"?: number,"p_user": string }; Returns: Json
                            },
+"preview_hierarchy_change":
+{ Args: { "p_id": string,"p_kind": string,"p_new_parent": string,"p_org": string }; Returns: Json
+                           },
 "privilege_violations":
 { Args: Record<PropertyKey, never>; Returns: string[]
+                           },
+"recorder_credential_status":
+{ Args: { "p_org": string,"p_recorder": string }; Returns: Json
+                           },
+"recorder_delete_credential":
+{ Args: { "p_recorder": string }; Returns: undefined
+                           },
+"recorder_ensure_primary":
+{ Args: { "p_location": string }; Returns: Record<string, unknown>
+                           },
+"recorder_primary_of":
+{ Args: { "p_location": string }; Returns: string
+                           },
+"recorder_read_credential":
+{ Args: { "p_recorder": string }; Returns: string
+                           },
+"recorder_set_monitoring":
+{ Args: { "p_actor"?: string,"p_enabled": boolean,"p_org": string,"p_reason": string,"p_recorder": string }; Returns: Json
+                           },
+"recorder_store_credential":
+{ Args: { "p_recorder": string,"p_secret": string }; Returns: string
                            },
 "replace_user_grants":
 { Args: { "p_actor"?: string,"p_capabilities": (string)[],"p_expected_version"?: number,"p_grants": Json,"p_org": string,"p_reason"?: string,"p_scope_kinds": (string)[],"p_user": string }; Returns: Json
                            },
-"report_effective_camera_ids":
+"report_effective_asset_ids":
 { Args: { "p_at"?: string,"p_cap": string,"p_ignore_status"?: boolean,"p_user": string }; Returns: string[]
                            },
-"report_effective_device_ids":
+"report_effective_camera_ids":
 { Args: { "p_at"?: string,"p_cap": string,"p_ignore_status"?: boolean,"p_user": string }; Returns: string[]
                            },
 "revoke_grant":
@@ -855,7 +1448,7 @@ isOneToOne: false
                            }
           }
           Enums: {
-            "device_type": "nvr"|"server"|"attendance"|"footfall"|"other","user_role": "user"|"operator"|"manager"|"admin"|"platform_owner"
+            "device_type": "nvr"|"server"|"attendance"|"footfall"|"other"|"sdwan_edge"|"switch"|"access_point"|"router"|"ups"|"printer"|"desktop"|"laptop","user_role": "user"|"operator"|"manager"|"admin"|"platform_owner"
           }
           CompositeTypes: {
             [_ in never]: never
@@ -975,7 +1568,7 @@ export const Constants = {
           }
         },"public": {
           Enums: {
-            "device_type": ["nvr", "server", "attendance", "footfall", "other"],"user_role": ["user", "operator", "manager", "admin", "platform_owner"]
+            "device_type": ["nvr", "server", "attendance", "footfall", "other", "sdwan_edge", "switch", "access_point", "router", "ups", "printer", "desktop", "laptop"],"user_role": ["user", "operator", "manager", "admin", "platform_owner"]
           }
         }
 } as const

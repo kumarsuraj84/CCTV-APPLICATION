@@ -65,13 +65,13 @@ describe('entry points with a real JWT (P2-2 fix round 1)', () => {
     go2rtc = await startFakeGo2rtc()
     process.env.GO2RTC_URL = go2rtc.url
     orgId = await createOrg()
-    const store = async (code: string) => (await admin().from('stores').insert({ org_id: orgId, code, name: code, nvr_ip: '127.0.0.1', http_port: nvr.port, rtsp_port: 554, nvr_username: NVR_USER }).select('id').single()).data!.id
+    const store = async (code: string) => (await admin().from('locations').insert({ org_id: orgId, code, name: code, nvr_ip: '127.0.0.1', http_port: nvr.port, rtsp_port: 554, nvr_username: NVR_USER }).select('id').single()).data!.id
     sGood = await store('EG')
     sWrong = await store('EW')
     sNoLogin = await store('EN')
     await admin().rpc('nvr_store_credential', { p_store: sGood, p_secret: NVR_PASSWORD })
     await admin().rpc('nvr_store_credential', { p_store: sWrong, p_secret: 'not-the-password' })
-    const cam = async (s: string) => (await admin().from('cameras').insert({ org_id: orgId, store_id: s, channel: 1, name: 'cam' }).select('id').single()).data!.id
+    const cam = async (s: string) => (await admin().from('cameras').insert({ org_id: orgId, location_id: s, channel: 1, name: 'cam' }).select('id').single()).data!.id
     cGood = await cam(sGood)
     cWrong = await cam(sWrong)
     cNoLogin = await cam(sNoLogin)

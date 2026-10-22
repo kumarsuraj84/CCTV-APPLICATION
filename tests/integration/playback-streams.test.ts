@@ -6,7 +6,7 @@ import { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { createWindowLimiter } from '@/lib/streams/limiter'
 import { listDaySegments, listRecordedDays, openPlayback } from '@/lib/streams/playback'
 import { verifyStreamToken } from '@/lib/streams/token'
-import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 import { closedPort, startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
 
 const SECRET = 'integration-test-stream-secret-0123456789'
@@ -86,12 +86,12 @@ describe('playback streams', () => {
   const savedSecret = process.env.STREAM_TOKEN_SECRET
 
   async function addStore(org: string, code: string, o: { port?: number; active?: boolean } = {}) {
-    const { data, error } = await admin().from('stores').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', http_port: o.port ?? nvr.port, rtsp_port: 554, nvr_username: NVR_USER, is_active: o.active ?? true }).select('id').single()
+    const { data, error } = await admin().from('locations').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', http_port: o.port ?? nvr.port, rtsp_port: 554, nvr_username: NVR_USER, is_active: o.active ?? true }).select('id').single()
     if (error || !data) throw new Error(`addStore: ${error?.message}`)
     return data.id
   }
   async function addCamera(org: string, store: string, channel: number, name: string, active = true) {
-    const { data, error } = await admin().from('cameras').insert({ org_id: org, store_id: store, channel, name, is_active: active }).select('id').single()
+    const { data, error } = await admin().from('cameras').insert({ org_id: org, location_id: store, channel, name, is_active: active }).select('id').single()
     if (error || !data) throw new Error(`addCamera: ${error?.message}`)
     return data.id
   }
@@ -230,6 +230,34 @@ describe('playback streams', () => {
       calls.length = 0
       await listDaySegments({ rls: viewer.client, admin: spy, nvr: nvrClient }, actorOf(viewer), b1, '2026-10-20', 0)
       expect(calls).toEqual([])
+    })
+
+    it('owner addition: a camera on an NVR with monitoring switched off is refused plainly; no login read, no NVR or go2rtc request', async () => {
+      const sOff = await addStore(orgId, 'POFFM')
+      await savePassword(sOff, NVR_PASSWORD)
+      const cam = await addCamera(orgId, sOff, 1, 'Real NVR camera')
+      const watcher = await createUser(orgId, 'user')
+      await grant(orgId, watcher.id, CCTV_VIEW, atLocation(sOff))
+      const rec = await primaryRecorderOf(sOff)
+      expect((await admin().rpc('recorder_set_monitoring', { p_org: orgId, p_recorder: rec, p_enabled: false, p_reason: 'Real NVR: not to be contacted' })).error).toBeNull()
+      const calls: string[] = []
+      const real = admin()
+      const spy = new Proxy(real, {
+        get(target, prop) {
+          if (prop === 'rpc') return (name: string, args: unknown) => { calls.push(name); return target.rpc(name as never, args as never) }
+          const v = Reflect.get(target, prop)
+          return typeof v === 'function' ? v.bind(target) : v
+        },
+      })
+      const off = { ok: false, error: 'Monitoring is switched off for this NVR.' }
+      expect(await listRecordedDays({ rls: watcher.client, admin: spy, nvr: nvrClient }, actorOf(watcher), cam, 2026, 10, 0)).toEqual(off)
+      expect(await listDaySegments({ rls: watcher.client, admin: spy, nvr: nvrClient }, actorOf(watcher), cam, '2026-10-20', 0)).toEqual(off)
+      expect(await play(watcher, cam, new Date(SHOWN_NOW - 3_600_000), 10, 0, { adminClient: spy as ReturnType<typeof admin> })).toEqual(off)
+      expect(calls).toEqual([])
+      expect(nvr.requests).toHaveLength(0)
+      expect(fake.seen).toHaveLength(0)
+      await admin().rpc('recorder_set_monitoring', { p_org: orgId, p_recorder: rec, p_enabled: true, p_reason: 'Lab NVR' })
+      expect((await days(watcher, cam)).ok).toBe(true)
     })
   })
 

@@ -52,20 +52,20 @@ export async function getLiveScope(
     return { kind: 'group', title: g.name, description: `Camera group · ${countText(cameras.length)} you can use here`, cameras }
   }
   if (q.store) {
-    const { data: store, error } = await supabase.from('stores').select('id, code, name').eq('id', q.store).eq('is_active', true).maybeSingle()
+    const { data: store, error } = await supabase.from('locations').select('id, code, name').eq('id', q.store).eq('is_active', true).maybeSingle()
     if (error) {
       if (error.code === MALFORMED_ID) return null
       throw new Error('Could not read the store.')
     }
     if (!store) return null
-    const rows = await fetchAll((from, to) => supabase.from('cameras').select('id, name, channel').eq('store_id', store.id).eq('is_active', true).order('channel').order('id').range(from, to))
+    const rows = await fetchAll((from, to) => supabase.from('cameras').select('id, name, channel').eq('location_id', store.id).eq('is_active', true).order('channel').order('id').range(from, to))
     const cameras = await narrow(supabase, rows.map((c) => ({ id: c.id, name: c.name, channel: c.channel, storeCode: store.code })), cap, now)
     return { kind: 'store', title: `${store.code} · ${store.name}`, description: `Store · ${countText(cameras.length)}`, cameras }
   }
   if (q.camera) {
     const { data, error } = await supabase
       .from('cameras')
-      .select('id, name, channel, stores!inner(code, name, is_active)')
+      .select('id, name, channel, stores:locations!inner(code, name, is_active)')
       .eq('id', q.camera)
       .eq('is_active', true)
       .eq('stores.is_active', true)

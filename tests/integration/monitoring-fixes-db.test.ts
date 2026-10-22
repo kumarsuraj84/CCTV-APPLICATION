@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { STALE_AFTER_MINUTES } from '@/lib/queries/status'
-import { adminClient, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { adminClient, cleanupOrg, createOrg, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 
-type R = { type: 'camera' | 'device' | 'nvr'; id: string; ok: boolean; at: string; method?: string; error?: string; cause?: 'nvr_down' }
+type R = { type: 'camera' | 'device' | 'nvr' | 'recorder'; id: string; ok: boolean; at: string; method?: string; error?: string; cause?: 'nvr_down' }
 const apply = (org: string, results: R[], threshold = 2) => admin().rpc('monitor_apply_results', { p_org: org, p_results: results, p_threshold: threshold })
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
 
@@ -14,11 +14,11 @@ describe('monitoring fixes in the database', () => {
   const gapIds: string[] = []
 
   const makeStore = async (code: string, extra: Record<string, unknown> = {}) =>
-    (await admin().from('stores').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u', ...extra }).select('id').single()).data!.id
+    (await admin().from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u', ...extra }).select('id').single()).data!.id
   const makeCamera = async (store: string, channel: number, extra: Record<string, unknown> = {}) =>
-    (await admin().from('cameras').insert({ org_id: orgId, store_id: store, channel, name: `C${channel}`, ...extra }).select('id').single()).data!.id
+    (await admin().from('cameras').insert({ org_id: orgId, location_id: store, channel, name: `C${channel}`, ...extra }).select('id').single()).data!.id
   const makeDevice = async (store: string, port: number) =>
-    (await admin().from('devices').insert({ org_id: orgId, store_id: store, type: 'server', name: `D${port}`, ip: '127.0.0.1', tcp_port: port }).select('id').single()).data!.id
+    (await admin().from('assets').insert({ org_id: orgId, location_id: store, type: 'server', name: `D${port}`, ip: '127.0.0.1', tcp_port: port }).select('id').single()).data!.id
   const state = async (type: string, id: string) =>
     (await admin().from('check_state').select('*').eq('org_id', orgId).eq('target_type', type).eq('target_id', id).maybeSingle()).data
   const outagesOf = async (type: string, id: string) =>
@@ -116,25 +116,27 @@ describe('monitoring fixes in the database', () => {
     it('switching a store off closes its open outages and forgets its status; switched on again it starts as not checked yet', async () => {
       const store = await makeStore('OFF')
       const cam = await makeCamera(store, 1)
+      // P2-5a: the NVR's state and outages belong to the location's recorder (the 'nvr' result is written to the primary recorder).
+      const rec = await primaryRecorderOf(store)
       await apply(orgId, [{ type: 'nvr', id: store, ok: false, at: ago(30) }], 1)
       await apply(orgId, [{ type: 'camera', id: cam, ok: false, at: ago(30), cause: 'nvr_down' }], 1)
-      expect((await outagesOf('nvr', store))[0].ended_at).toBeNull()
+      expect((await outagesOf('recorder', rec))[0].ended_at).toBeNull()
 
-      expect((await admin().from('stores').update({ is_active: false }).eq('id', store)).error).toBeNull()
-      for (const [type, id] of [['nvr', store], ['camera', cam]] as const) {
+      expect((await admin().from('locations').update({ is_active: false }).eq('id', store)).error).toBeNull()
+      for (const [type, id] of [['recorder', rec], ['camera', cam]] as const) {
         const o = await outagesOf(type, id)
         expect(o).toHaveLength(1)
         expect(o[0].ended_at).not.toBeNull()
         expect(await state(type, id)).toBeNull()
       }
       // It is gone from the status view, and a late result from a round that was already running changes nothing.
-      expect((await manager.client.from('store_status').select('store_id').eq('store_id', store)).data).toEqual([])
+      expect((await manager.client.from('location_status').select('location_id').eq('location_id', store)).data).toEqual([])
       await apply(orgId, [{ type: 'nvr', id: store, ok: false, at: new Date().toISOString() }, { type: 'camera', id: cam, ok: true, at: new Date().toISOString() }], 1)
-      expect(await state('nvr', store)).toBeNull()
+      expect(await state('recorder', rec)).toBeNull()
       expect(await state('camera', cam)).toBeNull()
 
-      expect((await admin().from('stores').update({ is_active: true }).eq('id', store)).error).toBeNull()
-      const back = await manager.client.from('store_status').select('*').eq('store_id', store).single()
+      expect((await admin().from('locations').update({ is_active: true }).eq('id', store)).error).toBeNull()
+      const back = await manager.client.from('location_status').select('*').eq('location_id', store).single()
       expect(back.data).toMatchObject({ cameras_total: 1, cameras_live: 0, cameras_unknown: 1, nvr_status: null })
     })
 
@@ -144,7 +146,7 @@ describe('monitoring fixes in the database', () => {
       const cam2 = await makeCamera(store, 2)
       const dev = await makeDevice(store, 7001)
       await apply(orgId, [{ type: 'camera', id: cam1, ok: false, at: ago(30) }, { type: 'camera', id: cam2, ok: false, at: ago(30) }, { type: 'device', id: dev, ok: false, at: ago(30) }], 1)
-      await admin().from('devices').update({ enabled: false }).eq('id', dev)
+      await admin().from('assets').update({ enabled: false }).eq('id', dev)
       await admin().from('cameras').update({ is_active: false }).eq('id', cam1)
       expect((await outagesOf('device', dev))[0].ended_at).not.toBeNull()
       expect(await state('device', dev)).toBeNull()
@@ -152,7 +154,7 @@ describe('monitoring fixes in the database', () => {
       expect(await state('camera', cam1)).toBeNull()
       // The other camera is untouched, and the view counts only the active one.
       expect((await outagesOf('camera', cam2))[0].ended_at).toBeNull()
-      const v = await manager.client.from('store_status').select('*').eq('store_id', store).single()
+      const v = await manager.client.from('location_status').select('*').eq('location_id', store).single()
       expect(v.data).toMatchObject({ cameras_total: 1, cameras_down: 1 })
       // A result for a disabled device or an inactive camera is ignored.
       await apply(orgId, [{ type: 'device', id: dev, ok: true, at: new Date().toISOString() }, { type: 'camera', id: cam1, ok: true, at: new Date().toISOString() }])
@@ -182,18 +184,18 @@ describe('monitoring fixes in the database', () => {
       ])
       await apply(orgId, [{ type: 'camera', id: down, ok: false, at: ago(STALE_AFTER_MINUTES + 30) }], 1)
       void never
-      const v = await manager.client.from('store_status').select('*').eq('store_id', store).single()
+      const v = await manager.client.from('location_status').select('*').eq('location_id', store).single()
       expect(v.data).toMatchObject({ cameras_total: 4, cameras_live: 1, cameras_stale: 1, cameras_down: 1, cameras_unknown: 1, nvr_status: 'up', nvr_stale: true })
 
       // A fresh NVR result is not stale.
       await apply(orgId, [{ type: 'nvr', id: store, ok: true, at: ago(1) }])
-      const w = await manager.client.from('store_status').select('nvr_stale').eq('store_id', store).single()
+      const w = await manager.client.from('location_status').select('nvr_stale').eq('location_id', store).single()
       expect(w.data?.nvr_stale).toBe(false)
     })
 
     it('a store that was never checked has no stale NVR', async () => {
       const store = await makeStore('NEVER')
-      const v = await manager.client.from('store_status').select('*').eq('store_id', store).single()
+      const v = await manager.client.from('location_status').select('*').eq('location_id', store).single()
       expect(v.data).toMatchObject({ nvr_status: null, nvr_stale: false, cameras_stale: 0 })
     })
   })

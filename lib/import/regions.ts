@@ -5,7 +5,9 @@ const ALIASES: Record<string, string> = {
   assam: 'Assam',
 }
 
-export function normalizeRegion(value: string | null | undefined): string | null {
+// P2-5a: named normalizeZone (was normalizeRegion) so it is not mistaken for the new regions of the hierarchy (ruling C-1); zone and
+// state stay plain optional attributes of a location.
+export function normalizeZone(value: string | null | undefined): string | null {
   const t = (value ?? '').trim().replace(/\s+/g, ' ')
   if (!t) return null
   const hit = ALIASES[t.toLowerCase()]

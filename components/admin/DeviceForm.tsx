@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
-export type DeviceFormValues = { id?: string; name?: string; type?: string; store_id?: string | null; ip?: string; tcp_port?: number | null; notes?: string | null; enabled?: boolean }
+export type DeviceFormValues = { id?: string; name?: string; type?: string; store_id?: string | null; ip?: string | null; tcp_port?: number | null; notes?: string | null; enabled?: boolean }
 
 export function DeviceForm({ device, stores }: { device?: DeviceFormValues; stores: { id: string; code: string; name: string }[] }) {
   const [state, action, pending] = useActionState<FormResult, FormData>(saveDeviceAction, {})

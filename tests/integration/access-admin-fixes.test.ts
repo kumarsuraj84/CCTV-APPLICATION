@@ -20,10 +20,10 @@ const versionOf = async (id: string) => Number((await admin().from('profiles').s
 const live = async (id: string) => (await admin().from('access_grants').select('id, capability, scope_kind, scope_id, valid_from, valid_until, revoked_at, revoke_reason, reason').eq('user_id', id).is('revoked_at', null)).data ?? []
 const actorOf = (u: TestUser, orgId: string, role: Actor['role']): Actor => ({ id: u.id, orgId, role })
 async function addStore(orgId: string, code: string) {
-  return (await admin().from('stores').insert({ org_id: orgId, code, name: `Location ${code}`, nvr_ip: '192.0.2.10', nvr_username: 'v' }).select('id').single()).data!.id as string
+  return (await admin().from('locations').insert({ org_id: orgId, code, name: `Location ${code}`, nvr_ip: '192.0.2.10', nvr_username: 'v' }).select('id').single()).data!.id as string
 }
 async function addCamera(orgId: string, storeId: string, ch: number) {
-  return (await admin().from('cameras').insert({ org_id: orgId, store_id: storeId, channel: ch, name: `Camera ${ch}` }).select('id').single()).data!.id as string
+  return (await admin().from('cameras').insert({ org_id: orgId, location_id: storeId, channel: ch, name: `Camera ${ch}` }).select('id').single()).data!.id as string
 }
 async function owners(orgId: string, n: number): Promise<TestUser[]> {
   const out: TestUser[] = []

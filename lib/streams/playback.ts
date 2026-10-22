@@ -1,6 +1,7 @@
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { IT_VIEW } from '@/lib/auth/capabilities'
 import { cameraFor, locationFor } from '@/lib/auth/resource'
+import { legacyReachable, MSG_MONITORING_OFF } from '@/lib/inventory/recorders'
 import { describeNvrError, NvrClient, NvrError, type NvrEndpoint } from '@/lib/nvr/client'
 import { findSegments, recordedDays } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
@@ -52,7 +53,7 @@ export const MSG_TOO_BUSY = 'Too many people are watching this recording right n
 const MAX_UNREADABLE_IN_A_ROW = 3
 
 export type StoreRow = { code: string; nvr_ip: string; http_port: number; rtsp_port: number; nvr_username: string }
-export type CameraRow = { id: string; name: string; channel: number; store_id: string; stores: StoreRow | null }
+export type CameraRow = { id: string; name: string; channel: number; store_id: string; recorder_id: string | null; stores: StoreRow | null }
 
 export type PlaybackDeps = {
   /** The person's own signed-in client: whatever it can read is what they may see. */
@@ -115,10 +116,11 @@ export async function findCamera(
   // Only then the NVR address and login, with the service role: signed-in people cannot read them any more (AC-10).
   const found = await deps.admin
     .from('cameras')
-    .select('id, name, channel, store_id, stores!inner(code, nvr_ip, http_port, rtsp_port, nvr_username, is_active)')
+    .select('id, name, channel, store_id:location_id, recorder_id, stores:locations!inner(code, nvr_ip, http_port, rtsp_port, nvr_username, is_active)')
     .eq('id', id)
     .eq('org_id', o.orgId)
     .eq('is_active', true)
+    .is('archived_at', null)
     .eq('stores.is_active', true)
     .maybeSingle()
   if (found.error) {
@@ -126,8 +128,18 @@ export async function findCamera(
     return { ok: false, error: MSG_READ_CAMERA }
   }
   const row = found.data as unknown as CameraRow | null
-  if (!row || !row.stores) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
+  if (!row || !row.stores || !row.stores.nvr_ip) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
   const camera = row as Found['camera']
+  // Owner addition: a switched-off NVR is never contacted (no login read, no NVR or go2rtc request). Until P2-5b, recordings are reached
+  // through the location's primary NVR only (seam D5-7): a camera of another NVR of the location is not opened through the wrong box.
+  let route
+  try {
+    route = await legacyReachable(deps.admin, o.orgId, [{ id: camera.id, location_id: camera.store_id, recorder_id: camera.recorder_id }])
+  } catch {
+    return { ok: false, error: MSG_READ_CAMERA }
+  }
+  if (route.off.has(camera.id)) return { ok: false, error: MSG_MONITORING_OFF }
+  if (!route.usable.has(camera.id)) return { ok: false, error: MSG_RECORDINGS_UNREACHABLE }
 
   const demo = o.password === 'unless-demo' && isDemoStore({ code: camera.stores.code, nvr_ip: camera.stores.nvr_ip }, o.env ?? process.env)
   if (demo) return { ok: true, camera, password: null, demo }

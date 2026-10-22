@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { NvrClient } from '@/lib/nvr/client'
 import { createWindowLimiter } from '@/lib/streams/limiter'
 import { buildFfmpegArgs, createConversionLimiter, parseVodQuery, serveVod, type ConversionLimiter, type VodDeps } from '@/lib/streams/vod'
-import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const WITH_EXPORT = [...CCTV_VIEW, 'cctv.export']
 import { closedPort, FAKE_DOWNLOAD_BYTES, startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
@@ -55,12 +55,12 @@ describe('fast playback (/api/vod)', () => {
   let hostileCodec: string | null = null
 
   async function addStore(org: string, code: string, o: { port?: number; active?: boolean } = {}) {
-    const { data, error } = await admin().from('stores').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', http_port: o.port ?? nvr.port, rtsp_port: 554, nvr_username: NVR_USER, is_active: o.active ?? true }).select('id').single()
+    const { data, error } = await admin().from('locations').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', http_port: o.port ?? nvr.port, rtsp_port: 554, nvr_username: NVR_USER, is_active: o.active ?? true }).select('id').single()
     if (error || !data) throw new Error(`addStore: ${error?.message}`)
     return data.id
   }
   async function addCamera(org: string, store: string, channel: number, name: string, active = true) {
-    const { data, error } = await admin().from('cameras').insert({ org_id: org, store_id: store, channel, name, is_active: active }).select('id').single()
+    const { data, error } = await admin().from('cameras').insert({ org_id: org, location_id: store, channel, name, is_active: active }).select('id').single()
     if (error || !data) throw new Error(`addCamera: ${error?.message}`)
     return data.id
   }
@@ -153,6 +153,23 @@ describe('fast playback (/api/vod)', () => {
   const errorOf = async (res: Response) => ((await res.json()) as { error: string }).error
 
   describe('the video', () => {
+    it('owner addition: refuses a camera on an NVR with monitoring switched off, before any NVR request or conversion', async () => {
+      const sMon = await addStore(orgId, 'VMOFF')
+      await savePassword(sMon, NVR_PASSWORD)
+      const cam = await addCamera(orgId, sMon, 1, 'Real NVR camera')
+      const watcher = await createUser(orgId, 'user')
+      await grant(orgId, watcher.id, WITH_EXPORT, atLocation(sMon))
+      const rec = await primaryRecorderOf(sMon)
+      expect((await admin().rpc('recorder_set_monitoring', { p_org: orgId, p_recorder: rec, p_enabled: false, p_reason: 'Real NVR: not to be contacted' })).error).toBeNull()
+      const spawn = fakeSpawn('copy')
+      const res = await get(watcher, cam, { deps: { spawn } })
+      expect(res.status).toBe(409)
+      expect(await errorOf(res)).toBe('Monitoring is switched off for this NVR.')
+      expect(nvr.requests).toEqual([])
+      expect(spawn.calls).toEqual([])
+      await admin().rpc('recorder_set_monitoring', { p_org: orgId, p_recorder: rec, p_enabled: true, p_reason: 'Lab NVR' })
+    })
+
     it('streams the NVR recording through the converter as video/mp4, with the headers the brief names', async () => {
       const spawn = fakeSpawn('copy')
       const res = await get(viewer, a1, { deps: { spawn } })

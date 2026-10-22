@@ -119,7 +119,8 @@ async function addDemo(admin: Admin, nvrPort: number): Promise<void> {
     const storeIds: Record<string, string> = {}
     for (const s of plan.stores) {
       const { data, error } = await admin
-        .from('stores')
+        // P2-5a: written the old way (NVR columns on the location); the database makes it the location's primary recorder (seam D5-7).
+        .from('locations')
         .insert({
           org_id: orgId, code: s.code, name: s.name, city: s.city, zone: s.zone,
           nvr_ip: LOOPBACK, http_port: s.httpPort, rtsp_port: s.rtspPort, nvr_username: DEMO_NVR_USER, expected_channels: s.cameras,
@@ -133,11 +134,11 @@ async function addDemo(admin: Admin, nvrPort: number): Promise<void> {
       if (cred.error) throw new Error(`password for ${s.code}: ${cred.error.message}`)
       const cams = await admin
         .from('cameras')
-        .insert(Array.from({ length: s.cameras }, (_, i) => ({ org_id: orgId, store_id: data.id, channel: i + 1, name: `Camera ${i + 1}` })))
+        .insert(Array.from({ length: s.cameras }, (_, i) => ({ org_id: orgId, location_id: data.id, channel: i + 1, name: `Camera ${i + 1}` })))
       if (cams.error) throw new Error(`cameras of ${s.code}: ${cams.error.message}`)
     }
-    const devs = await admin.from('devices').insert(
-      plan.devices.map((d) => ({ org_id: orgId, store_id: d.storeCode ? storeIds[d.storeCode] : null, type: d.type, name: d.name, ip: LOOPBACK, tcp_port: d.port })),
+    const devs = await admin.from('assets').insert(
+      plan.devices.map((d) => ({ org_id: orgId, location_id: d.storeCode ? storeIds[d.storeCode] : null, type: d.type, name: d.name, ip: LOOPBACK, tcp_port: d.port })),
     )
     if (devs.error) throw new Error(`devices: ${devs.error.message}`)
 

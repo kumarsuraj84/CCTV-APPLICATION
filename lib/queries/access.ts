@@ -17,10 +17,13 @@ export async function storesForCapability(supabase: Client, caps: Capabilities, 
   if (!holds(caps, cap) || !scope) return []
   const stores = await listVisibleStores(supabase)
   if (scope.organization) return stores.filter((s) => s.camera_count > 0)
-  const whole = new Set(scope.locations)
+  // P2-5a: whole = the locations the database says are covered whole (location, cluster and region grants expanded); single cameras
+  // = camera grants plus the cameras on granted recorders. The hierarchy is never recomputed here.
+  const whole = new Set(scope.coveredLocations ?? scope.locations)
+  const single = [...new Set([...scope.cameras, ...(scope.recorderCameras ?? [])])]
   const perStore = new Map<string, number>()
-  for (let i = 0; i < scope.cameras.length; i += PIECE) {
-    const { data, error } = await supabase.from('cameras').select('id, store_id').in('id', scope.cameras.slice(i, i + PIECE)).eq('is_active', true)
+  for (let i = 0; i < single.length; i += PIECE) {
+    const { data, error } = await supabase.from('cameras').select('id, store_id:location_id').in('id', single.slice(i, i + PIECE)).eq('is_active', true)
     if (error) throw new Error('Could not read the cameras.')
     for (const c of data ?? []) if (!whole.has(c.store_id)) perStore.set(c.store_id, (perStore.get(c.store_id) ?? 0) + 1)
   }

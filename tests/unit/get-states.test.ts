@@ -22,10 +22,19 @@ describe('getStates', () => {
           }),
         }),
       }),
+      // P2-5a owner addition: cameras on a switched-off NVR come back as 'off' (asked per chunk as well).
+      rpc: async (fn: string, args: { p_ids: string[] }) => {
+        offAsked.push(fn)
+        return { data: args.p_ids.includes('id7') ? ['id7'] : [], error: null }
+      },
     } as unknown as SupabaseClient
+    const offAsked: string[] = []
     const ids = Array.from({ length: 950 }, (_, i) => `id${i}`)
     const out = await getStates(client as never, 'camera', ids)
     expect(out.size).toBe(950)
+    expect(out.get('id7')?.status).toBe('off')
+    expect(out.get('id8')?.status).toBe('up')
+    expect(new Set(offAsked)).toEqual(new Set(['cameras_monitoring_off']))
     expect(calls).toHaveLength(10)
     expect(peak).toBeGreaterThan(1)
     expect(peak).toBeLessThanOrEqual(4)

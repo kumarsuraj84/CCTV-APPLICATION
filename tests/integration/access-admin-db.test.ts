@@ -16,12 +16,12 @@ const day = 86_400_000
 const iso = (ms: number) => new Date(ms).toISOString()
 
 async function addStore(orgId: string, code: string): Promise<string> {
-  const { data, error } = await admin().from('stores').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '192.0.2.10', nvr_username: 'viewer' }).select('id').single()
+  const { data, error } = await admin().from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '192.0.2.10', nvr_username: 'viewer' }).select('id').single()
   if (error || !data) throw new Error(`addStore: ${error?.message}`)
   return data.id
 }
 async function addCamera(orgId: string, storeId: string, channel: number): Promise<string> {
-  const { data, error } = await admin().from('cameras').insert({ org_id: orgId, store_id: storeId, channel, name: `Camera ${channel}` }).select('id').single()
+  const { data, error } = await admin().from('cameras').insert({ org_id: orgId, location_id: storeId, channel, name: `Camera ${channel}` }).select('id').single()
   if (error || !data) throw new Error(`addCamera: ${error?.message}`)
   return data.id
 }

@@ -30,18 +30,18 @@ const ANON = () => process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 type Fn = keyof Database['public']['Functions']
 
 async function addStore(orgId: string, code: string, zone: string | null = null): Promise<string> {
-  const { data, error } = await admin().from('stores').insert({ org_id: orgId, code, name: `Store ${code}`, zone, nvr_ip: '192.0.2.10', nvr_username: 'viewer' }).select('id').single()
+  const { data, error } = await admin().from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, zone, nvr_ip: '192.0.2.10', nvr_username: 'viewer' }).select('id').single()
   if (error || !data) throw new Error(`addStore: ${error?.message}`)
   return data.id
 }
 async function addCamera(orgId: string, storeId: string, channel: number): Promise<string> {
-  const { data, error } = await admin().from('cameras').insert({ org_id: orgId, store_id: storeId, channel, name: `Camera ${channel}`, camera_ip: `192.0.2.${100 + channel}` }).select('id').single()
+  const { data, error } = await admin().from('cameras').insert({ org_id: orgId, location_id: storeId, channel, name: `Camera ${channel}`, camera_ip: `192.0.2.${100 + channel}` }).select('id').single()
   if (error || !data) throw new Error(`addCamera: ${error?.message}`)
   return data.id
 }
 let port = 20
 async function addDevice(orgId: string, storeId: string | null, name: string): Promise<string> {
-  const { data, error } = await admin().from('devices').insert({ org_id: orgId, store_id: storeId, type: 'server', name, ip: '192.0.2.50', tcp_port: port++ }).select('id').single()
+  const { data, error } = await admin().from('assets').insert({ org_id: orgId, location_id: storeId, type: 'server', name, ip: '192.0.2.50', tcp_port: port++ }).select('id').single()
   if (error || !data) throw new Error(`addDevice: ${error?.message}`)
   return data.id
 }
@@ -62,8 +62,9 @@ async function canFor(u: TestUser, cap: string, kind: 'camera' | 'location' | 'a
   expect(error).toBeNull()
   return data as boolean
 }
-async function rows(u: TestUser, table: 'stores' | 'cameras' | 'devices' | 'camera_groups' | 'profiles' | 'admin_audit_log'): Promise<string[]> {
-  const { data, error } = await u.client.from(table).select('id')
+// P2-5a: stores → locations, devices → assets. A location's NVR is an asset too (a recorder); 'assets' here are the IT devices.
+async function rows(u: TestUser, table: 'locations' | 'cameras' | 'assets' | 'camera_groups' | 'profiles' | 'admin_audit_log'): Promise<string[]> {
+  const { data, error } = table === 'assets' ? await u.client.from('assets').select('id').eq('is_recorder', false) : await u.client.from(table).select('id')
   expect(error, table).toBeNull()
   return sorted((data ?? []).map((r) => r.id))
 }
@@ -143,30 +144,31 @@ describe('capability access model (P2-1)', () => {
       { org_id: orgA, target_type: 'nvr', target_id: L1, started_at: at, ended_at: at },
       { org_id: orgA, target_type: 'camera', target_id: c11, started_at: at, ended_at: at },
     ])
-    expect(await rows(p, 'devices')).toEqual([])
+    expect(await rows(p, 'assets')).toEqual([])
     const states = await p.client.from('check_state').select('target_type, target_id')
     expect(states.error).toBeNull()
     expect(states.data).toEqual([{ target_type: 'camera', target_id: c11 }])
     const outs = await p.client.from('outages').select('target_type')
     expect(outs.data).toEqual([{ target_type: 'camera' }])
-    const status = await p.client.from('store_status').select('store_id, cameras_total, nvr_status')
-    expect(status.data).toEqual([{ store_id: L1, cameras_total: 3, nvr_status: null }])
+    const status = await p.client.from('location_status').select('location_id, cameras_total, nvr_status, recorders_total')
+    expect(status.data).toEqual([{ location_id: L1, cameras_total: 3, nvr_status: null, recorders_total: 0 }])
     for (const cap of ['it.inventory.view', 'it.monitoring.view']) {
       expect(await can(p, cap)).toBe(false)
-      expect(await ids(p, 'capability_device_ids', { p_cap: cap })).toEqual([])
+      expect(await ids(p, 'capability_asset_ids', { p_cap: cap })).toEqual([])
     }
 
-    // The same location with it.monitoring.view shows the devices and their status (and nothing of CCTV).
+    // The same location with it.monitoring.view shows the devices and their status (and nothing of CCTV). P2-5a: the NVR status is
+    // the location's recorder's ('recorder' rows; the 'nvr' result was written to the primary recorder).
     const it_ = await createUser(orgA, 'user')
     await grant(orgA, it_.id, 'it.monitoring.view', atLocation(L1))
-    expect(await rows(it_, 'devices')).toEqual([d1])
+    expect(await rows(it_, 'assets')).toEqual([d1])
     expect(await rows(it_, 'cameras')).toEqual([])
     const itStates = await it_.client.from('check_state').select('target_type').order('target_type')
-    expect(itStates.data).toEqual([{ target_type: 'device' }, { target_type: 'nvr' }])
+    expect(itStates.data).toEqual([{ target_type: 'device' }, { target_type: 'recorder' }])
     // An asset grant shows exactly that asset; a device without a location needs an organisation or asset grant.
     const one = await createUser(orgA, 'user')
     await grant(orgA, one.id, 'it.inventory.view', atAsset(d0))
-    expect(await rows(one, 'devices')).toEqual([d0])
+    expect(await rows(one, 'assets')).toEqual([d0])
   })
 
   it('VA-4 (AC-5): selected-camera grants across two locations, with live different from playback', async () => {
@@ -177,7 +179,7 @@ describe('capability access model (P2-1)', () => {
     expect(await ids(p, 'capability_camera_ids', { p_cap: 'cctv.playback' })).toEqual(sorted([c12, c21]))
     expect(await ids(p, 'any_cctv_camera_ids')).toEqual(sorted([c11, c12, c21]))
     expect(await rows(p, 'cameras')).toEqual(sorted([c11, c12, c21]))
-    expect(await rows(p, 'stores')).toEqual(sorted([L1, L2]))
+    expect(await rows(p, 'locations')).toEqual(sorted([L1, L2]))
     expect(await canFor(p, 'cctv.live', 'location', L1)).toBe(false) // one camera is not the whole location
     expect(await canFor(p, 'cctv.playback', 'camera', c11)).toBe(false)
   })
@@ -194,42 +196,47 @@ describe('capability access model (P2-1)', () => {
     // A location grant includes cameras added later.
     const later = await addCamera(orgA, L1, 9)
     expect(await ids(p, 'capability_camera_ids', { p_cap: 'cctv.playback' })).toEqual(sorted([c11, c12, c13, later]))
-    await admin().from('cameras').delete().eq('id', later)
+    // (P2-5a: cameras are archived, never deleted.)
+    await admin().rpc('inventory_archive', { p_org: orgA, p_kind: 'camera', p_id: later })
   })
 
   it('VA-6 (AC-7): a home store on the profile grants nothing', async () => {
     const p = await createUser(orgA, 'user', { storeId: L1 })
-    for (const t of ['stores', 'cameras', 'devices'] as const) expect(await rows(p, t)).toEqual([])
+    for (const t of ['locations', 'cameras', 'assets'] as const) expect(await rows(p, t)).toEqual([])
     expect(await can(p, 'cctv.live')).toBe(false)
     expect(await canFor(p, 'cctv.live', 'location', L1)).toBe(false)
     // The column stays, as information only.
-    const own = await p.client.from('profiles').select('store_id').eq('id', p.id).single()
-    expect(own.data?.store_id).toBe(L1)
+    const own = await p.client.from('profiles').select('location_id').eq('id', p.id).single()
+    expect(own.data?.location_id).toBe(L1)
   })
 
   it('VA-7 (AC-8): a manager without grants sees nothing but their own profile; admin.users opens the profiles', async () => {
     const m = await createUser(orgA, 'manager')
     await createUser(orgA, 'user')
-    for (const t of ['stores', 'cameras', 'devices', 'camera_groups', 'admin_audit_log'] as const) expect(await rows(m, t)).toEqual([])
+    for (const t of ['locations', 'cameras', 'assets', 'camera_groups', 'admin_audit_log'] as const) expect(await rows(m, t)).toEqual([])
     expect((await m.client.from('check_state').select('id')).data).toEqual([])
     expect((await m.client.from('outages').select('id')).data).toEqual([])
-    expect((await m.client.from('store_status').select('store_id')).data).toEqual([])
+    expect((await m.client.from('location_status').select('location_id')).data).toEqual([])
     expect(await rows(m, 'profiles')).toEqual([m.id])
 
     await grant(orgA, m.id, 'admin.users')
     expect((await rows(m, 'profiles')).length).toBeGreaterThan(2)
     // admin.users is administrative: it still shows no store, camera or device.
-    for (const t of ['stores', 'cameras', 'devices'] as const) expect(await rows(m, t)).toEqual([])
+    for (const t of ['locations', 'cameras', 'assets'] as const) expect(await rows(m, t)).toEqual([])
 
     // P2-2 fix M-2: no role literal any more: an administrator reads only their own profile until granted admin.users, and no data.
     const a = await createUser(orgA, 'admin')
     expect(await rows(a, 'profiles')).toEqual([a.id])
     await grant(orgA, a.id, 'admin.users')
     expect((await rows(a, 'profiles')).length).toBeGreaterThan(2)
-    for (const t of ['stores', 'cameras', 'devices', 'admin_audit_log'] as const) expect(await rows(a, t)).toEqual([])
+    for (const t of ['locations', 'cameras', 'assets', 'admin_audit_log'] as const) expect(await rows(a, t)).toEqual([])
     await grant(orgA, a.id, 'admin.audit.read')
-    await admin().from('admin_audit_log').insert({ org_id: orgA, actor_id: a.id, action: 'test' })
-    expect((await rows(a, 'admin_audit_log')).length).toBe(1)
+    const { data: mine } = await admin().from('admin_audit_log').insert({ org_id: orgA, actor_id: a.id, action: 'test' }).select('id').single()
+    // (Other rows of the organisation, such as the P2-5a archive record of VA-5, are visible too: admin.audit.read is organisation-wide.)
+    const all = sorted(((await admin().from('admin_audit_log').select('id').eq('org_id', orgA)).data ?? []).map((r) => r.id))
+    expect(all).toContain(mine!.id)
+    expect(await rows(a, 'admin_audit_log')).toEqual(all)
+    expect(await rows(m, 'admin_audit_log')).toEqual([])
   })
 
   it('VA-8 (AC-6): overlapping grants are a predictable union, and granting the same thing twice is idempotent', async () => {
@@ -422,16 +429,16 @@ describe('capability access model (P2-1)', () => {
     await grant(orgA, p.id, READ_EVERYTHING)
     expect((await rows(p, 'cameras')).length).toBe(6)
     await admin().from('profiles').update({ is_active: false }).eq('id', p.id)
-    for (const t of ['stores', 'cameras', 'devices'] as const) expect(await rows(p, t)).toEqual([])
+    for (const t of ['locations', 'cameras', 'assets'] as const) expect(await rows(p, t)).toEqual([])
     expect(await can(p, 'cctv.live')).toBe(false)
     expect(await ids(p, 'any_cctv_camera_ids')).toEqual([])
     await admin().from('profiles').update({ is_active: true }).eq('id', p.id)
     expect((await rows(p, 'cameras')).length).toBe(6)
-    expect(await rows(p, 'devices')).toEqual(sorted([d0, d1, d2]))
+    expect(await rows(p, 'assets')).toEqual(sorted([d0, d1, d2]))
 
     const r = await createUser(orgA, 'user', { mustReset: true })
     await grant(orgA, r.id, READ_EVERYTHING)
-    for (const t of ['stores', 'cameras', 'devices'] as const) expect(await rows(r, t)).toEqual([])
+    for (const t of ['locations', 'cameras', 'assets'] as const) expect(await rows(r, t)).toEqual([])
     expect(await can(r, 'cctv.live')).toBe(false)
   })
 
@@ -440,9 +447,9 @@ describe('capability access model (P2-1)', () => {
     await grant(orgA, a.id, READ_EVERYTHING)
     const b = await createUser(orgB, 'user')
     await grant(orgB, b.id, READ_EVERYTHING)
-    expect(await rows(b, 'stores')).toEqual([LB])
+    expect(await rows(b, 'locations')).toEqual([LB])
     expect(await rows(b, 'cameras')).toEqual([cB])
-    expect(await rows(b, 'devices')).toEqual([dB])
+    expect(await rows(b, 'assets')).toEqual([dB])
     expect(await canFor(a, 'cctv.live', 'camera', cB)).toBe(false)
     expect(await ids(a, 'cameras_with_capability', { p_cap: 'cctv.live', p_ids: [cB, c11] })).toEqual([c11])
 
@@ -509,28 +516,31 @@ describe('capability access model (P2-1)', () => {
     const p = await createUser(orgA, 'user')
     await grant(orgA, p.id, CCTV_VIEW, atLocation(L1))
     for (const col of ['nvr_ip', 'rtsp_port', 'http_port', 'nvr_username', 'nvr_secret_id', '*']) {
-      const res = await p.client.from('stores').select(col)
+      const res = await p.client.from('locations').select(col)
       expect(res.error?.code, col).toBe('42501')
     }
     expect((await p.client.from('cameras').select('camera_ip')).error?.code).toBe('42501')
     expect((await p.client.from('cameras').select('*')).error?.code).toBe('42501')
+    // P2-5a: nor which recorder a camera is on (ruling C-1: the recorder is shown to IT users only).
+    expect((await p.client.from('cameras').select('recorder_id')).error?.code).toBe('42501')
     // The plain columns still work.
-    expect((await p.client.from('stores').select('id, code, name, city, zone, is_active')).data).toHaveLength(1)
-    expect((await p.client.from('cameras').select('id, store_id, channel, name, is_active')).data).toHaveLength(3)
-    expect((await p.client.from('store_nvr_endpoints').select('store_id')).data).toEqual([])
+    expect((await p.client.from('locations').select('id, code, name, city, zone, is_active')).data).toHaveLength(1)
+    expect((await p.client.from('cameras').select('id, location_id, channel, name, is_active')).data).toHaveLength(3)
+    expect((await p.client.from('recorder_endpoints').select('recorder_id')).data).toEqual([])
     expect((await p.client.from('camera_endpoints').select('camera_id')).data).toEqual([])
     // Straight to PostgREST with the person's own token.
-    const raw = await fetch(`${URL_()}/rest/v1/stores?select=nvr_ip,nvr_username`, { headers: { apikey: ANON(), Authorization: `Bearer ${await token(p)}` } })
+    const raw = await fetch(`${URL_()}/rest/v1/locations?select=nvr_ip,nvr_username`, { headers: { apikey: ANON(), Authorization: `Bearer ${await token(p)}` } })
     expect(raw.status).toBeGreaterThanOrEqual(400)
     expect(await raw.text()).not.toContain('192.0.2.10')
 
-    // An IT person for L1 reads the addresses of L1 only (never the vault id).
+    // An IT person for L1 reads the addresses of L1 only (never the vault id). P2-5a: recorder_endpoints replaces store_nvr_endpoints.
     const it_ = await createUser(orgA, 'user')
     await grant(orgA, it_.id, 'it.inventory.view', atLocation(L1))
-    expect((await it_.client.from('store_nvr_endpoints').select('store_id, nvr_ip, nvr_username')).data).toEqual([{ store_id: L1, nvr_ip: '192.0.2.10', nvr_username: 'viewer' }])
+    expect((await it_.client.from('recorder_endpoints').select('location_id, host, username')).data).toEqual([{ location_id: L1, host: '192.0.2.10', username: 'viewer' }])
     expect((await it_.client.from('camera_endpoints').select('camera_id')).data?.length).toBe(3)
-    expect((await it_.client.from('store_nvr_endpoints').select('nvr_secret_id')).error).not.toBeNull()
-    expect((await it_.client.from('devices').select('ip, tcp_port')).data).toHaveLength(1)
+    expect((await it_.client.from('recorder_endpoints').select('secret_id' as never)).error).not.toBeNull()
+    expect((await it_.client.from('recorders').select('secret_id')).error).not.toBeNull()
+    expect((await it_.client.from('assets').select('ip, tcp_port').eq('is_recorder', false)).data).toHaveLength(1)
   })
 
   it('VA-15 (AC-9): preview_access_change counts what a change adds and removes, and writes nothing', async () => {
@@ -571,9 +581,9 @@ describe('capability access model (P2-1)', () => {
     expect(later.capabilities['cctv.playback']).toMatchObject({ added_count: 0, removed_count: 2 })
     expect(later.capabilities['cctv.live']).toMatchObject({ added_count: 0, removed_count: 0 })
 
-    // IT capabilities count assets.
+    // IT capabilities count assets: L1's device and (P2-5a) L1's NVR, which is a recorder asset of the location now.
     const it_ = await preview([{ op: 'grant', capability: 'it.inventory.view', scope_kind: 'location', scope_id: L1 }])
-    expect(it_.capabilities['it.inventory.view']).toMatchObject({ added_count: 1, removed_count: 0 })
+    expect(it_.capabilities['it.inventory.view']).toMatchObject({ added_count: 2, removed_count: 0 })
 
     // The write refuses a stale expected version, so two administrators cannot overwrite each other.
     const stale = await admin().rpc('grant_access', {
@@ -600,7 +610,7 @@ describe('capability access model (P2-1)', () => {
     expect((await db.from('user_store_access').insert({ org_id: orgA, user_id: p.id, store_id: L1 })).error).toBeNull()
     expect((await db.from('user_zone_access').insert({ org_id: orgA, user_id: p.id, zone: 'N' })).error).toBeNull()
     expect((await db.from('user_camera_access').insert({ org_id: orgA, user_id: p.id, camera_id: c31 })).error).toBeNull()
-    for (const t of ['stores', 'cameras', 'devices'] as const) expect(await rows(p, t)).toEqual([])
+    for (const t of ['locations', 'cameras', 'assets'] as const) expect(await rows(p, t)).toEqual([])
     for (const t of ['user_store_access', 'user_zone_access', 'user_camera_access'] as const) {
       expect((await p.client.from(t).select('org_id')).error?.code, t).toBe('42501')
     }
@@ -622,14 +632,19 @@ describe('capability access model (P2-1)', () => {
       has_capability: people,
       has_capability_for: people,
       capability_camera_ids: people,
-      capability_store_ids: people,
-      capability_device_ids: people,
+      // P2-5a renames (decision D5-5): store → location, device → asset; region/cluster/recorder rows and the IT recorder view.
+      capability_location_ids: people,
+      capability_asset_ids: people,
       any_cctv_camera_ids: people,
       cameras_with_capability: people,
-      any_grant_store_ids: people,
-      it_view_store_ids: people,
-      it_view_device_ids: people,
+      any_grant_location_ids: people,
+      any_grant_cluster_ids: people,
+      any_grant_region_ids: people,
+      it_view_location_ids: people,
+      it_view_asset_ids: people,
+      it_view_recorder_ids: people,
       cctv_visible_group_ids: people,
+      cameras_monitoring_off: ['authenticated'],
       // P2-2: the caller's capability summary (one call per request). Signed-in people only: the service role is nobody.
       my_access_summary: ['authenticated'],
       // P2-2 fix I-1: why targets are offline, in camera terms without the IT view.
@@ -641,7 +656,7 @@ describe('capability access model (P2-1)', () => {
       access_expiring: server,
       // Reporting only (ignore MFA, never for authorisation): the old access_effective_* names are gone (fix minor 2).
       report_effective_camera_ids: server,
-      report_effective_device_ids: server,
+      report_effective_asset_ids: server,
       access_session_capabilities: server,
       access_legacy_camera_ids: server,
       access_legacy_device_ids: server,
@@ -658,11 +673,14 @@ describe('capability access model (P2-1)', () => {
       access_check_actor: [],
       access_grants_of: [],
       access_camera_set: [],
-      access_device_set: [],
-      access_store_set: [],
+      access_asset_set: [],
+      access_location_set: [],
       access_cameras_for: [],
-      access_devices_for: [],
-      access_stores_for: [],
+      access_assets_for: [],
+      access_locations_for: [],
+      access_location_expand: [],
+      access_ancestry: [],
+      access_scope_covers: [],
       access_lock_person: [],
       access_bump_version: [],
       access_check_spec: [],
@@ -682,6 +700,58 @@ describe('capability access model (P2-1)', () => {
       access_catalogue_probe_test: server,
       capabilities_after_insert: [],
       profiles_platform_owner_after_update: [],
+      // P2-5a (20261021000019..21): locations, recorders, mappings, archive, hierarchy moves, monitoring switch, credentials, migration.
+      access_target_ancestry: server,
+      recorder_store_credential: server,
+      recorder_read_credential: server,
+      recorder_delete_credential: server,
+      recorder_credential_status: server,
+      recorder_primary_of: server,
+      recorder_set_monitoring: server,
+      nvr_store_credential: server,
+      nvr_read_credential: server,
+      nvr_delete_credential: server,
+      monitor_apply_results: server,
+      camera_remap: server,
+      inventory_archive: server,
+      inventory_restore: server,
+      inventory_move_location: server,
+      inventory_move_cluster: server,
+      preview_hierarchy_change: server,
+      inventory_purge_test_org: server,
+      inventory_propose_hierarchy: server,
+      inventory_effective_snapshot: server,
+      inventory_migrate_org_test: server,
+      inventory_unmigrate_org_test: server,
+      inventory_secret_fingerprint_test: server,
+      inventory_stale_name_scan: server,
+      network_validate_address: server,
+      network_address_conflicts: server,
+      inventory_migrate_org: [],
+      inventory_unmigrate_org: [],
+      inventory_require_test_org: [],
+      recorder_ensure_primary: [],
+      address_space_global: [],
+      asset_sync_endpoints: [],
+      inventory_refuse_delete: [],
+      organizations_global_space: [],
+      assets_after_write: [],
+      assets_before_update: [],
+      assets_attached_check: [],
+      monitor_stop_asset: [],
+      monitor_stop_location: [],
+      recorders_before_write: [],
+      recorders_after_write: [],
+      recorder_monitoring_stop: [],
+      mappings_before_write: [],
+      mappings_after_write: [],
+      cameras_after_insert: [],
+      cameras_before_update: [],
+      locations_legacy_seam: [],
+      inventory_hierarchy_moved: [],
+      inventory_node_archived: [],
+      network_definitions_check: [],
+      asset_dependencies_no_cycle: [],
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)
@@ -691,18 +761,23 @@ describe('capability access model (P2-1)', () => {
     }
     // The old model is gone, and so are the names replaced in fix round 1.
     for (const old of ['is_staff_all', 'granted_store_ids', 'visible_store_ids', 'visible_camera_ids', 'visible_device_ids', 'replace_user_access',
-      'access_effective_camera_ids', 'access_effective_device_ids']) {
+      'access_effective_camera_ids', 'access_effective_device_ids',
+      // Renamed in P2-5a (D5-5), and the history-erasing delete trigger function that is gone (archive instead).
+      'capability_store_ids', 'capability_device_ids', 'any_grant_store_ids', 'it_view_store_ids', 'it_view_device_ids', 'report_effective_device_ids',
+      'access_store_set', 'access_device_set', 'access_stores_for', 'access_devices_for', 'monitor_forget_target', 'monitor_stop_store']) {
       expect(byName.has(old), old).toBe(false)
     }
     // One signature each (no stale overloads left behind by a changed parameter list).
-    for (const name of ['preview_access_change', 'access_expiring', 'access_migrate_legacy', 'replace_user_grants', 'grant_access', 'revoke_grant']) {
+    for (const name of ['preview_access_change', 'access_expiring', 'access_migrate_legacy', 'replace_user_grants', 'grant_access', 'revoke_grant',
+      'access_camera_set', 'access_asset_set', 'my_access_summary', 'access_grant_summary']) {
       expect((data ?? []).filter((f) => f.name === name), name).toHaveLength(1)
     }
     // Minor 8, the sweep: no function of schema public is callable by anon or PUBLIC, and signed-in people only the allow-list.
     const forPeople = new Set([
       'current_org_id', 'current_user_role', 'monitor_stale_after_minutes', 'mfa_enforced', 'has_capability', 'has_capability_for',
-      'capability_camera_ids', 'capability_store_ids', 'capability_device_ids', 'any_cctv_camera_ids', 'cameras_with_capability',
-      'any_grant_store_ids', 'it_view_store_ids', 'it_view_device_ids', 'cctv_visible_group_ids', 'my_access_summary', 'status_reasons',
+      'capability_camera_ids', 'capability_location_ids', 'capability_asset_ids', 'any_cctv_camera_ids', 'cameras_with_capability',
+      'any_grant_location_ids', 'any_grant_cluster_ids', 'any_grant_region_ids', 'it_view_location_ids', 'it_view_asset_ids', 'it_view_recorder_ids',
+      'cctv_visible_group_ids', 'my_access_summary', 'status_reasons', 'cameras_monitoring_off',
     ])
     for (const f of data ?? []) {
       expect(f.grantees.filter((g) => g === 'anon' || g.startsWith('PUBLIC')), `${f.name}(${f.args})`).toEqual([])
@@ -723,6 +798,14 @@ describe('capability access model (P2-1)', () => {
       ['access_migrate_legacy_test', { p_run: randomUUID(), p_users: [someone.id] }],
       ['report_effective_camera_ids', { p_user: someone.id, p_cap: 'cctv.live' }],
       ['access_session_capabilities', { p_user: someone.id, p_claims: {}, p_mfa_enforced: false }],
+      // P2-5a server tools.
+      ['recorder_read_credential', { p_recorder: randomUUID() }],
+      ['inventory_archive', { p_org: orgA, p_kind: 'camera', p_id: c11 }],
+      ['camera_remap', { p_org: orgA, p_camera: c11, p_recorder: randomUUID(), p_channel: 1 }],
+      ['inventory_move_location', { p_org: orgA, p_location: L1, p_cluster: randomUUID() }],
+      ['recorder_set_monitoring', { p_org: orgA, p_recorder: randomUUID(), p_enabled: false, p_reason: 'nope' }],
+      ['inventory_purge_test_org', { p_org: orgA }],
+      ['report_effective_asset_ids', { p_user: someone.id, p_cap: 'it.inventory.view' }],
     ]
     for (const [fn, args] of calls) {
       expect((await anon.rpc(fn, args as never)).error?.code, `anon ${fn}`).toBe('42501')
@@ -754,8 +837,9 @@ describe('capability access model (P2-1)', () => {
     ]))
     for (const c of data ?? []) expect(c.requires_mfa, c.key).toBe(c.risk === 'high' || c.key === 'cctv.export')
     const byKey = new Map((data ?? []).map((c) => [c.key, c]))
-    expect(sorted(byKey.get('cctv.live')!.scope_kinds)).toEqual(sorted(['organization', 'location', 'camera']))
-    expect(sorted(byKey.get('it.inventory.view')!.scope_kinds)).toEqual(sorted(['organization', 'location', 'asset']))
+    // P2-5a (ruling C-1, decision D5-6): region, cluster and recorder scopes; a CCTV right never has an asset scope, IT never a camera.
+    expect(sorted(byKey.get('cctv.live')!.scope_kinds)).toEqual(sorted(['organization', 'region', 'cluster', 'location', 'recorder', 'camera']))
+    expect(sorted(byKey.get('it.inventory.view')!.scope_kinds)).toEqual(sorted(['organization', 'region', 'cluster', 'location', 'recorder', 'asset']))
     expect(byKey.get('admin.users')!.scope_kinds).toEqual(['organization'])
     expect((await admin().rpc('mfa_enforced')).data).toBe(false)
     // A capability that needs MFA still works while MFA is not enforced (the switch arrives in P3).

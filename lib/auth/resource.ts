@@ -9,9 +9,11 @@ import { logger } from '@/lib/observability/logger'
 // and MFA are evaluated by the database:
 //   camerasFor   -> cameras_with_capability(cap, ids)        (a list: the subset the person may use)
 //   cameraFor    -> has_capability_for(cap, 'camera', id)
-//   locationFor  -> has_capability_for(cap, 'location', id)  (true only when the whole location is covered: organisation or location grant)
+//   locationFor  -> has_capability_for(cap, 'location', id)  (true only when the whole location is covered: organisation, region,
+//                                                            cluster or location grant)
 //   assetFor     -> has_capability_for(cap, 'asset', id)
-//   coversSomeLocation -> capability_store_ids(cap)          (at least one whole location, or the organisation)
+//   recorderFor  -> has_capability_for(cap, 'recorder', id)  (the whole recorder: organisation, region, cluster, location or recorder grant)
+//   coversSomeLocation -> capability_location_ids(cap)       (at least one whole location, or the organisation)
 // Never the any-scope capability check, and never the reporting / diagnostic helpers (they skip MFA; tooling only).
 // A check that fails is a plain failure, never "allowed". Only after an allowed answer may a service-role read (addresses, passwords)
 // happen, and then scoped to the person's organisation.
@@ -47,7 +49,10 @@ export async function camerasFor(rls: Client, cap: Capability, ids: readonly str
   return { ok: true, ids: wanted.filter((c) => allowed.has(c)) }
 }
 
-async function holdsFor(rls: Client, cap: Capability, kind: 'camera' | 'location' | 'asset', id: string): Promise<Result<{ allowed: boolean }>> {
+/** P2-5a (ruling C-1): recorder, cluster and region are covered WHOLE like a location. */
+export type ResourceKind = 'camera' | 'location' | 'asset' | 'recorder' | 'cluster' | 'region'
+
+async function holdsFor(rls: Client, cap: Capability, kind: ResourceKind, id: string): Promise<Result<{ allowed: boolean }>> {
   if (typeof id !== 'string' || !UUID.test(id)) return { ok: true, allowed: false }
   const { data, error } = await rls.rpc('has_capability_for', { p_cap: cap, p_kind: kind, p_id: id.toLowerCase() })
   if (error) return failed('access_check_failed', error.code)
@@ -57,10 +62,11 @@ async function holdsFor(rls: Client, cap: Capability, kind: 'camera' | 'location
 export const cameraFor = (rls: Client, cap: Capability, id: string) => holdsFor(rls, cap, 'camera', id)
 export const locationFor = (rls: Client, cap: Capability, id: string) => holdsFor(rls, cap, 'location', id)
 export const assetFor = (rls: Client, cap: Capability, id: string) => holdsFor(rls, cap, 'asset', id)
+export const recorderFor = (rls: Client, cap: Capability, id: string) => holdsFor(rls, cap, 'recorder', id)
 
 /** True when the capability covers at least one whole location (or the organisation). */
 export async function coversSomeLocation(rls: Client, cap: Capability): Promise<Result<{ allowed: boolean }>> {
-  const { data, error } = await rls.rpc('capability_store_ids', { p_cap: cap }).limit(1)
+  const { data, error } = await rls.rpc('capability_location_ids', { p_cap: cap }).limit(1)
   if (error) return failed('access_check_failed', error.code)
   return { ok: true, allowed: Array.isArray(data) && data.length > 0 }
 }

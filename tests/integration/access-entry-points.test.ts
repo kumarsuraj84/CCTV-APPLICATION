@@ -22,7 +22,7 @@ describe('access entry points with a real JWT (P2-3 fix round 1)', () => {
 
   beforeAll(async () => {
     org = await createOrg()
-    store = (await admin().from('stores').insert({ org_id: org, code: 'EP1', name: 'EP1', nvr_ip: '192.0.2.1', nvr_username: 'v' }).select('id').single()).data!.id
+    store = (await admin().from('locations').insert({ org_id: org, code: 'EP1', name: 'EP1', nvr_ip: '192.0.2.1', nvr_username: 'v' }).select('id').single()).data!.id
     managerWithAccess = await createUser(org, 'manager')
     await grant(org, managerWithAccess.id, ['admin.access', 'admin.users', 'cctv.live'])
     plainAdmin = await createUser(org, 'admin')

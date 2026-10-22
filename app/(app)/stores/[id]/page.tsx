@@ -21,7 +21,7 @@ export const metadata = { title: 'Store' }
 
 /** "Offline since …" or "Last seen live …", or nothing for a target that was never checked. */
 function Since({ state }: { state: StateRow | undefined }) {
-  if (!state || state.status === 'unknown') return null
+  if (!state || state.status === 'unknown' || state.status === 'off') return null
   if (state.status === 'down') return <div className="text-muted-foreground">Offline since {formatDateTime(state.down_since)}</div>
   return <div className="text-muted-foreground">Last seen live {formatDateTime(state.last_up_at ?? state.last_checked_at)}</div>
 }

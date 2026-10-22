@@ -60,7 +60,7 @@ export async function createUser(admin: AdminClient, actor: Actor, input: unknow
   if (!canManageRole(actor.role, v.role)) return { ok: false, error: 'You are not allowed to create a user with that role.' }
   if (v.store_id) {
     try {
-      await assertRefsInOrg(admin, actor.orgId, [{ table: 'stores', ids: [v.store_id] }])
+      await assertRefsInOrg(admin, actor.orgId, [{ table: 'locations', ids: [v.store_id] }])
     } catch {
       return { ok: false, error: 'That location was not found.' }
     }
@@ -78,7 +78,7 @@ export async function createUser(admin: AdminClient, actor: Actor, input: unknow
     full_name: v.full_name,
     role: v.role,
     must_reset_password: true,
-    store_id: v.store_id ?? null,
+    location_id: v.store_id ?? null, // the home location (P2-5a rename of profiles.store_id)
   })
   if (error) {
     const undone = await admin.auth.admin.deleteUser(userId)
@@ -125,12 +125,13 @@ export async function updateUser(admin: AdminClient, actor: Actor, userId: strin
   }
   if (patch.store_id) {
     try {
-      await assertRefsInOrg(admin, actor.orgId, [{ table: 'stores', ids: [patch.store_id] }])
+      await assertRefsInOrg(admin, actor.orgId, [{ table: 'locations', ids: [patch.store_id] }])
     } catch {
       return { ok: false, error: 'That location was not found.' }
     }
   }
-  const { role, is_active, ...rest } = patch
+  const { role, is_active, store_id: home, ...others } = patch
+  const rest = { ...others, ...(home !== undefined ? { location_id: home } : {}) }
   let revoked: RevokedGrant[] = []
   if (role !== undefined && role !== target.role) {
     // Review I-2: the role change and the revocation of what the new role may not keep, in one transaction (change_person_role).
@@ -206,11 +207,11 @@ export async function resetUserPassword(admin: AdminClient, actor: Actor, userId
 
 export async function listUsers(admin: AdminClient, orgId: string) {
   return fetchAll((from, to) =>
-    admin.from('profiles').select('id, email, full_name, role, is_active, must_reset_password, store_id, created_at').eq('org_id', orgId).order('full_name').order('id').range(from, to),
+    admin.from('profiles').select('id, email, full_name, role, is_active, must_reset_password, store_id:location_id, created_at').eq('org_id', orgId).order('full_name').order('id').range(from, to),
   )
 }
 
 /** Locations for the home-location choice on the create form (information only: it gives no access, AC-7). */
 export async function listStoresForAccess(admin: AdminClient, orgId: string) {
-  return fetchAll((from, to) => admin.from('stores').select('id, code, name, zone').eq('org_id', orgId).order('code').order('id').range(from, to))
+  return fetchAll((from, to) => admin.from('locations').select('id, code, name, zone').eq('org_id', orgId).is('archived_at', null).order('code').order('id').range(from, to))
 }

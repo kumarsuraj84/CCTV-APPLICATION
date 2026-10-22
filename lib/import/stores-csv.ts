@@ -1,5 +1,5 @@
 import { parseCsv } from '@/lib/import/csv'
-import { normalizeRegion } from '@/lib/import/regions'
+import { normalizeZone } from '@/lib/import/regions'
 import { isValidIp, parsePort } from '@/lib/import/validators'
 
 export type RowError = { line: number; message: string }
@@ -50,7 +50,7 @@ export function parseStoresCsv(text: string): { rows: StoreRow[]; errors: RowErr
     seen.add(code)
     rows.push({
       line, code, name,
-      city: orNull(v.city), zone: normalizeRegion(v.zone), state: normalizeRegion(v.state), address: orNull(v.address),
+      city: orNull(v.city), zone: normalizeZone(v.zone), state: normalizeZone(v.state), address: orNull(v.address),
       nvr_ip: v.ip.trim(), rtsp_port: rtsp, http_port: http,
       nvr_username: v.user.trim(), nvr_password: v.password ?? '',
       channels: channelsText === '' ? 0 : Number(channelsText),

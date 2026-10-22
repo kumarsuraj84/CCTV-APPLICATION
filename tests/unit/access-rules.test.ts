@@ -81,6 +81,27 @@ describe('who may grant what', () => {
     expect(grantRefusal({ ...base, holdings, cap: live, spec: at('cctv.live', 'organization', null), parentLocation: null })).toMatch(/hold yourself/)
     expect(grantRefusal({ ...base, holdings: [hold('cctv.live', 'organization', null)], cap: live, spec: at('cctv.live', 'camera', 'C9'), parentLocation: 'L2' })).toBeNull()
   })
+  // P2-5a, ruling C-1: organization > region > cluster > location > recorder > camera / asset, with the target's place in the tree
+  // from the database (access_target_ancestry). The same decisions as access_scope_covers in SQL
+  // (tests/integration/region-cluster-access.test.ts "grantor rule").
+  it('a region or cluster holding covers what lies beneath it, never a wider or a sibling node', () => {
+    const inC1 = { region_id: 'R1', cluster_id: 'C1', location_id: 'L1', recorder_id: 'N1' }
+    const clusterHolder = [hold('cctv.live', 'cluster', 'C1')]
+    expect(grantRefusal({ ...base, holdings: clusterHolder, cap: live, spec: at('cctv.live', 'location', 'L1'), parentLocation: null, ancestry: { ...inC1, recorder_id: null } })).toBeNull()
+    expect(grantRefusal({ ...base, holdings: clusterHolder, cap: live, spec: at('cctv.live', 'camera', 'K1'), parentLocation: 'L1', ancestry: inC1 })).toBeNull()
+    expect(grantRefusal({ ...base, holdings: clusterHolder, cap: live, spec: at('cctv.live', 'recorder', 'N1'), parentLocation: null, ancestry: inC1 })).toBeNull()
+    expect(grantRefusal({ ...base, holdings: clusterHolder, cap: live, spec: at('cctv.live', 'cluster', 'C1'), parentLocation: null, ancestry: { region_id: 'R1', cluster_id: 'C1', location_id: null, recorder_id: null } })).toBeNull()
+    expect(grantRefusal({ ...base, holdings: clusterHolder, cap: live, spec: at('cctv.live', 'region', 'R1'), parentLocation: null, ancestry: { region_id: 'R1', cluster_id: null, location_id: null, recorder_id: null } })).toMatch(/hold yourself/)
+    expect(grantRefusal({ ...base, holdings: clusterHolder, cap: live, spec: at('cctv.live', 'location', 'L9'), parentLocation: null, ancestry: { region_id: 'R1', cluster_id: 'C2', location_id: 'L9', recorder_id: null } })).toMatch(/hold yourself/)
+    const regionHolder = [hold('cctv.live', 'region', 'R1')]
+    expect(grantRefusal({ ...base, holdings: regionHolder, cap: live, spec: at('cctv.live', 'cluster', 'C2'), parentLocation: null, ancestry: { region_id: 'R1', cluster_id: 'C2', location_id: null, recorder_id: null } })).toBeNull()
+    // A location without a cluster is not under any region.
+    expect(grantRefusal({ ...base, holdings: regionHolder, cap: live, spec: at('cctv.live', 'location', 'L0'), parentLocation: null, ancestry: { region_id: null, cluster_id: null, location_id: 'L0', recorder_id: null } })).toMatch(/hold yourself/)
+    // A recorder holding covers the cameras on it, never the whole location.
+    const recorderHolder = [hold('cctv.live', 'recorder', 'N1')]
+    expect(grantRefusal({ ...base, holdings: recorderHolder, cap: live, spec: at('cctv.live', 'camera', 'K1'), parentLocation: 'L1', ancestry: inC1 })).toBeNull()
+    expect(grantRefusal({ ...base, holdings: recorderHolder, cap: live, spec: at('cctv.live', 'location', 'L1'), parentLocation: null, ancestry: { ...inC1, recorder_id: null } })).toMatch(/hold yourself/)
+  })
   it('and for no longer than they hold it', () => {
     const holdings = [hold('cctv.live', 'organization', null, '2026-11-01T00:00:00Z')]
     expect(grantRefusal({ ...base, holdings, cap: live, spec: at('cctv.live', 'location', 'L1'), parentLocation: null })).toMatch(/no longer/)

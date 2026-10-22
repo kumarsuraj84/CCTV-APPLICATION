@@ -25,17 +25,17 @@ const sorted = (a: readonly string[]) => [...a].sort()
 const day = 86_400_000
 
 async function addStore(orgId: string, code: string): Promise<string> {
-  const { data, error } = await admin().from('stores').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '192.0.2.10', nvr_username: 'viewer' }).select('id').single()
+  const { data, error } = await admin().from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '192.0.2.10', nvr_username: 'viewer' }).select('id').single()
   if (error || !data) throw new Error(`addStore: ${error?.message}`)
   return data.id
 }
 async function addCamera(orgId: string, storeId: string, channel: number): Promise<string> {
-  const { data, error } = await admin().from('cameras').insert({ org_id: orgId, store_id: storeId, channel, name: `Camera ${channel}` }).select('id').single()
+  const { data, error } = await admin().from('cameras').insert({ org_id: orgId, location_id: storeId, channel, name: `Camera ${channel}` }).select('id').single()
   if (error || !data) throw new Error(`addCamera: ${error?.message}`)
   return data.id
 }
 async function addDevice(orgId: string, storeId: string, name: string, port: number): Promise<string> {
-  const { data, error } = await admin().from('devices').insert({ org_id: orgId, store_id: storeId, type: 'server', name, ip: '192.0.2.50', tcp_port: port }).select('id').single()
+  const { data, error } = await admin().from('assets').insert({ org_id: orgId, location_id: storeId, type: 'server', name, ip: '192.0.2.50', tcp_port: port }).select('id').single()
   if (error || !data) throw new Error(`addDevice: ${error?.message}`)
   return data.id
 }
@@ -92,7 +92,7 @@ describe('access editor service (P2-3)', () => {
       expect(await seenCameras(v)).toEqual(sorted([c11, c12]))
       const later = await addCamera(org, L1, 9)
       expect(await seenCameras(v)).toEqual(sorted([c11, c12, later]))
-      await admin().from('cameras').delete().eq('id', later)
+      await admin().rpc('inventory_archive', { p_org: org, p_kind: 'camera', p_id: later }) // P2-5a: archived, never deleted
     })
 
     it('2: all cameras across selected locations', async () => {
@@ -106,7 +106,7 @@ describe('access editor service (P2-3)', () => {
       expect((await save(owner, v.id, [g('cctv.live', 'camera', c11), g('cctv.live', 'camera', c12)])).ok).toBe(true)
       const later = await addCamera(org, L1, 8)
       expect(await seenCameras(v)).toEqual(sorted([c11, c12]))
-      await admin().from('cameras').delete().eq('id', later)
+      await admin().rpc('inventory_archive', { p_org: org, p_kind: 'camera', p_id: later }) // P2-5a: archived, never deleted
     })
 
     it('4: selected cameras across locations', async () => {
@@ -134,7 +134,7 @@ describe('access editor service (P2-3)', () => {
     it('IT rights per capability at location or asset scope, separate from CCTV', async () => {
       const v = await createUser(org, 'operator')
       expect((await save(owner, v.id, [g('it.inventory.view', 'asset', d1), g('it.monitoring.operate', 'location', L1)])).ok).toBe(true)
-      expect(((await v.client.from('devices').select('id')).data ?? []).map((x) => x.id)).toEqual([d1])
+      expect(((await v.client.from('assets').select('id')).data ?? []).map((x) => x.id)).toEqual([d1])
       expect(await seenCameras(v)).toEqual([])
     })
   })

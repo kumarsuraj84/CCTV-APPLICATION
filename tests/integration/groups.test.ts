@@ -7,7 +7,7 @@ const admin = () => adminClient()
 
 async function addStore(orgId: string, code: string): Promise<string> {
   const { data, error } = await admin()
-    .from('stores')
+    .from('locations')
     .insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'viewer' })
     .select('id')
     .single()
@@ -16,7 +16,7 @@ async function addStore(orgId: string, code: string): Promise<string> {
 }
 
 async function addCamera(orgId: string, storeId: string, channel: number, name: string): Promise<string> {
-  const { data, error } = await admin().from('cameras').insert({ org_id: orgId, store_id: storeId, channel, name }).select('id').single()
+  const { data, error } = await admin().from('cameras').insert({ org_id: orgId, location_id: storeId, channel, name }).select('id').single()
   if (error || !data) throw new Error(`addCamera: ${error?.message}`)
   return data.id
 }
@@ -128,7 +128,7 @@ describe('camera groups', () => {
       expect(await itemIds(manager, wide)).toEqual(sorted([a1, a2, b1, b2]))
     })
     it('the database refuses an item that mixes organisations', async () => {
-      const foreign = await admin().from('stores').insert({ org_id: otherOrg, code: 'FOREIGN', name: 'F', nvr_ip: '127.0.0.1', nvr_username: 'v' }).select('id').single()
+      const foreign = await admin().from('locations').insert({ org_id: otherOrg, code: 'FOREIGN', name: 'F', nvr_ip: '127.0.0.1', nvr_username: 'v' }).select('id').single()
       const cam = await addCamera(otherOrg, foreign.data!.id, 1, 'Foreign')
       const res = await admin().from('camera_group_items').insert({ org_id: orgId, group_id: wide, camera_id: cam })
       expect(res.error?.code).toBe('23503')
@@ -322,7 +322,7 @@ describe('camera groups', () => {
 
     it('adds at most 500 cameras by keyword and says when more matched', async () => {
       const store = await addStore(orgId, 'BIG')
-      const rows = Array.from({ length: 520 }, (_, i) => ({ org_id: orgId, store_id: store, channel: i + 1, name: `Lane ${i + 1}` }))
+      const rows = Array.from({ length: 520 }, (_, i) => ({ org_id: orgId, location_id: store, channel: i + 1, name: `Lane ${i + 1}` }))
       const { error } = await admin().from('cameras').insert(rows)
       expect(error).toBeNull()
       const actor = actorOf(adminUser, orgId, 'admin')
@@ -495,15 +495,20 @@ describe('camera groups', () => {
       expect(audit).toHaveLength(2)
     })
 
-    it('deleting a camera removes it from its groups', async () => {
+    // P2-5a (brief item 2) replaces "deleting a camera removes it from its groups": cameras and locations are archived, never deleted,
+    // and archiving keeps the group membership as history; the archived camera simply no longer shows in the group for anybody.
+    it('archiving a location keeps its cameras\' group membership, and they no longer show in the group', async () => {
       const store = await addStore(orgId, 'TMP')
       const cam = await addCamera(orgId, store, 1, 'Temporary')
       const actor = actorOf(adminUser, orgId, 'admin')
       const made = await createGroup(deps(adminUser), actor, 'Temp group')
       if (!made.ok) throw new Error(made.error)
       expect((await addCameras(deps(adminUser), actor, made.groupId, [cam])).ok).toBe(true)
-      await admin().from('stores').delete().eq('id', store)
-      expect((await admin().from('camera_group_items').select('camera_id').eq('group_id', made.groupId)).data).toEqual([])
+      expect((await adminUser.client.from('camera_group_items').select('camera_id').eq('group_id', made.groupId)).data).toEqual([{ camera_id: cam }])
+      expect((await admin().from('locations').delete().eq('id', store)).error?.code).toBe('DR003')
+      expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'location', p_id: store })).error).toBeNull()
+      expect((await admin().from('camera_group_items').select('camera_id').eq('group_id', made.groupId)).data).toEqual([{ camera_id: cam }])
+      expect((await adminUser.client.from('camera_group_items').select('camera_id').eq('group_id', made.groupId)).data).toEqual([])
     })
   })
 })

@@ -5,6 +5,7 @@ import { Readable } from 'node:stream'
 import type { ReadableStream as NodeWebStream } from 'node:stream/web'
 import type { AdminClient, Result } from '@/lib/admin/types'
 import { auditAccess } from '@/lib/auth/access-audit'
+import { MSG_MONITORING_OFF } from '@/lib/inventory/recorders'
 import { describeNvrError, MAX_DOWNLOAD_BYTES, MAX_DOWNLOAD_MS, NvrClient, NvrError, type NvrEndpoint } from '@/lib/nvr/client'
 import { findSegments } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
@@ -630,6 +631,7 @@ function cameraFailure(error: string): Response {
   if (error === MSG_CAMERA_NOT_FOUND) return fail(404, error)
   if (error === MSG_NO_LOGIN) return fail(409, error)
   if (error === MSG_RECORDINGS_UNREACHABLE) return fail(502, error) // camera terms: no status that tells login trouble apart (fix I-2)
+  if (error === MSG_MONITORING_OFF) return fail(409, error) // owner addition: the NVR is switched off, nothing was contacted
   return fail(500, error)
 }
 

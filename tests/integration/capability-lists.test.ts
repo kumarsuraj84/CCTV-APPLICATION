@@ -19,8 +19,8 @@ describe('lists per capability', () => {
 
   beforeAll(async () => {
     orgId = await createOrg()
-    const store = async (code: string) => (await admin().from('stores').insert({ org_id: orgId, code, name: code, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
-    const camera = async (s: string, ch: number) => (await admin().from('cameras').insert({ org_id: orgId, store_id: s, channel: ch, name: `cam ${ch}` }).select('id').single()).data!.id
+    const store = async (code: string) => (await admin().from('locations').insert({ org_id: orgId, code, name: code, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const camera = async (s: string, ch: number) => (await admin().from('cameras').insert({ org_id: orgId, location_id: s, channel: ch, name: `cam ${ch}` }).select('id').single()).data!.id
     s1 = await store('P1')
     s2 = await store('P2')
     s3 = await store('P3')

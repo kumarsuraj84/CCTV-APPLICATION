@@ -1,7 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
 
-type Ref = { table: 'stores' | 'cameras' | 'devices' | 'profiles'; ids: string[] }
+// P2-5a: stores → locations, devices → assets; the hierarchy and recorders are referenced by grants too.
+type Ref = { table: 'locations' | 'cameras' | 'assets' | 'profiles' | 'regions' | 'clusters' | 'recorders'; ids: string[] }
 
 /**
  * Before the server (which bypasses row-level security) writes a foreign key, prove every referenced row belongs to the

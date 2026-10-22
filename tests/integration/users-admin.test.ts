@@ -40,9 +40,9 @@ describe('user administration', () => {
     // P2-3 grant rule: an administrator gives only what they hold, and needs admin.access.
     await grant(orgId, o.id, ['admin.users', 'admin.access'])
     await grant(orgId, a.id, ['admin.users', 'admin.access', 'cctv.live', 'cctv.playback'])
-    const { data: s } = await admin().from('stores').insert({ org_id: orgId, code: 'U1', name: 'Store U1', zone: 'BR', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()
+    const { data: s } = await admin().from('locations').insert({ org_id: orgId, code: 'U1', name: 'Store U1', zone: 'BR', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()
     storeId = s!.id
-    const { data: cams } = await admin().from('cameras').insert([1, 2, 3].map((n) => ({ org_id: orgId, store_id: storeId, channel: n, name: `C${n}` }))).select('id')
+    const { data: cams } = await admin().from('cameras').insert([1, 2, 3].map((n) => ({ org_id: orgId, location_id: storeId, channel: n, name: `C${n}` }))).select('id')
     cameraIds = cams!.map((c) => c.id)
   })
 
@@ -158,8 +158,8 @@ describe('user administration', () => {
     const hour = 3_600_000
     const iso = (ms: number) => new Date(ms).toISOString()
     const mk = async (code: string) => {
-      const s = (await admin().from('stores').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
-      const c = (await admin().from('cameras').insert({ org_id: orgId, store_id: s, channel: 1, name: `${code} cam` }).select('id').single()).data!.id
+      const s = (await admin().from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+      const c = (await admin().from('cameras').insert({ org_id: orgId, location_id: s, channel: 1, name: `${code} cam` }).select('id').single()).data!.id
       return { s, c }
     }
     const past = await mk('UEXP')
@@ -216,7 +216,7 @@ describe('user administration', () => {
     expect((await saveAccess(plainAdmin, manager.id, live('location', storeId))).ok).toBe(true)
     expect(((await manager.client.from('cameras').select('id')).data ?? []).length).toBe(3)
     const otherOrg = await createOrg()
-    const { data: other } = await admin().from('stores').insert({ org_id: otherOrg, code: 'O1', name: 'Other', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()
+    const { data: other } = await admin().from('locations').insert({ org_id: otherOrg, code: 'O1', name: 'Other', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()
     const viewer = await makeUser(orgId, 'user')
     const res = await saveAccess(plainAdmin, viewer.id, live('location', other!.id))
     expect(res).toMatchObject({ ok: false, error: 'One of the locations, cameras or assets was not found.' })
@@ -319,9 +319,9 @@ describe('user administration', () => {
   it('lists every store and camera and user even when sort keys tie across more than 1000 rows', async () => {
     const pagingOrg = await createOrg()
     try {
-      const { data: two } = await admin().from('stores').insert([1, 2].map((n) => ({ org_id: pagingOrg, code: `P${n}`, name: `Paging ${n}`, zone: 'PG', nvr_ip: '127.0.0.1', nvr_username: 'u' }))).select('id')
+      const { data: two } = await admin().from('locations').insert([1, 2].map((n) => ({ org_id: pagingOrg, code: `P${n}`, name: `Paging ${n}`, zone: 'PG', nvr_ip: '127.0.0.1', nvr_username: 'u' }))).select('id')
       // Two stores with channels 1..501: every channel number appears twice, so ordering by channel alone would tie.
-      const rows = two!.flatMap((s) => Array.from({ length: 501 }, (_, i) => ({ org_id: pagingOrg, store_id: s.id, channel: i + 1, name: `C${i + 1}` })))
+      const rows = two!.flatMap((s) => Array.from({ length: 501 }, (_, i) => ({ org_id: pagingOrg, location_id: s.id, channel: i + 1, name: `C${i + 1}` })))
       const ins = await admin().from('cameras').insert(rows)
       expect(ins.error).toBeNull()
 

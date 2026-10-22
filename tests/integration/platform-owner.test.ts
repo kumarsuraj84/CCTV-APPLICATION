@@ -64,6 +64,8 @@ describe('platform owner = super administrator with full rights (P-1)', () => {
       expect((await admin().from('organizations').update({ slug: `real-${other}` }).eq('id', other)).error).toBeNull()
       expect((await admin().rpc('access_catalogue_probe_test', { p_org: other })).error?.code).toBe('42501')
     } finally {
+      // P2-5a: the inventory purge works only on test organisations, so the slug goes back first.
+      await admin().from('organizations').update({ slug: `test-${other}` }).eq('id', other)
       await cleanupOrg(other)
     }
   })

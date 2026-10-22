@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { getDashboard, getStates, listStoreStatus, STALE_AFTER_MINUTES } from '@/lib/queries/status'
 import { uptimeFor } from '@/lib/monitor/uptime'
-import { adminClient, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { adminClient, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
@@ -19,14 +19,14 @@ describe('status queries', () => {
   beforeAll(async () => {
     orgId = await createOrg()
     const a = admin()
-    const mk = async (code: string) => (await a.from('stores').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const mk = async (code: string) => (await a.from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
     s1 = await mk('ST1')
     s2 = await mk('ST2')
-    cams1 = (await a.from('cameras').insert([1, 2, 3].map((n) => ({ org_id: orgId, store_id: s1, channel: n, name: `C${n}` }))).select('id, channel').order('channel')).data!.map((c) => c.id)
-    cam2 = (await a.from('cameras').insert({ org_id: orgId, store_id: s2, channel: 1, name: 'D1' }).select('id').single()).data!.id
-    dev = (await a.from('devices').insert([
-      { org_id: orgId, store_id: s1, type: 'server', name: 'ERP', ip: '127.0.0.1', tcp_port: 1 },
-      { org_id: orgId, store_id: s1, type: 'server', name: 'Mail', ip: '127.0.0.1', tcp_port: 2 },
+    cams1 = (await a.from('cameras').insert([1, 2, 3].map((n) => ({ org_id: orgId, location_id: s1, channel: n, name: `C${n}` }))).select('id, channel').order('channel')).data!.map((c) => c.id)
+    cam2 = (await a.from('cameras').insert({ org_id: orgId, location_id: s2, channel: 1, name: 'D1' }).select('id').single()).data!.id
+    dev = (await a.from('assets').insert([
+      { org_id: orgId, location_id: s1, type: 'server', name: 'ERP', ip: '127.0.0.1', tcp_port: 1 },
+      { org_id: orgId, location_id: s1, type: 'server', name: 'Mail', ip: '127.0.0.1', tcp_port: 2 },
     ]).select('id, name').order('name')).data!.map((d) => d.id)
     // ST1: camera 1 up, camera 2 down (own outage), camera 3 not checked; NVR up; ERP up, Mail down.
     // ST2: NVR down, its camera down because of the NVR.
@@ -94,11 +94,11 @@ describe('status queries: outages of cameras whose NVR was down', () => {
   beforeAll(async () => {
     orgId = await createOrg()
     const a = admin()
-    const mk = async (code: string) => (await a.from('stores').insert({ org_id: orgId, code, name: `Shop ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const mk = async (code: string) => (await a.from('locations').insert({ org_id: orgId, code, name: `Shop ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
     const open = await mk('OPN')
     const closed = await mk('CLS')
-    const camOpen = (await a.from('cameras').insert({ org_id: orgId, store_id: open, channel: 1, name: 'InOpen' }).select('id').single()).data!.id
-    const camClosed = (await a.from('cameras').insert({ org_id: orgId, store_id: closed, channel: 1, name: 'InClosed' }).select('id').single()).data!.id
+    const camOpen = (await a.from('cameras').insert({ org_id: orgId, location_id: open, channel: 1, name: 'InOpen' }).select('id').single()).data!.id
+    const camClosed = (await a.from('cameras').insert({ org_id: orgId, location_id: closed, channel: 1, name: 'InClosed' }).select('id').single()).data!.id
     const apply = (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: 1 })
     // OPN: the NVR is down and still down; its camera went down because of it.
     await apply([{ type: 'nvr', id: open, ok: false, at: ago(30) }])
@@ -108,7 +108,7 @@ describe('status queries: outages of cameras whose NVR was down', () => {
     await apply([{ type: 'camera', id: camClosed, ok: false, at: ago(60), cause: 'nvr_down' }])
     await apply([{ type: 'nvr', id: closed, ok: true, at: ago(20) }])
     const flk = await mk('FLK')
-    flaky = (await a.from('cameras').insert({ org_id: orgId, store_id: flk, channel: 1, name: 'Flaky' }).select('id').single()).data!.id
+    flaky = (await a.from('cameras').insert({ org_id: orgId, location_id: flk, channel: 1, name: 'Flaky' }).select('id').single()).data!.id
     await apply([{ type: 'camera', id: flaky, ok: true, at: ago(60) }])
     await apply([{ type: 'camera', id: flaky, ok: false, at: ago(30) }])
     manager = await createUser(orgId, 'manager')
@@ -140,8 +140,8 @@ describe('status queries: which camera outages hide under an NVR outage', () => 
   beforeAll(async () => {
     orgId = await createOrg()
     const a = admin()
-    const mk = async (code: string) => (await a.from('stores').insert({ org_id: orgId, code, name: `Unit ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
-    const cam = async (store: string, name: string) => (await a.from('cameras').insert({ org_id: orgId, store_id: store, channel: 1, name }).select('id').single()).data!.id
+    const mk = async (code: string) => (await a.from('locations').insert({ org_id: orgId, code, name: `Unit ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const cam = async (store: string, name: string) => (await a.from('cameras').insert({ org_id: orgId, location_id: store, channel: 1, name }).select('id').single()).data!.id
     const apply = (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: 1 })
 
     // AGN: the NVR went down, the camera outage it caused ended, then the NVR went down again (open now). The ended camera outage stays listed.
@@ -185,8 +185,8 @@ describe('status queries: a capped scan of grouped outages', () => {
   beforeAll(async () => {
     orgId = await createOrg()
     const a = admin()
-    const store = (await a.from('stores').insert({ org_id: orgId, code: 'BIG', name: 'Big store', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
-    const cams = (await a.from('cameras').insert([1, 2, 3, 4, 5].map((n) => ({ org_id: orgId, store_id: store, channel: n, name: `G${n}` }))).select('id, channel').order('channel')).data!.map((c) => c.id)
+    const store = (await a.from('locations').insert({ org_id: orgId, code: 'BIG', name: 'Big store', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const cams = (await a.from('cameras').insert([1, 2, 3, 4, 5].map((n) => ({ org_id: orgId, location_id: store, channel: n, name: `G${n}` }))).select('id, channel').order('channel')).data!.map((c) => c.id)
     const apply = (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: 1 })
     await apply([{ type: 'nvr', id: store, ok: false, at: ago(60) }])
     await apply(cams.map((id, i) => ({ type: 'camera', id, ok: false, at: ago(50 - i), cause: 'nvr_down' })))
@@ -215,8 +215,8 @@ describe('status queries: grouping uses the time an outage was recorded (I5)', (
   beforeAll(async () => {
     orgId = await createOrg()
     const a = admin()
-    const store = (await a.from('stores').insert({ org_id: orgId, code: 'EAR', name: 'Early camera', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
-    const cam = (await a.from('cameras').insert({ org_id: orgId, store_id: store, channel: 1, name: 'EarlyStart' }).select('id').single()).data!.id
+    const store = (await a.from('locations').insert({ org_id: orgId, code: 'EAR', name: 'Early camera', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const cam = (await a.from('cameras').insert({ org_id: orgId, location_id: store, channel: 1, name: 'EarlyStart' }).select('id').single()).data!.id
     const apply = (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: 1 })
     // The NVR's outage is recorded first and starts 30 minutes ago. The camera's, caused by it, is recorded afterwards but its first failure
     // (the round began a moment earlier) is dated before the NVR's: it still belongs under the NVR outage.
@@ -244,15 +244,15 @@ describe('status queries: stale and switched-off targets', () => {
   beforeAll(async () => {
     orgId = await createOrg()
     const a = admin()
-    const mk = async (code: string) => (await a.from('stores').insert({ org_id: orgId, code, name: `Place ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const mk = async (code: string) => (await a.from('locations').insert({ org_id: orgId, code, name: `Place ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
     const on = await mk('ON')
     off = await mk('OFF')
-    const cams = (await a.from('cameras').insert([1, 2, 3].map((n) => ({ org_id: orgId, store_id: on, channel: n, name: `K${n}`, is_active: true }))).select('id, channel').order('channel')).data!.map((c) => c.id)
-    const offCam = (await a.from('cameras').insert({ org_id: orgId, store_id: off, channel: 1, name: 'InOff' }).select('id').single()).data!.id
-    const devs = (await a.from('devices').insert([
-      { org_id: orgId, store_id: on, type: 'server', name: 'FreshDev', ip: '127.0.0.1', tcp_port: 1, enabled: true },
-      { org_id: orgId, store_id: on, type: 'server', name: 'OldDev', ip: '127.0.0.1', tcp_port: 2, enabled: true },
-      { org_id: orgId, store_id: on, type: 'server', name: 'OffDev', ip: '127.0.0.1', tcp_port: 3, enabled: true },
+    const cams = (await a.from('cameras').insert([1, 2, 3].map((n) => ({ org_id: orgId, location_id: on, channel: n, name: `K${n}`, is_active: true }))).select('id, channel').order('channel')).data!.map((c) => c.id)
+    const offCam = (await a.from('cameras').insert({ org_id: orgId, location_id: off, channel: 1, name: 'InOff' }).select('id').single()).data!.id
+    const devs = (await a.from('assets').insert([
+      { org_id: orgId, location_id: on, type: 'server', name: 'FreshDev', ip: '127.0.0.1', tcp_port: 1, enabled: true },
+      { org_id: orgId, location_id: on, type: 'server', name: 'OldDev', ip: '127.0.0.1', tcp_port: 2, enabled: true },
+      { org_id: orgId, location_id: on, type: 'server', name: 'OffDev', ip: '127.0.0.1', tcp_port: 3, enabled: true },
     ]).select('id, name').order('name')).data!
     const dev = Object.fromEntries(devs.map((d) => [d.name, d.id]))
     const apply = (results: object[], threshold = 2) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: threshold })
@@ -287,22 +287,23 @@ describe('status queries: stale and switched-off targets', () => {
   it('a store that is switched off leaves the NVR list, the counts and the recent problems; its outage is closed', async () => {
     const before = await getDashboard(manager.client)
     expect(before.stores.nvrDown.map((s) => s.code)).toEqual(['OFF'])
-    await admin().from('stores').update({ is_active: false }).eq('id', off)
+    await admin().from('locations').update({ is_active: false }).eq('id', off)
     const d = await getDashboard(manager.client)
     expect(d.stores.nvrDown).toEqual([])
     expect(d.stores.total).toBe(1)
     expect(d.cameras.total).toBe(3)
     expect(d.recentOutages.map((o) => o.label)).not.toContain('Place OFF')
     expect(d.recentOutages.map((o) => o.label)).not.toContain('InOff')
-    expect((await admin().from('outages').select('ended_at').eq('target_id', off)).data?.[0].ended_at).not.toBeNull()
+    // P2-5a: the NVR outage belongs to the location's recorder (the 'nvr' result was written to its primary recorder).
+    expect((await admin().from('outages').select('ended_at').eq('target_id', await primaryRecorderOf(off))).data?.[0].ended_at).not.toBeNull()
     // Back on: it starts as not checked yet.
-    await admin().from('stores').update({ is_active: true }).eq('id', off)
+    await admin().from('locations').update({ is_active: true }).eq('id', off)
     const back = await listStoreStatus(manager.client)
     expect(back.get(off)).toMatchObject({ nvr_status: null, cameras_unknown: 1, cameras_down: 0 })
   })
 
   it('a device that is switched off is not counted or listed', async () => {
-    await admin().from('devices').update({ enabled: false }).eq('org_id', orgId).eq('name', 'OffDev')
+    await admin().from('assets').update({ enabled: false }).eq('org_id', orgId).eq('name', 'OffDev')
     const d = await getDashboard(manager.client)
     expect(d.devices.server).toEqual({ total: 2, up: 1, down: 0, unknown: 0, stale: 1 })
     expect(d.recentOutages.map((o) => o.label)).not.toContain('OffDev')

@@ -5,7 +5,7 @@
 // legacy evaluator itself is checked.
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { adminClient, cleanupOrg, createOrg, createUser, type Role, type TestUser } from '../setup/fixtures'
+import { adminClient, cleanupOrg, createOrg, createUser, primaryRecorderOf, type Role, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 const sorted = (a: readonly string[]) => [...a].sort()
@@ -20,7 +20,7 @@ async function setOf(fn: 'access_legacy_camera_ids' | 'access_legacy_device_ids'
 // Fix I-3: the real migration function is owner-only; tests go through the wrapper that only touches organisations made by tests.
 const migrate = (users: string[] | null, force = false) =>
   admin().rpc('access_migrate_legacy_test', { p_run: randomUUID(), ...(users ? { p_users: users } : {}), p_force: force })
-async function effective(fn: 'report_effective_camera_ids' | 'report_effective_device_ids', userId: string, cap: string, ignoreStatus: boolean): Promise<string[]> {
+async function effective(fn: 'report_effective_camera_ids' | 'report_effective_asset_ids', userId: string, cap: string, ignoreStatus: boolean): Promise<string[]> {
   const { data, error } = await admin().rpc(fn, { p_user: userId, p_cap: cap, p_ignore_status: ignoreStatus })
   if (error) throw new Error(`${fn}: ${error.message}`)
   return sorted((data as unknown as string[]) ?? [])
@@ -38,16 +38,16 @@ describe('VA-18: migration of the old access model (AC-6, AC-7, AL-7, D-2a)', ()
   beforeAll(async () => {
     orgId = await createOrg()
     const a = admin()
-    const store = async (code: string, zone: string) => (await a.from('stores').insert({ org_id: orgId, code, name: code, zone, nvr_ip: '192.0.2.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const store = async (code: string, zone: string) => (await a.from('locations').insert({ org_id: orgId, code, name: code, zone, nvr_ip: '192.0.2.1', nvr_username: 'u' }).select('id').single()).data!.id
     M1 = await store('M1', 'Z')
     M2 = await store('M2', 'Z')
     M3 = await store('M3', 'Y')
-    const cam = async (s: string, ch: number) => (await a.from('cameras').insert({ org_id: orgId, store_id: s, channel: ch, name: `C${ch}` }).select('id').single()).data!.id
+    const cam = async (s: string, ch: number) => (await a.from('cameras').insert({ org_id: orgId, location_id: s, channel: ch, name: `C${ch}` }).select('id').single()).data!.id
     m11 = await cam(M1, 1); m12 = await cam(M1, 2); m13 = await cam(M1, 3)
     m21 = await cam(M2, 1); m22 = await cam(M2, 2)
     m31 = await cam(M3, 1)
     let p = 30
-    const dev = async (s: string | null) => (await a.from('devices').insert({ org_id: orgId, store_id: s, type: 'server', name: `D${p}`, ip: '192.0.2.2', tcp_port: p++ }).select('id').single()).data!.id
+    const dev = async (s: string | null) => (await a.from('assets').insert({ org_id: orgId, location_id: s, type: 'server', name: `D${p}`, ip: '192.0.2.2', tcp_port: p++ }).select('id').single()).data!.id
     e1 = await dev(M1); e2 = await dev(M2); e3 = await dev(M3); e0 = await dev(null)
 
     const make = async (key: string, role: Role, o: { home?: string; mustReset?: boolean } & Omit<Person, 'u'> = {}) => {
@@ -138,7 +138,7 @@ describe('VA-18: migration of the old access model (AC-6, AC-7, AL-7, D-2a)', ()
     }
     for (const [key, p] of Object.entries(people)) {
       if (key === 'inactive' || key === 'mustReset') continue
-      const seen = sorted(((await p.u.client.from('stores').select('id')).data ?? []).map((r) => r.id))
+      const seen = sorted(((await p.u.client.from('locations').select('id')).data ?? []).map((r) => r.id))
       expect(seen, key).toEqual(await setOf('access_legacy_store_ids', p.u.id, false))
     }
     expect(await setOf('access_legacy_store_ids', people.storePlusCam.u.id, false)).toEqual([M1])
@@ -150,7 +150,7 @@ describe('VA-18: migration of the old access model (AC-6, AC-7, AL-7, D-2a)', ()
     expect(await seen(people.storeOnly.u)).toEqual(sorted([m11, m12, m13]))
     expect(await seen(people.storePlusCam.u)).toEqual([m12])
     expect(await seen(people.homeOnly.u)).toEqual([m31])
-    expect(sorted(((await people.storePlusCam.u.client.from('stores').select('id')).data ?? []).map((r) => r.id))).toEqual([M1])
+    expect(sorted(((await people.storePlusCam.u.client.from('locations').select('id')).data ?? []).map((r) => r.id))).toEqual([M1])
     // Taking the old rows away changes nothing now.
     await admin().from('user_store_access').delete().eq('user_id', people.storeOnly.u.id)
     expect(await seen(people.storeOnly.u)).toEqual(sorted([m11, m12, m13]))
@@ -159,13 +159,15 @@ describe('VA-18: migration of the old access model (AC-6, AC-7, AL-7, D-2a)', ()
   it('IT device visibility that came through a store, zone or home grant is not migrated (AC-4); managers and administrators keep theirs', async () => {
     for (const key of ['storeOnly', 'zoneOnly', 'homeOnly', 'storePlusCam', 'operator', 'inactive']) {
       for (const cap of ['it.inventory.view', 'it.monitoring.view']) {
-        expect(await effective('report_effective_device_ids', people[key].u.id, cap, true), `${key} ${cap}`).toEqual([])
+        expect(await effective('report_effective_asset_ids', people[key].u.id, cap, true), `${key} ${cap}`).toEqual([])
       }
     }
+    // P2-5a: the stores' NVRs are assets (recorders) now, so organisation-wide IT holders see them as assets too.
+    const nvrs = await Promise.all([M1, M2, M3].map((s) => primaryRecorderOf(s)))
     for (const key of ['manager', 'admin', 'owner']) {
-      expect(await effective('report_effective_device_ids', people[key].u.id, 'it.inventory.view', true), key).toEqual(sorted([e0, e1, e2, e3]))
+      expect(await effective('report_effective_asset_ids', people[key].u.id, 'it.inventory.view', true), key).toEqual(sorted([e0, e1, e2, e3, ...nvrs]))
     }
-    const devices = async (u: TestUser) => ((await u.client.from('devices').select('id')).data ?? []).length
+    const devices = async (u: TestUser) => ((await u.client.from('assets').select('id').eq('is_recorder', false)).data ?? []).length
     expect(await devices(people.storeOnly.u)).toBe(0)
     expect(await devices(people.manager.u)).toBe(4)
   })

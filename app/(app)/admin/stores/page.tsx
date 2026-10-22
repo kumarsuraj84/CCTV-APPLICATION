@@ -17,7 +17,7 @@ export default async function ManageStoresPage({ searchParams }: { searchParams:
   const me = await requireAdministration('admin.inventory')
   const admin = createAdminClient()
   const stores = await fetchAll((from, to) =>
-    admin.from('stores').select('id, code, name, city, zone, state, address, nvr_ip, rtsp_port, http_port, nvr_username, expected_channels, is_active').eq('org_id', me.org_id).order('code').range(from, to),
+    admin.from('locations').select('id, code, name, city, zone, state, address, nvr_ip, rtsp_port, http_port, nvr_username, expected_channels, is_active').eq('org_id', me.org_id).is('archived_at', null).order('code').range(from, to),
   )
   const editing = stores.find((s) => s.id === edit)
   return (

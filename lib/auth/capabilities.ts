@@ -32,15 +32,28 @@ export const CCTV_CAPABILITIES: readonly Capability[] = ['cctv.live', 'cctv.play
 /** The IT view of locations and assets: devices, their status, NVR status and addresses (AC-4). */
 export const IT_VIEW: readonly Capability[] = ['it.inventory.view', 'it.monitoring.view']
 
-/** Where one capability counts for the person: the whole organisation, and/or specific locations, cameras and assets. */
-export type ScopeSummary = { organization: boolean; locations: string[]; cameras: string[]; assets: string[] }
+/**
+ * Where one capability counts for the person: the whole organisation, and/or the granted regions, clusters, locations, recorders,
+ * cameras and assets (P2-5a, ruling C-1). `coveredLocations` are the locations covered WHOLE (location, cluster and region grants
+ * expanded by the database — the app never recomputes the hierarchy); `recorderCameras` the cameras currently on granted recorders.
+ */
+export type ScopeSummary = {
+  organization: boolean; locations: string[]; cameras: string[]; assets: string[]
+  /** Optional so that a summary written by hand (tests) without the hierarchy means: covered locations = granted locations. */
+  regions?: string[]; clusters?: string[]; recorders?: string[]; coveredLocations?: string[]; recorderCameras?: string[]
+}
+const covered = (s: ScopeSummary): readonly string[] => s.coveredLocations ?? s.locations
 /** `failed`: the summary could not be read; it then holds nothing (fail closed) and screens say so instead of "nothing assigned". */
 export type Capabilities = { readonly failed: boolean; readonly grants: Readonly<Partial<Record<Capability, ScopeSummary>>> }
 
 export const NO_CAPABILITIES: Capabilities = Object.freeze({ failed: false, grants: Object.freeze({}) })
 
 type Client = SupabaseClient<Database>
-type Row = { capability: string; organization_wide: boolean; location_ids: string[] | null; camera_ids: string[] | null; asset_ids: string[] | null }
+type Row = {
+  capability: string; organization_wide: boolean; location_ids: string[] | null; camera_ids: string[] | null; asset_ids: string[] | null
+  region_ids?: string[] | null; cluster_ids?: string[] | null; recorder_ids?: string[] | null; covered_location_ids?: string[] | null
+  recorder_camera_ids?: string[] | null
+}
 
 const known = new Set<string>(CAPABILITIES)
 
@@ -60,6 +73,12 @@ export async function readCapabilities(rls: Client): Promise<Capabilities> {
         locations: [...(r.location_ids ?? [])].sort(),
         cameras: [...(r.camera_ids ?? [])].sort(),
         assets: [...(r.asset_ids ?? [])].sort(),
+        regions: [...(r.region_ids ?? [])].sort(),
+        clusters: [...(r.cluster_ids ?? [])].sort(),
+        recorders: [...(r.recorder_ids ?? [])].sort(),
+        // An older database without the expansion: the granted locations are the covered ones (no region/cluster grants exist there).
+        coveredLocations: [...(r.covered_location_ids ?? r.location_ids ?? [])].sort(),
+        recorderCameras: [...(r.recorder_camera_ids ?? [])].sort(),
       }
     }
     return { failed: false, grants }
@@ -90,30 +109,31 @@ export const holdsAnyLocationGrant = (c: Capabilities): boolean => Object.keys(c
 export const holdsNothing = (c: Capabilities): boolean => Object.keys(c.grants).length === 0
 
 /**
- * Display only: whether the summary covers one camera for a capability (organisation, its location, or the camera itself). Used for
- * lists and links; the operation behind the link checks again in the database (lib/auth/resource.ts).
+ * Display only: whether the summary covers one camera for a capability (organisation; its location covered whole by a location,
+ * cluster or region grant; its recorder; or the camera itself). Used for lists and links; the operation behind the link checks again
+ * in the database (lib/auth/resource.ts). `store_id` is the camera's location id (the old field name, kept until P2-5b).
  */
 export function coversCamera(c: Capabilities, cap: Capability, camera: { id: string; store_id: string }): boolean {
   const s = c.grants[cap]
-  return !!s && (s.organization || s.locations.includes(camera.store_id) || s.cameras.includes(camera.id))
+  return !!s && (s.organization || covered(s).includes(camera.store_id) || s.cameras.includes(camera.id) || (s.recorderCameras ?? []).includes(camera.id))
 }
 
-/** Display only: whether a whole location is covered for any of the capabilities (organisation or location scope). */
+/** Display only: whether a whole location is covered for any of the capabilities (organisation, region, cluster or location scope). */
 export function coversLocation(c: Capabilities, caps: Capability | readonly Capability[], locationId: string): boolean {
   const list: readonly Capability[] = typeof caps === 'string' ? [caps] : caps
   return list.some((k) => {
     const s = c.grants[k]
-    return !!s && (s.organization || s.locations.includes(locationId))
+    return !!s && (s.organization || covered(s).includes(locationId))
   })
 }
 
 /**
- * Display only: the capability covers at least one whole location (or the organisation) — the rule of capability_store_ids, used by
+ * Display only: the capability covers at least one whole location (or the organisation) — the rule of capability_location_ids, used by
  * check-now (P2-2 fix M-5: the button appears exactly when the action can work).
  */
 export function coversSomeWholeLocation(c: Capabilities, cap: Capability): boolean {
   const s = c.grants[cap]
-  return !!s && (s.organization || s.locations.length > 0)
+  return !!s && (s.organization || covered(s).length > 0)
 }
 
 /** Plain-English explanation for a person who has nothing assigned yet (the home state). */

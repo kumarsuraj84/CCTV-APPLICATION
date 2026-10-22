@@ -24,7 +24,7 @@ export async function listVisibleGroups(supabase: Client, only?: { capabilities:
   const items = (await fetchAll((from, to) =>
     supabase
       .from('camera_group_items')
-      .select('group_id, camera_id, cameras!inner(store_id, is_active, stores!inner(is_active))')
+      .select('group_id, camera_id, cameras!inner(store_id:location_id, is_active, stores:locations!inner(is_active))')
       .eq('cameras.is_active', true)
       .eq('cameras.stores.is_active', true)
       .order('group_id')
@@ -55,7 +55,7 @@ export async function getVisibleGroup(supabase: Client, id: string): Promise<Gro
   const rows = (await fetchAll((from, to) =>
     supabase
       .from('camera_group_items')
-      .select('camera_id, cameras!inner(id, channel, name, stores!inner(id, code, name))')
+      .select('camera_id, cameras!inner(id, channel, name, stores:locations!inner(id, code, name))')
       .eq('group_id', id)
       .eq('cameras.is_active', true)
       .eq('cameras.stores.is_active', true)
@@ -72,14 +72,14 @@ export type StoreCameraChoice = { id: string; channel: number; name: string; in_
 
 /** The visible, working cameras of one store, for choosing what to add; null when the store is not one the person may see (or is switched off). */
 export async function listStoreCamerasForGroups(supabase: Client, storeId: string, groupId: string): Promise<StoreCameraChoice[] | null> {
-  const { data: store, error } = await supabase.from('stores').select('id').eq('id', storeId).eq('is_active', true).maybeSingle()
+  const { data: store, error } = await supabase.from('locations').select('id').eq('id', storeId).eq('is_active', true).maybeSingle()
   if (error) {
     if (error.code === MALFORMED_ID) return null
     throw new Error('Could not read the store.')
   }
   if (!store) return null
   const [cameras, inGroup] = await Promise.all([
-    fetchAll((from, to) => supabase.from('cameras').select('id, channel, name').eq('store_id', storeId).eq('is_active', true).order('channel').order('id').range(from, to)),
+    fetchAll((from, to) => supabase.from('cameras').select('id, channel, name').eq('location_id', storeId).eq('is_active', true).order('channel').order('id').range(from, to)),
     supabase.from('camera_group_items').select('camera_id').eq('group_id', groupId).limit(5000),
   ])
   if (inGroup.error && inGroup.error.code !== MALFORMED_ID) throw new Error('Could not read the group.')

@@ -1,18 +1,20 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
-  adminClient, atAsset, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type GrantScope, type TestUser,
+  adminClient, atAsset, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type GrantScope, type TestUser,
 } from '../setup/fixtures'
 
 // P2-1 rewrote this file for the capability model (docs/drishti/access-model.md). The old assertions it replaces encoded behaviour the
 // directive forbids: a manager seeing everything (AC-8), store and zone grants revealing IT devices (AC-4), camera grants narrowing a
 // store grant (AC-6) and a home store acting as a grant (AC-7). Each case below names the requirement it now proves.
 
-type Table = 'stores' | 'cameras' | 'devices'
+// P2-5a: stores → locations, devices → assets (ids unchanged). A location's NVR is now an asset too (a recorder); the device lists
+// below are the IT devices, so recorder assets are counted on their own (the NVR test at the end).
+type Table = 'locations' | 'cameras' | 'assets'
 
 async function addStore(orgId: string, code: string, zone: string): Promise<string> {
   const { data, error } = await adminClient()
-    .from('stores')
+    .from('locations')
     .insert({ org_id: orgId, code, name: `Store ${code}`, zone, nvr_ip: '127.0.0.1', nvr_username: 'viewer' })
     .select('id')
     .single()
@@ -23,7 +25,7 @@ async function addStore(orgId: string, code: string, zone: string): Promise<stri
 async function addCamera(orgId: string, storeId: string, channel: number): Promise<string> {
   const { data, error } = await adminClient()
     .from('cameras')
-    .insert({ org_id: orgId, store_id: storeId, channel, name: `Camera ${channel}` })
+    .insert({ org_id: orgId, location_id: storeId, channel, name: `Camera ${channel}` })
     .select('id')
     .single()
   if (error || !data) throw new Error(`addCamera: ${error?.message}`)
@@ -33,8 +35,8 @@ async function addCamera(orgId: string, storeId: string, channel: number): Promi
 let devicePort = 9 // devices are unique per address and port, so each fixture device gets its own port
 async function addDevice(orgId: string, storeId: string | null, type: 'server' | 'attendance', name: string): Promise<string> {
   const { data, error } = await adminClient()
-    .from('devices')
-    .insert({ org_id: orgId, store_id: storeId, type, name, ip: '127.0.0.1', tcp_port: devicePort++ })
+    .from('assets')
+    .insert({ org_id: orgId, location_id: storeId, type, name, ip: '127.0.0.1', tcp_port: devicePort++ })
     .select('id')
     .single()
   if (error || !data) throw new Error(`addDevice: ${error?.message}`)
@@ -42,7 +44,9 @@ async function addDevice(orgId: string, storeId: string | null, type: 'server' |
 }
 
 async function idsOf(user: TestUser, table: Table): Promise<string[]> {
-  const { data, error } = await user.client.from(table).select('id')
+  const { data, error } = table === 'assets'
+    ? await user.client.from('assets').select('id').eq('is_recorder', false)
+    : await user.client.from(table).select('id')
   expect(error).toBeNull()
   return (data ?? []).map((r) => r.id).sort()
 }
@@ -109,70 +113,70 @@ describe('inventory visibility (row-level security, capability model)', () => {
   })
 
   it('AC-8: a manager without grants sees nothing; with organisation-wide read grants they see everything of their organisation', async () => {
-    for (const t of ['stores', 'cameras', 'devices'] as const) expect(await idsOf(manager, t)).toEqual([])
-    expect(await idsOf(managerWithGrants, 'stores')).toEqual(sorted(s1, s2, s3))
+    for (const t of ['locations', 'cameras', 'assets'] as const) expect(await idsOf(manager, t)).toEqual([])
+    expect(await idsOf(managerWithGrants, 'locations')).toEqual(sorted(s1, s2, s3))
     expect(await idsOf(managerWithGrants, 'cameras')).toEqual(sorted(c11, c12, c21, c31, c32))
-    expect(await idsOf(managerWithGrants, 'devices')).toEqual(sorted(d1, d3, d0))
+    expect(await idsOf(managerWithGrants, 'assets')).toEqual(sorted(d1, d3, d0))
   })
 
   it('AC-4: CCTV grants for the stores of a zone give those stores and cameras, and no devices', async () => {
-    expect(await idsOf(zoneUser, 'stores')).toEqual(sorted(s1, s2))
+    expect(await idsOf(zoneUser, 'locations')).toEqual(sorted(s1, s2))
     expect(await idsOf(zoneUser, 'cameras')).toEqual(sorted(c11, c12, c21))
-    expect(await idsOf(zoneUser, 'devices')).toEqual([])
+    expect(await idsOf(zoneUser, 'assets')).toEqual([])
   })
 
   it('AC-4: a CCTV store grant gives all cameras of that store and no devices (also for an operator)', async () => {
-    expect(await idsOf(storeUser, 'stores')).toEqual(sorted(s3))
+    expect(await idsOf(storeUser, 'locations')).toEqual(sorted(s3))
     expect(await idsOf(storeUser, 'cameras')).toEqual(sorted(c31, c32))
-    expect(await idsOf(storeUser, 'devices')).toEqual([])
+    expect(await idsOf(storeUser, 'assets')).toEqual([])
   })
 
   it('a camera-only grant shows that camera and its store, but no devices', async () => {
-    expect(await idsOf(camUser, 'stores')).toEqual(sorted(s1))
+    expect(await idsOf(camUser, 'locations')).toEqual(sorted(s1))
     expect(await idsOf(camUser, 'cameras')).toEqual(sorted(c11))
-    expect(await idsOf(camUser, 'devices')).toEqual([])
+    expect(await idsOf(camUser, 'assets')).toEqual([])
   })
 
   it('AC-6: camera grants inside a granted store add to it and never narrow it', async () => {
-    expect(await idsOf(mixedUser, 'stores')).toEqual(sorted(s3))
+    expect(await idsOf(mixedUser, 'locations')).toEqual(sorted(s3))
     expect(await idsOf(mixedUser, 'cameras')).toEqual(sorted(c31, c32))
-    expect(await idsOf(mixedUser, 'devices')).toEqual([])
+    expect(await idsOf(mixedUser, 'assets')).toEqual([])
   })
 
   it('AC-6: the union holds per store too: a camera grant beside store grants changes nothing for the other stores', async () => {
-    expect(await idsOf(zoneCamUser, 'stores')).toEqual(sorted(s1, s2))
+    expect(await idsOf(zoneCamUser, 'locations')).toEqual(sorted(s1, s2))
     expect(await idsOf(zoneCamUser, 'cameras')).toEqual(sorted(c11, c12, c21))
   })
 
   it('AC-7: a home store on the profile gives nothing at all', async () => {
-    for (const t of ['stores', 'cameras', 'devices'] as const) expect(await idsOf(ownStoreUser, t)).toEqual([])
+    for (const t of ['locations', 'cameras', 'assets'] as const) expect(await idsOf(ownStoreUser, t)).toEqual([])
   })
 
   it('AC-4: devices come only with an IT capability: a location grant shows its devices, an asset grant exactly that one; no cameras', async () => {
-    expect(await idsOf(itUser, 'devices')).toEqual(sorted(d1, d0))
+    expect(await idsOf(itUser, 'assets')).toEqual(sorted(d1, d0))
     expect(await idsOf(itUser, 'cameras')).toEqual([])
-    expect(await idsOf(itUser, 'stores')).toEqual(sorted(s1)) // the device without a store adds no store
+    expect(await idsOf(itUser, 'locations')).toEqual(sorted(s1)) // the device without a store adds no store
   })
 
   it('a user without grants sees nothing, and neither does one who must still choose a password', async () => {
     for (const u of [nobody, resetUser]) {
-      expect(await idsOf(u, 'stores')).toEqual([])
+      expect(await idsOf(u, 'locations')).toEqual([])
       expect(await idsOf(u, 'cameras')).toEqual([])
-      expect(await idsOf(u, 'devices')).toEqual([])
+      expect(await idsOf(u, 'assets')).toEqual([])
     }
   })
 
   it('another organisation sees only its own rows', async () => {
-    expect(await idsOf(managerB, 'stores')).toEqual(sorted(sB))
+    expect(await idsOf(managerB, 'locations')).toEqual(sorted(sB))
     expect((await idsOf(managerB, 'cameras')).length).toBe(1)
   })
 
   it('nobody writes inventory through the data API', async () => {
-    const insert = await managerWithGrants.client.from('stores').insert({ org_id: orgA, code: 'X', name: 'X', nvr_ip: '127.0.0.1', nvr_username: 'u' })
+    const insert = await managerWithGrants.client.from('locations').insert({ org_id: orgA, code: 'X', name: 'X', nvr_ip: '127.0.0.1', nvr_username: 'u' })
     expect(insert.error?.code).toBe('42501')
     const update = await zoneUser.client.from('cameras').update({ name: 'changed' }).eq('id', c11)
     expect(update.error?.code).toBe('42501')
-    const del = await managerWithGrants.client.from('devices').delete().eq('id', d1)
+    const del = await managerWithGrants.client.from('assets').delete().eq('id', d1)
     expect(del.error?.code).toBe('42501')
   })
 
@@ -201,9 +205,9 @@ describe('inventory visibility (row-level security, capability model)', () => {
     const { data: camB } = await db.from('cameras').select('id').eq('org_id', orgB).limit(1).single()
     expect(camB?.id).toBeTruthy()
 
-    const camera = await db.from('cameras').insert({ org_id: orgA, store_id: sB, channel: 9, name: 'Cross' })
+    const camera = await db.from('cameras').insert({ org_id: orgA, location_id: sB, channel: 9, name: 'Cross' })
     expect(camera.error?.code).toBe('23503')
-    const device = await db.from('devices').insert({ org_id: orgA, store_id: sB, type: 'server', name: 'Cross', ip: '127.0.0.1' })
+    const device = await db.from('assets').insert({ org_id: orgA, location_id: sB, type: 'server', name: 'Cross', ip: '127.0.0.1' })
     expect(device.error?.code).toBe('23503')
     // The retired grant tables keep their keys until they are dropped.
     const storeGrant = await db.from('user_store_access').insert({ org_id: orgA, user_id: nobody.id, store_id: sB })
@@ -212,27 +216,38 @@ describe('inventory visibility (row-level security, capability model)', () => {
     expect(cameraGrant.error?.code).toBe('23503')
     const zoneGrant = await db.from('user_zone_access').insert({ org_id: orgB, user_id: nobody.id, zone: 'BR' })
     expect(zoneGrant.error?.code).toBe('23503')
-    const profile = await db.from('profiles').update({ store_id: sB }).eq('id', nobody.id)
+    const profile = await db.from('profiles').update({ location_id: sB }).eq('id', nobody.id)
     expect(profile.error?.code).toBe('23503')
 
     // A device with no store is still fine.
-    const loose = await db.from('devices').insert({ org_id: orgA, store_id: null, type: 'other', name: 'Loose', ip: '127.0.0.1' })
+    const loose = await db.from('assets').insert({ org_id: orgA, location_id: null, type: 'other', name: 'Loose', ip: '127.0.0.1' })
     expect(loose.error).toBeNull()
   })
 
-  it('deleting a store detaches its devices but keeps their organisation, and revokes the grants on it (history kept)', async () => {
+  // P2-5a (brief item 2) replaces "deleting a store detaches its devices and revokes the grants": a location is never deleted (history
+  // is kept); it is archived with its devices, and an archived location grants nothing while the grant row itself stays as it was.
+  it('a location cannot be deleted; archiving keeps its devices and grants as history, and the grant then gives nothing', async () => {
     const db = adminClient()
     const tmp = await addStore(orgA, 'TMP', 'XX')
     const dev = await addDevice(orgA, tmp, 'server', 'Temp device')
     const [g] = await grant(orgA, nobody.id, 'cctv.live', atLocation(tmp))
-    const del = await db.from('stores').delete().eq('id', tmp)
-    expect(del.error).toBeNull()
-    const back = await db.from('devices').select('store_id, org_id').eq('id', dev).single()
-    expect(back.data).toEqual({ store_id: null, org_id: orgA })
-    const row = await db.from('access_grants').select('scope_id, location_id, revoked_at, revoke_reason').eq('id', g).single()
-    expect(row.data?.scope_id).toBe(tmp)
-    expect(row.data?.location_id).toBeNull()
-    expect(row.data?.revoked_at).not.toBeNull()
+    expect(await idsOf(nobody, 'locations')).toEqual([tmp])
+    const del = await db.from('locations').delete().eq('id', tmp)
+    expect(del.error?.code).toBe('DR003')
+    expect((await db.rpc('inventory_archive', { p_org: orgA, p_kind: 'location', p_id: tmp })).error).toBeNull()
+    const back = await db.from('assets').select('location_id, org_id, enabled').eq('id', dev).single()
+    expect(back.data).toEqual({ location_id: tmp, org_id: orgA, enabled: false })
+    const row = await db.from('access_grants').select('scope_id, location_id, revoked_at').eq('id', g).single()
+    expect(row.data).toEqual({ scope_id: tmp, location_id: tmp, revoked_at: null })
+    expect(await idsOf(nobody, 'locations')).toEqual([])
+    expect((await nobody.client.rpc('has_capability_for', { p_cap: 'cctv.live', p_kind: 'location', p_id: tmp })).data).toBe(false)
+  })
+
+  it('a location\'s NVR is a recorder asset: visible with the IT view of the location, never with CCTV rights', async () => {
+    const nvrs = (await itUser.client.from('assets').select('id, type').eq('is_recorder', true)).data ?? []
+    expect(nvrs.map((n) => n.type)).toEqual(['nvr'])
+    expect(nvrs.map((n) => n.id)).toEqual([await primaryRecorderOf(s1)])
+    expect((await zoneUser.client.from('assets').select('id')).data).toEqual([])
   })
 
   it('NVR passwords live in the vault and only the server can read them', async () => {
@@ -240,8 +255,10 @@ describe('inventory visibility (row-level security, capability model)', () => {
     const secret = `Nvr-${randomUUID()}`
     expect((await admin.rpc('nvr_store_credential', { p_store: s1, p_secret: secret })).error).toBeNull()
     expect((await admin.rpc('nvr_read_credential', { p_store: s1 })).data).toBe(secret)
-    const row = await admin.from('stores').select('nvr_secret_id').eq('id', s1).single()
-    expect(row.data?.nvr_secret_id).toBeTruthy()
+    // P2-5a: the recorder owns the vault pointer (recorders.secret_id, name recorder:<id>); the legacy location column stays empty.
+    const row = await admin.from('recorders').select('secret_id').eq('id', await primaryRecorderOf(s1)).single()
+    expect(row.data?.secret_id).toBeTruthy()
+    expect((await admin.from('locations').select('nvr_secret_id').eq('id', s1).single()).data?.nvr_secret_id).toBeNull()
 
     const denied = await managerWithGrants.client.rpc('nvr_read_credential', { p_store: s1 })
     expect(denied.error?.code).toBe('42501')

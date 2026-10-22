@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { adminClient, atCamera, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 const T0 = new Date('2026-03-10T10:00:00Z')
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000).toISOString()
 
-type R = { type: 'camera' | 'device' | 'nvr'; id: string; ok: boolean; at: string; method?: string; error?: string; cause?: 'nvr_down' }
+type R = { type: 'camera' | 'device' | 'nvr' | 'recorder'; id: string; ok: boolean; at: string; method?: string; error?: string; cause?: 'nvr_down' }
 const apply = (org: string, results: R[], threshold = 2) => admin().rpc('monitor_apply_results', { p_org: org, p_results: results, p_threshold: threshold })
 
 describe('monitoring in the database', () => {
@@ -25,13 +25,13 @@ describe('monitoring in the database', () => {
     orgId = await createOrg()
     otherOrg = await createOrg()
     const a = admin()
-    storeId = (await a.from('stores').insert({ org_id: orgId, code: 'MON', name: 'Mon', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
-    const cams = await a.from('cameras').insert([1, 2].map((n) => ({ org_id: orgId, store_id: storeId, channel: n, name: `C${n}` }))).select('id, channel').order('channel')
+    storeId = (await a.from('locations').insert({ org_id: orgId, code: 'MON', name: 'Mon', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const cams = await a.from('cameras').insert([1, 2].map((n) => ({ org_id: orgId, location_id: storeId, channel: n, name: `C${n}` }))).select('id, channel').order('channel')
     cam1 = cams.data![0].id
     cam2 = cams.data![1].id
-    deviceId = (await a.from('devices').insert({ org_id: orgId, store_id: storeId, type: 'server', name: 'ERP', ip: '127.0.0.1', tcp_port: 9 }).select('id').single()).data!.id
-    const otherStore = (await a.from('stores').insert({ org_id: otherOrg, code: 'OTH', name: 'Oth', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
-    foreignCam = (await a.from('cameras').insert({ org_id: otherOrg, store_id: otherStore, channel: 1, name: 'F' }).select('id').single()).data!.id
+    deviceId = (await a.from('assets').insert({ org_id: orgId, location_id: storeId, type: 'server', name: 'ERP', ip: '127.0.0.1', tcp_port: 9 }).select('id').single()).data!.id
+    const otherStore = (await a.from('locations').insert({ org_id: otherOrg, code: 'OTH', name: 'Oth', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    foreignCam = (await a.from('cameras').insert({ org_id: otherOrg, location_id: otherStore, channel: 1, name: 'F' }).select('id').single()).data!.id
     viewer = await createUser(orgId, 'user')
     manager = await createUser(orgId, 'manager')
     await grant(orgId, manager.id, READ_EVERYTHING) // AC-8 (P2-1): sees everything only through explicit grants
@@ -102,17 +102,22 @@ describe('monitoring in the database', () => {
     expect(data).toEqual([])
   })
 
-  it('deleting a camera, a device or a store removes its status and outages', async () => {
+  // P2-5a (brief item 2) replaces "deleting removes its status and outages", the behaviour that erased history: nothing is deleted;
+  // archiving stops monitoring like switching off does (current state forgotten, open outages closed) and keeps the outages.
+  it('a location cannot be deleted; archiving it stops monitoring of its NVR and cameras and keeps their outages', async () => {
     const a = admin()
-    const { data: s2 } = await a.from('stores').insert({ org_id: orgId, code: 'GONE', name: 'Gone', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()
-    const { data: c } = await a.from('cameras').insert({ org_id: orgId, store_id: s2!.id, channel: 1, name: 'G' }).select('id').single()
+    const { data: s2 } = await a.from('locations').insert({ org_id: orgId, code: 'GONE', name: 'Gone', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()
+    const { data: c } = await a.from('cameras').insert({ org_id: orgId, location_id: s2!.id, channel: 1, name: 'G' }).select('id').single()
+    const rec = await primaryRecorderOf(s2!.id)
     await apply(orgId, [{ type: 'nvr', id: s2!.id, ok: false, at: at(0) }, { type: 'camera', id: c!.id, ok: false, at: at(0) }], 1)
-    expect((await state('nvr', s2!.id))?.status).toBe('down')
-    await a.from('stores').delete().eq('id', s2!.id)
-    expect(await state('nvr', s2!.id)).toBeNull()
+    expect((await state('recorder', rec))?.status).toBe('down')
+    expect((await a.from('locations').delete().eq('id', s2!.id)).error?.code).toBe('DR003')
+    expect((await a.rpc('inventory_archive', { p_org: orgId, p_kind: 'location', p_id: s2!.id })).error).toBeNull()
+    expect(await state('recorder', rec)).toBeNull()
     expect(await state('camera', c!.id)).toBeNull()
-    expect(await outagesOf('camera', c!.id)).toHaveLength(0)
-    expect(await outagesOf('nvr', s2!.id)).toHaveLength(0)
+    for (const o of [...await outagesOf('camera', c!.id), ...await outagesOf('recorder', rec)]) expect(o.ended_at).not.toBeNull()
+    expect(await outagesOf('camera', c!.id)).toHaveLength(1)
+    expect(await outagesOf('recorder', rec)).toHaveLength(1)
   })
 
   it('people read status only for what they may see, and nobody but the server writes it', async () => {
@@ -128,13 +133,13 @@ describe('monitoring in the database', () => {
     expect((await viewer.client.rpc('monitor_apply_results', { p_org: orgId, p_results: [], p_threshold: 2 })).error?.code).toBe('42501')
   })
 
-  it('store_status counts what the reader may see', async () => {
+  it('location_status (was store_status) counts what the reader may see', async () => {
     // Results must be recent: a "Live" older than 20 minutes counts as stale, not live.
     const now = new Date().toISOString()
     await apply(orgId, [{ type: 'nvr', id: storeId, ok: true, at: now }, { type: 'camera', id: cam1, ok: true, at: now }])
-    const m = await manager.client.from('store_status').select('*').eq('store_id', storeId).single()
-    expect(m.data).toMatchObject({ cameras_total: 2, cameras_live: 1, cameras_down: 1, cameras_unknown: 0, nvr_status: 'up' })
-    const v = await viewer.client.from('store_status').select('*').eq('store_id', storeId).single()
+    const m = await manager.client.from('location_status').select('*').eq('location_id', storeId).single()
+    expect(m.data).toMatchObject({ cameras_total: 2, cameras_live: 1, cameras_down: 1, cameras_unknown: 0, nvr_status: 'up', recorders_total: 1, recorders_up: 1 })
+    const v = await viewer.client.from('location_status').select('*').eq('location_id', storeId).single()
     expect(v.data).toMatchObject({ cameras_total: 1, cameras_live: 1, cameras_down: 0 })
   })
 
@@ -150,7 +155,7 @@ describe('monitoring in the database', () => {
     }
     const makeCamera = async (n: number, createdHoursAgo: number) => {
       const a = admin()
-      const { data } = await a.from('cameras').insert({ org_id: orgId, store_id: storeId, channel: 10 + n, name: `U${n}` }).select('id').single()
+      const { data } = await a.from('cameras').insert({ org_id: orgId, location_id: storeId, channel: 10 + n, name: `U${n}` }).select('id').single()
       await a.from('check_state').insert({ org_id: orgId, target_type: 'camera', target_id: data!.id, status: 'up', created_at: t(createdHoursAgo) })
       return data!.id
     }

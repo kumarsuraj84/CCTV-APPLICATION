@@ -25,13 +25,13 @@ describe('a wrong NVR password in the database', () => {
     rtsp = await startFakeRtsp('needs-auth', 0, { username: 'viewer', password: 'secret-pass' })
     const a = admin()
     const mk = async (code: string, ip: string) =>
-      (await a.from('stores').insert({ org_id: orgId, code, name: code, nvr_ip: ip, rtsp_port: rtsp.port, http_port: nvr.port, nvr_username: 'viewer' }).select('id').single()).data!.id
+      (await a.from('locations').insert({ org_id: orgId, code, name: code, nvr_ip: ip, rtsp_port: rtsp.port, http_port: nvr.port, nvr_username: 'viewer' }).select('id').single()).data!.id
     wrongStore = await mk('LG1', '127.0.0.1')
     downStore = await mk('LG2', '127.0.0.1')
     await a.rpc('nvr_store_credential', { p_store: wrongStore, p_secret: 'not-the-password' })
     await a.rpc('nvr_store_credential', { p_store: downStore, p_secret: 'not-the-password' })
     const cams = async (store: string) =>
-      (await a.from('cameras').insert([1, 2].map((n) => ({ org_id: orgId, store_id: store, channel: n, name: `C${n}` }))).select('id, channel').order('channel')).data!.map((c) => c.id)
+      (await a.from('cameras').insert([1, 2].map((n) => ({ org_id: orgId, location_id: store, channel: n, name: `C${n}` }))).select('id, channel').order('channel')).data!.map((c) => c.id)
     wrongCams = await cams(wrongStore)
     downCams = await cams(downStore)
     deps = { db: new SupabaseMonitorDb(admin(), { orgId }), probes: realProbes, cfg: loadMonitorConfig({}), clock: () => new Date() }

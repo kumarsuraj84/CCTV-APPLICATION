@@ -15,14 +15,14 @@ export async function importStores(admin: AdminClient, actor: Actor, rows: Store
   if (!isAdminRole(actor.role)) return { ...result, errors: [{ line: 1, message: 'Only administrators can import.' }] }
   for (const r of rows) {
     try {
-      const { data: existing } = await admin.from('stores').select('id').eq('org_id', actor.orgId).eq('code', r.code).maybeSingle()
+      const { data: existing } = await admin.from('locations').select('id').eq('org_id', actor.orgId).eq('code', r.code).is('archived_at', null).maybeSingle()
       const fields = {
         name: r.name, city: r.city, zone: r.zone, state: r.state, address: r.address, nvr_ip: r.nvr_ip,
         rtsp_port: r.rtsp_port, http_port: r.http_port, nvr_username: r.nvr_username, expected_channels: r.channels,
       }
       let storeId: string
       if (existing) {
-        const { error } = await admin.from('stores').update(fields).eq('id', existing.id)
+        const { error } = await admin.from('locations').update(fields).eq('id', existing.id)
         if (error) throw error
         storeId = existing.id
       } else {
@@ -30,14 +30,15 @@ export async function importStores(admin: AdminClient, actor: Actor, rows: Store
           result.errors.push({ line: r.line, message: 'A new store needs a password for its NVR.' })
           continue
         }
-        const { data, error } = await admin.from('stores').insert({ ...fields, org_id: actor.orgId, code: r.code }).select('id').single()
+        const { data, error } = await admin.from('locations').insert({ ...fields, org_id: actor.orgId, code: r.code }).select('id').single()
         if (error || !data) throw error
         storeId = data.id
       }
       if (r.nvr_password) {
         const { error } = await admin.rpc('nvr_store_credential', { p_store: storeId, p_secret: r.nvr_password })
         if (error) {
-          if (!existing) await admin.from('stores').delete().eq('id', storeId)
+          // P2-5a: never deleted, archived (the archived location frees its code for the next attempt).
+          if (!existing) await admin.rpc('inventory_archive', { p_org: actor.orgId, p_kind: 'location', p_id: storeId, p_actor: actor.id })
           throw error
         }
       }
@@ -56,7 +57,7 @@ export async function importStores(admin: AdminClient, actor: Actor, rows: Store
 export async function importDevices(admin: AdminClient, actor: Actor, rows: DeviceRow[]): Promise<ImportResult> {
   const result: ImportResult = { created: 0, updated: 0, errors: [] }
   if (!isAdminRole(actor.role)) return { ...result, errors: [{ line: 1, message: 'Only administrators can import.' }] }
-  const stores = await fetchAll((from, to) => admin.from('stores').select('id, code').eq('org_id', actor.orgId).order('id').range(from, to))
+  const stores = await fetchAll((from, to) => admin.from('locations').select('id, code').eq('org_id', actor.orgId).is('archived_at', null).order('id').range(from, to))
   const byCode = new Map(stores.map((s) => [s.code, s.id]))
   for (const r of rows) {
     try {
@@ -68,15 +69,15 @@ export async function importDevices(admin: AdminClient, actor: Actor, rows: Devi
           continue
         }
       }
-      const { data: same } = await admin.from('devices').select('id, tcp_port').eq('org_id', actor.orgId).eq('ip', r.ip)
+      const { data: same } = await admin.from('assets').select('id, tcp_port').eq('org_id', actor.orgId).eq('ip', r.ip).is('archived_at', null).eq('is_recorder', false)
       const existing = (same ?? []).find((d) => d.tcp_port === r.tcp_port)
-      const fields = { store_id: storeId, type: r.type, name: r.name, ip: r.ip, tcp_port: r.tcp_port, notes: r.notes }
+      const fields = { location_id: storeId, type: r.type, name: r.name, ip: r.ip, tcp_port: r.tcp_port, notes: r.notes }
       if (existing) {
-        const { error } = await admin.from('devices').update(fields).eq('id', existing.id)
+        const { error } = await admin.from('assets').update(fields).eq('id', existing.id)
         if (error) throw error
         result.updated++
       } else {
-        const { error } = await admin.from('devices').insert({ ...fields, org_id: actor.orgId })
+        const { error } = await admin.from('assets').insert({ ...fields, org_id: actor.orgId })
         if (error) throw error
         result.created++
       }

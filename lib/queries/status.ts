@@ -5,9 +5,16 @@ import { fetchAll } from '@/lib/supabase/fetch-all'
 
 type Client = SupabaseClient<Database>
 
-export type Status = 'up' | 'down' | 'unknown'
+/** 'off' (owner addition, P2-5a): monitoring of the camera's NVR is switched off — never contacted, shown as "Switched off", not offline. */
+export type Status = 'up' | 'down' | 'unknown' | 'off'
 export type StoreStatusRow = {
   store_id: string
+  /** The location's recorders the person has the IT view of (0 for everyone else), how many are down, and how many are switched off. */
+  recorders_total?: number
+  recorders_down?: number
+  recorders_monitoring_off?: number
+  /** Cameras on a switched-off NVR (not counted as unknown). */
+  cameras_monitoring_off?: number
   cameras_total: number
   /** Live and checked recently. */
   cameras_live: number
@@ -47,13 +54,15 @@ export function isStale(lastCheckedAt: string | null | undefined, now: Date = ne
   return now.getTime() - t > STALE_AFTER_MINUTES * 60_000
 }
 
-export type StatusWord = 'Live' | 'Offline' | 'Not checked yet' | 'Not checked lately'
+export type StatusWord = 'Live' | 'Offline' | 'Not checked yet' | 'Not checked lately' | 'Switched off'
 
 /**
  * The words the screens use. `stale` only matters for a live result: it is then "Not checked lately".
- * "Not checked yet" still means never checked; offline stays offline however old the result is.
+ * "Not checked yet" still means never checked; offline stays offline however old the result is; "Switched off" is an NVR (or a
+ * camera on it) whose monitoring an administrator switched off.
  */
 export function statusLabel(s: Status | null | undefined, stale = false): StatusWord {
+  if (s === 'off') return 'Switched off'
   if (s === 'up') return stale ? 'Not checked lately' : 'Live'
   return s === 'down' ? 'Offline' : 'Not checked yet'
 }
@@ -104,12 +113,33 @@ export function nvrLoginProblem(a: { nvr: StateRow | undefined; cameraIds: strin
 
 // Everything below reads with the signed-in person's own client, so row-level security decides what is counted and listed.
 
+const STATUS_COLUMNS = 'store_id:location_id, cameras_total, cameras_live, cameras_down, cameras_unknown, cameras_stale, nvr_status, nvr_down_since, nvr_checked_at, nvr_stale, recorders_total, recorders_down, recorders_monitoring_off, cameras_monitoring_off'
+
 export async function listStoreStatus(supabase: Client): Promise<Map<string, StoreStatusRow>> {
-  const rows = await fetchAll((from, to) => supabase.from('store_status').select('*').order('store_id').range(from, to))
+  // P2-5a: location_status (was store_status); the nvr_* figures are the worst of the location's recorders (seam D5-9).
+  const rows = await fetchAll((from, to) => supabase.from('location_status').select(STATUS_COLUMNS).order('location_id').range(from, to))
   return new Map(rows.filter((r) => r.store_id).map((r) => [r.store_id as string, r as unknown as StoreStatusRow]))
 }
 
-export async function getStates(supabase: Client, type: 'camera' | 'device' | 'nvr', ids: string[]): Promise<Map<string, StateRow>> {
+/**
+ * The status of targets the person may see. 'nvr' takes location ids and answers per location with its primary recorder (the
+ * P2-5a seam; only people with the IT view see recorders at all); 'recorder' takes recorder ids. A camera or NVR whose monitoring is
+ * switched off comes back as status 'off'.
+ */
+export async function getStates(supabase: Client, type: 'camera' | 'device' | 'nvr' | 'recorder', ids: string[]): Promise<Map<string, StateRow>> {
+  if (type === 'nvr') {
+    const { data, error } = await supabase.from('recorders').select('id, location_id, created_at, monitoring_enabled').in('location_id', ids).order('created_at').order('id')
+    if (error) throw new Error('Could not read the status.')
+    const primary = new Map<string, { id: string; monitoring_enabled: boolean }>()
+    for (const r of data ?? []) if (!primary.has(r.location_id)) primary.set(r.location_id, r)
+    const states = await getStates(supabase, 'recorder', [...primary.values()].map((r) => r.id))
+    const out = new Map<string, StateRow>()
+    for (const [loc, r] of primary) {
+      const st = states.get(r.id)
+      if (st) out.set(loc, { ...st, target_id: loc })
+    }
+    return out
+  }
   const out = new Map<string, StateRow>()
   const chunks: string[][] = []
   for (let i = 0; i < ids.length; i += 100) chunks.push(ids.slice(i, i + 100))
@@ -133,6 +163,20 @@ export async function getStates(supabase: Client, type: 'camera' | 'device' | 'n
     return rows
   })
   for (const page of pages) for (const r of page) out.set(r.target_id, r)
+  // Monitoring switched off (owner addition): never contacted, so "Switched off" rather than "Not checked yet" or a stale state.
+  const off = new Set<string>()
+  if (type === 'camera' && ids.length > 0) {
+    for (const chunk of chunks) {
+      const { data, error } = await supabase.rpc('cameras_monitoring_off', { p_ids: chunk })
+      if (error) throw new Error('Could not read the status.')
+      for (const id of (data as unknown as string[] | null) ?? []) off.add(String(id))
+    }
+  } else if (type === 'recorder' && ids.length > 0) {
+    const { data, error } = await supabase.from('recorders').select('id').in('id', ids).eq('monitoring_enabled', false)
+    if (error) throw new Error('Could not read the status.')
+    for (const r of data ?? []) off.add(r.id)
+  }
+  for (const id of off) out.set(id, { target_id: id, status: 'off', down_since: null, last_checked_at: null, last_up_at: null, error: null })
   return out
 }
 
@@ -161,9 +205,18 @@ async function recentOutages(
 ): Promise<{ list: Recent[]; limited: boolean }> {
   const pageSize = opts.outagePageSize ?? OUTAGE_PAGE
   const maxPages = opts.outageMaxPages ?? OUTAGE_MAX_PAGES
-  const openNvr = new Map(
-    (await fetchAll((from, to) => supabase.from('outages').select('target_id, created_at').eq('target_type', 'nvr').is('ended_at', null).order('target_id').order('id').range(from, to))).map((o) => [o.target_id, o.created_at] as const),
+  // P2-5a: NVR outages are recorder outages ('recorder', recorder id); recorders are visible to the IT view only, exactly like the old
+  // 'nvr' rows. Until P2-5b groups per recorder, a camera outage is grouped under an open outage of an NVR of its location.
+  const recorderLocation = new Map(
+    (await fetchAll((from, to) => supabase.from('recorders').select('id, location_id').order('id').range(from, to))).map((r) => [r.id, r.location_id] as const),
   )
+  const openNvr = new Map<string, string>()
+  for (const o of await fetchAll((from, to) => supabase.from('outages').select('target_id, created_at').eq('target_type', 'recorder').is('ended_at', null).order('target_id').order('id').range(from, to))) {
+    const loc = recorderLocation.get(o.target_id)
+    if (!loc) continue
+    const prev = openNvr.get(loc)
+    if (!prev || new Date(o.created_at).getTime() < new Date(prev).getTime()) openNvr.set(loc, o.created_at)
+  }
   const groupedUnderNvr = (o: OutageRow, storeId: string): boolean => {
     if (o.cause !== 'nvr_down' || o.ended_at !== null) return false
     const nvrRecorded = openNvr.get(storeId)
@@ -186,14 +239,14 @@ async function recentOutages(
     const cameras = new Map<string, { name: string; store_id: string }>()
     const cameraIds = rows.filter((o) => o.target_type === 'camera').map((o) => o.target_id)
     for (let i = 0; i < cameraIds.length; i += 100) {
-      const res = await supabase.from('cameras').select('id, name, store_id').eq('is_active', true).in('id', cameraIds.slice(i, i + 100))
+      const res = await supabase.from('cameras').select('id, name, store_id:location_id').eq('is_active', true).in('id', cameraIds.slice(i, i + 100))
       if (res.error) throw new Error('Could not read the cameras.')
       for (const c of res.data ?? []) cameras.set(c.id, c)
     }
     const devices = new Map<string, { name: string; store_id: string | null }>()
     const deviceIds = rows.filter((o) => o.target_type === 'device').map((o) => o.target_id)
     for (let i = 0; i < deviceIds.length; i += 100) {
-      const res = await supabase.from('devices').select('id, name, store_id').eq('enabled', true).in('id', deviceIds.slice(i, i + 100))
+      const res = await supabase.from('assets').select('id, name, store_id:location_id').eq('enabled', true).in('id', deviceIds.slice(i, i + 100))
       if (res.error) throw new Error('Could not read the devices.')
       for (const d of res.data ?? []) devices.set(d.id, d)
     }
@@ -208,9 +261,10 @@ async function recentOutages(
         const device = devices.get(o.target_id)
         if (!device) continue
         collected.push({ o, device })
-      } else {
-        if (!storeById.has(o.target_id)) continue
-        collected.push({ o })
+      } else if (o.target_type === 'recorder') {
+        const loc = recorderLocation.get(o.target_id)
+        if (!loc || !storeById.has(loc)) continue
+        collected.push({ o: { ...o, target_id: loc } })
       }
     }
     if (rows.length < pageSize) {
@@ -233,8 +287,9 @@ export async function getDashboard(supabase: Client, opts: DashboardOptions = {}
   // Only stores and devices that are switched on are counted (store_status already leaves out the rest).
   const [statuses, stores, devices, deviceStates] = await Promise.all([
     listStoreStatus(supabase),
-    fetchAll((from, to) => supabase.from('stores').select('id, code, name').eq('is_active', true).order('code').order('id').range(from, to)),
-    fetchAll((from, to) => supabase.from('devices').select('id, type, name, store_id').eq('enabled', true).order('id').range(from, to)),
+    fetchAll((from, to) => supabase.from('locations').select('id, code, name').eq('is_active', true).order('code').order('id').range(from, to)),
+    // The NVRs are recorders (counted as NVRs), not devices.
+    fetchAll((from, to) => supabase.from('assets').select('id, type, name, store_id:location_id').eq('enabled', true).eq('is_recorder', false).order('id').range(from, to)),
     fetchAll((from, to) => supabase.from('check_state').select('target_id, status, last_checked_at').eq('target_type', 'device').order('target_id').range(from, to)),
   ])
 
@@ -261,7 +316,8 @@ export async function getDashboard(supabase: Client, opts: DashboardOptions = {}
     const st = stateOf.get(d.id)
     c.total++
     if (st?.status === 'up' && isStale(st.lastCheckedAt, now)) c.stale++
-    else c[st?.status ?? 'unknown']++
+    else if (st?.status === 'up' || st?.status === 'down') c[st.status]++
+    else c.unknown++
   }
 
   const recent = await recentOutages(supabase, storeById, opts)

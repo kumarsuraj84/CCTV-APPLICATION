@@ -3,7 +3,10 @@
 // checks them a third time (migration 20261021000015: access_check_manager, access_check_grantor).
 import type { Role } from '@/lib/admin/roles'
 
-export type ScopeKind = 'organization' | 'location' | 'camera' | 'asset'
+// P2-5a (ruling C-1): region, cluster and recorder scopes. The editor offers them from P2-5c; the rules below already know them.
+export type ScopeKind = 'organization' | 'region' | 'cluster' | 'location' | 'recorder' | 'camera' | 'asset'
+/** Where a grant target sits in the tree (archived nodes cut out), from the database (access_target_ancestry). */
+export type Ancestry = { region_id: string | null; cluster_id: string | null; location_id: string | null; recorder_id: string | null }
 export type Area = 'cctv' | 'it' | 'wifi' | 'admin'
 export type CatalogueEntry = { key: string; area: Area | string; risk: 'low' | 'medium' | 'high' | string; description: string; scope_kinds?: string[] }
 
@@ -131,11 +134,12 @@ export function manageRefusal(i: { actorRole: Role; actorId: string; targetId: s
 
 /**
  * Rules 4-7 for one grant (the same as access_check_grantor). `parentLocation` is the location of the camera or asset, when the grant
- * points at one. null = allowed; otherwise a plain sentence for the administrator.
+ * points at one; `ancestry` (P2-5a) is where the target sits in the tree (organisation > region > cluster > location > recorder >
+ * camera / asset): a holding at a node above the target covers it. null = allowed; otherwise a plain sentence for the administrator.
  */
 export function grantRefusal(i: {
   actorRole: Role; actorId: string; targetId: string; targetRole: Role; holdings: readonly Holding[]; cap: CatalogueEntry
-  spec: WantedGrant; parentLocation: string | null; reason: string | null | undefined; now?: Date
+  spec: WantedGrant; parentLocation: string | null; ancestry?: Ancestry | null; reason: string | null | undefined; now?: Date
 }): string | null {
   const manage = manageRefusal(i)
   if (manage) return manage
@@ -149,10 +153,16 @@ export function grantRefusal(i: {
   const inEffect = i.holdings.filter(
     (h) => h.capability === i.spec.capability && new Date(h.valid_from).getTime() <= t && (h.valid_until === null || new Date(h.valid_until).getTime() > t),
   )
+  const a = i.ancestry ?? null
   const covers = (h: Holding) =>
     h.scope_kind === 'organization' ||
     (h.scope_kind === i.spec.scope_kind && h.scope_id === i.spec.scope_id) ||
-    (h.scope_kind === 'location' && (i.spec.scope_kind === 'camera' || i.spec.scope_kind === 'asset') && i.parentLocation !== null && h.scope_id === i.parentLocation)
+    (h.scope_kind === 'location' && (i.spec.scope_kind === 'camera' || i.spec.scope_kind === 'asset') && i.parentLocation !== null && h.scope_id === i.parentLocation) ||
+    (a !== null && h.scope_id !== null && (
+      (h.scope_kind === 'region' && a.region_id === h.scope_id) ||
+      (h.scope_kind === 'cluster' && a.cluster_id === h.scope_id) ||
+      (h.scope_kind === 'location' && a.location_id === h.scope_id) ||
+      (h.scope_kind === 'recorder' && a.recorder_id === h.scope_id)))
   const wide = inEffect.filter(covers)
   if (wide.length === 0) return `You can only give rights you hold yourself, for the same places: ${label}.`
   const long = wide.some((h) => h.valid_until === null || (i.spec.valid_until !== null && new Date(h.valid_until).getTime() >= new Date(i.spec.valid_until).getTime()))
@@ -161,12 +171,19 @@ export function grantRefusal(i: {
 }
 
 // ── Summary for the people list ─────────────────────────────────────────────
-export type SummaryRow = { capability: string; organization_wide: boolean; locations: number; cameras: number; assets: number }
+export type SummaryRow = {
+  capability: string; organization_wide: boolean; locations: number; cameras: number; assets: number
+  regions?: number; clusters?: number; recorders?: number
+}
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 function coverage(r: SummaryRow): string {
   if (r.organization_wide) return 'whole organisation'
-  const parts = [r.locations && plural(r.locations, 'location', 'locations'), r.cameras && plural(r.cameras, 'camera', 'cameras'), r.assets && plural(r.assets, 'asset', 'assets')]
+  const parts = [
+    r.regions && plural(r.regions, 'region', 'regions'), r.clusters && plural(r.clusters, 'cluster', 'clusters'),
+    r.locations && plural(r.locations, 'location', 'locations'), r.recorders && plural(r.recorders, 'NVR', 'NVRs'),
+    r.cameras && plural(r.cameras, 'camera', 'cameras'), r.assets && plural(r.assets, 'asset', 'assets'),
+  ]
   return parts.filter(Boolean).join(' + ') || 'none'
 }
 

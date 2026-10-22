@@ -17,7 +17,7 @@ describe('database hardening', () => {
     const u = await createUser(orgId, 'admin')
     actor = { id: u.id, orgId, role: 'admin' }
     const { data } = await admin()
-      .from('stores')
+      .from('locations')
       .insert({ org_id: orgId, code: 'HARD', name: 'Hardening', nvr_ip: '127.0.0.1', nvr_username: 'u' })
       .select('id')
       .single()
@@ -52,8 +52,11 @@ describe('database hardening', () => {
 
     const first = `Nvr-${randomUUID()}`
     expect((await admin().rpc('nvr_store_credential', { p_store: storeId, p_secret: first })).error).toBeNull()
-    // Point the store at a vault row that does not exist, as after a partial failure.
-    await admin().from('stores').update({ nvr_secret_id: randomUUID() }).eq('id', storeId)
+    // Point the store at a vault row that does not exist, as after a partial failure. P2-5a: the recorder owns the pointer now and it
+    // can only be written by the credential functions; the location's legacy column is ignored, so a stale value there harms nothing.
+    await admin().from('locations').update({ nvr_secret_id: randomUUID() }).eq('id', storeId)
+    const rec = (await admin().from('recorders').select('id').eq('location_id', storeId).single()).data!.id
+    expect((await admin().from('recorders').update({ secret_id: randomUUID() }).eq('id', rec)).error?.code).toBe('42501')
     const second = `Nvr-${randomUUID()}`
     expect((await admin().rpc('nvr_store_credential', { p_store: storeId, p_secret: second })).error).toBeNull()
     expect((await admin().rpc('nvr_read_credential', { p_store: storeId })).data).toBe(second)
@@ -72,7 +75,10 @@ describe('database hardening', () => {
     expect([a, b]).toContain(read)
   })
 
-  it('deleteStore keeps the store when its vault secret cannot be removed', async () => {
+  // P2-5a (brief item 2): "deleteStore keeps the store when its vault secret cannot be removed" protected against an orphaned secret
+  // after a hard delete. Deleting is archiving now: the row and the recorder's secret are both kept (restore brings them back), so no
+  // secret can be orphaned; a failure of the archive itself leaves the store as it was.
+  it('deleteStore archives the store and keeps its vault secret; a failing archive leaves the store active', async () => {
     const made = await createStore(admin(), actor, { name: 'Keeper', ip: '192.0.2.60', nvr_username: 'viewer', nvr_password: 'Secret-K1', channels: 0 })
     if (!made.ok) throw new Error(made.error)
     const real = admin()
@@ -80,15 +86,16 @@ describe('database hardening', () => {
       get(target, prop, receiver) {
         if (prop === 'rpc') {
           return (fn: string, args: object) =>
-            fn === 'nvr_delete_credential' ? Promise.resolve({ data: null, error: { message: 'boom', code: 'XX000' } }) : (target.rpc as (f: string, a: object) => unknown)(fn, args)
+            fn === 'inventory_archive' ? Promise.resolve({ data: null, error: { message: 'boom', code: 'XX000' } }) : (target.rpc as (f: string, a: object) => unknown)(fn, args)
         }
         return Reflect.get(target, prop, receiver)
       },
     })
-    const res = await deleteStore(failing, actor, made.storeId)
-    expect(res.ok).toBe(false)
-    const { data } = await real.from('stores').select('id').eq('id', made.storeId)
-    expect(data).toHaveLength(1)
+    expect((await deleteStore(failing, actor, made.storeId)).ok).toBe(false)
+    expect((await real.from('locations').select('is_active, archived_at').eq('id', made.storeId).single()).data).toEqual({ is_active: true, archived_at: null })
     expect((await deleteStore(real, actor, made.storeId)).ok).toBe(true)
+    expect((await real.from('locations').select('archived_at').eq('id', made.storeId).single()).data?.archived_at).not.toBeNull()
+    const rec = (await real.from('recorders').select('id').eq('location_id', made.storeId).single()).data!.id
+    expect((await real.rpc('recorder_read_credential', { p_recorder: rec })).data).toBe('Secret-K1')
   })
 })

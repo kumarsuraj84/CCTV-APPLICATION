@@ -46,15 +46,15 @@ describe('capability enforcement per operation (P2-2)', () => {
     orgId = await createOrg()
     otherOrg = await createOrg()
     const store = async (org: string, code: string) =>
-      (await admin().from('stores').insert({ org_id: org, code, name: code, nvr_ip: '127.0.0.1', http_port: nvr.port, rtsp_port: 554, nvr_username: NVR_USER }).select('id').single()).data!.id
-    const camera = async (org: string, s: string, ch: number) => (await admin().from('cameras').insert({ org_id: org, store_id: s, channel: ch, name: `cam ${ch}`, camera_ip: '192.0.2.50' }).select('id').single()).data!.id
+      (await admin().from('locations').insert({ org_id: org, code, name: code, nvr_ip: '127.0.0.1', http_port: nvr.port, rtsp_port: 554, nvr_username: NVR_USER }).select('id').single()).data!.id
+    const camera = async (org: string, s: string, ch: number) => (await admin().from('cameras').insert({ org_id: org, location_id: s, channel: ch, name: `cam ${ch}`, camera_ip: '192.0.2.50' }).select('id').single()).data!.id
     s1 = await store(orgId, 'E1')
     s2 = await store(orgId, 'E2')
     for (const s of [s1, s2]) await admin().rpc('nvr_store_credential', { p_store: s, p_secret: NVR_PASSWORD })
     c11 = await camera(orgId, s1, 1)
     c12 = await camera(orgId, s1, 2)
     c21 = await camera(orgId, s2, 1)
-    d1 = (await admin().from('devices').insert({ org_id: orgId, store_id: s1, type: 'server', name: 'Server', ip: '192.0.2.60' }).select('id').single()).data!.id
+    d1 = (await admin().from('assets').insert({ org_id: orgId, location_id: s1, type: 'server', name: 'Server', ip: '192.0.2.60' }).select('id').single()).data!.id
     group = (await admin().from('camera_groups').insert({ org_id: orgId, name: 'Only c11' }).select('id').single()).data!.id
     await admin().from('camera_group_items').insert({ org_id: orgId, group_id: group, camera_id: c11 })
 

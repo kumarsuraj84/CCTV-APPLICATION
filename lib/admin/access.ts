@@ -32,6 +32,7 @@ import {
   type GrantState,
   type Holding,
   type ScopeKind,
+  type Ancestry,
   type SummaryRow,
 } from '@/lib/admin/access-rules'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
@@ -49,7 +50,7 @@ const DATE = /^\d{4}-\d{2}-\d{2}$/
 const grantChange = z.object({
   op: z.literal('grant'),
   capability: z.string().trim().min(3).max(64),
-  scope_kind: z.enum(['organization', 'location', 'camera', 'asset']),
+  scope_kind: z.enum(['organization', 'region', 'cluster', 'location', 'recorder', 'camera', 'asset']),
   scope_id: z.uuid('Choose a location, camera or asset.').nullable(),
   valid_until: z.string().regex(DATE, 'Use a date like 2026-10-31.').nullable(),
   reason: z.string().trim().max(500, 'Use 500 characters or fewer for the reason.').default(''),
@@ -118,16 +119,22 @@ async function readIn<T>(ids: string[], read: (chunk: string[]) => PromiseLike<{
 /** Labels for scope ids: "E1 · Store one", "E1 · Camera 3", "Back-office PC · E1". Only rows of the organisation. */
 async function scopeLabels(admin: AdminClient, orgId: string, refs: { scope_kind: string; scope_id: string | null }[]) {
   const ids = (k: string) => refs.filter((r) => r.scope_kind === k && r.scope_id).map((r) => r.scope_id as string)
-  const [stores, cameras, devices] = await Promise.all([
-    readIn(ids('location'), (c) => admin.from('stores').select('id, code, name').eq('org_id', orgId).in('id', c)),
-    readIn(ids('camera'), (c) => admin.from('cameras').select('id, name, store_id, stores(code)').eq('org_id', orgId).in('id', c)),
-    readIn(ids('asset'), (c) => admin.from('devices').select('id, name, store_id, stores(code)').eq('org_id', orgId).in('id', c)),
+  const [stores, cameras, devices, regions, clusters, recorders] = await Promise.all([
+    readIn(ids('location'), (c) => admin.from('locations').select('id, code, name').eq('org_id', orgId).in('id', c)),
+    readIn(ids('camera'), (c) => admin.from('cameras').select('id, name, store_id:location_id, stores:locations(code)').eq('org_id', orgId).in('id', c)),
+    readIn(ids('asset'), (c) => admin.from('assets').select('id, name, store_id:location_id, stores:locations(code)').eq('org_id', orgId).in('id', c)),
+    readIn(ids('region'), (c) => admin.from('regions').select('id, code, name').eq('org_id', orgId).in('id', c)),
+    readIn(ids('cluster'), (c) => admin.from('clusters').select('id, code, name').eq('org_id', orgId).in('id', c)),
+    readIn(ids('recorder'), (c) => admin.from('assets').select('id, name, store_id:location_id, stores:locations(code)').eq('org_id', orgId).in('id', c)),
   ])
   const code = (x: unknown) => (x as { code: string } | null)?.code ?? ''
   const label = new Map<string, string>([
     ...stores.map((s) => [s.id, `${s.code} · ${s.name}`] as [string, string]),
     ...cameras.map((c) => [c.id, `${code(c.stores)} · ${c.name}`] as [string, string]),
     ...devices.map((d) => [d.id, d.store_id ? `${d.name} · ${code(d.stores)}` : d.name] as [string, string]),
+    ...regions.map((r) => [r.id, `Region ${r.code} · ${r.name}`] as [string, string]),
+    ...clusters.map((r) => [r.id, `Cluster ${r.code} · ${r.name}`] as [string, string]),
+    ...recorders.map((d) => [d.id, `${code(d.stores)} · ${d.name}`] as [string, string]),
   ])
   return (kind: string, id: string | null) => (kind === 'organization' ? 'Whole organisation' : (id && label.get(id)) || 'No longer exists')
 }
@@ -191,14 +198,25 @@ async function checkChanges(admin: AdminClient, actor: Actor, userId: string, in
   const grants = normal.filter((n): n is NormalGrant => n.op === 'grant')
   const idsOf = (k: ScopeKind) => grants.filter((x) => x.scope_kind === k).map((x) => x.scope_id as string)
   const parent = new Map<string, string | null>()
+  // P2-5a: where each target sits in the tree, from the database (the hierarchy is never recomputed here; archived nodes cut out).
+  const ancestry = new Map<string, Ancestry>()
   try {
     await assertRefsInOrg(admin, actor.orgId, [
-      { table: 'stores', ids: idsOf('location') },
+      { table: 'locations', ids: idsOf('location') },
       { table: 'cameras', ids: idsOf('camera') },
-      { table: 'devices', ids: idsOf('asset') },
+      { table: 'assets', ids: idsOf('asset') },
+      { table: 'regions', ids: idsOf('region') },
+      { table: 'clusters', ids: idsOf('cluster') },
+      { table: 'recorders', ids: idsOf('recorder') },
     ])
-    for (const c of await readIn(idsOf('camera'), (ch) => admin.from('cameras').select('id, store_id').eq('org_id', actor.orgId).in('id', ch))) parent.set(c.id, c.store_id)
-    for (const d of await readIn(idsOf('asset'), (ch) => admin.from('devices').select('id, store_id').eq('org_id', actor.orgId).in('id', ch))) parent.set(d.id, d.store_id)
+    for (const c of await readIn(idsOf('camera'), (ch) => admin.from('cameras').select('id, location_id').eq('org_id', actor.orgId).in('id', ch))) parent.set(c.id, c.location_id)
+    for (const d of await readIn(idsOf('asset'), (ch) => admin.from('assets').select('id, location_id').eq('org_id', actor.orgId).in('id', ch))) parent.set(d.id, d.location_id)
+    const targets = grants.filter((g) => g.scope_kind !== 'organization' && g.scope_id).map((g) => ({ kind: g.scope_kind, id: g.scope_id }))
+    for (let i = 0; i < targets.length; i += CHUNK) {
+      const { data, error } = await admin.rpc('access_target_ancestry', { p_org: actor.orgId, p_targets: targets.slice(i, i + CHUNK) })
+      if (error) throw error
+      for (const r of data ?? []) ancestry.set(`${r.kind}|${r.id}`, { region_id: r.region_id, cluster_id: r.cluster_id, location_id: r.location_id, recorder_id: r.recorder_id })
+    }
   } catch {
     return { ok: false, error: MSG_NOT_FOUND_REF }
   }
@@ -206,7 +224,8 @@ async function checkChanges(admin: AdminClient, actor: Actor, userId: string, in
   for (const n of grants) {
     const refusal = grantRefusal({
       actorRole: actor.role, actorId: actor.id, targetId: target.id, targetRole: target.role, holdings, cap: cat.get(n.capability)!,
-      spec: n, parentLocation: n.scope_id ? parent.get(n.scope_id) ?? null : null, reason: n.reason, now,
+      spec: n, parentLocation: n.scope_id ? parent.get(n.scope_id) ?? null : null, ancestry: ancestry.get(`${n.scope_kind}|${n.scope_id}`) ?? null,
+      reason: n.reason, now,
     })
     if (refusal) return { ok: false, error: refusal }
   }
@@ -396,9 +415,9 @@ export async function loadEditor(admin: AdminClient, actor: Actor, userId: strin
     catalogue(admin),
     fetchAll((from, to) => admin.from('access_grants').select(GRANT_COLUMNS).eq('org_id', actor.orgId).eq('user_id', target.id).order('granted_at', { ascending: false }).order('id').range(from, to)),
     holdingsOf(admin, actor),
-    fetchAll((from, to) => admin.from('stores').select('id, code, name').eq('org_id', actor.orgId).order('code').order('id').range(from, to)),
-    fetchAll((from, to) => admin.from('cameras').select('id, store_id, channel, name').eq('org_id', actor.orgId).order('store_id').order('channel').order('id').range(from, to)),
-    fetchAll((from, to) => admin.from('devices').select('id, store_id, name, type').eq('org_id', actor.orgId).order('name').order('id').range(from, to)),
+    fetchAll((from, to) => admin.from('locations').select('id, code, name').eq('org_id', actor.orgId).is('archived_at', null).order('code').order('id').range(from, to)),
+    fetchAll((from, to) => admin.from('cameras').select('id, store_id:location_id, channel, name').eq('org_id', actor.orgId).is('archived_at', null).order('location_id').order('channel').order('id').range(from, to)),
+    fetchAll((from, to) => admin.from('assets').select('id, store_id:location_id, name, type').eq('org_id', actor.orgId).is('archived_at', null).order('name').order('id').range(from, to)),
     fetchAll((from, to) => admin.from('access_grant_reviews').select('grant_id, reviewed_at').eq('org_id', actor.orgId).order('id').range(from, to)),
   ])
   const grantRows = rows as GrantRow[]
@@ -546,7 +565,8 @@ export async function accessSummaries(admin: AdminClient, orgId: string): Promis
   const by = new Map<string, SummaryRow[]>()
   for (const r of data ?? []) {
     const list = by.get(r.user_id) ?? []
-    list.push({ capability: r.capability, organization_wide: r.organization_wide, locations: r.locations, cameras: r.cameras, assets: r.assets })
+    list.push({ capability: r.capability, organization_wide: r.organization_wide, locations: r.locations, cameras: r.cameras, assets: r.assets,
+      regions: r.regions, clusters: r.clusters, recorders: r.recorders })
     by.set(r.user_id, list)
   }
   return new Map([...by].map(([u, rows]) => [u, summarise(rows)]))

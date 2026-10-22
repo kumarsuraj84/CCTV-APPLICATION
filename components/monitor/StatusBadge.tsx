@@ -1,4 +1,4 @@
-import { CircleCheck, CircleHelp, CircleX, Clock } from 'lucide-react'
+import { CircleCheck, CircleHelp, CircleX, Clock, PowerOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { STALE_AFTER_MINUTES, statusLabel, type Status } from '@/lib/queries/status'
 
@@ -9,8 +9,9 @@ const STYLES: Record<Kind, string> = {
   down: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300',
   unknown: 'bg-muted text-muted-foreground',
   stale: 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200',
+  off: 'bg-slate-100 text-slate-700 dark:bg-slate-900 dark:text-slate-300',
 }
-const ICONS = { up: CircleCheck, down: CircleX, unknown: CircleHelp, stale: Clock } as const
+const ICONS = { up: CircleCheck, down: CircleX, unknown: CircleHelp, stale: Clock, off: PowerOff } as const
 
 /**
  * The status as a word and an icon, never colour alone. `stale` (only for a live result) means it has not been checked for longer than
@@ -23,7 +24,8 @@ export function StatusBadge({ status, stale = false, className }: { status: Stat
   return (
     <span
       className={cn('inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium', STYLES[kind], className)}
-      title={kind === 'stale' ? `It was live, but has not been checked for more than ${STALE_AFTER_MINUTES} minutes.` : undefined}
+      title={kind === 'stale' ? `It was live, but has not been checked for more than ${STALE_AFTER_MINUTES} minutes.`
+        : kind === 'off' ? 'Monitoring of this NVR is switched off: it is not contacted, so its status is not known.' : undefined}
     >
       <Icon aria-hidden="true" className="size-3 shrink-0" />
       {statusLabel(s, stale)}

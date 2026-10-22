@@ -3,7 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
 import type { Database } from '@/types/database'
-import { adminClient, cleanupOrg, createOrg } from '../setup/fixtures'
+import { adminClient, cleanupOrg, createCamera, createOrg, createRecorder, primaryRecorderOf } from '../setup/fixtures'
 
 const admin = () => adminClient()
 
@@ -41,15 +41,15 @@ describe('SupabaseMonitorDb', () => {
     orgId = await createOrg()
     db = new SupabaseMonitorDb(admin(), { orgId })
     const a = admin()
-    storeId = (await a.from('stores').insert({ org_id: orgId, code: 'DB1', name: 'Db1', nvr_ip: '127.0.0.1', rtsp_port: 8554, http_port: 8081, nvr_username: 'viewer' }).select('id').single()).data!.id
+    storeId = (await a.from('locations').insert({ org_id: orgId, code: 'DB1', name: 'Db1', nvr_ip: '127.0.0.1', rtsp_port: 8554, http_port: 8081, nvr_username: 'viewer' }).select('id').single()).data!.id
     await a.rpc('nvr_store_credential', { p_store: storeId, p_secret: 'secret-pass' })
-    bareStoreId = (await a.from('stores').insert({ org_id: orgId, code: 'DB2', name: 'Db2', nvr_ip: '127.0.0.2', nvr_username: 'viewer' }).select('id').single()).data!.id
-    noPassStoreId = (await a.from('stores').insert({ org_id: orgId, code: 'DB3', name: 'Db3', nvr_ip: '127.0.0.3', nvr_username: 'viewer' }).select('id').single()).data!.id
-    await a.from('cameras').insert({ org_id: orgId, store_id: noPassStoreId, channel: 1, name: 'NP1' })
-    camIds = (await a.from('cameras').insert([1, 2].map((n) => ({ org_id: orgId, store_id: storeId, channel: n, name: `C${n}` }))).select('id, channel').order('channel')).data!.map((c) => c.id)
-    await a.from('devices').insert([
-      { org_id: orgId, store_id: storeId, type: 'server', name: 'On', ip: '127.0.0.1', tcp_port: 9, enabled: true },
-      { org_id: orgId, store_id: storeId, type: 'server', name: 'Off', ip: '127.0.0.1', tcp_port: 10, enabled: false },
+    bareStoreId = (await a.from('locations').insert({ org_id: orgId, code: 'DB2', name: 'Db2', nvr_ip: '127.0.0.2', nvr_username: 'viewer' }).select('id').single()).data!.id
+    noPassStoreId = (await a.from('locations').insert({ org_id: orgId, code: 'DB3', name: 'Db3', nvr_ip: '127.0.0.3', nvr_username: 'viewer' }).select('id').single()).data!.id
+    await a.from('cameras').insert({ org_id: orgId, location_id: noPassStoreId, channel: 1, name: 'NP1' })
+    camIds = (await a.from('cameras').insert([1, 2].map((n) => ({ org_id: orgId, location_id: storeId, channel: n, name: `C${n}` }))).select('id, channel').order('channel')).data!.map((c) => c.id)
+    await a.from('assets').insert([
+      { org_id: orgId, location_id: storeId, type: 'server', name: 'On', ip: '127.0.0.1', tcp_port: 9, enabled: true },
+      { org_id: orgId, location_id: storeId, type: 'server', name: 'Off', ip: '127.0.0.1', tcp_port: 10, enabled: false },
     ])
     savedHeartbeat = (await a.from('worker_state').select('last_heartbeat').eq('id', 1).single()).data!.last_heartbeat
   })
@@ -81,6 +81,37 @@ describe('SupabaseMonitorDb', () => {
     expect(jobs.find((j) => j.id === noPassStoreId)).toMatchObject({ password: '' })
     expect(jobs.find((j) => j.id === noPassStoreId)?.cameras).toHaveLength(1)
     expect(await db.loadStoreJobs([])).toEqual([])
+  })
+
+  it('owner addition: a location whose NVR has monitoring switched off is in no round (no NVR check, no cameras, no password read)', async () => {
+    const a = admin()
+    const off = (await a.from('locations').insert({ org_id: orgId, code: 'DBOFF', name: 'Off', nvr_ip: '127.0.0.9', nvr_username: 'viewer' }).select('id').single()).data!.id
+    await a.from('cameras').insert({ org_id: orgId, location_id: off, channel: 1, name: 'X1' })
+    await a.rpc('nvr_store_credential', { p_store: off, p_secret: 'secret-pass' })
+    const rec = await primaryRecorderOf(off)
+    expect((await a.rpc('recorder_set_monitoring', { p_org: orgId, p_recorder: rec, p_enabled: false, p_reason: 'Real NVR, not to be contacted' })).error).toBeNull()
+    const { client, reads } = watched()
+    const watchedDb = new SupabaseMonitorDb(client, { orgId })
+    expect((await watchedDb.loadNvrs()).map((n) => n.id)).not.toContain(off)
+    expect(await watchedDb.loadStoreJobs([off])).toEqual([])
+    expect((await watchedDb.loadStoreJobs()).map((j) => j.id)).not.toContain(off)
+    expect(reads).not.toContain(off) // its password is never read
+    // Its NVR is a recorder, never probed as a device either.
+    expect((await watchedDb.loadDevices()).map((d) => d.id)).not.toContain(rec)
+    // Switched on again: back in the rounds.
+    await a.rpc('recorder_set_monitoring', { p_org: orgId, p_recorder: rec, p_enabled: true, p_reason: 'Lab NVR' })
+    expect((await watchedDb.loadNvrs()).map((n) => n.id)).toContain(off)
+    expect((await watchedDb.loadStoreJobs([off]))[0]?.cameras).toHaveLength(1)
+  })
+
+  it('a location with a second NVR: until P2-5b the job holds only the cameras of the primary NVR (never probed through the wrong box)', async () => {
+    const a = admin()
+    const two = (await a.from('locations').insert({ org_id: orgId, code: 'DBTWO', name: 'Two', nvr_ip: '127.0.0.11', nvr_username: 'viewer' }).select('id').single()).data!.id
+    const second = await createRecorder(orgId, two)
+    await createCamera(orgId, { locationId: two, channel: 1, name: 'On primary' })
+    await createCamera(orgId, { locationId: two, recorderId: second, channel: 1, name: 'On second' })
+    const [job] = await db.loadStoreJobs([two])
+    expect(job.cameras).toHaveLength(1)
   })
 
   it('leaves a store out of the round when its password cannot be read', async () => {

@@ -3,7 +3,8 @@ import type { NvrChannel } from '@/lib/nvr/isapi'
 import type { NvrEndpoint } from '@/lib/nvr/client'
 import type { RtspTarget } from '@/lib/rtsp/describe'
 
-export type TargetType = 'camera' | 'device' | 'nvr'
+// 'recorder' (P2-5a): an NVR by recorder id. The worker still reports 'nvr' + location id during the seam (D5-7).
+export type TargetType = 'camera' | 'device' | 'nvr' | 'recorder'
 export type CheckResult = { type: TargetType; id: string; ok: boolean; at: string; method?: string; error?: string; cause?: 'nvr_down' }
 export type DeviceJob = { id: string; org_id: string; ip: string; tcp_port: number | null }
 export type NvrJob = { id: string; org_id: string; ip: string; rtsp_port: number }

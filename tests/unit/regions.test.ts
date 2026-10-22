@@ -1,23 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeRegion } from '@/lib/import/regions'
+import { normalizeZone } from '@/lib/import/regions'
 
-describe('normalizeRegion', () => {
+describe('normalizeZone', () => {
   it('makes the same place always look the same', () => {
-    expect(normalizeRegion('JH')).toBe('Jharkhand')
-    expect(normalizeRegion('Jharkhand')).toBe('Jharkhand')
-    expect(normalizeRegion('ASSAM')).toBe('Assam')
-    expect(normalizeRegion(' assam ')).toBe('Assam')
+    expect(normalizeZone('JH')).toBe('Jharkhand')
+    expect(normalizeZone('Jharkhand')).toBe('Jharkhand')
+    expect(normalizeZone('ASSAM')).toBe('Assam')
+    expect(normalizeZone(' assam ')).toBe('Assam')
   })
   it('keeps short zone codes in capitals', () => {
-    expect(normalizeRegion('br')).toBe('BR')
-    expect(normalizeRegion('UP')).toBe('UP')
-    expect(normalizeRegion('Mp')).toBe('MP')
+    expect(normalizeZone('br')).toBe('BR')
+    expect(normalizeZone('UP')).toBe('UP')
+    expect(normalizeZone('Mp')).toBe('MP')
   })
   it('title-cases longer names', () => {
-    expect(normalizeRegion('uttar  pradesh')).toBe('Uttar Pradesh')
+    expect(normalizeZone('uttar  pradesh')).toBe('Uttar Pradesh')
   })
   it('returns null for empty values', () => {
-    expect(normalizeRegion('')).toBeNull()
-    expect(normalizeRegion(undefined)).toBeNull()
+    expect(normalizeZone('')).toBeNull()
+    expect(normalizeZone(undefined)).toBeNull()
   })
 })

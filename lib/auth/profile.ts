@@ -20,7 +20,8 @@ export type CurrentProfile = {
   capabilities: Capabilities
 }
 
-const COLUMNS = 'id, org_id, email, full_name, role, is_active, must_reset_password, store_id'
+// P2-5a: profiles.store_id is now location_id (the home location: information only); read under the old field name until P2-5b.
+const COLUMNS = 'id, org_id, email, full_name, role, is_active, must_reset_password, store_id:location_id'
 
 /**
  * The signed-in person's profile with their capability summary, or null. Uses the id the proxy verified, and checks the session itself

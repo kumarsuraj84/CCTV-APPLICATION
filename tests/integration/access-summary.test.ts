@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { readCapabilities } from '@/lib/auth/capabilities'
+import { readCapabilities, type ScopeSummary } from '@/lib/auth/capabilities'
 import { adminClient, atAsset, atCamera, atLocation, cleanupOrg, createOrg, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
 
 // P2-2 (WP-2.1b): the request's capability summary. One call (my_access_summary) answers, for the signed-in person only, which
@@ -7,6 +7,9 @@ import { adminClient, atAsset, atCamera, atLocation, cleanupOrg, createOrg, crea
 // not revoked, inside the validity window, MFA when enforced), so the app never re-implements them.
 
 const admin = () => adminClient()
+const scope = (o: Partial<ScopeSummary>): ScopeSummary => ({
+  organization: false, locations: [], cameras: [], assets: [], regions: [], clusters: [], recorders: [], coveredLocations: [], recorderCameras: [], ...o,
+})
 
 describe('my_access_summary / readCapabilities', () => {
   let orgId: string, otherOrg: string
@@ -16,11 +19,11 @@ describe('my_access_summary / readCapabilities', () => {
   beforeAll(async () => {
     orgId = await createOrg()
     otherOrg = await createOrg()
-    const store = async (org: string, code: string) => (await admin().from('stores').insert({ org_id: org, code, name: code, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const store = async (org: string, code: string) => (await admin().from('locations').insert({ org_id: org, code, name: code, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
     s1 = await store(orgId, 'S1')
     s2 = await store(orgId, 'S2')
-    c1 = (await admin().from('cameras').insert({ org_id: orgId, store_id: s2, channel: 1, name: 'C1' }).select('id').single()).data!.id
-    d1 = (await admin().from('devices').insert({ org_id: orgId, store_id: s2, type: 'server', name: 'D1', ip: '127.0.0.1' }).select('id').single()).data!.id
+    c1 = (await admin().from('cameras').insert({ org_id: orgId, location_id: s2, channel: 1, name: 'C1' }).select('id').single()).data!.id
+    d1 = (await admin().from('assets').insert({ org_id: orgId, location_id: s2, type: 'server', name: 'D1', ip: '127.0.0.1' }).select('id').single()).data!.id
     mixed = await createUser(orgId, 'user')
     nobody = await createUser(orgId, 'user')
     expired = await createUser(orgId, 'user')
@@ -51,10 +54,11 @@ describe('my_access_summary / readCapabilities', () => {
     const c = await readCapabilities(mixed.client)
     expect(c.failed).toBe(false)
     expect(Object.keys(c.grants).sort()).toEqual(['cctv.live', 'cctv.playback', 'it.inventory.view', 'it.monitoring.view'])
-    expect(c.grants['cctv.live']).toEqual({ organization: false, locations: [s1], cameras: [c1], assets: [] })
-    expect(c.grants['cctv.playback']).toEqual({ organization: false, locations: [], cameras: [c1], assets: [] })
-    expect(c.grants['it.inventory.view']).toEqual({ organization: false, locations: [], cameras: [], assets: [d1] })
-    expect(c.grants['it.monitoring.view']).toEqual({ organization: true, locations: [], cameras: [], assets: [] })
+    // P2-5a: the summary also carries the region/cluster/recorder scopes and the locations they cover (computed by the database).
+    expect(c.grants['cctv.live']).toEqual(scope({ locations: [s1], cameras: [c1], coveredLocations: [s1] }))
+    expect(c.grants['cctv.playback']).toEqual(scope({ cameras: [c1] }))
+    expect(c.grants['it.inventory.view']).toEqual(scope({ assets: [d1] }))
+    expect(c.grants['it.monitoring.view']).toEqual(scope({ organization: true }))
   })
 
   it('is empty without grants, for an ended or not yet started grant, and for a revoked one; the other kind stays', async () => {
@@ -72,7 +76,7 @@ describe('my_access_summary / readCapabilities', () => {
 
   it('administrative capabilities are organisation-wide only', async () => {
     const c = await readCapabilities(adminPerson.client)
-    expect(c.grants['admin.users']).toEqual({ organization: true, locations: [], cameras: [], assets: [] })
+    expect(c.grants['admin.users']).toEqual(scope({ organization: true }))
     expect(c.grants['admin.inventory']?.organization).toBe(true)
     expect(c.grants['cctv.live']).toBeUndefined() // the administrator role gives no data access (AC-8)
   })

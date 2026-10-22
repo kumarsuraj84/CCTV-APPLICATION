@@ -15,7 +15,7 @@ export const WINDOW_HOURS: Record<UptimeWindow, number> = { '24h': 24, '7d': 168
 export async function uptimeFor(
   admin: AdminClient,
   orgId: string,
-  type: 'camera' | 'device' | 'nvr',
+  type: 'camera' | 'device' | 'nvr' | 'recorder',
   ids: string[],
   window: UptimeWindow,
   asOf?: Date,
@@ -59,7 +59,7 @@ export async function getMonitoringState(admin: AdminClient, now = new Date()): 
 export async function uptimeForPage(
   admin: AdminClient,
   orgId: string,
-  type: 'camera' | 'device' | 'nvr',
+  type: 'camera' | 'device' | 'nvr' | 'recorder',
   ids: string[],
   window: UptimeWindow,
   monitoring: MonitoringState,

@@ -27,23 +27,23 @@ describe('inventory administration', () => {
     const res = await importStores(admin(), actor, parsed.rows)
     expect(res).toEqual({ created: 2, updated: 0, errors: [] })
 
-    const { data: stores } = await admin().from('stores').select('id, code, zone').eq('org_id', orgId).order('code')
+    const { data: stores } = await admin().from('locations').select('id, code, zone').eq('org_id', orgId).order('code')
     expect(stores?.map((s) => [s.code, s.zone])).toEqual([['ALPHA', 'BR'], ['BETA', 'Jharkhand']])
     expect((await password(stores![0].id)).data).toBe('Secret-A1')
-    const { data: cams } = await admin().from('cameras').select('name').eq('store_id', stores![0].id).order('channel')
+    const { data: cams } = await admin().from('cameras').select('name').eq('location_id', stores![0].id).order('channel')
     expect(cams?.map((c) => c.name)).toEqual(['Camera 1', 'Camera 2', 'Camera 3', 'Camera 4'])
   })
 
   it('a second import updates stores, keeps the password when the cell is empty and keeps camera names', async () => {
-    const { data: alpha } = await admin().from('stores').select('id').eq('org_id', orgId).eq('code', 'ALPHA').single()
-    await admin().from('cameras').update({ name: 'Front door' }).eq('store_id', alpha!.id).eq('channel', 1)
+    const { data: alpha } = await admin().from('locations').select('id').eq('org_id', orgId).eq('code', 'ALPHA').single()
+    await admin().from('cameras').update({ name: 'Front door' }).eq('location_id', alpha!.id).eq('channel', 1)
     const parsed = parseStoresCsv('name,city,zone,ip,user,password,channels\nAlpha,Patna City,BR,192.0.2.99,viewer,,4\n')
     const res = await importStores(admin(), actor, parsed.rows)
     expect(res).toEqual({ created: 0, updated: 1, errors: [] })
-    const { data: row } = await admin().from('stores').select('city, nvr_ip').eq('id', alpha!.id).single()
+    const { data: row } = await admin().from('locations').select('city, nvr_ip').eq('id', alpha!.id).single()
     expect(row).toEqual({ city: 'Patna City', nvr_ip: '192.0.2.99' })
     expect((await password(alpha!.id)).data).toBe('Secret-A1')
-    const { data: cam } = await admin().from('cameras').select('name').eq('store_id', alpha!.id).eq('channel', 1).single()
+    const { data: cam } = await admin().from('cameras').select('name').eq('location_id', alpha!.id).eq('channel', 1).single()
     expect(cam?.name).toBe('Front door')
   })
 
@@ -52,7 +52,7 @@ describe('inventory administration', () => {
     const res = await importStores(admin(), actor, parsed.rows)
     expect(res.created).toBe(0)
     expect(res.errors).toEqual([{ line: 2, message: 'A new store needs a password for its NVR.' }])
-    const { data } = await admin().from('stores').select('id').eq('org_id', orgId).eq('code', 'GAMMA')
+    const { data } = await admin().from('locations').select('id').eq('org_id', orgId).eq('code', 'GAMMA')
     expect(data).toEqual([])
   })
 
@@ -63,11 +63,15 @@ describe('inventory administration', () => {
     expect(res.errors).toEqual([{ line: 4, message: 'There is no store with the code NOWHERE.' }])
     const again = await importDevices(admin(), actor, parsed.rows.slice(0, 2))
     expect(again).toEqual({ created: 0, updated: 2, errors: [] })
-    const { data } = await admin().from('devices').select('id').eq('org_id', orgId)
+    // (The stores' NVRs are assets too since P2-5a — recorders — and are not devices of the import.)
+    const { data } = await admin().from('assets').select('id').eq('org_id', orgId).eq('is_recorder', false)
     expect(data).toHaveLength(2)
   })
 
-  it('creates, changes and deletes one store; deleting removes its cameras and detaches its devices', async () => {
+  // P2-5a (brief item 2) replaces "deleting removes its cameras and detaches its devices": deleting is archiving. The location, its
+  // cameras and devices are switched off and archived (they keep their location, ids and history) and the recorder keeps its vault
+  // login (archive keeps the secret; only the purge of a test organisation removes it). An archived location frees its code.
+  it('creates, changes and deletes (archives) one store; its cameras and devices are archived with it, nothing is erased', async () => {
     const made = await createStore(admin(), actor, { name: 'Delta', ip: '192.0.2.30', nvr_username: 'viewer', nvr_password: 'Secret-D1', zone: 'up', channels: 3 })
     if (!made.ok) throw new Error(made.error)
     expect((await password(made.storeId)).data).toBe('Secret-D1')
@@ -82,12 +86,22 @@ describe('inventory administration', () => {
 
     const dev = await createDevice(admin(), actor, { name: 'Counter', type: 'footfall', store_id: made.storeId, ip: '192.0.2.33' })
     if (!dev.ok) throw new Error(dev.error)
+    const camsBefore = (await admin().from('cameras').select('id').eq('location_id', made.storeId)).data!
+    expect(camsBefore).toHaveLength(3)
     expect((await deleteStore(admin(), actor, made.storeId)).ok).toBe(true)
-    expect((await password(made.storeId)).data).toBeNull()
-    const { data: cams } = await admin().from('cameras').select('id').eq('store_id', made.storeId)
-    expect(cams).toEqual([])
-    const { data: d } = await admin().from('devices').select('store_id').eq('id', dev.deviceId).single()
-    expect(d?.store_id).toBeNull()
+    expect((await admin().from('locations').select('archived_at, is_active').eq('id', made.storeId).single()).data!.is_active).toBe(false)
+    const { data: cams } = await admin().from('cameras').select('id, archived_at').eq('location_id', made.storeId)
+    expect(cams?.map((c) => c.id).sort()).toEqual(camsBefore.map((c) => c.id).sort())
+    expect(cams?.every((c) => c.archived_at !== null)).toBe(true)
+    const { data: d } = await admin().from('assets').select('location_id, enabled, archived_at').eq('id', dev.deviceId).single()
+    expect(d).toMatchObject({ location_id: made.storeId, enabled: false })
+    expect(d?.archived_at).not.toBeNull()
+    const rec = (await admin().from('recorders').select('id').eq('location_id', made.storeId).single()).data!.id
+    expect((await admin().rpc('recorder_read_credential', { p_recorder: rec })).data).toBe('Secret-D2')
+    expect((await deleteStore(admin(), actor, made.storeId)).ok).toBe(false) // already archived: "Store not found."
+    // The code is free again for a new location.
+    const again = await createStore(admin(), actor, { name: 'Delta', ip: '192.0.2.34', nvr_username: 'viewer', nvr_password: 'Secret-D3', channels: 0 })
+    expect(again.ok).toBe(true)
   })
 
   it('changes and deletes a device, and refuses a store of another organisation', async () => {
@@ -95,7 +109,7 @@ describe('inventory administration', () => {
     if (!dev.ok) throw new Error(dev.error)
     expect((await updateDevice(admin(), actor, dev.deviceId, { name: 'Scanner 2', type: 'attendance', ip: '192.0.2.41', tcp_port: 4370 })).ok).toBe(true)
     const otherOrg = await createOrg()
-    const { data: other } = await admin().from('stores').insert({ org_id: otherOrg, code: 'ZZ', name: 'ZZ', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()
+    const { data: other } = await admin().from('locations').insert({ org_id: otherOrg, code: 'ZZ', name: 'ZZ', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()
     expect((await createDevice(admin(), actor, { name: 'Bad', type: 'server', ip: '192.0.2.42', store_id: other!.id })).ok).toBe(false)
     await cleanupOrg(otherOrg)
     expect((await deleteDevice(admin(), actor, dev.deviceId)).ok).toBe(true)

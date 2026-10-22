@@ -13,12 +13,12 @@ describe('getLiveScope', () => {
   const now = new Date()
 
   async function store(org: string, code: string, active = true) {
-    const { data, error } = await admin().from('stores').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'v', is_active: active }).select('id').single()
+    const { data, error } = await admin().from('locations').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'v', is_active: active }).select('id').single()
     if (error || !data) throw new Error(error?.message)
     return data.id
   }
   async function camera(org: string, storeId: string, channel: number, name: string, active = true) {
-    const { data, error } = await admin().from('cameras').insert({ org_id: org, store_id: storeId, channel, name, is_active: active }).select('id').single()
+    const { data, error } = await admin().from('cameras').insert({ org_id: org, location_id: storeId, channel, name, is_active: active }).select('id').single()
     if (error || !data) throw new Error(error?.message)
     return data.id
   }
@@ -70,7 +70,7 @@ describe('getLiveScope', () => {
   it('a live result that is old counts as not checked lately; a camera never checked has no status', async () => {
     const scope = await getLiveScope(manager.client, { store: sB }, 'cctv.live', now)
     expect(scope!.cameras.map((c) => [c.status, c.stale])).toEqual([['up', true]])
-    await admin().from('cameras').insert({ org_id: orgId, store_id: sB, channel: 9, name: 'Never checked' })
+    await admin().from('cameras').insert({ org_id: orgId, location_id: sB, channel: 9, name: 'Never checked' })
     const again = await getLiveScope(manager.client, { store: sB }, 'cctv.live', now)
     expect(again!.cameras.find((c) => c.name === 'Never checked')).toMatchObject({ status: null, stale: false })
   })

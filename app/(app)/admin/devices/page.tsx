@@ -15,8 +15,9 @@ export default async function ManageDevicesPage({ searchParams }: { searchParams
   const me = await requireAdministration('admin.inventory') // P2-2: an administrative role AND admin.inventory
   const admin = createAdminClient()
   const [devices, stores] = await Promise.all([
-    fetchAll((from, to) => admin.from('devices').select('id, store_id, type, name, ip, tcp_port, notes, enabled').eq('org_id', me.org_id).order('name').order('id').range(from, to)),
-    fetchAll((from, to) => admin.from('stores').select('id, code, name').eq('org_id', me.org_id).order('code').range(from, to)),
+    // P2-5a: devices are assets (archived ones are history); a location's NVRs are recorders, managed with the location.
+    fetchAll((from, to) => admin.from('assets').select('id, store_id:location_id, type, name, ip, tcp_port, notes, enabled').eq('org_id', me.org_id).is('archived_at', null).eq('is_recorder', false).order('name').order('id').range(from, to)),
+    fetchAll((from, to) => admin.from('locations').select('id, code, name').eq('org_id', me.org_id).is('archived_at', null).order('code').range(from, to)),
   ])
   const editing = devices.find((d) => d.id === edit)
   const storeName = new Map(stores.map((s) => [s.id, s.code]))

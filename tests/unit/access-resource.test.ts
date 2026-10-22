@@ -80,10 +80,11 @@ describe('cameraFor, locationFor, assetFor', () => {
 })
 
 describe('coversSomeLocation', () => {
-  it('asks capability_store_ids (whole locations, or the organisation) and is true when one comes back', async () => {
+  // P2-5a (decision D5-5): capability_store_ids was renamed capability_location_ids (whole locations incl. region/cluster expansion).
+  it('asks capability_location_ids (whole locations, or the organisation) and is true when one comes back', async () => {
     const yes = fakeRls(() => ({ data: [id(9)], error: null }))
     expect(await coversSomeLocation(yes.client, 'it.monitoring.operate')).toEqual({ ok: true, allowed: true })
-    expect(yes.calls).toEqual([{ fn: 'capability_store_ids', args: { p_cap: 'it.monitoring.operate' } }])
+    expect(yes.calls).toEqual([{ fn: 'capability_location_ids', args: { p_cap: 'it.monitoring.operate' } }])
     const no = fakeRls(() => ({ data: [], error: null }))
     expect(await coversSomeLocation(no.client, 'it.monitoring.operate')).toEqual({ ok: true, allowed: false })
   })

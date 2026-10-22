@@ -32,13 +32,15 @@ export default async function MonitoringPage() {
   const admin = createAdminClient()
   const now = new Date()
   const since = new Date(now.getTime() - GAP_DAYS * 86_400_000).toISOString()
-  const [worker, states, stores, cameras, gapsRead] = await Promise.all([
+  const [worker, states, stores, cameras, recorders, gapsRead] = await Promise.all([
     getWorkerStatus(admin),
     fetchAll((from, to) =>
       admin.from('check_state').select('target_type, target_id, status, down_since, last_checked_at, last_up_at').eq('org_id', me.org_id).order('id').range(from, to),
     ),
-    fetchAll((from, to) => admin.from('stores').select('id, code, name').eq('org_id', me.org_id).eq('is_active', true).order('code').range(from, to)),
-    fetchAll((from, to) => admin.from('cameras').select('id, store_id').eq('org_id', me.org_id).eq('is_active', true).order('id').range(from, to)),
+    fetchAll((from, to) => admin.from('locations').select('id, code, name').eq('org_id', me.org_id).eq('is_active', true).is('archived_at', null).order('code').range(from, to)),
+    fetchAll((from, to) => admin.from('cameras').select('id, store_id:location_id').eq('org_id', me.org_id).eq('is_active', true).is('archived_at', null).order('id').range(from, to)),
+    // P2-5a: NVR states are recorder states; until P2-5b the page shows each location's primary recorder (the first one made).
+    fetchAll((from, to) => admin.from('recorders').select('id, location_id').eq('org_id', me.org_id).order('created_at').order('id').range(from, to)),
     // The gaps are about the whole checker, not one organisation. A failed read only leaves this list out.
     admin.from('monitor_gaps').select('id, started_at, ended_at').gte('ended_at', since).order('started_at', { ascending: false }).limit(GAPS_SHOWN),
   ])
@@ -49,12 +51,20 @@ export default async function MonitoringPage() {
   const counts: Record<string, { up: number; down: number; unknown: number; stale: number }> = {}
   const nvrByStore = new Map<string, StateRow>()
   const cameraStates = new Map<string, StateRow>()
+  const primaryLocation = new Map<string, string>()
+  const seenLocation = new Set<string>()
+  for (const r of recorders) {
+    if (seenLocation.has(r.location_id)) continue
+    seenLocation.add(r.location_id)
+    primaryLocation.set(r.id, r.location_id)
+  }
   for (const s of states) {
-    const c = (counts[s.target_type] ??= { up: 0, down: 0, unknown: 0, stale: 0 })
+    const kind = s.target_type === 'recorder' ? 'nvr' : s.target_type
+    const c = (counts[kind] ??= { up: 0, down: 0, unknown: 0, stale: 0 })
     if (s.status === 'up' && isStale(s.last_checked_at, now)) c.stale++
     else c[s.status as 'up' | 'down' | 'unknown']++
     const row: StateRow = { ...s, status: s.status as StateRow['status'], error: null }
-    if (s.target_type === 'nvr') nvrByStore.set(s.target_id, row)
+    if (s.target_type === 'recorder' && primaryLocation.has(s.target_id)) nvrByStore.set(primaryLocation.get(s.target_id)!, row)
     else if (s.target_type === 'camera') cameraStates.set(s.target_id, row)
   }
 

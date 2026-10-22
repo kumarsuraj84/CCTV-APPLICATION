@@ -15,9 +15,9 @@ describe('check now', () => {
   beforeAll(async () => {
     saved = await state()
     orgId = await createOrg()
-    store = (await adminClient().from('stores').insert({ org_id: orgId, code: 'CN', name: 'CN', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
-    camera = (await adminClient().from('cameras').insert({ org_id: orgId, store_id: store, channel: 1, name: 'c' }).select('id').single()).data!.id
-    device = (await adminClient().from('devices').insert({ org_id: orgId, store_id: store, type: 'server', name: 'd', ip: '127.0.0.1' }).select('id').single()).data!.id
+    store = (await adminClient().from('locations').insert({ org_id: orgId, code: 'CN', name: 'CN', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    camera = (await adminClient().from('cameras').insert({ org_id: orgId, location_id: store, channel: 1, name: 'c' }).select('id').single()).data!.id
+    device = (await adminClient().from('assets').insert({ org_id: orgId, location_id: store, type: 'server', name: 'd', ip: '127.0.0.1' }).select('id').single()).data!.id
     operateOrg = await createUser(orgId, 'user')
     operateStore = await createUser(orgId, 'operator')
     await grant(orgId, operateOrg.id, 'it.monitoring.operate', ORG_SCOPE)

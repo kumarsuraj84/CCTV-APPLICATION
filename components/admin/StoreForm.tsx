@@ -8,7 +8,8 @@ import { Label } from '@/components/ui/label'
 
 export type StoreFormValues = {
   id?: string; code?: string; name?: string; city?: string | null; zone?: string | null; state?: string | null; address?: string | null
-  nvr_ip?: string; rtsp_port?: number; http_port?: number; nvr_username?: string; expected_channels?: number; is_active?: boolean
+  // (P2-5a: the NVR columns of a location may be empty — a head office has none.)
+  nvr_ip?: string | null; rtsp_port?: number; http_port?: number; nvr_username?: string | null; expected_channels?: number; is_active?: boolean
 }
 
 function Field({ id, label, ...props }: { id: string; label: string } & React.ComponentProps<typeof Input>) {

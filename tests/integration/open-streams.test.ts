@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { MAX_STREAMS_PER_REQUEST, openStreams, type OpenedStream } from '@/lib/streams/open'
 import { verifyStreamToken } from '@/lib/streams/token'
-import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const SECRET = 'integration-test-stream-secret-0123456789'
 const PASSWORD = 'p@ss:w/rd#1!'
@@ -63,12 +63,12 @@ describe('openStreams', () => {
   const savedSecret = process.env.STREAM_TOKEN_SECRET
 
   async function addStore(org: string, code: string, o: { active?: boolean; port?: number } = {}) {
-    const { data, error } = await admin().from('stores').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', rtsp_port: o.port ?? 554, nvr_username: 'viewer', is_active: o.active ?? true }).select('id').single()
+    const { data, error } = await admin().from('locations').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', rtsp_port: o.port ?? 554, nvr_username: 'viewer', is_active: o.active ?? true }).select('id').single()
     if (error || !data) throw new Error(`addStore: ${error?.message}`)
     return data.id
   }
   async function addCamera(org: string, store: string, channel: number, name: string, active = true) {
-    const { data, error } = await admin().from('cameras').insert({ org_id: org, store_id: store, channel, name, is_active: active }).select('id').single()
+    const { data, error } = await admin().from('cameras').insert({ org_id: org, location_id: store, channel, name, is_active: active }).select('id').single()
     if (error || !data) throw new Error(`addCamera: ${error?.message}`)
     return data.id
   }
@@ -328,5 +328,34 @@ describe('openStreams', () => {
     const res = await open(viewer, [a1], 'sub', { env: { DEMO_VIDEO: '1', NODE_ENV: 'production' } })
     expect(streamsOf(res)).toHaveLength(1)
     expect(fake.seen[0].src).toMatch(/^rtsp:\/\/viewer:/)
+  })
+
+  it('owner addition: a camera on an NVR with monitoring switched off is refused with a plain message; nothing is registered or read', async () => {
+    const sOff = await addStore(orgId, 'OOFF')
+    await admin().rpc('nvr_store_credential', { p_store: sOff, p_secret: PASSWORD })
+    const off1 = await addCamera(orgId, sOff, 1, 'Real NVR camera')
+    const watcher = await createUser(orgId, 'user')
+    await grant(orgId, watcher.id, CCTV_VIEW, [atLocation(sOff), atLocation(sA)])
+    const rec = await primaryRecorderOf(sOff)
+    expect((await admin().rpc('recorder_set_monitoring', { p_org: orgId, p_recorder: rec, p_enabled: false, p_reason: 'Real NVR: not to be contacted' })).error).toBeNull()
+    // Count every credential read the service makes.
+    const reads: string[] = []
+    const real = admin()
+    const counting = new Proxy(real, {
+      get(target, prop) {
+        if (prop === 'rpc') return (fn: string, args: object) => { if (/credential/.test(fn)) reads.push(fn); return (target.rpc as (f: string, a: object) => unknown)(fn, args) }
+        const v = Reflect.get(target, prop)
+        return typeof v === 'function' ? v.bind(target) : v
+      },
+    }) as ReturnType<typeof admin>
+    expect(await open(watcher, [off1], 'sub', { adminClient: counting })).toEqual({ ok: false, error: 'Monitoring is switched off for this NVR.' })
+    expect(fake.seen).toEqual([])
+    expect(reads).toEqual([])
+    // Mixed with a camera of a switched-on NVR: only that one opens.
+    expect(streamsOf(await open(watcher, [off1, a1])).map((s) => s.cameraId)).toEqual([a1])
+    expect(fake.seen.map((s) => s.name)).toEqual([`cam_${a1}_sub`])
+    // Switched on again, it opens.
+    await admin().rpc('recorder_set_monitoring', { p_org: orgId, p_recorder: rec, p_enabled: true, p_reason: 'Lab NVR' })
+    expect(streamsOf(await open(watcher, [off1])).map((s) => s.cameraId)).toEqual([off1])
   })
 })
