@@ -409,6 +409,26 @@ isOneToOne: false
       referencedColumns: ["id","org_id"]
     }
                   ]
+                },"camera_group_rules": {
+                  Row: {
+                    "created_at": string,"created_by": string | null,"group_id": string,"id": string,"kind": string,"name_contains": string | null,"org_id": string,"ref_id": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_at"?: string,"created_by"?: string | null,"group_id": string,"id"?: string,"kind": string,"name_contains"?: string | null,"org_id": string,"ref_id"?: string | null
+                  }
+                  Update: {
+                    "created_at"?: string,"created_by"?: string | null,"group_id"?: string,"id"?: string,"kind"?: string,"name_contains"?: string | null,"org_id"?: string,"ref_id"?: string | null
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "camera_group_rules_group_id_org_id_fkey"
+      columns: ["group_id","org_id"]
+isOneToOne: false
+      referencedRelation: "camera_groups"
+      referencedColumns: ["id","org_id"]
+    }
+                  ]
                 },"camera_groups": {
                   Row: {
                     "created_at": string,"created_by": string | null,"id": string,"name": string,"org_id": string,"updated_at": string
@@ -558,6 +578,26 @@ isOneToOne: false
                   }
                   Relationships: [
                     
+                  ]
+                },"discovery_findings": {
+                  Row: {
+                    "because": string | null,"camera_id": string,"channel": number | null,"found_at": string,"found_by": string | null,"id": string,"kind": string,"location_id": string,"note": string | null,"org_id": string,"other_camera_id": string | null,"recorder_id": string,"reported_name": string | null,"resolution": string | null,"resolved_at": string | null,"resolved_by": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "because"?: string | null,"camera_id": string,"channel"?: number | null,"found_at"?: string,"found_by"?: string | null,"id"?: string,"kind": string,"location_id": string,"note"?: string | null,"org_id": string,"other_camera_id"?: string | null,"recorder_id": string,"reported_name"?: string | null,"resolution"?: string | null,"resolved_at"?: string | null,"resolved_by"?: string | null
+                  }
+                  Update: {
+                    "because"?: string | null,"camera_id"?: string,"channel"?: number | null,"found_at"?: string,"found_by"?: string | null,"id"?: string,"kind"?: string,"location_id"?: string,"note"?: string | null,"org_id"?: string,"other_camera_id"?: string | null,"recorder_id"?: string,"reported_name"?: string | null,"resolution"?: string | null,"resolved_at"?: string | null,"resolved_by"?: string | null
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "discovery_findings_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
                   ]
                 },"inventory_migration_report": {
                   Row: {
@@ -1242,6 +1282,14 @@ isOneToOne: false
 "asset_sync_endpoints":
 { Args: { "p_asset": string }; Returns: undefined
                            },
+"camera_group_rule_members":
+{ Args: { "p_groups"?: (string)[],"p_org": string }; Returns: {
+              "camera_id": string,"group_id": string
+            }[]
+                           },
+"camera_merge":
+{ Args: { "p_actor"?: string,"p_duplicate": string,"p_keep": string,"p_org": string }; Returns: Json
+                           },
 "camera_remap":
 { Args: { "p_actor"?: string,"p_at"?: string,"p_camera": string,"p_channel": number,"p_org": string,"p_recorder": string }; Returns: string
                            },
@@ -1273,7 +1321,7 @@ isOneToOne: false
 { Args: Record<PropertyKey, never>; Returns: Database["public"]['Enums']["user_role"]
                            },
 "discovery_apply":
-{ Args: { "p_actor"?: string,"p_ops": Json,"p_org": string,"p_recorder": string,"p_to_reconcile"?: number }; Returns: Json
+{ Args: { "p_actor"?: string,"p_findings"?: Json,"p_ops": Json,"p_org": string,"p_recorder": string,"p_to_reconcile"?: number }; Returns: Json
                            },
 "function_privileges":
 { Args: Record<PropertyKey, never>; Returns: {
@@ -1285,6 +1333,11 @@ isOneToOne: false
                            },
 "grant_platform_owner_all":
 { Args: { "p_actor"?: string,"p_org": string,"p_user": string }; Returns: number
+                           },
+"group_rule_members":
+{ Args: { "p_group"?: string }; Returns: {
+              "camera_id": string,"group_id": string
+            }[]
                            },
 "has_capability":
 { Args: { "p_cap": string }; Returns: boolean
