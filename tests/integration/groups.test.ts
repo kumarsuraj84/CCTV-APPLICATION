@@ -175,6 +175,61 @@ describe('camera groups', () => {
       expect((await admin().from('camera_group_items').select('camera_id').eq('group_id', made.groupId)).data!.map((r) => r.camera_id).sort()).toEqual(sorted([a1, a2]))
     })
 
+    // P2-2 fix M-1: renaming and removing need live view of the cameras concerned, not only seeing them.
+    it('an operator with live on store A but only playback on store B cannot rename a B-only group or remove a B camera', async () => {
+      const actor = actorOf(mixedOperator, orgId, 'operator')
+      const bOnly = (await admin().from('camera_groups').insert({ org_id: orgId, name: `B only ${Math.random()}`, created_by: adminUser.id }).select('id').single()).data!.id
+      await admin().from('camera_group_items').insert([b1, b2].map((camera_id) => ({ org_id: orgId, group_id: bOnly, camera_id })))
+      expect(await groupIds(mixedOperator)).toContain(bOnly) // seen (playback), but not changeable
+      expect(await renameGroup(deps(mixedOperator), actor, bOnly, 'Renamed by playback')).toEqual({ ok: false, error: 'Group not found.' })
+      expect(await removeCamera(deps(mixedOperator), actor, wide, b1)).toEqual({ ok: false, error: 'That camera is not in this group.' })
+      expect(await itemIds(manager, wide)).toContain(b1)
+      expect((await admin().from('camera_groups').select('name').eq('id', bOnly).single()).data!.name).not.toBe('Renamed by playback')
+      // Live on A: removing an A camera from the mixed group works.
+      const own = await createGroup(deps(mixedOperator), actor, `Mine ${Math.random()}`)
+      if (!own.ok) throw new Error(own.error)
+      await addCameras(deps(mixedOperator), actor, own.groupId, [a1])
+      expect(await removeCamera(deps(mixedOperator), actor, own.groupId, a1)).toEqual({ ok: true })
+    })
+
+    it('a playback-only viewer or operator cannot rename a group or remove a camera from it', async () => {
+      const viewerPb = await createUser(orgId, 'user')
+      await grantTo(orgId, viewerPb.id, 'cctv.playback', atLocation(sA))
+      for (const [u, role] of [[viewerPb, 'user'], [pbOperator, 'operator']] as const) {
+        expect((await renameGroup(deps(u), actorOf(u, orgId, role), wide, 'Nope')).ok).toBe(false)
+        expect((await removeCamera(deps(u), actorOf(u, orgId, role), wide, a1)).ok).toBe(false)
+      }
+      expect(await itemIds(manager, wide)).toContain(a1)
+    })
+
+    // P2-2 fix M-1: deleting another person's group needs the administrator role AND admin.inventory; creators delete their own.
+    it('deleting someone else\'s group needs the admin role and admin.inventory', async () => {
+      const plainAdmin = await createUser(orgId, 'admin')
+      await grantTo(orgId, plainAdmin.id, 'cctv.live') // live everywhere, but no admin.inventory
+      const theirs = await createGroup(deps(mixedOperator), actorOf(mixedOperator, orgId, 'operator'), `Theirs ${Math.random()}`)
+      if (!theirs.ok) throw new Error(theirs.error)
+      await addCameras(deps(mixedOperator), actorOf(mixedOperator, orgId, 'operator'), theirs.groupId, [a1])
+      expect(await deleteGroup(deps(plainAdmin), actorOf(plainAdmin, orgId, 'admin'), theirs.groupId)).toEqual({ ok: false, error: 'Only the person who made a group, or an administrator, can delete it.' })
+      expect(await deleteGroup(deps(adminUser), actorOf(adminUser, orgId, 'admin'), theirs.groupId)).toEqual({ ok: true }) // ADMINISTRATOR_SET holds admin.inventory
+      const mine = await createGroup(deps(mixedOperator), actorOf(mixedOperator, orgId, 'operator'), `Own ${Math.random()}`)
+      if (!mine.ok) throw new Error(mine.error)
+      expect(await deleteGroup(deps(mixedOperator), actorOf(mixedOperator, orgId, 'operator'), mine.groupId)).toEqual({ ok: true })
+    })
+
+    // P2-2 fix M-6: group audit entries carry the capability and the camera ids / counts.
+    it('group audit entries carry the capability and the cameras', async () => {
+      const actor = actorOf(mixedOperator, orgId, 'operator')
+      const made = await createGroup(deps(mixedOperator), actor, `Audited ${Math.random()}`)
+      if (!made.ok) throw new Error(made.error)
+      await addCameras(deps(mixedOperator), actor, made.groupId, [a1, a2])
+      await removeCamera(deps(mixedOperator), actor, made.groupId, a2)
+      const rows = (await admin().from('admin_audit_log').select('action, entity_type, entity_id, detail').eq('entity_id', made.groupId).order('created_at')).data!
+      expect(rows.map((r) => [r.action, r.entity_type])).toEqual([['group_created', 'camera_group'], ['group_cameras_added', 'camera_group'], ['group_camera_removed', 'camera_group']])
+      expect(rows[1].detail).toMatchObject({ capability: 'cctv.live', cameraIds: [a1, a2].sort(), count: 2, added: 2 })
+      expect(rows[2].detail).toMatchObject({ capability: 'cctv.live', cameraIds: [a2], count: 1 })
+      expect(rows[0].detail).toMatchObject({ capability: 'cctv.live' })
+    })
+
     it('a person who loses cctv.live can no longer change their group', async () => {
       const p = await createUser(orgId, 'operator')
       const [g] = await grantTo(orgId, p.id, 'cctv.live', atLocation(sA))
@@ -328,8 +383,9 @@ describe('camera groups', () => {
       const { data } = await admin().from('admin_audit_log').select('action, detail').eq('org_id', orgId).eq('entity_id', made.groupId)
       const byAction = Object.fromEntries((data ?? []).map((r) => [r.action, r.detail]))
       expect(Object.keys(byAction).sort()).toEqual(['group_cameras_added', 'group_cameras_added_by_keyword', 'group_created'])
-      expect(byAction.group_cameras_added_by_keyword).toEqual({ keyword: 'front', added: 1 })
-      expect(byAction.group_cameras_added).toEqual({ count: 1, added: 1 })
+      // P2-2 fix M-6: the capability and the cameras added are recorded too.
+      expect(byAction.group_cameras_added_by_keyword).toEqual({ capability: 'cctv.live', cameraIds: [a1], count: 1, keyword: 'front', added: 1 })
+      expect(byAction.group_cameras_added).toEqual({ capability: 'cctv.live', cameraIds: [a3], count: 1, added: 1 })
     })
 
     // AC-11 (P2-1): the taken name may belong to a group the person cannot see, so the answer never says it "exists".

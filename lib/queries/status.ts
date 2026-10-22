@@ -75,10 +75,15 @@ export const MSG_CAMERA_NOT_RESPONDING = 'The camera is not responding.'
 /** The text lib/monitor/checks.ts stores for a camera whose NVR is known to be down. */
 export const NVR_DOWN_CAMERA_ERROR = 'The NVR is not reachable.'
 
+/**
+ * The database already makes this decision (status_reasons, migration 20261021000014: the checker's text is not readable without the
+ * IT view); this is the same rule once more on the page, so a reason can never be shown in recorder terms without the IT view.
+ */
 export function cameraReason(error: string | null | undefined, o: { itView: boolean }): string | null {
   if (!error) return null
   if (o.itView) return error
-  return error === NVR_DOWN_CAMERA_ERROR ? MSG_RECORDER_NOT_REACHABLE : MSG_CAMERA_NOT_RESPONDING
+  if (error === MSG_RECORDER_NOT_REACHABLE || error === NVR_DOWN_CAMERA_ERROR) return MSG_RECORDER_NOT_REACHABLE
+  return MSG_CAMERA_NOT_RESPONDING
 }
 
 // Cameras are checked every 5 minutes and the NVR every minute; these allow a few missed rounds before anything is called stale.
@@ -109,13 +114,23 @@ export async function getStates(supabase: Client, type: 'camera' | 'device' | 'n
   const chunks: string[][] = []
   for (let i = 0; i < ids.length; i += 100) chunks.push(ids.slice(i, i + 100))
   const pages = await mapLimit(chunks, 4, async (chunk) => {
+    // The checker's own words are not readable by signed-in people (P2-2 fix I-1): the reason of an offline target comes from
+    // status_reasons, which gives the checker's text only with the IT view and camera-terms reasons otherwise.
     const { data, error } = await supabase
       .from('check_state')
-      .select('target_id, status, down_since, last_checked_at, last_up_at, error')
+      .select('target_id, status, down_since, last_checked_at, last_up_at')
       .eq('target_type', type)
       .in('target_id', chunk)
     if (error) throw new Error('Could not read the status.')
-    return (data ?? []) as StateRow[]
+    const rows = ((data ?? []) as Omit<StateRow, 'error'>[]).map((r): StateRow => ({ ...r, error: null }))
+    const down = rows.filter((r) => r.status === 'down').map((r) => r.target_id)
+    if (down.length > 0) {
+      const reasons = await supabase.rpc('status_reasons', { p_type: type, p_ids: down })
+      if (reasons.error) throw new Error('Could not read the status.')
+      const by = new Map((reasons.data ?? []).map((x) => [x.target_id, x.reason]))
+      for (const r of rows) r.error = by.get(r.target_id) ?? null
+    }
+    return rows
   })
   for (const page of pages) for (const r of page) out.set(r.target_id, r)
   return out

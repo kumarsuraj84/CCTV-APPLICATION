@@ -3,6 +3,7 @@
 import { auditAccess } from '@/lib/auth/access-audit'
 import { holds } from '@/lib/auth/capabilities'
 import { requireProfile } from '@/lib/auth/profile'
+import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { logger } from '@/lib/observability/logger'
 import { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { MSG_UNAVAILABLE } from '@/lib/streams/open'
@@ -34,16 +35,22 @@ function failed(event: string, route: string, error: unknown, message: string) {
   return { ok: false as const, error: message }
 }
 
-/** The person, or null when they hold cctv.playback nowhere (then the answer is "Camera not found."). */
-async function playbackPerson() {
+/**
+ * The person; or the refusal: the plain access-check failure when the summary could not be read (fix M-4), "Camera not found." when
+ * they hold cctv.playback nowhere.
+ */
+async function playbackPerson(): Promise<{ ok: true; p: Awaited<ReturnType<typeof requireProfile>> } | { ok: false; error: string }> {
   const p = await requireProfile() // sends signed-out people to the sign-in page
-  return holds(p.capabilities, 'cctv.playback') ? p : null
+  if (p.capabilities.failed) return { ok: false, error: MSG_ACCESS_CHECK_FAILED }
+  return holds(p.capabilities, 'cctv.playback') ? { ok: true, p } : { ok: false, error: NOT_FOUND }
 }
 
 /** The days of a month that the NVR calendar marks (a hint: any day may be opened). */
 export async function listRecordedDaysAction(cameraId: string, year: number, month: number): Promise<RecordedDaysState> {
-  const p = await playbackPerson()
-  if (!p || typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: NOT_FOUND }
+  const who = await playbackPerson()
+  if (!who.ok) return who
+  const { p } = who
+  if (typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: NOT_FOUND }
   if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12) return { ok: false, error: BAD_REQUEST }
   try {
     const admin = createAdminClient()
@@ -57,8 +64,10 @@ export async function listRecordedDaysAction(cameraId: string, year: number, mon
 
 /** The recordings of one day (`yyyy-mm-dd`), as shown times. */
 export async function listDaySegmentsAction(cameraId: string, day: string): Promise<DaySegmentsState> {
-  const p = await playbackPerson()
-  if (!p || typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: NOT_FOUND }
+  const who = await playbackPerson()
+  if (!who.ok) return who
+  const { p } = who
+  if (typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: NOT_FOUND }
   if (parseDay(day) === null) return { ok: false, error: BAD_REQUEST }
   try {
     const admin = createAdminClient()
@@ -72,8 +81,10 @@ export async function listDaySegmentsAction(cameraId: string, day: string): Prom
 
 /** Starts playback from `startIso` (`yyyy-mm-ddThh:mm[:ss]Z`, a shown time) for `minutes` (1 to 60); returns a token for the video gateway. */
 export async function openPlaybackAction(cameraId: string, startIso: string, minutes: number): Promise<OpenPlaybackState> {
-  const p = await playbackPerson()
-  if (!p || typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: NOT_FOUND }
+  const who = await playbackPerson()
+  if (!who.ok) return who
+  const { p } = who
+  if (typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: NOT_FOUND }
   const start = typeof startIso === 'string' ? parseStartIso(startIso) : null
   if (!start) return { ok: false, error: 'Choose a start time.' }
   if (!Number.isInteger(minutes)) return { ok: false, error: 'Choose how long to play.' }

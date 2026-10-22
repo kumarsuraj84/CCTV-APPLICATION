@@ -6,9 +6,9 @@ import { buttonVariants } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { deleteGroupAction } from '@/lib/actions/groups'
-import { hasGroupEditingAuthority, isAdminRole } from '@/lib/admin/roles'
+import { hasGroupEditingAuthority } from '@/lib/admin/roles'
 import { CCTV_CAPABILITIES, holds } from '@/lib/auth/capabilities'
-import { requireCapability } from '@/lib/auth/profile'
+import { mayAdminister, requireCapability } from '@/lib/auth/profile'
 import { LIVE_WALL_ENABLED, liveWallHref } from '@/lib/groups/live-wall'
 import { listVisibleGroups } from '@/lib/queries/groups'
 import { cn } from '@/lib/utils'
@@ -42,7 +42,8 @@ export default async function GroupsPage() {
       ) : (
         <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {groups.map((g) => {
-            const mayDelete = canManage && (isAdminRole(profile.role) || g.created_by === profile.id)
+            // The creator, or the administrator role AND admin.inventory (fix M-1; the action checks the same).
+            const mayDelete = canManage && (g.created_by === profile.id || mayAdminister(profile, 'admin.inventory'))
             return (
               <li key={g.id} className="flex flex-col gap-2 rounded-lg border bg-card p-3 text-sm">
                 <div className="min-w-0">

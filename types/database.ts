@@ -773,6 +773,11 @@ isOneToOne: false
 "revoke_user_sessions":
 { Args: { "p_user": string }; Returns: undefined
                            },
+"status_reasons":
+{ Args: { "p_ids": (string)[],"p_type": string }; Returns: {
+              "reason": string,"target_id": string
+            }[]
+                           },
 "targets_uptime":
 { Args: { "p_ids": (string)[],"p_now"?: string,"p_org": string,"p_type": string,"p_window": string }; Returns: {
               "target_id": string,"uptime_pct": number

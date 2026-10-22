@@ -100,6 +100,13 @@ describe('home sections', () => {
     // Operate without a view: the button, and the state says nothing to show beyond it.
     expect(homeSections({ role: 'operator', capabilities: caps(['it.monitoring.operate']) })).toEqual({ state: 'nothing', cctv: false, it: false, checkNow: true, adminPages: false })
   })
+  // P2-2 fix M-5: the button follows the service rule (organisation or a whole location), so an asset-only grant shows no dead button.
+  it('Check now is not offered for an asset-only it.monitoring.operate grant', () => {
+    const assetOnly: Capabilities = { failed: false, grants: { 'it.monitoring.operate': { organization: false, locations: [], cameras: [], assets: ['a1'] }, 'it.monitoring.view': AT_ONE } }
+    expect(homeSections({ role: 'operator', capabilities: assetOnly }).checkNow).toBe(false)
+    expect(homeSections({ role: 'operator', capabilities: caps(['it.monitoring.operate'], ORG) }).checkNow).toBe(true)
+  })
+
   it('administrative capabilities alone: nothing to monitor, but the admin pages are pointed to', () => {
     expect(homeSections({ role: 'admin', capabilities: caps(['admin.users'], ORG) })).toEqual({ state: 'nothing', cctv: false, it: false, checkNow: false, adminPages: true })
   })

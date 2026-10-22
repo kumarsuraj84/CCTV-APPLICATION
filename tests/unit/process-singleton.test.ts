@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { processSingleton } from '@/lib/process-singleton'
 
-const NAMES = ['cctv.liveRequestLimiter', 'cctv.playbackRequestLimiter', 'cctv.lookupRequestLimiter', 'cctv.exportRequestLimiter', 'cctv.conversionLimiter', 'cctv.fastPlaybackAvailable', 'cctv.test-thing']
+const NAMES = ['cctv.liveRequestLimiter', 'cctv.playbackRequestLimiter', 'cctv.lookupRequestLimiter', 'cctv.exportRequestLimiter', 'cctv.conversionLimiter', 'cctv.fastPlaybackAvailable', 'cctv.test-thing', 'app.rateLimitStore']
 afterEach(() => {
   for (const n of NAMES) delete (globalThis as unknown as Record<symbol, unknown>)[Symbol.for(n)]
 })
@@ -57,6 +57,19 @@ describe('the limiters when their modules are loaded twice (a second bundle, or 
     expect(l.lookupRequestLimiter.allow(who)).toBe(true)
     expect(l.exportRequestLimiter.allow(who)).toBe(true)
     expect('streamRequestLimiter' in l).toBe(false)
+  })
+
+  // P2-2 fix M-8: the general rate limiter (check-now, sign-in) is one count per process too, whichever copy of the module counts.
+  it('the general rate limiter is one count when its module is loaded twice', async () => {
+    vi.resetModules()
+    const a = await import('@/lib/rate-limit')
+    vi.resetModules()
+    const b = await import('@/lib/rate-limit')
+    expect(b).not.toBe(a)
+    const key = `k-${Math.random()}`
+    expect((await a.rateLimit(key, 2, 60_000)).limited).toBe(false)
+    expect((await b.rateLimit(key, 2, 60_000)).limited).toBe(false)
+    expect((await a.rateLimit(key, 2, 60_000)).limited).toBe(true)
   })
 
   it('the conversion limiter is one count, and so is the ffmpeg check', async () => {

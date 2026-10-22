@@ -1,8 +1,9 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { holds } from '@/lib/auth/capabilities'
+import { coversSomeWholeLocation } from '@/lib/auth/capabilities'
 import { requireProfile } from '@/lib/auth/profile'
+import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { MSG_CHECK_NOT_ALLOWED, requestCheckNow } from '@/lib/monitor/check-now'
 import { rateLimit } from '@/lib/rate-limit'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -16,7 +17,8 @@ export type CheckNowState = { ok?: boolean; message?: string; error?: string }
  */
 export async function requestCheckNowAction(): Promise<CheckNowState> {
   const p = await requireProfile()
-  if (!holds(p.capabilities, 'it.monitoring.operate')) return { error: MSG_CHECK_NOT_ALLOWED }
+  if (p.capabilities.failed) return { error: MSG_ACCESS_CHECK_FAILED }
+  if (!coversSomeWholeLocation(p.capabilities, 'it.monitoring.operate')) return { error: MSG_CHECK_NOT_ALLOWED }
   const { limited } = await rateLimit(`checknow:${p.id}`, 3, 60_000)
   if (limited) return { error: 'Please wait a minute before asking again.' }
   const res = await requestCheckNow({ admin: createAdminClient(), rls: await createClient() }, { id: p.id, orgId: p.org_id, role: p.role })

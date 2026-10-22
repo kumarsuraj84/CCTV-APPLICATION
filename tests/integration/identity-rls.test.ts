@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { cleanupOrg, createOrg, createUser, type TestUser } from '../setup/fixtures'
+import { cleanupOrg, createOrg, createUser, grant, type TestUser } from '../setup/fixtures'
 
 describe('identity row-level security', () => {
   let orgA: string
@@ -33,7 +33,10 @@ describe('identity row-level security', () => {
     expect(data).toEqual([{ id: viewerA.id }])
   })
 
-  it('an admin reads every profile of their organisation and none of another', async () => {
+  // P2-2 fix M-2: the organisation-wide read comes from admin.users (organisation scope), never from the role alone.
+  it('an admin with admin.users reads every profile of their organisation and none of another; without it only their own', async () => {
+    expect((await adminA.client.from('profiles').select('id')).data).toEqual([{ id: adminA.id }])
+    await grant(orgA, adminA.id, 'admin.users')
     const { data } = await adminA.client.from('profiles').select('id')
     const ids = (data ?? []).map((r) => r.id).sort()
     expect(ids).toEqual([adminA.id, viewerA.id, resetA.id].sort())

@@ -1,7 +1,9 @@
 import { headers } from 'next/headers'
+import { processSingleton } from '@/lib/process-singleton'
 
 type Entry = { count: number; resetAt: number }
-const store = new Map<string, Entry>()
+// One table for the whole process (P2-2 fix M-8): actions, route handlers and reloaded modules all count in the same place.
+const store = processSingleton('app.rateLimitStore', () => new Map<string, Entry>())
 
 const MAX_KEYS = 50_000
 let lastCleanup = 0

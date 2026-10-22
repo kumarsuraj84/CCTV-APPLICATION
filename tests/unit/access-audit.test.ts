@@ -54,6 +54,13 @@ describe('auditAccess', () => {
     expect(a.rows[0].detail).toEqual({ capability: 'cctv.export', cameraIds: ['c1'], count: 1, minutes: 10, note: 'ok' })
   })
 
+  it('keeps harmless names that contain an address word ("keyword"), and an explicit entity wins', async () => {
+    const a = fakeAdmin()
+    await auditAccess(a.client, { orgId: 'o1', actorId: 'u1', action: 'group_cameras_added_by_keyword', capability: 'cctv.live', cameraIds: ['c1'], detail: { keyword: 'door', key: 'x' }, entity: { type: 'camera_group', id: 'g1' } })
+    expect(a.rows[0]).toMatchObject({ entity_type: 'camera_group', entity_id: 'g1', detail: { capability: 'cctv.live', cameraIds: ['c1'], count: 1, keyword: 'door' } })
+    expect((a.rows[0].detail as Record<string, unknown>).key).toBeUndefined()
+  })
+
   it('never throws and never breaks the operation: a failed or throwing write is only logged, without its text', async () => {
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     await expect(auditAccess(fakeAdmin({ fail: 'error' }).client, { orgId: 'o', actorId: 'u', action: 'x', capability: 'cctv.live' })).resolves.toBeUndefined()

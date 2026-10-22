@@ -104,6 +104,15 @@ describe('stream actions', () => {
     expect(openStreams).not.toHaveBeenCalled()
   })
 
+  // P2-2 fix M-4: an unreadable summary is the plain access-check failure (not "nothing to show"), and nothing is opened.
+  it('a summary that could not be read gives the plain access-check failure and opens nothing', async () => {
+    requireProfile.mockResolvedValue({ ...person('u1'), capabilities: { failed: true, grants: {} } })
+    const { openStreamsAction, refreshStreamTokensAction } = await import('@/lib/actions/streams')
+    expect(await openStreamsAction(['c1'], 'sub')).toEqual({ ok: false, error: 'Could not check your access. Please try again.' })
+    expect(await refreshStreamTokensAction(['c1'], 'sub')).toEqual({ ok: false, error: 'Could not check your access. Please try again.' })
+    expect(openStreams).not.toHaveBeenCalled()
+  })
+
   it('records an opening (not the 8-minute token refresh) with the cameras opened and the kind, never a token', async () => {
     requireProfile.mockResolvedValue(person('u1'))
     openStreams.mockResolvedValue({ ok: true, streams: [{ cameraId: 'c1', name: 'N', storeCode: 'S', channel: 1, token: 'secret-token', kind: 'sub' }] })

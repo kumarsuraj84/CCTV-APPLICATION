@@ -9,7 +9,7 @@ import { describeNvrError, MAX_DOWNLOAD_BYTES, MAX_DOWNLOAD_MS, NvrClient, NvrEr
 import { findSegments } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
 import { processSingleton } from '@/lib/process-singleton'
-import { findCamera, MSG_CAMERA_NOT_FOUND, MSG_BAD_START, MSG_NO_LOGIN, parsePlaybackOffset, startInBounds } from '@/lib/streams/playback'
+import { findCamera, MSG_CAMERA_NOT_FOUND, MSG_BAD_START, MSG_NO_LOGIN, MSG_RECORDINGS_UNREACHABLE, parsePlaybackOffset, recorderMessage, startInBounds } from '@/lib/streams/playback'
 import { MSG_TOO_MANY_REQUESTS, type RequestLimiter } from '@/lib/streams/request-limit'
 import { parseStartIso } from '@/lib/streams/timeline'
 
@@ -629,6 +629,7 @@ const fail = (status: number, error: string) => Response.json({ error }, { statu
 function cameraFailure(error: string): Response {
   if (error === MSG_CAMERA_NOT_FOUND) return fail(404, error)
   if (error === MSG_NO_LOGIN) return fail(409, error)
+  if (error === MSG_RECORDINGS_UNREACHABLE) return fail(502, error) // camera terms: no status that tells login trouble apart (fix I-2)
   return fail(500, error)
 }
 
@@ -653,8 +654,9 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
   if (!startInBounds(query.start.getTime(), now())) return fail(400, MSG_BAD_START)
   if (deps.limiter && !deps.limiter.allow(actor.id)) return fail(429, MSG_TOO_MANY_REQUESTS)
 
-  // Fast playback hands over a savable MP4, so it needs cctv.export for the camera (decision D-6a; P2-1).
-  const c = await findCamera(deps, query.camera, { password: 'always', capability: 'cctv.export', orgId: actor.orgId })
+  // Fast playback hands over a savable MP4 of a recording, so it needs cctv.export AND cctv.playback for the camera (decision D-6a;
+  // P2-2 fix M-3: export alone gets the same refusal as no right at all).
+  const c = await findCamera(deps, query.camera, { password: 'always', capability: ['cctv.export', 'cctv.playback'], orgId: actor.orgId })
   if (!c.ok) {
     // A camera the person may not export (or that does not exist) is recorded as a refusal (P2-2, brief item 7).
     if (c.error === MSG_CAMERA_NOT_FOUND) await auditAccess(deps.admin, { orgId: actor.orgId, actorId: actor.id, action: 'cctv_export_denied', capability: 'cctv.export', cameraIds: [query.camera], detail: { reason: 'camera' } })
@@ -711,7 +713,7 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
       uri = clipped
       family = videoFamily(segment.codec)
     } catch (e) {
-      return nvrFailure(e, store.code, 'vod_search_failed')
+      return await nvrFailure(e, store.code, 'vod_search_failed', deps.rls, camera.store_id)
     }
     if (signal?.aborted || transfer.signal.aborted) return new Response(null, { status: 499 })
 
@@ -734,7 +736,7 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
       source = await client.postStream(DOWNLOAD_PATH, body, { signal: transfer.signal, maxMs: deps.timing?.transferMs ?? MAX_DOWNLOAD_MS, maxBytes: deps.timing?.maxBytes ?? MAX_DOWNLOAD_BYTES })
     } catch (e) {
       if (transfer.signal.aborted) return new Response(null, { status: 499 })
-      return nvrFailure(e, store.code, 'vod_download_failed')
+      return await nvrFailure(e, store.code, 'vod_download_failed', deps.rls, camera.store_id)
     }
 
     handedOver = true
@@ -762,7 +764,7 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
         return fail(500, MSG_NO_FFMPEG)
       }
       if (converted.reason === 'cancelled') return new Response(null, { status: 499 })
-      if (converted.reason === 'timeout') return fail(502, describeNvrError(new NvrError('timeout', 'slow')))
+      if (converted.reason === 'timeout') return fail(502, await recorderMessage(deps.rls, camera.store_id, describeNvrError(new NvrError('timeout', 'slow')), 'nvr_timeout'))
       if (converted.reason === 'format') return fail(502, MSG_FORMAT_UNSUPPORTED)
       return fail(502, MSG_CONVERT_FAILED)
     }
@@ -778,9 +780,12 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
   }
 }
 
-/** NVR trouble as a 502 in plain words. Anything unexpected is logged by its kind only: its text can carry an address or a password. */
-function nvrFailure(e: unknown, store: string, event: string): Response {
-  if (e instanceof NvrError) return fail(502, describeNvrError(e))
+/**
+ * NVR trouble as a 502 in plain words: the NVR's own words only with the IT view of the store, camera terms otherwise (fix I-2).
+ * Anything unexpected is logged by its kind only: its text can carry an address or a password.
+ */
+async function nvrFailure(e: unknown, store: string, event: string, rls: AdminClient, storeId: string): Promise<Response> {
+  if (e instanceof NvrError) return fail(502, await recorderMessage(rls, storeId, describeNvrError(e), `nvr_${e.kind}`))
   logger.error({ event, store, errorName: e instanceof Error ? e.name : typeof e })
   return fail(502, MSG_NVR_FAILED)
 }

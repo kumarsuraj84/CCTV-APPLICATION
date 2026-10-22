@@ -58,15 +58,18 @@ describe('capability enforcement per operation (P2-2)', () => {
     group = (await admin().from('camera_groups').insert({ org_id: orgId, name: 'Only c11' }).select('id').single()).data!.id
     await admin().from('camera_group_items').insert({ org_id: orgId, group_id: group, camera_id: c11 })
 
-    const add = async (key: string, role: 'user' | 'operator' | 'admin', allowed: Op[], grants: [string | string[], ReturnType<typeof atLocation> | typeof ORG_SCOPE][] = [], o: { validFrom?: string; validUntil?: string } = {}) => {
-      const user = await createUser(orgId, role)
+    const add = async (key: string, role: 'user' | 'operator' | 'admin', allowed: Op[], grants: [string | string[], ReturnType<typeof atLocation> | typeof ORG_SCOPE][] = [], o: { validFrom?: string; validUntil?: string; mustReset?: boolean } = {}) => {
+      const user = await createUser(orgId, role, { mustReset: o.mustReset })
       for (const [caps, scope] of grants) await grant(orgId, user.id, caps, scope, o)
       people[key] = { user, role, allowed }
     }
     const EVERYTHING = ['cctv.live', 'cctv.playback', 'cctv.export', 'it.inventory.view', 'it.monitoring.view', 'it.monitoring.operate']
     await add('liveOnly', 'user', ['live', 'refresh', 'groupRead'], [['cctv.live', atLocation(s1)]])
     await add('playbackOnly', 'user', ['calendar', 'segments', 'playback', 'groupRead'], [['cctv.playback', atLocation(s1)]])
-    await add('exportOnly', 'user', ['vod', 'probe', 'groupRead'], [['cctv.export', atLocation(s1)]])
+    // Fix M-3: fast playback needs cctv.export AND cctv.playback for the camera; export alone opens nothing.
+    await add('exportOnly', 'user', ['groupRead'], [['cctv.export', atLocation(s1)]])
+    await add('exportPlayback', 'user', ['calendar', 'segments', 'playback', 'vod', 'probe', 'groupRead'], [[['cctv.export', 'cctv.playback'], atLocation(s1)]])
+    await add('mustReset', 'operator', [], [[EVERYTHING, atLocation(s1)]], { mustReset: true })
     await add('itOnly', 'operator', ['devices', 'storeDevices', 'checkNow'], [[['it.inventory.view', 'it.monitoring.view', 'it.monitoring.operate'], atLocation(s1)]])
     await add('otherStore', 'operator', ['checkNow'], [[EVERYTHING, atLocation(s2)]]) // check-now runs for everything; any whole location counts
     await add('otherCamera', 'operator', [], [[['cctv.live', 'cctv.playback', 'cctv.export'], atCamera(c12)]])

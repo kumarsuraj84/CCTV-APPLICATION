@@ -318,22 +318,31 @@ describe('playback streams', () => {
     })
   })
 
+  // P2-2 fix round 1, I-2: NVR and credential trouble is recorder information. A person without the IT view of the camera's store
+  // (here the CCTV-only viewer) gets one camera-terms message; the IT view (the manager's organisation-wide grants) gets the specific one.
   describe('NVR trouble', () => {
-    it('a store with no saved NVR login gives a plain message and no request is sent', async () => {
-      expect(await days(viewer, n1)).toEqual({ ok: false, error: 'This store has no saved NVR login.' })
-      expect(await segments(viewer, n1, '2026-10-20')).toEqual({ ok: false, error: 'This store has no saved NVR login.' })
-      expect(await play(viewer, n1, new Date(SHOWN_NOW - 3_600_000))).toEqual({ ok: false, error: 'This store has no saved NVR login.' })
+    const NEUTRAL = { ok: false, error: 'The recordings of this camera cannot be reached right now.' }
+    it('a store with no saved NVR login: the camera-terms message for a CCTV viewer, the specific one with the IT view; no request is sent', async () => {
+      expect(await days(viewer, n1)).toEqual(NEUTRAL)
+      expect(await segments(viewer, n1, '2026-10-20')).toEqual(NEUTRAL)
+      expect(await play(viewer, n1, new Date(SHOWN_NOW - 3_600_000))).toEqual(NEUTRAL)
+      expect(await days(manager, n1)).toEqual({ ok: false, error: 'This store has no saved NVR login.' })
+      expect(await play(manager, n1, new Date(SHOWN_NOW - 3_600_000))).toEqual({ ok: false, error: 'This store has no saved NVR login.' })
       expect(nvr.requests).toHaveLength(0)
       expect(fake.seen).toHaveLength(0)
     })
 
-    it('an NVR that does not answer gives the plain NVR message', async () => {
-      expect(await days(viewer, d1)).toEqual({ ok: false, error: 'The NVR did not answer.' })
-      expect(await segments(viewer, d1, '2026-10-20')).toEqual({ ok: false, error: 'The NVR did not answer.' })
+    it('an NVR that does not answer: camera terms for a CCTV viewer, the NVR message with the IT view', async () => {
+      expect(await days(viewer, d1)).toEqual(NEUTRAL)
+      expect(await segments(viewer, d1, '2026-10-20')).toEqual(NEUTRAL)
+      expect(await days(manager, d1)).toEqual({ ok: false, error: 'The NVR did not answer.' })
+      expect(await segments(manager, d1, '2026-10-20')).toEqual({ ok: false, error: 'The NVR did not answer.' })
     })
 
-    it('a refused login gives the plain NVR message', async () => {
-      expect(await segments(viewer, w1, '2026-10-20')).toEqual({ ok: false, error: 'The NVR refused the user name or password.' })
+    it('a refused login (wrong NVR password): camera terms for a CCTV viewer, the NVR message with the IT view', async () => {
+      expect(await segments(viewer, w1, '2026-10-20')).toEqual(NEUTRAL)
+      expect(await days(viewer, w1)).toEqual(NEUTRAL)
+      expect(await segments(manager, w1, '2026-10-20')).toEqual({ ok: false, error: 'The NVR refused the user name or password.' })
     })
 
     it('an NVR that answers with nonsense gives the plain NVR message', async () => {

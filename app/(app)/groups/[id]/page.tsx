@@ -54,6 +54,7 @@ export default async function GroupPage({ params, searchParams }: { params: Prom
         stores={stores.map((s) => ({ id: s.id, code: s.code, name: s.name }))}
         selectedStoreId={selectedStoreId}
         choices={choices}
+        removableIds={watchable.ok ? watchable.ids : []}
       />
     </div>
   )

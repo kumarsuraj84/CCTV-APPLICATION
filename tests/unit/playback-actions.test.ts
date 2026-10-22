@@ -144,6 +144,18 @@ describe('playback actions', () => {
     expect(audit).toEqual([])
   })
 
+  // P2-2 fix M-4.
+  it('a summary that could not be read gives the plain access-check failure from every action, and nothing is asked', async () => {
+    requireProfile.mockResolvedValue({ ...person('u1'), capabilities: { failed: true, grants: {} } })
+    const a = await import('@/lib/actions/playback')
+    const failed = { ok: false, error: 'Could not check your access. Please try again.' }
+    expect(await a.listRecordedDaysAction(CAM, 2026, 10)).toEqual(failed)
+    expect(await a.listDaySegmentsAction(CAM, '2026-10-20')).toEqual(failed)
+    expect(await a.openPlaybackAction(CAM, '2026-10-20T10:00:00Z', 10)).toEqual(failed)
+    expect(listRecordedDays).not.toHaveBeenCalled()
+    expect(openPlayback).not.toHaveBeenCalled()
+  })
+
   it('records a search and an opening in the audit log (actor, capability, camera; never the token)', async () => {
     const a = await import('@/lib/actions/playback')
     await a.listRecordedDaysAction(CAM, 2026, 10)

@@ -107,6 +107,15 @@ export function coversLocation(c: Capabilities, caps: Capability | readonly Capa
   })
 }
 
+/**
+ * Display only: the capability covers at least one whole location (or the organisation) — the rule of capability_store_ids, used by
+ * check-now (P2-2 fix M-5: the button appears exactly when the action can work).
+ */
+export function coversSomeWholeLocation(c: Capabilities, cap: Capability): boolean {
+  const s = c.grants[cap]
+  return !!s && (s.organization || s.locations.length > 0)
+}
+
 /** Plain-English explanation for a person who has nothing assigned yet (the home state). */
 export const MSG_NOTHING_ASSIGNED = 'Nothing is assigned to your account yet. Ask an administrator for access.'
 export const MSG_ACCESS_UNREADABLE = 'Your access could not be read just now. Reload the page in a moment.'

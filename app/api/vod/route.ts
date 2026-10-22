@@ -1,6 +1,7 @@
 import { auditAccess } from '@/lib/auth/access-audit'
 import { holds } from '@/lib/auth/capabilities'
 import { getCurrentProfile } from '@/lib/auth/profile'
+import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { logger } from '@/lib/observability/logger'
 import { exportRequestLimiter, MSG_TOO_MANY_REQUESTS } from '@/lib/streams/request-limit'
 import { FAST_PLAYBACK_CAPABILITY, MSG_FAST_NOT_FOR_YOU } from '@/lib/streams/speed'
@@ -27,10 +28,12 @@ export async function GET(request: Request) {
     if (profile.must_reset_password) return error(403, 'Choose your own password first.')
     // cctv.export somewhere, or nothing else is read or asked (it also covers ?probe=1). The refusal is recorded (counted first, so a
     // flood of refusals cannot flood the log).
-    if (!holds(profile.capabilities, FAST_PLAYBACK_CAPABILITY)) {
+    // Fast playback is a recording: cctv.export AND cctv.playback (fix M-3). An unreadable summary is the plain access-check failure (M-4).
+    const failedCheck = profile.capabilities.failed
+    if (failedCheck || !holds(profile.capabilities, FAST_PLAYBACK_CAPABILITY) || !holds(profile.capabilities, 'cctv.playback')) {
       if (!exportRequestLimiter.allow(profile.id)) return error(429, MSG_TOO_MANY_REQUESTS)
-      await auditAccess(createAdminClient(), { orgId: profile.org_id, actorId: profile.id, action: 'cctv_export_denied', capability: FAST_PLAYBACK_CAPABILITY, detail: { reason: 'no_capability' } })
-      return error(403, MSG_FAST_NOT_FOR_YOU)
+      await auditAccess(createAdminClient(), { orgId: profile.org_id, actorId: profile.id, action: 'cctv_export_denied', capability: FAST_PLAYBACK_CAPABILITY, detail: { reason: failedCheck ? 'access_check_failed' : 'no_capability' } })
+      return failedCheck ? error(503, MSG_ACCESS_CHECK_FAILED) : error(403, MSG_FAST_NOT_FOR_YOU)
     }
 
     const parsed = parseVodQuery(new URL(request.url).searchParams)

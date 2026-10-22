@@ -33,6 +33,11 @@ describe('cameraReason', () => {
     expect(readFileSync('lib/monitor/checks.ts', 'utf8')).toContain(`method: 'nvr_down', error: '${NVR_DOWN_CAMERA_ERROR}', cause: 'nvr_down'`)
   })
 
+  it('the camera-terms reasons the database gives (status_reasons) stay as they are', () => {
+    expect(cameraReason(MSG_RECORDER_NOT_REACHABLE, { itView: false })).toBe(MSG_RECORDER_NOT_REACHABLE)
+    expect(cameraReason(MSG_CAMERA_NOT_RESPONDING, { itView: false })).toBe(MSG_CAMERA_NOT_RESPONDING)
+  })
+
   it('nothing to say gives nothing', () => {
     expect(cameraReason(null, { itView: false })).toBeNull()
     expect(cameraReason('', { itView: true })).toBeNull()

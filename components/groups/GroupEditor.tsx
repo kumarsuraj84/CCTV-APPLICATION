@@ -18,6 +18,8 @@ export type GroupEditorProps = {
   selectedStoreId: string | null
   /** The cameras of the chosen store, or null when no store is chosen (or it cannot be used). */
   choices: StoreCameraChoice[] | null
+  /** P2-2 fix M-1: cameras the person may take out (they may watch them live). Without it, every camera shows Remove. */
+  removableIds?: string[]
 }
 
 function tell(res: GroupActionState, fallbackOk: string) {
@@ -25,7 +27,8 @@ function tell(res: GroupActionState, fallbackOk: string) {
   else toast.success(res.message ?? fallbackOk)
 }
 
-export function GroupEditor({ groupId, cameras, canManage, stores, selectedStoreId, choices }: GroupEditorProps) {
+export function GroupEditor({ groupId, cameras, canManage, stores, selectedStoreId, choices, removableIds }: GroupEditorProps) {
+  const removable = (id: string) => !removableIds || removableIds.includes(id.toLowerCase())
   const [pending, start] = useTransition()
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [word, setWord] = useState('')
@@ -74,7 +77,7 @@ export function GroupEditor({ groupId, cameras, canManage, stores, selectedStore
                 <span className="min-w-0 break-words">
                   <span className="font-mono">{c.store_code}</span> · channel {c.channel} · {c.name}
                 </span>
-                {canManage && (
+                {canManage && removable(c.id) && (
                   <Button size="sm" variant="outline" disabled={pending} aria-label={`Remove ${c.name} (${c.store_code}, channel ${c.channel}) from the group`} onClick={() => remove(c.id)}>
                     Remove
                   </Button>

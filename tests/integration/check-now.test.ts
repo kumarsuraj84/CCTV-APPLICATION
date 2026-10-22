@@ -154,4 +154,39 @@ describe('check now', () => {
     expect(await requestCheckNow(deps(operateOrg), actor(operateOrg))).toEqual({ ok: true })
     expect(new Date((await state()).check_requested_at!).getTime()).toBeGreaterThan(new Date(asked).getTime())
   })
+
+  // Restored in P2-2 fix round 1 (it was dropped by mistake when this file moved to capabilities); now with a person holding
+  // it.monitoring.operate for the organisation, through their own client.
+  describe('check now is stamped by the database clock', () => {
+    it('asks the database to stamp the request and never writes the time from the web server', async () => {
+      await quiet()
+      const real = adminClient()
+      const calls: string[] = []
+      const watched = new Proxy(real, {
+        get(target, prop) {
+          if (prop === 'rpc') return (name: string, ...rest: unknown[]) => { calls.push(`rpc:${name}`); return (target.rpc as (...a: unknown[]) => unknown)(name, ...rest) }
+          if (prop === 'from') {
+            return (table: string) => {
+              const builder = target.from(table as 'worker_state')
+              return new Proxy(builder, {
+                get(b, p) {
+                  const v = Reflect.get(b, p)
+                  if (p === 'update' && table === 'worker_state') calls.push('update:worker_state')
+                  return typeof v === 'function' ? v.bind(b) : v
+                },
+              })
+            }
+          }
+          const v = Reflect.get(target, prop)
+          return typeof v === 'function' ? v.bind(target) : v
+        },
+      }) as typeof real
+      // The web server's clock is an hour out; the stamp must not depend on it.
+      const res = await requestCheckNow({ ...deps(operateOrg), admin: watched }, actor(operateOrg), () => Date.now() - 3600_000)
+      expect(res.ok).toBe(true)
+      expect(calls).toContain('rpc:monitor_request_check')
+      expect(calls).not.toContain('update:worker_state')
+      expect(Math.abs(Date.now() - new Date((await state()).check_requested_at!).getTime())).toBeLessThan(10_000)
+    })
+  })
 })

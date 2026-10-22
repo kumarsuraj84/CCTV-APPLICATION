@@ -1,6 +1,6 @@
 import { isAdminRole, type Role } from '@/lib/admin/roles'
 import {
-  CCTV_CAPABILITIES, holdsAny, holdsAnyLocationGrant, holdsOrgWide, IT_VIEW, type AdminCapability, type Capabilities, type Capability,
+  CCTV_CAPABILITIES, coversSomeWholeLocation, holdsAny, holdsAnyLocationGrant, holdsOrgWide, IT_VIEW, type AdminCapability, type Capabilities, type Capability,
 } from '@/lib/auth/capabilities'
 
 export type { Role }
@@ -69,5 +69,5 @@ export function homeSections(v: NavViewer): HomeSections {
   const it = holdsAny(c, IT_VIEW)
   const adminPages = NAV.some((i) => i.group === 'Admin' && meets(v, i.needs))
   const state = c.failed ? 'unreadable' : cctv || it ? 'ok' : 'nothing'
-  return { state, cctv, it, checkNow: holdsAny(c, ['it.monitoring.operate']), adminPages }
+  return { state, cctv, it, checkNow: coversSomeWholeLocation(c, 'it.monitoring.operate'), adminPages }
 }

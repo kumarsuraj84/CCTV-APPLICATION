@@ -3,6 +3,7 @@
 import { auditAccess } from '@/lib/auth/access-audit'
 import { holds } from '@/lib/auth/capabilities'
 import { requireProfile } from '@/lib/auth/profile'
+import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { logger } from '@/lib/observability/logger'
 import { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { MSG_UNAVAILABLE, openStreams, type OpenedStream } from '@/lib/streams/open'
@@ -18,7 +19,9 @@ const TOO_MANY = MSG_TOO_MANY_REQUESTS
 
 async function run(cameraIds: string[], kind: 'sub' | 'main', route: 'openStreamsAction' | 'refreshStreamTokensAction'): Promise<OpenStreamsState> {
   const p = await requireProfile() // sends signed-out people to the sign-in page
-  // Without cctv.live anywhere the answer is the one for cameras the person may not watch: nothing, without a word, and nothing asked.
+  // A summary that could not be read is the plain access-check failure (fix M-4). Without cctv.live anywhere the answer is the one for
+  // cameras the person may not watch: nothing, without a word, and nothing asked.
+  if (p.capabilities.failed) return { ok: false, error: MSG_ACCESS_CHECK_FAILED }
   if (!holds(p.capabilities, 'cctv.live')) return { ok: true, streams: [] }
   if (!limiter.allow(p.id)) return { ok: false, error: TOO_MANY }
   try {

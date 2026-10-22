@@ -225,10 +225,14 @@ describe('fast playback (/api/vod)', () => {
       expect(limits.running).toBe(0)
     })
 
-    it('a store with no saved NVR login is 409 with the plain message, and the NVR gets no request at all', async () => {
+    // P2-2 fix I-2: credential trouble is recorder information: camera terms (502) without the IT view, the specific 409 with it.
+    it('a store with no saved NVR login: 502 in camera terms for a CCTV viewer, 409 with the plain message with the IT view; the NVR gets no request', async () => {
       const res = await get(viewer, n1)
-      expect(res.status).toBe(409)
-      expect(await errorOf(res)).toBe('This store has no saved NVR login.')
+      expect(res.status).toBe(502)
+      expect(await errorOf(res)).toBe('The recordings of this camera cannot be reached right now.')
+      const it = await get(manager, n1)
+      expect(it.status).toBe(409)
+      expect(await errorOf(it)).toBe('This store has no saved NVR login.')
       expect(nvr.requests).toHaveLength(0)
     })
 
@@ -249,6 +253,24 @@ describe('fast playback (/api/vod)', () => {
       const res = await get(noExport, a1, { deps: { spawn } })
       expect(res.status).toBe(404)
       expect(await errorOf(res)).toBe('Camera not found.')
+      expect(nvr.requests).toHaveLength(0)
+      expect(spawn.calls).toHaveLength(0)
+    })
+
+    // P2-2 fix M-3 (ruling): fast playback is a recording, so it needs cctv.export AND cctv.playback for the camera; export alone gets
+    // the same refusal as no right at all, probe included, and the NVR is never asked.
+    it('export without playback for that camera is "Camera not found." (404), the same as no right; probe too', async () => {
+      const spawn = fakeSpawn('copy')
+      const exportOnly = await createUser(orgId, 'user')
+      await grant(orgId, exportOnly.id, 'cctv.export', atLocation(sA))
+      const split = await createUser(orgId, 'user')
+      await grant(orgId, split.id, 'cctv.export', atLocation(sA))
+      await grant(orgId, split.id, 'cctv.playback', atCamera(a2)) // playback for another camera only
+      for (const [who, more] of [[exportOnly, ''], [exportOnly, '&probe=1'], [split, ''], [split, '&probe=1']] as const) {
+        const res = await get(who, a1, { more, deps: { spawn } })
+        expect(res.status).toBe(404)
+        expect(await errorOf(res)).toBe('Camera not found.')
+      }
       expect(nvr.requests).toHaveLength(0)
       expect(spawn.calls).toHaveLength(0)
     })
@@ -293,14 +315,19 @@ describe('fast playback (/api/vod)', () => {
       expect(spawn.calls).toHaveLength(0)
     })
 
-    it('an NVR problem is 502 in the words of describeNvrError, and no password, address or path appears', async () => {
+    it('an NVR problem is 502: in camera terms for a CCTV viewer, in the words of describeNvrError with the IT view; no password, address or path appears', async () => {
+      for (const camera of [w1, d1, x1]) {
+        const res = await get(viewer, camera)
+        expect(res.status, camera).toBe(502)
+        expect(await res.json()).toEqual({ error: 'The recordings of this camera cannot be reached right now.' })
+      }
       const cases: [string, string][] = [
         [w1, 'The NVR refused the user name or password.'],
         [d1, 'The NVR did not answer.'],
         [x1, 'The NVR gave an answer this app does not understand.'],
       ]
       for (const [camera, words] of cases) {
-        const res = await get(viewer, camera)
+        const res = await get(manager, camera)
         expect(res.status, camera).toBe(502)
         const text = await res.text()
         expect(JSON.parse(text)).toEqual({ error: words })
@@ -308,7 +335,7 @@ describe('fast playback (/api/vod)', () => {
         expect(res.headers.get('cache-control')).toBe('no-store')
         expect(res.headers.get('cross-origin-resource-policy')).toBe('same-origin')
       }
-      expect(nvrXml.downloadBodies).toHaveLength(1) // the document was the answer to a real download request
+      expect(nvrXml.downloadBodies).toHaveLength(2) // the document was the answer to a real download request (viewer and manager)
     })
 
     it('a missing ffmpeg is a plain 500 "ffmpeg is not installed on the server", before the NVR is asked for the download', async () => {
@@ -640,15 +667,17 @@ describe('fast playback (/api/vod)', () => {
       expect(limits.running).toBe(0)
     })
 
-    it('gives the same plain errors as the video request would', async () => {
-      const expected: [string, number, string][] = [
-        [foreign, 404, 'Camera not found.'],
-        [n1, 409, 'This store has no saved NVR login.'],
-        [w1, 502, 'The NVR refused the user name or password.'],
-        [a2, 404, 'There is no recording at that time.'],
+    it('gives the same plain errors as the video request would (camera terms without the IT view, P2-2 fix I-2)', async () => {
+      const expected: [TestUser, string, number, string][] = [
+        [viewer, foreign, 404, 'Camera not found.'],
+        [viewer, n1, 502, 'The recordings of this camera cannot be reached right now.'],
+        [viewer, w1, 502, 'The recordings of this camera cannot be reached right now.'],
+        [viewer, a2, 404, 'There is no recording at that time.'],
+        [manager, n1, 409, 'This store has no saved NVR login.'],
+        [manager, w1, 502, 'The NVR refused the user name or password.'],
       ]
-      for (const [camera, status, words] of expected) {
-        const res = await get(viewer, camera, { more: '&probe=1' })
+      for (const [who, camera, status, words] of expected) {
+        const res = await get(who, camera, { more: '&probe=1' })
         expect(res.status, camera).toBe(status)
         expect(await errorOf(res)).toBe(words)
       }

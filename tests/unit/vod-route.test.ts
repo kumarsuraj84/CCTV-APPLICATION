@@ -39,7 +39,7 @@ const request = (qs: string, init?: RequestInit) => new Request(`http://localhos
 const VALID = `camera=${ID}&start=2026-10-22T09:20:00Z&minutes=10`
 
 beforeEach(() => {
-  mocks.profile = { id: 'user-1', org_id: 'org-1', role: 'user', must_reset_password: false, capabilities: caps('cctv.export') }
+  mocks.profile = { id: 'user-1', org_id: 'org-1', role: 'user', must_reset_password: false, capabilities: caps('cctv.export', 'cctv.playback') }
   mocks.profileCalls = 0
   mocks.clients = 0
   mocks.admins = 0
@@ -86,10 +86,30 @@ describe('GET /api/vod', () => {
     expect(mocks.audit[0]).toMatchObject({ action: 'cctv_export_denied', actor_id: 'user-1', detail: { capability: 'cctv.export', reason: 'no_capability' } })
   })
 
-  it('lets anybody holding cctv.export through, probe too (the camera itself is checked by the service)', async () => {
+  // P2-2 fix M-3: fast playback is a recording: cctv.export AND cctv.playback (the camera itself is checked by the service).
+  it('export without playback is refused like no right at all, before any camera lookup', async () => {
+    mocks.profile = { id: 'user-m3', org_id: 'org-1', role: 'admin', must_reset_password: false, capabilities: caps('cctv.export', 'cctv.live') }
+    const res = await GET(request(VALID))
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'Fast playback is not available for your account.' })
+    expect(mocks.clients).toBe(0)
+    expect(mocks.serve).not.toHaveBeenCalled()
+  })
+
+  // P2-2 fix M-4: a summary that cannot be read is the plain access-check failure, audited as such, never "not for your account".
+  it('a summary that could not be read is a plain 503 access-check failure, audited with reason access_check_failed', async () => {
+    mocks.profile = { id: 'user-m4', org_id: 'org-1', role: 'user', must_reset_password: false, capabilities: { failed: true, grants: {} } }
+    const res = await GET(request(VALID))
+    expect(res.status).toBe(503)
+    expect(await res.json()).toEqual({ error: 'Could not check your access. Please try again.' })
+    expect(mocks.serve).not.toHaveBeenCalled()
+    expect(mocks.audit[0]).toMatchObject({ action: 'cctv_export_denied', detail: { capability: 'cctv.export', reason: 'access_check_failed' } })
+  })
+
+  it('lets anybody holding cctv.export and cctv.playback through, probe too (the camera itself is checked by the service)', async () => {
     for (const role of ['user', 'admin']) {
       for (const qs of [VALID, `${VALID}&probe=1`]) {
-        mocks.profile = { id: 'user-1', org_id: 'org-1', role, must_reset_password: false, capabilities: caps('cctv.export') }
+        mocks.profile = { id: 'user-1', org_id: 'org-1', role, must_reset_password: false, capabilities: caps('cctv.export', 'cctv.playback') }
         expect((await GET(request(qs))).status, `${role} ${qs}`).toBe(200)
       }
     }

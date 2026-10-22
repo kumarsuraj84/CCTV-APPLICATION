@@ -27,9 +27,13 @@ export type AccessAuditEntry = {
   cameraIds?: string[]
   locationIds?: string[]
   detail?: Record<string, string | number | boolean | null>
+  /** The row's entity when it is not the one camera / location (for example a camera group). */
+  entity?: { type: string; id: string }
 }
 
-const SECRET_NAME = /token|password|secret|passwd|url|uri|src|address|ip|host|credential|key/i
+// A field is dropped when its name contains one of the secret words, or is exactly one of the address words (so "keyword" stays).
+const SECRET_NAME = /token|password|secret|passwd|credential|apikey/i
+const ADDRESS_NAME = /^(url|uri|src|address|ip|host|key|port)$/i
 const SECRET_VALUE = /:\/\/|@|\b\d{1,3}(\.\d{1,3}){3}\b/
 
 export async function auditAccess(admin: SupabaseClient<Database>, e: AccessAuditEntry): Promise<void> {
@@ -40,10 +44,10 @@ export async function auditAccess(admin: SupabaseClient<Database>, e: AccessAudi
     const ids = e.cameraIds ?? e.locationIds
     if (ids) detail.count = ids.length
     for (const [k, v] of Object.entries(e.detail ?? {})) {
-      if (SECRET_NAME.test(k) || (typeof v === 'string' && SECRET_VALUE.test(v))) continue
+      if (SECRET_NAME.test(k) || ADDRESS_NAME.test(k) || (typeof v === 'string' && SECRET_VALUE.test(v))) continue
       detail[k] = v
     }
-    const one = e.cameraIds?.length === 1 ? { type: 'camera', id: e.cameraIds[0] } : !e.cameraIds && e.locationIds?.length === 1 ? { type: 'store', id: e.locationIds[0] } : null
+    const one = e.entity ? e.entity : e.cameraIds?.length === 1 ? { type: 'camera', id: e.cameraIds[0] } : !e.cameraIds && e.locationIds?.length === 1 ? { type: 'store', id: e.locationIds[0] } : null
     const { error } = await admin.from('admin_audit_log').insert({
       org_id: e.orgId,
       actor_id: e.actorId,

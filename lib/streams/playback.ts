@@ -1,5 +1,6 @@
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
-import { cameraFor } from '@/lib/auth/resource'
+import { IT_VIEW } from '@/lib/auth/capabilities'
+import { cameraFor, locationFor } from '@/lib/auth/resource'
 import { describeNvrError, NvrClient, NvrError, type NvrEndpoint } from '@/lib/nvr/client'
 import { findSegments, recordedDays } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
@@ -100,14 +101,17 @@ export type RecordingCapability = 'cctv.playback' | 'cctv.export'
 export async function findCamera(
   deps: PlaybackDeps,
   cameraId: string,
-  o: { password: 'always' | 'unless-demo'; env?: Record<string, string | undefined>; capability: RecordingCapability; orgId: string },
+  o: { password: 'always' | 'unless-demo'; env?: Record<string, string | undefined>; capability: RecordingCapability | readonly RecordingCapability[]; orgId: string },
 ): Promise<Result<Found>> {
   if (typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
   const id = cameraId.toLowerCase()
-  // The person's own client answers whether they may use this camera for recordings.
-  const allowed = await cameraFor(deps.rls, o.capability, id)
-  if (!allowed.ok) return { ok: false, error: MSG_READ_CAMERA }
-  if (!allowed.allowed) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
+  // The person's own client answers whether they may use this camera for recordings: every capability asked for must cover it
+  // (fast playback asks cctv.export AND cctv.playback, P2-2 fix M-3).
+  for (const cap of typeof o.capability === 'string' ? [o.capability] : o.capability) {
+    const allowed = await cameraFor(deps.rls, cap, id)
+    if (!allowed.ok) return { ok: false, error: MSG_READ_CAMERA }
+    if (!allowed.allowed) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
+  }
   // Only then the NVR address and login, with the service role: signed-in people cannot read them any more (AC-10).
   const found = await deps.admin
     .from('cameras')
@@ -130,15 +134,36 @@ export async function findCamera(
   const { data, error } = await deps.admin.rpc('nvr_read_credential', { p_store: camera.store_id })
   if (error) {
     logger.error({ event: 'playback_credential_failed', store: camera.stores.code, errorCode: error.code })
-    return { ok: false, error: MSG_READ_LOGIN }
+    return { ok: false, error: await recorderMessage(deps.rls, camera.store_id, MSG_READ_LOGIN, 'credential_read_failed') }
   }
-  if (typeof data !== 'string' || data === '') return { ok: false, error: MSG_NO_LOGIN }
+  if (typeof data !== 'string' || data === '') return { ok: false, error: await recorderMessage(deps.rls, camera.store_id, MSG_NO_LOGIN, 'no_saved_login') }
   return { ok: true, camera, password: data, demo }
 }
 
-/** NVR trouble in plain words. Anything unexpected is logged by its kind only: its text can carry an address or a password. */
-function nvrFailure(e: unknown, event: string): { ok: false; error: string } {
-  if (e instanceof NvrError) return { ok: false, error: describeNvrError(e) }
+// ── NVR and credential trouble, for whom (P2-2 fix round 1, I-2) ──────────────
+// Which login is saved, whether the NVR refused it, whether it answered: recorder information, for people with the IT view of the
+// camera's store (it.inventory.view or it.monitoring.view covering the location, asked as the person). Everybody else gets one
+// message in camera terms. The kind of trouble is always logged on the server (never its text).
+export const MSG_RECORDINGS_UNREACHABLE = 'The recordings of this camera cannot be reached right now.'
+
+/** Whether the person has the IT view of the store (whole location or the organisation), asked in the database. */
+export async function recorderDetailsAllowed(rls: AdminClient, storeId: string): Promise<boolean> {
+  for (const cap of IT_VIEW) {
+    const r = await locationFor(rls, cap, storeId)
+    if (r.ok && r.allowed) return true
+  }
+  return false
+}
+
+/** `specific` for a person with the IT view of the store, the camera-terms message for everybody else. */
+export async function recorderMessage(rls: AdminClient, storeId: string, specific: string, kind: string): Promise<string> {
+  logger.warn({ event: 'recorder_problem', kind })
+  return (await recorderDetailsAllowed(rls, storeId)) ? specific : MSG_RECORDINGS_UNREACHABLE
+}
+
+/** NVR trouble in plain words (camera terms without the IT view). Anything unexpected is logged by its kind only: its text can carry an address or a password. */
+async function nvrFailure(e: unknown, event: string, rls: AdminClient, storeId: string): Promise<{ ok: false; error: string }> {
+  if (e instanceof NvrError) return { ok: false, error: await recorderMessage(rls, storeId, describeNvrError(e), `nvr_${e.kind}`) }
   logger.error({ event, errorName: e instanceof Error ? e.name : typeof e })
   return { ok: false, error: MSG_READ_RECORDINGS }
 }
@@ -159,7 +184,7 @@ export async function listRecordedDays(deps: LookupDeps, actor: Who, cameraId: s
     const client = (deps.nvr ?? defaultNvr)({ host: camera.stores.nvr_ip, port: camera.stores.http_port, username: camera.stores.nvr_username, password: password! })
     return { ok: true, days: await recordedDays(client, { channel: camera.channel, year, month }) }
   } catch (e) {
-    return nvrFailure(e, 'playback_days_failed')
+    return await nvrFailure(e, 'playback_days_failed', deps.rls, camera.store_id)
   }
 }
 
@@ -190,7 +215,7 @@ export async function listDaySegments(
       skipped: found.skipped,
     }
   } catch (e) {
-    return nvrFailure(e, 'playback_segments_failed')
+    return await nvrFailure(e, 'playback_segments_failed', deps.rls, camera.store_id)
   }
 }
 

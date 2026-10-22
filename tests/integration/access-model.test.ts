@@ -221,8 +221,10 @@ describe('capability access model (P2-1)', () => {
     // admin.users is administrative: it still shows no store, camera or device.
     for (const t of ['stores', 'cameras', 'devices'] as const) expect(await rows(m, t)).toEqual([])
 
-    // Administrators read every profile of their organisation by their role (administrative authority), but no data.
+    // P2-2 fix M-2: no role literal any more: an administrator reads only their own profile until granted admin.users, and no data.
     const a = await createUser(orgA, 'admin')
+    expect(await rows(a, 'profiles')).toEqual([a.id])
+    await grant(orgA, a.id, 'admin.users')
     expect((await rows(a, 'profiles')).length).toBeGreaterThan(2)
     for (const t of ['stores', 'cameras', 'devices', 'admin_audit_log'] as const) expect(await rows(a, t)).toEqual([])
     await grant(orgA, a.id, 'admin.audit.read')
@@ -627,6 +629,8 @@ describe('capability access model (P2-1)', () => {
       cctv_visible_group_ids: people,
       // P2-2: the caller's capability summary (one call per request). Signed-in people only: the service role is nobody.
       my_access_summary: ['authenticated'],
+      // P2-2 fix I-1: why targets are offline, in camera terms without the IT view.
+      status_reasons: ['authenticated'],
       grant_access: server,
       revoke_grant: server,
       replace_user_grants: server,
@@ -684,7 +688,7 @@ describe('capability access model (P2-1)', () => {
     const forPeople = new Set([
       'current_org_id', 'current_user_role', 'monitor_stale_after_minutes', 'mfa_enforced', 'has_capability', 'has_capability_for',
       'capability_camera_ids', 'capability_store_ids', 'capability_device_ids', 'any_cctv_camera_ids', 'cameras_with_capability',
-      'any_grant_store_ids', 'it_view_store_ids', 'it_view_device_ids', 'cctv_visible_group_ids', 'my_access_summary',
+      'any_grant_store_ids', 'it_view_store_ids', 'it_view_device_ids', 'cctv_visible_group_ids', 'my_access_summary', 'status_reasons',
     ])
     for (const f of data ?? []) {
       expect(f.grantees.filter((g) => g === 'anon' || g.startsWith('PUBLIC')), `${f.name}(${f.args})`).toEqual([])
