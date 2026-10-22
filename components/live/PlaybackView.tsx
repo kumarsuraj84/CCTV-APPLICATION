@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { listDaySegmentsAction, listRecordedDaysAction, openPlaybackAction } from '@/lib/actions/playback'
 import { clampDay, dayLabel, monthInBounds, shiftMonth } from '@/lib/streams/calendar'
+import { fastMinutes, isSpeed, MAX_FAST_MINUTES, SPEEDS, speedLabel, vodUrl, type Speed } from '@/lib/streams/speed'
 import {
   blockAt,
   dayBlocks,
@@ -22,6 +23,7 @@ import {
 } from '@/lib/streams/timeline'
 import { DayCalendar } from './DayCalendar'
 import { DayTimeline } from './DayTimeline'
+import { FastPlayer } from './FastPlayer'
 import { PlaybackPlayer } from './PlaybackPlayer'
 
 export type PlaybackCamera = { id: string; name: string; storeCode: string }
@@ -29,7 +31,7 @@ export type PlaybackCamera = { id: string; name: string; storeCode: string }
 type Segments = { start: string; end: string }[]
 type DaysLoaded = { key: string; days: number[]; error: string | null }
 type DayLoaded = { key: string; segments: Segments; truncated: boolean; skipped: number; error: string | null }
-type Session = { id: number; token: string; minutes: number; label: string; startIso: string }
+type Session = { id: number; minutes: number; label: string; startIso: string } & ({ kind: 'live'; token: string } | { kind: 'fast'; src: string; speed: Speed })
 
 const COULD_NOT_REACH = 'Could not reach the server.'
 
@@ -37,7 +39,7 @@ const COULD_NOT_REACH = 'Could not reach the server.'
  * Playback for one camera: a month to pick the day from, the day's recordings on a 24 hour bar, a start time (click or drag on the bar, or
  * type HH:MM), a length, and the picture. Times are the clock people see (India time, 24 hour).
  */
-export function PlaybackView({ camera, today, initialDay }: { camera: PlaybackCamera; today: string; initialDay: string }) {
+export function PlaybackView({ camera, today, initialDay, fastPlayback = false }: { camera: PlaybackCamera; today: string; initialDay: string; /** ffmpeg runs on the server, so 2x, 4x and 8x can be offered. */ fastPlayback?: boolean }) {
   const startDay = clampDay(parseDay(initialDay) ? initialDay : today, today)
   const first = parseDay(startDay)!
   const [day, setDay] = useState(startDay)
@@ -46,6 +48,7 @@ export function PlaybackView({ camera, today, initialDay }: { camera: PlaybackCa
   const [draft, setDraft] = useState<string | null>(null)
   const [clockError, setClockError] = useState<string | null>(null)
   const [length, setLength] = useState<number>(DEFAULT_LENGTH)
+  const [speed, setSpeed] = useState<Speed>(1)
   const [session, setSession] = useState<Session | null>(null)
   const [busy, setBusy] = useState(false)
   const [playError, setPlayError] = useState<string | null>(null)
@@ -125,9 +128,20 @@ export function PlaybackView({ camera, today, initialDay }: { camera: PlaybackCa
     }
   }
 
-  const start = async (iso: string, minutes: number, text: string) => {
-    setBusy(true)
+  // Without ffmpeg on the server only 1x is offered, whatever was chosen before.
+  const playSpeed: Speed = fastPlayback ? speed : 1
+
+  const start = async (iso: string, minutes: number, text: string, at: Speed = playSpeed) => {
     setPlayError(null)
+    const label = `${camera.storeCode}, ${camera.name}, ${text}`
+    if (at !== 1) {
+      // Fast playback needs no token: the picture is the video route's answer to a plain video element.
+      const clip = fastMinutes(minutes)
+      setSession({ id: nextId.current++, kind: 'fast', src: vodUrl({ camera: camera.id, start: iso, minutes: clip }), speed: at, minutes: clip, label, startIso: iso })
+      setTimeout(() => playerBox.current?.focus(), 0)
+      return
+    }
+    setBusy(true)
     try {
       const res = await openPlaybackAction(camera.id, iso, minutes)
       if (!res.ok) {
@@ -135,7 +149,7 @@ export function PlaybackView({ camera, today, initialDay }: { camera: PlaybackCa
         toast.error(res.error)
         return
       }
-      setSession({ id: nextId.current++, token: res.token, minutes, label: `${camera.storeCode}, ${camera.name}, ${text}`, startIso: iso })
+      setSession({ id: nextId.current++, kind: 'live', token: res.token, minutes, label, startIso: iso })
       // The picture takes the focus so a keyboard or screen reader user lands on it.
       setTimeout(() => playerBox.current?.focus(), 0)
     } catch {
@@ -163,8 +177,12 @@ export function PlaybackView({ camera, today, initialDay }: { camera: PlaybackCa
     if (!session) return
     const from = new Date(Date.parse(session.startIso) + seconds * 1000)
     const remaining = Math.max(1, Math.ceil((session.minutes * 60 - seconds) / 60))
-    void start(from.toISOString(), remaining, `from ${formatShortDateTime(from.toISOString())}`)
+    void start(from.toISOString(), remaining, `from ${formatShortDateTime(from.toISOString())}`, session.kind === 'fast' ? session.speed : 1)
   }
+
+  const playLabel = playSpeed === 1 ? `Play ${length} minutes` : `Play ${fastMinutes(length)} minutes at ${speedLabel(playSpeed)}`
+  // Under the speed: why only 1x is offered, or that fast playback is shorter than the longest normal playback.
+  const fastHelp = !fastPlayback ? 'Fast playback is not set up on this server.' : playSpeed !== 1 && length > MAX_FAST_MINUTES ? `Fast playback shows at most ${MAX_FAST_MINUTES} minutes.` : null
 
   const summary = !loaded
     ? 'Loading the recordings…'
@@ -236,10 +254,23 @@ export function PlaybackView({ camera, today, initialDay }: { camera: PlaybackCa
                 {LENGTH_CHOICES.map((n) => <option key={n} value={n}>{n} minutes</option>)}
               </select>
             </div>
+            <div className="space-y-1">
+              <Label htmlFor={`${ids}-speed`}>Speed</Label>
+              <select
+                id={`${ids}-speed`}
+                value={playSpeed}
+                onChange={(e) => { const n = Number(e.target.value); if (isSpeed(n)) setSpeed(n) }}
+                aria-describedby={fastHelp === null ? undefined : `${ids}-speed-help`}
+                className="h-8 rounded-lg border border-input bg-transparent px-2 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm dark:bg-input/30"
+              >
+                {(fastPlayback ? SPEEDS : SPEEDS.filter((s) => s === 1)).map((s) => <option key={s} value={s}>{speedLabel(s)}</option>)}
+              </select>
+            </div>
             <Button ref={playButton} type="button" onClick={play} disabled={busy || (minute === null && draft === null)}>
-              <Play aria-hidden="true" /> {busy ? 'Opening…' : `Play ${length} minutes`}
+              <Play aria-hidden="true" /> {busy ? 'Opening…' : playLabel}
             </Button>
           </div>
+          {fastHelp !== null && <p id={`${ids}-speed-help`} className="text-xs text-muted-foreground">{fastHelp}</p>}
           <p id={`${ids}-time-help`} className={clockError ? 'text-xs text-destructive' : 'text-xs text-muted-foreground'}>
             {clockError ?? 'Click or drag on the bar, use the arrow keys on it, or type the time (24-hour, for example 14:30).'}
           </p>
@@ -257,7 +288,11 @@ export function PlaybackView({ camera, today, initialDay }: { camera: PlaybackCa
       {session && (
         <div ref={playerBox} tabIndex={-1} className="space-y-2 outline-none" aria-label="Playback">
           <h2 className="text-sm font-semibold">Playing {session.label}</h2>
-          <PlaybackPlayer key={session.id} token={session.token} minutes={session.minutes} label={session.label} onStop={stop} onContinue={carryOn} />
+          {session.kind === 'fast' ? (
+            <FastPlayer key={session.id} src={session.src} minutes={session.minutes} speed={session.speed} label={session.label} onStop={stop} onContinue={carryOn} />
+          ) : (
+            <PlaybackPlayer key={session.id} token={session.token} minutes={session.minutes} label={session.label} onStop={stop} onContinue={carryOn} />
+          )}
         </div>
       )}
     </div>

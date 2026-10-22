@@ -30,20 +30,26 @@ export const FUTURE_SLACK_MS = 15 * 60_000
 export const MAX_START_SHIFTS = 20
 const MAX_AGE_MS = 365 * 86_400_000
 
+/** True when a start (a shown-time instant) is not more than 15 minutes ahead of the shown clock and not older than a year. `nowMs` is the real clock. */
+export function startInBounds(startMs: number, nowMs: number): boolean {
+  const shownNow = shownNowMs(nowMs)
+  return Number.isFinite(startMs) && startMs <= shownNow + FUTURE_SLACK_MS && startMs >= shownNow - MAX_AGE_MS
+}
+
 export const MSG_CAMERA_NOT_FOUND = 'Camera not found.'
 export const MSG_NO_LOGIN = 'This store has no saved NVR login.'
-const MSG_READ_CAMERA = 'Could not read the camera.'
-const MSG_READ_LOGIN = 'Could not read the NVR login.'
+export const MSG_READ_CAMERA = 'Could not read the camera.'
+export const MSG_READ_LOGIN = 'Could not read the NVR login.'
 const MSG_READ_RECORDINGS = 'Could not read the recordings. Please try again.'
 const MSG_BAD_REQUEST = 'That request is not valid.'
-const MSG_BAD_START = 'Choose a start time within the last year, not in the future.'
+export const MSG_BAD_START = 'Choose a start time within the last year, not in the future.'
 const MSG_BAD_LENGTH = 'Choose how long to play.'
 export const MSG_TOO_BUSY = 'Too many people are watching this recording right now. Try again in a moment.'
 /** After this many answers in a row that could not be read, go2rtc is taken to be down. */
 const MAX_UNREADABLE_IN_A_ROW = 3
 
-type StoreRow = { code: string; nvr_ip: string; http_port: number; rtsp_port: number; nvr_username: string }
-type CameraRow = { id: string; name: string; channel: number; store_id: string; stores: StoreRow | null }
+export type StoreRow = { code: string; nvr_ip: string; http_port: number; rtsp_port: number; nvr_username: string }
+export type CameraRow = { id: string; name: string; channel: number; store_id: string; stores: StoreRow | null }
 
 export type PlaybackDeps = {
   /** The person's own signed-in client: whatever it can read is what they may see. */
@@ -80,10 +86,10 @@ export function parsePlaybackOffset(raw: string | undefined): number {
   return 0
 }
 
-type Found = { camera: CameraRow & { stores: StoreRow }; password: string | null; demo: boolean }
+export type Found = { camera: CameraRow & { stores: StoreRow }; password: string | null; demo: boolean }
 
 /** The camera if this person may see it (and it and its store are switched on), and the NVR password unless it is not needed. */
-async function findCamera(deps: PlaybackDeps, cameraId: string, o: { password: 'always' | 'unless-demo'; env?: Record<string, string | undefined> }): Promise<Result<Found>> {
+export async function findCamera(deps: PlaybackDeps, cameraId: string, o: { password: 'always' | 'unless-demo'; env?: Record<string, string | undefined> }): Promise<Result<Found>> {
   if (typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
   const found = await deps.rls
     .from('cameras')
@@ -186,8 +192,7 @@ export async function openPlayback(deps: OpenPlaybackDeps, actor: Who, cameraId:
   if (typeof minutes !== 'number' || !Number.isFinite(minutes)) return { ok: false, error: MSG_BAD_LENGTH }
   if (!(start instanceof Date) || !Number.isFinite(start.getTime())) return { ok: false, error: MSG_BAD_START }
   const now = deps.now ?? Date.now
-  const shownNow = shownNowMs(now())
-  if (start.getTime() > shownNow + FUTURE_SLACK_MS || start.getTime() < shownNow - MAX_AGE_MS) return { ok: false, error: MSG_BAD_START }
+  if (!startInBounds(start.getTime(), now())) return { ok: false, error: MSG_BAD_START }
   if (deps.limiter && !deps.limiter.allow(actor.id)) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
 
   const length = Math.min(MAX_PLAY_MINUTES, Math.max(MIN_PLAY_MINUTES, Math.round(minutes)))

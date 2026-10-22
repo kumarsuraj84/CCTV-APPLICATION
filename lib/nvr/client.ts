@@ -36,6 +36,10 @@ export type NvrClientOptions = { timeoutMs?: number; fetchImpl?: typeof fetch }
 export const MAX_RESPONSE_BYTES = 1024 * 1024
 /** Largest request body sent to an NVR (search and calendar requests are a few hundred bytes). */
 export const MAX_REQUEST_BYTES = 8 * 1024
+/** Longest a download (a recording sent by the NVR) may take, from the first request to the last byte. */
+export const MAX_DOWNLOAD_MS = 30 * 60_000
+/** Most bytes read from one download. */
+export const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
 const DEFAULT_TIMEOUT_MS = 8000
 /** Only ISAPI paths made of plain path characters: no space, control character, query, fragment or backslash. */
 const SAFE_PATH = /^\/ISAPI\/[A-Za-z0-9._~/-]*$/
@@ -92,32 +96,158 @@ export class NvrClient {
     return this.request('POST', path, xml, signal)
   }
 
-  private async request(method: 'GET' | 'POST', path: string, body: string | undefined, signal: AbortSignal): Promise<string> {
-    // Programming mistakes (not NVR trouble): plain errors that never echo the path or the body.
+  /**
+   * POSTs one small XML document (at most 8 KB) and returns the answer as a stream of bytes, for a download that is far larger than
+   * any ISAPI answer (a recording). Same login (Digest only), same path rule, same body cap and same typed errors as `post`, with these differences:
+   *
+   *  - Everything that can be an error before the first byte is: a refused login, a status other than 200, a Content-Length above the
+   *    limit, or an answer that is text (XML, JSON, HTML: an NVR reports some failures as a 200 with a status document) instead of a recording
+   *    all END THE CALL with an NvrError. Only then is the stream handed back.
+   *  - There are two deadlines, both on one signal: `timeoutMs` (default 8 s) for the connection, the login and the headers, and then
+   *    `maxMs` (default 30 minutes, MAX_DOWNLOAD_MS) for the whole transfer. When either passes, the transfer is cut.
+   *  - The bytes are counted: more than `maxBytes` (default 2 GB, MAX_DOWNLOAD_BYTES) cuts the transfer too.
+   *  - Once the stream has been handed back there is no way to send an error document: a failure after that point (the NVR resets the
+   *    connection, a deadline passes, the byte limit is reached) makes the stream fail with an NvrError when it is read, and the reader
+   *    decides what that means for what it has already passed on.
+   *  - `signal` is the caller's own cancel (for example "the person closed the page"): it cuts the transfer at once. Cancelling the stream
+   *    does the same and releases the connection.
+   *
+   * Nothing in an error carries the address, the login or the path.
+   */
+  async postStream(path: string, xml: string, o: { signal?: AbortSignal; maxBytes?: number; maxMs?: number } = {}): Promise<ReadableStream<Uint8Array>> {
+    this.check('POST', path, xml)
+    const maxBytes = o.maxBytes ?? MAX_DOWNLOAD_BYTES
+    const maxMs = o.maxMs ?? MAX_DOWNLOAD_MS
+    if (!Number.isFinite(maxBytes) || maxBytes <= 0 || !Number.isFinite(maxMs) || maxMs <= 0) throw new Error('Invalid NVR download limits.')
+    const url = this.url(path)
+
+    const stop = new AbortController()
+    const state: { why: 'timeout' | 'cancelled' | 'too-large' | null } = { why: null }
+    const cut = (reason: NonNullable<typeof state.why>) => {
+      state.why ??= reason
+      stop.abort()
+    }
+    const onCaller = () => cut('cancelled')
+    const headerTimer = setTimeout(() => cut('timeout'), this.#opts.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+    const totalTimer = setTimeout(() => cut('timeout'), maxMs)
+    headerTimer.unref?.()
+    totalTimer.unref?.()
+    const release = () => {
+      clearTimeout(headerTimer)
+      clearTimeout(totalTimer)
+      o.signal?.removeEventListener('abort', onCaller)
+    }
+    if (o.signal?.aborted) onCaller()
+    else o.signal?.addEventListener('abort', onCaller, { once: true })
+
+    let res: Response
+    try {
+      const ep = this.#ep
+      res = await digestFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/xml' }, body: xml, username: ep.username, password: ep.password, signal: stop.signal }, this.#opts.fetchImpl)
+      if (res.status !== 200) {
+        await drop(res)
+        throw this.statusError(res.status)
+      }
+      const type = res.headers.get('content-type') ?? ''
+      const length = Number(res.headers.get('content-length'))
+      if (/xml|json|html|^text\//i.test(type)) {
+        await drop(res)
+        throw new NvrError('bad_response', 'the NVR answered with a document, not a recording')
+      }
+      if (Number.isFinite(length) && length > maxBytes) {
+        await drop(res)
+        throw new NvrError('bad_response', 'download too large')
+      }
+      if (!res.body) throw new NvrError('bad_response', 'empty answer')
+    } catch (e) {
+      release()
+      stop.abort()
+      if (state.why === 'cancelled') throw new NvrError('unreachable', 'cancelled')
+      throw this.toNvrError(e)
+    }
+    clearTimeout(headerTimer)
+
+    const reader = res.body.getReader()
+    let total = 0
+    return new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          try {
+            const { done, value } = await reader.read()
+            if (done) {
+              release()
+              controller.close()
+              return
+            }
+            total += value.byteLength
+            if (total > maxBytes) {
+              cut('too-large')
+              release()
+              await reader.cancel().catch(() => {})
+              controller.error(new NvrError('bad_response', 'download too large'))
+              return
+            }
+            controller.enqueue(value)
+          } catch {
+            release()
+            stop.abort()
+            controller.error(state.why === 'timeout' ? new NvrError('timeout', 'download too slow') : new NvrError('unreachable', 'download interrupted'))
+          }
+        },
+        async cancel() {
+          cut('cancelled')
+          release()
+          await reader.cancel().catch(() => {})
+        },
+      },
+      { highWaterMark: 0 }, // nothing is read from the NVR until the reader asks: the reader's pace is the NVR's pace
+    )
+  }
+
+  /** Programming mistakes (not NVR trouble): plain errors that never echo the path or the body. */
+  private check(method: 'GET' | 'POST', path: string, body: string | undefined) {
     if (typeof path !== 'string' || !SAFE_PATH.test(path) || path.includes('..')) throw new Error('Invalid NVR request path.')
     if (method === 'POST' && (typeof body !== 'string' || Buffer.byteLength(body, 'utf8') > MAX_REQUEST_BYTES)) throw new Error('Invalid NVR request body.')
+  }
+
+  private url(path: string): string {
     const ep = this.#ep
     if (!validHost(ep.host) || !validPort(ep.port)) throw new NvrError('unreachable', 'invalid NVR address')
     const host = isIP(ep.host) === 6 ? `[${ep.host}]` : ep.host
+    return `http://${host}:${ep.port}${path}`
+  }
+
+  private statusError(status: number): NvrError {
+    if (status === 401) return new NvrError('auth', 'login refused')
+    if (status === 403) return new NvrError('forbidden', 'not allowed')
+    return new NvrError('bad_response', `status ${status}`)
+  }
+
+  private toNvrError(e: unknown): NvrError {
+    if (e instanceof NvrError) return e
+    if (e instanceof DigestUnsupportedError) return new NvrError('bad_response', 'no supported login method offered', 'unsupported_login')
+    if (e instanceof DigestInputError) return new NvrError('bad_response', 'login details cannot be used')
+    const name = (e as { name?: string }).name
+    return new NvrError(name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable', 'request failed')
+  }
+
+  private async request(method: 'GET' | 'POST', path: string, body: string | undefined, signal: AbortSignal): Promise<string> {
+    this.check(method, path, body)
+    const ep = this.#ep
+    const url = this.url(path)
     try {
       const res = await digestFetch(
-        `http://${host}:${ep.port}${path}`,
+        url,
         { method, headers: body === undefined ? undefined : { 'Content-Type': 'application/xml' }, body, username: ep.username, password: ep.password, signal },
         this.#opts.fetchImpl,
       )
       if (res.status !== 200) {
         await drop(res)
-        if (res.status === 401) throw new NvrError('auth', 'login refused')
-        if (res.status === 403) throw new NvrError('forbidden', 'not allowed')
-        throw new NvrError('bad_response', `status ${res.status}`)
+        throw this.statusError(res.status)
       }
       return await readCapped(res)
     } catch (e) {
-      if (e instanceof NvrError) throw e
-      if (e instanceof DigestUnsupportedError) throw new NvrError('bad_response', 'no supported login method offered', 'unsupported_login')
-      if (e instanceof DigestInputError) throw new NvrError('bad_response', 'login details cannot be used')
-      const name = (e as { name?: string }).name
-      throw new NvrError(name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable', 'request failed')
+      throw this.toNvrError(e)
     }
   }
 

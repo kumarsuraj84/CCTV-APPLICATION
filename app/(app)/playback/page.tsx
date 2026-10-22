@@ -10,6 +10,7 @@ import { requireProfile } from '@/lib/auth/profile'
 import { listVisibleStores } from '@/lib/queries/inventory'
 import { getLiveScope } from '@/lib/queries/live'
 import { parseDay, shownToday } from '@/lib/streams/timeline'
+import { fastPlaybackAvailable } from '@/lib/streams/vod'
 import { createClient } from '@/lib/supabase/server'
 import { cn } from '@/lib/utils'
 
@@ -32,6 +33,8 @@ export default async function PlaybackPage({ searchParams }: { searchParams: Pro
     const camera = scope?.cameras[0]
     if (!scope || !camera) notFound()
     const day = one(sp.day)
+    // Fast playback (2x, 4x, 8x) needs ffmpeg on the server; the answer is remembered for a minute.
+    const fastPlayback = await fastPlaybackAvailable()
     return (
       <div className="space-y-4">
         <PageHeader
@@ -44,7 +47,7 @@ export default async function PlaybackPage({ searchParams }: { searchParams: Pro
             </Link>
           }
         />
-        <PlaybackView camera={{ id: camera.id, name: camera.name, storeCode: camera.storeCode }} today={today} initialDay={parseDay(day) ? day! : today} />
+        <PlaybackView camera={{ id: camera.id, name: camera.name, storeCode: camera.storeCode }} today={today} initialDay={parseDay(day) ? day! : today} fastPlayback={fastPlayback} />
       </div>
     )
   }

@@ -69,6 +69,13 @@ export type FakeNvrOptions = {
   searchAnswer?: (o: { position: number; maxResults: number; body: string }) => string
   /** Takes over the whole calendar answer. */
   dailyAnswer?: (o: { year: number; month: number; body: string }) => string
+  /** What a download sends instead of FAKE_DOWNLOAD_BYTES (default: those). */
+  downloadBytes?: Buffer
+  /**
+   * How a download goes. ok: the bytes at once. endless: the first bytes, then more every 20 ms until the client goes away (counted in
+   * downloadsEnded). xml: 200 with an XML status document instead of a recording. stall: headers and a few bytes, then nothing.
+   */
+  download?: 'ok' | 'endless' | 'xml' | 'stall'
   port?: number
 }
 export type FakeNvr = Bound & {
@@ -79,6 +86,8 @@ export type FakeNvr = Bound & {
   posts: { path: string; body: string; contentType: string }[]
   /** Test-only: the bodies of the POSTs to /ISAPI/ContentMgmt/download that passed the login (each at most 64 KB). */
   downloadBodies: string[]
+  /** Test-only: how many endless downloads have been ended by the client going away. */
+  downloadsEnded: { count: number }
   setStatuses: (s: Record<number, boolean>) => void
 }
 
@@ -186,6 +195,7 @@ export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNv
 
   const posts: FakeNvr['posts'] = []
   const downloadBodies: string[] = []
+  const downloadsEnded = { count: 0 }
 
   const handle = (req: http.IncomingMessage, res: http.ServerResponse, body: string) => {
     const challenge = () => {
@@ -242,8 +252,28 @@ export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNv
       posts.push({ path, body, contentType: String(req.headers['content-type'] ?? '') })
       if (path === DOWNLOAD_PATH) {
         downloadBodies.push(body)
-        res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': String(FAKE_DOWNLOAD_BYTES.length) })
-        return res.end(FAKE_DOWNLOAD_BYTES)
+        const bytes = options.downloadBytes ?? FAKE_DOWNLOAD_BYTES
+        if (options.download === 'xml') {
+          res.writeHead(200, { 'Content-Type': 'application/xml' })
+          return res.end('<ResponseStatus><statusCode>4</statusCode></ResponseStatus>')
+        }
+        if (options.download === 'stall') {
+          res.writeHead(200, { 'Content-Type': 'video/mp4' })
+          res.write(bytes.subarray(0, 8))
+          return
+        }
+        if (options.download === 'endless') {
+          res.writeHead(200, { 'Content-Type': 'video/mp4' })
+          res.write(bytes)
+          const timer = setInterval(() => res.write(Buffer.alloc(1024, 1)), 20)
+          res.on('close', () => {
+            clearInterval(timer)
+            downloadsEnded.count++
+          })
+          return
+        }
+        res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': String(bytes.length) })
+        return res.end(bytes)
       }
       if (path === SEARCH_PATH) {
         const asked = tagNumber(body, 'maxResults')
@@ -292,7 +322,7 @@ export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNv
     s.on('close', () => sockets.delete(s))
   })
   const port = await new Promise<number>((resolve) => server.listen(options.port ?? 0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port)))
-  return { port, host: (server.address() as net.AddressInfo).address, requests, authorizations, posts, downloadBodies, setStatuses: (s) => (statuses = s), close: closer(server, sockets) }
+  return { port, host: (server.address() as net.AddressInfo).address, requests, authorizations, posts, downloadBodies, downloadsEnded, setStatuses: (s) => (statuses = s), close: closer(server, sockets) }
 }
 
 // ── Fake RTSP camera endpoint ────────────────────────────────────────────────
