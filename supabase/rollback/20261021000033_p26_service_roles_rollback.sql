@@ -409,9 +409,13 @@ DROP FUNCTION IF EXISTS public.security_settings_set_test(uuid, boolean);
 DROP FUNCTION IF EXISTS public.service_role_may_read_credentials(uuid);
 DROP TABLE IF EXISTS public.security_settings;
 
--- The roles: every privilege in this database first (DROP OWNED also removes default privileges), then membership, then the roles.
+-- The roles: every privilege in this database first (revoking a table privilege also revokes its column privileges), then the
+-- membership, then the roles. (DROP OWNED is not used: the migration owner has ADMIN on these roles but not their privileges.)
 -- Roles are cluster-wide: if another database of this cluster granted them anything, DROP ROLE says so and they stay (harmless).
-DROP OWNED BY app_web, media_service, monitor_worker, video_gateway;
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM app_web, media_service, monitor_worker, video_gateway;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM app_web, media_service, monitor_worker, video_gateway;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM app_web, media_service, monitor_worker, video_gateway;
+REVOKE USAGE ON SCHEMA public FROM app_web, media_service, monitor_worker, video_gateway;
 REVOKE app_web, media_service, monitor_worker, video_gateway FROM authenticator;
 DROP ROLE IF EXISTS app_web;
 DROP ROLE IF EXISTS media_service;
