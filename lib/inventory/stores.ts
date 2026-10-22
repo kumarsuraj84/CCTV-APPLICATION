@@ -7,11 +7,11 @@ import { ensurePlaceholderCameras } from '@/lib/inventory/cameras'
 import { storeSchema } from '@/lib/inventory/schemas'
 import { addressChanged, MSG_PASSWORD_AGAIN } from '@/lib/inventory/recorder-admin'
 
-// The "Manage stores" form (P2-5b): a location plus its PRIMARY recorder (NVR) and that recorder's cameras. The location row holds no NVR
+// The old "Manage stores" form (P2-5b; T-1 retired the page, the service stays for the import): a location plus its PRIMARY recorder (NVR) and that recorder's cameras. The location row holds no NVR
 // data any more; the NVR is a recorder of its own (address, ports, login name, expected cameras; the password only in the vault). A
 // location's further NVRs are managed per recorder (P2-5c screens); this form never touches them.
 
-const DENIED = 'Only administrators can change stores.'
+const DENIED = 'Only administrators can change locations.'
 
 export { ensurePlaceholderCameras }
 
@@ -42,9 +42,9 @@ export async function savePrimaryRecorder(admin: AdminClient, actor: Actor, loca
   return { recorderId, created: !existing, ...(warning ? { warning } : {}) }
 }
 
-export const MSG_ADDRESS_SHARED = 'This NVR address is also used by the NVR of another store. Check that it is right.'
+export const MSG_ADDRESS_SHARED = 'This NVR address is also used by the NVR of another location. Check that it is right.'
 /** The plain answer to the database's DR010 (another NVR of the same location already has this address and port). */
-export const MSG_ADDRESS_TAKEN_HERE = 'Another NVR of this store already has this address.'
+export const MSG_ADDRESS_TAKEN_HERE = 'Another NVR of this location already has this address.'
 
 /**
  * Review M-2: on this all-VPN network the same NVR address at two locations is more likely a typo than an SD-WAN overlap. It is saved
@@ -66,7 +66,7 @@ export function recorderSaveError(e: unknown, route: string, fallback: string): 
   return sanitizeError(e, { route, fallback })
 }
 
-export const CAMERAS_FAILED = 'The store was saved, but its cameras could not be created. Open the store and save it again.'
+export const CAMERAS_FAILED = 'The location was saved, but its cameras could not be created. Open the location and save it again.'
 
 /** The store is already saved when this runs, so a failure is reported without undoing anything (the audit row is still written by the caller). */
 async function tryPlaceholderCameras(admin: AdminClient, orgId: string, locationId: string, recorderId: string, count: number, route: string): Promise<boolean> {
@@ -93,7 +93,7 @@ export async function createStore(admin: AdminClient, actor: Actor, input: unkno
   const { data, error } = await admin.from('locations').insert({
     org_id: actor.orgId, code, name: v.name, city: v.city, zone: normalizeZone(v.zone), state: normalizeZone(v.state), address: v.address, is_active: v.is_active,
   }).select('id').single()
-  if (error || !data) return { ok: false, error: sanitizeError(error, { route: 'createStore', fallback: 'Could not save the store.' }) }
+  if (error || !data) return { ok: false, error: sanitizeError(error, { route: 'createStore', fallback: 'Could not save the location.' }) }
   // Rows are archived, never deleted (history is kept); an archived location frees its code for a new attempt.
   const undo = () => admin.rpc('inventory_archive', { p_org: actor.orgId, p_kind: 'location', p_id: data.id, p_actor: actor.id })
   let recorderId: string
@@ -121,7 +121,7 @@ export async function updateStore(admin: AdminClient, actor: Actor, storeId: str
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? 'Check the form and try again.' }
   const v = parsed.data
   const { data: existing } = await admin.from('locations').select('id').eq('id', storeId).eq('org_id', actor.orgId).is('archived_at', null).maybeSingle()
-  if (!existing) return { ok: false, error: 'Store not found.' }
+  if (!existing) return { ok: false, error: 'Location not found.' }
   // Review M-7: a store without an NVR (a head office, or every NVR archived) gets one only with its password; checked before anything
   // is changed.
   let current: string | null
@@ -157,7 +157,7 @@ export async function updateStore(admin: AdminClient, actor: Actor, storeId: str
   const { error } = await admin.from('locations').update({
     name: v.name, city: v.city, zone: normalizeZone(v.zone), state: normalizeZone(v.state), address: v.address, is_active: v.is_active,
   }).eq('id', storeId).eq('org_id', actor.orgId)
-  if (error) return { ok: false, error: sanitizeError(error, { route: 'updateStore', fallback: 'Could not save the store.' }) }
+  if (error) return { ok: false, error: sanitizeError(error, { route: 'updateStore', fallback: 'Could not save the location.' }) }
   const camerasOk = await tryPlaceholderCameras(admin, actor.orgId, storeId, recorderId, v.channels, 'updateStore.cameras')
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'store_updated', entityType: 'location', entityId: storeId, detail: { recorder_id: recorderId } })
   if (!camerasOk) return { ok: false, error: CAMERAS_FAILED }
@@ -167,11 +167,11 @@ export async function updateStore(admin: AdminClient, actor: Actor, storeId: str
 export async function deleteStore(admin: AdminClient, actor: Actor, storeId: string): Promise<Result<object>> {
   if (!isAdminRole(actor.role)) return { ok: false, error: DENIED }
   const { data: existing } = await admin.from('locations').select('id, code').eq('id', storeId).eq('org_id', actor.orgId).is('archived_at', null).maybeSingle()
-  if (!existing) return { ok: false, error: 'Store not found.' }
+  if (!existing) return { ok: false, error: 'Location not found.' }
   // P2-5a (brief item 2): deleting is archiving. The location, its cameras, recorders and devices are switched off and archived;
   // their monitoring history, grants, groups and the recorders' vault logins are kept (restore brings them back).
   const { error } = await admin.rpc('inventory_archive', { p_org: actor.orgId, p_kind: 'location', p_id: storeId, p_actor: actor.id })
-  if (error) return { ok: false, error: sanitizeError(error, { route: 'deleteStore', fallback: 'Could not delete the store.' }) }
+  if (error) return { ok: false, error: sanitizeError(error, { route: 'deleteStore', fallback: 'Could not delete the location.' }) }
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'store_deleted', entityType: 'location', entityId: storeId, detail: { code: existing.code, archived: true } })
   return { ok: true }
 }

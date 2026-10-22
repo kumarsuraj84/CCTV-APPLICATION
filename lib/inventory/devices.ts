@@ -6,7 +6,7 @@ import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { assertRefsInOrg } from '@/lib/security/org-scope'
 
 const DENIED = 'Only administrators can change devices.'
-export const MSG_IS_NVR = 'This is the NVR of a store. Change it on the Manage stores page.'
+export const MSG_IS_NVR = 'This is the NVR of a location. Change it under Locations and NVRs.'
 
 /**
  * Review M4: a location's NVR is a recorder asset, not a device. The device screens never change or delete it (its address, login
@@ -27,7 +27,7 @@ async function checked(admin: AdminClient, actor: Actor, input: unknown) {
     try {
       await assertRefsInOrg(admin, actor.orgId, [{ table: 'locations', ids: [v.store_id] }])
     } catch {
-      return { error: 'That store was not found.' } as const
+      return { error: 'That location was not found.' } as const
     }
   }
   return { value: v } as const

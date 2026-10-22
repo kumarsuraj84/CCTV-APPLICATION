@@ -4,6 +4,7 @@ import { Section } from '@/components/admin/inventory/fields'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { importDevicesAction } from '@/lib/actions/admin/inventory'
 import { requireAdministration } from '@/lib/auth/profile'
+import { DEVICES_IMPORT_HELP } from '@/lib/import/help'
 
 export const metadata = { title: 'Import' }
 
@@ -25,7 +26,7 @@ export default async function ImportPage() {
       </Section>
       <ImportForm
         title="Devices"
-        help="Columns: name, type (nvr, server, attendance, footfall, other), store_code (optional), ip, port (optional), notes (optional)."
+        help={DEVICES_IMPORT_HELP}
         sampleHref="/samples/devices-sample.csv"
         action={importDevicesAction}
       />

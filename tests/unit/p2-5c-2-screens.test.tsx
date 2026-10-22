@@ -9,6 +9,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }) }))
 import { DiscoverAll, RunResults } from '@/components/admin/inventory/DiscoverAll'
 import { ImportResultPanel, LocationImport, PreviewPanel } from '@/components/admin/import/LocationImport'
 import { WifiInventoryTable } from '@/components/wifi/WifiInventoryTable'
+import { DEVICES_IMPORT_HELP } from '@/lib/import/help'
 import { parseLocationsCsv } from '@/lib/import/locations-csv'
 import { planImport } from '@/lib/import/locations-plan'
 import type { RunView } from '@/lib/inventory/discover-all'
@@ -81,6 +82,14 @@ describe('P2-5c-2 screens', () => {
   it.each(screens)('%s: plain wording, "location" not "store", and no password anywhere', (_name, html) => {
     expect(text(html)).not.toMatch(/\bstores?\b/i)
     expect(html).not.toMatch(/Pw-screen/)
+  })
+
+  // T-1: the visible help says "location code" and documents the accepted spellings of the column.
+  it('the import help speaks of the location code and names location_code and store_code', () => {
+    const t = text(screens[0][1])
+    expect(t).toContain('the location code (code, also written location_code or, in older files, store_code)')
+    expect(t).toContain('with the same location code')
+    expect(DEVICES_IMPORT_HELP).toContain('location_code (optional; the older name store_code also works)')
   })
 
   it('the preview names each problem by line, column and reason; with problems there is no Import button, only the way out', () => {

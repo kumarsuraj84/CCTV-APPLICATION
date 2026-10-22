@@ -42,7 +42,7 @@ describe('a store is saved but its cameras cannot be created', () => {
 
   it('createStore keeps the store, writes the audit row and returns a plain error', async () => {
     const res = await createStore(failingCameras(), actor, input)
-    expect(res).toEqual({ ok: false, error: 'The store was saved, but its cameras could not be created. Open the store and save it again.' })
+    expect(res).toEqual({ ok: false, error: 'The location was saved, but its cameras could not be created. Open the location and save it again.' })
     const { data: store } = await adminClient().from('locations').select('id').eq('org_id', orgId).eq('code', 'CF1').single()
     expect(store).not.toBeNull()
     const { data: audit } = await adminClient().from('admin_audit_log').select('action').eq('org_id', orgId).eq('entity_id', store!.id)
@@ -55,7 +55,7 @@ describe('a store is saved but its cameras cannot be created', () => {
   it('updateStore does the same, and a retry with a working client creates the cameras', async () => {
     const { data: store } = await adminClient().from('locations').select('id').eq('org_id', orgId).eq('code', 'CF1').single()
     const res = await updateStore(failingCameras(), actor, store!.id, { ...input, nvr_password: '', city: 'Patna' })
-    expect(res).toEqual({ ok: false, error: 'The store was saved, but its cameras could not be created. Open the store and save it again.' })
+    expect(res).toEqual({ ok: false, error: 'The location was saved, but its cameras could not be created. Open the location and save it again.' })
     const { data: row } = await adminClient().from('locations').select('city').eq('id', store!.id).single()
     expect(row?.city).toBe('Patna')
     const { data: audit } = await adminClient().from('admin_audit_log').select('action').eq('org_id', orgId).eq('entity_id', store!.id).order('created_at')

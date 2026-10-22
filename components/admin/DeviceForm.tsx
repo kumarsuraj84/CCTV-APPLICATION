@@ -27,9 +27,9 @@ export function DeviceForm({ device, stores }: { device?: DeviceFormValues; stor
         </select>
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="store_id">Store</Label>
+        <Label htmlFor="store_id">Location</Label>
         <select id="store_id" name="store_id" defaultValue={v('store_id', device?.store_id)} className="h-8 w-full rounded-lg border bg-background px-2 text-sm">
-          <option value="">Not at a store</option>
+          <option value="">Not at a location</option>
           {stores.map((s) => (<option key={s.id} value={s.id}>{s.code} · {s.name}</option>))}
         </select>
       </div>

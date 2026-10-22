@@ -125,8 +125,8 @@ export default async function MonitoringPage() {
         <section className="space-y-2">
           <h2 className="font-medium">NVR login problems ({loginProblems.length})</h2>
           <p className="text-sm text-muted-foreground">
-            These NVRs answer, but their cameras have no recent result. The saved NVR user name or password is probably wrong. Open Manage stores and check them.
-            A store that was only just added looks the same for a few minutes.
+            These NVRs answer, but their cameras have no recent result. The saved NVR user name or password is probably wrong. Open Locations and NVRs, choose the location, then the NVR, and check its login.
+            A location that was only just added looks the same for a few minutes.
           </p>
           <ul className="divide-y rounded-xl border bg-card text-sm">
             {loginProblems.map((p) => (

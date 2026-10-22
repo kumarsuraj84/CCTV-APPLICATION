@@ -47,11 +47,11 @@ const MAX_NAME = 200
 
 const DENIED = 'Only administrators can look for cameras.'
 export const MSG_NVR_NOT_FOUND = 'NVR not found.'
-/** The location's primary NVR (the one the Manage stores page edits) has no password. */
-export const MSG_NO_NVR_PASSWORD = 'This NVR has no password saved. Add it on the Manage stores page first.'
+/** The location's primary NVR (the one the legacy single-NVR import and form edit) has no password. */
+export const MSG_NO_NVR_PASSWORD = 'This NVR has no password saved. Add it under Locations and NVRs first.'
 /** Any other NVR of the location (its page arrives with P2-5c): no advice that leads nowhere (review M-8). */
 export const MSG_NO_NVR_PASSWORD_OTHER = 'This NVR has no password saved yet.'
-export const MSG_NO_NVR = 'This store has no NVR.'
+export const MSG_NO_NVR = 'This location has no NVR.'
 /** P2-5b re-review N-3: an NVR of a switched-off location is never contacted. */
 export const MSG_LOCATION_OFF = 'This location is switched off. Switch it on before looking for cameras.'
 /** An archived NVR is never contacted (it is not "not found": the administrator can restore it). */
@@ -323,19 +323,19 @@ export type LocationDiscovery = {
 }
 
 /**
- * Discovery of every NVR of one location, one after the other (the "Find cameras" button of the store list). A switched-off NVR is
+ * Discovery of every NVR of one location, one after the other (the "Find cameras" of a location). A switched-off NVR is
  * listed with its plain message and never contacted. Succeeds when at least one NVR answered.
  */
 export async function discoverStoreCameras(clients: Clients, actor: Actor, storeId: string, deps: Deps = defaults): Promise<Result<LocationDiscovery>> {
   if (!isAdminRole(actor.role)) return { ok: false, error: DENIED }
-  if (typeof storeId !== 'string' || !UUID.test(storeId)) return { ok: false, error: 'Store not found.' }
-  const may = await mayDiscoverAt(clients, actor, storeId, 'Store not found.')
+  if (typeof storeId !== 'string' || !UUID.test(storeId)) return { ok: false, error: 'Location not found.' }
+  const may = await mayDiscoverAt(clients, actor, storeId, 'Location not found.')
   if (!may.ok) return may
   let recorders: Recorder[]
   try {
     recorders = await recordersOfLocation(clients.admin, actor.orgId, storeId)
   } catch (e) {
-    return { ok: false, error: sanitizeError(e, { route: 'discoverStoreCameras', fallback: 'Could not read the store.' }) }
+    return { ok: false, error: sanitizeError(e, { route: 'discoverStoreCameras', fallback: 'Could not read the location.' }) }
   }
   if (recorders.length === 0) return { ok: false, error: MSG_NO_NVR }
   const out: LocationDiscovery = { cameras: 0, created: 0, updated: 0, mapped: 0, moved: 0, recorders: [] }

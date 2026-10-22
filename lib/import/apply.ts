@@ -34,7 +34,7 @@ export async function importStores(admin: AdminClient, actor: Actor, rows: Store
         current = await primaryRecorderOf(admin, storeId)
         // Review M-7: an existing store that has no NVR yet gets one only with its password.
         if (!current && !r.recorder.password) {
-          result.errors.push({ line: r.line, message: 'This store has no NVR yet: give the password of its NVR.' })
+          result.errors.push({ line: r.line, message: 'This location has no NVR yet: give the password of its NVR.' })
           continue
         }
         // P2-5c-1 review I-4 (the NVR page's rule and words): the saved password belongs to the address and web port it was saved for;
@@ -50,7 +50,7 @@ export async function importStores(admin: AdminClient, actor: Actor, rows: Store
         }
       } else {
         if (!r.recorder.password) {
-          result.errors.push({ line: r.line, message: 'A new store needs a password for its NVR.' })
+          result.errors.push({ line: r.line, message: 'A new location needs a password for its NVR.' })
           continue
         }
         const { data, error } = await admin.from('locations').insert({ ...fields, org_id: actor.orgId, code: r.code }).select('id').single()
@@ -119,7 +119,7 @@ export async function importDevices(admin: AdminClient, actor: Actor, rows: Devi
       if (r.store_code) {
         storeId = byCode.get(r.store_code) ?? null
         if (!storeId) {
-          result.errors.push({ line: r.line, message: `There is no store with the code ${r.store_code}.` })
+          result.errors.push({ line: r.line, message: `There is no location with the code ${r.store_code}.` })
           continue
         }
       }

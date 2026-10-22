@@ -31,7 +31,7 @@ export default async function ManageDevicesPage({ searchParams }: { searchParams
       <div className="overflow-x-auto rounded-xl border bg-card">
         <table className="w-full text-sm">
           <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-            <tr><th className="px-3 py-2">Name</th><th className="px-3 py-2">Type</th><th className="px-3 py-2">Store</th><th className="px-3 py-2">Address</th><th className="px-3 py-2" /></tr>
+            <tr><th className="px-3 py-2">Name</th><th className="px-3 py-2">Type</th><th className="px-3 py-2">Location</th><th className="px-3 py-2">Address</th><th className="px-3 py-2" /></tr>
           </thead>
           <tbody>
             {devices.map((d) => (

@@ -6,6 +6,7 @@ import { FileCheck2, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { FormAlert } from '@/components/ui/form-alert'
 import { applyLocationImportAction, checkLocationImportAction, type ImportApplyState, type ImportCheckState } from '@/lib/actions/admin/import-locations'
+import { LOCATION_COLUMNS_HELP } from '@/lib/import/help'
 import type { ImportOutcome } from '@/lib/import/locations-import'
 import type { ImportPreview, PlanLocationView, PlanRecorderView } from '@/lib/import/locations-plan'
 import { CheckField } from '../inventory/fields'
@@ -76,8 +77,7 @@ export function LocationImport() {
             }}
           />
           <p id="import-file-help" className="text-xs text-muted-foreground">
-            Up to 5 MB. Columns: code or name, and for each NVR: ip, user, password (optional: display_name, kind, city, zone, state, address,
-            region, cluster, port, http_port, channels, nvr_name, monitoring). Several NVRs of one location: one row each, with the same code.
+            {LOCATION_COLUMNS_HELP}
           </p>
         </div>
         <Button type="submit" disabled={pending || !file}>

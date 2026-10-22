@@ -41,7 +41,7 @@ export default async function DevicesPage({ searchParams }: { searchParams: Prom
         <table className="w-full text-sm">
           <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
             <tr>
-              <th className="px-3 py-2">Name</th><th className="px-3 py-2">Type</th><th className="px-3 py-2">Store</th><th className="px-3 py-2">Address</th>
+              <th className="px-3 py-2">Name</th><th className="px-3 py-2">Type</th><th className="px-3 py-2">Location</th><th className="px-3 py-2">Address</th>
               <th className="px-3 py-2">Status</th><th className="px-3 py-2 text-right">Uptime 24h{uptimeSuffix(monitoring)}</th>
             </tr>
           </thead>

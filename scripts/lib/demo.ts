@@ -1,6 +1,6 @@
 // Shared by the two demo scripts (scripts/fake-nvr.ts and scripts/seed-demo.ts). Pure code, so it can be tested.
 //
-// Everything the demo connects to is on this computer: every address below is 127.0.0.1. A real store address must never appear here.
+// Everything the demo connects to is on this computer: every address below is 127.0.0.1. A real location address must never appear here.
 import { randomBytes } from 'node:crypto'
 
 export const LOOPBACK = '127.0.0.1'
@@ -101,11 +101,11 @@ export function demoPlan(nvrPort: number = DEFAULT_NVR_PORT, dead: DeadPorts = D
   }
   return {
     stores: [
-      { code: 'DEMO1', name: 'Demo Store Patna', city: 'Patna', zone: 'BR', recorders: [{ name: 'NVR 1', httpPort: nvr, rtspPort: FAKE_RTSP_PORT, cameras: 6 }] },
+      { code: 'DEMO1', name: 'Demo location Patna', city: 'Patna', zone: 'BR', recorders: [{ name: 'NVR 1', httpPort: nvr, rtspPort: FAKE_RTSP_PORT, cameras: 6 }] },
       // Nothing listens on these two ports: the NVR is down.
-      { code: 'DEMO2', name: 'Demo Store Ranchi', city: 'Ranchi', zone: 'Jharkhand', recorders: [{ name: 'NVR 1', httpPort: dead.nvrHttp, rtspPort: dead.nvrRtsp, cameras: 4 }] },
+      { code: 'DEMO2', name: 'Demo location Ranchi', city: 'Ranchi', zone: 'Jharkhand', recorders: [{ name: 'NVR 1', httpPort: dead.nvrHttp, rtspPort: dead.nvrRtsp, cameras: 4 }] },
       {
-        code: 'DEMO3', name: 'Demo Store Gaya', city: 'Gaya', zone: 'BR',
+        code: 'DEMO3', name: 'Demo location Gaya', city: 'Gaya', zone: 'BR',
         recorders: [
           { name: 'NVR 1', httpPort: second, rtspPort: FAKE_RTSP_2_PORT, cameras: 4 },
           // Nothing listens here: only THIS NVR's cameras show the recorder as the cause; NVR 1's cameras are unaffected.

@@ -126,7 +126,7 @@ async function addDemo(admin: Admin, nvrPort: number, secondNvrPort: number): Pr
     const storeIds: Record<string, string> = {}
     for (const s of plan.stores) {
       const { data, error } = await admin.from('locations').insert({ org_id: orgId, code: s.code, name: s.name, city: s.city, zone: s.zone }).select('id').single()
-      if (error || !data) throw new Error(`store ${s.code}: ${error?.message}`)
+      if (error || !data) throw new Error(`location ${s.code}: ${error?.message}`)
       storeIds[s.code] = data.id
       // P2-5b: each NVR is a recorder of its own (the same function the app uses; two NVRs of one location may both have channel 1).
       for (const r of s.recorders) {
@@ -191,7 +191,7 @@ async function addDemo(admin: Admin, nvrPort: number, secondNvrPort: number): Pr
   console.log('Demo people. These passwords are shown now and are NOT saved anywhere:')
   for (const p of passwords) console.log(`  ${DEMO_ROLE_LABELS[p.role].padEnd(15)} ${p.email.padEnd(40)} ${p.password}`)
   console.log('')
-  console.log('Next: run `npm run fake:nvr` and `npm run worker`, sign in, press "Find cameras" for DEMO1 and DEMO3 on Manage stores, then "Check now" on Monitoring.')
+  console.log('Next: run `npm run fake:nvr` and `npm run worker`, sign in, open Locations and NVRs, press "Find cameras for all", then "Check now" on Monitoring.')
   console.log('Remove all of it with `npm run demo:seed -- --reset` (stop the worker first).')
 }
 

@@ -35,7 +35,7 @@ export function parseStoresCsv(text: string): { rows: StoreRow[]; errors: RowErr
     headers.forEach((h, i) => (v[h] = cells[i] ?? ''))
     const fail = (message: string) => errors.push({ line, message })
     const name = v.name.trim()
-    if (!name) { fail('The store name is empty.'); continue }
+    if (!name) { fail('The location name is empty.'); continue }
     if (!isValidIp(v.ip)) { fail(`“${v.ip.trim()}” is not a valid IP address.`); continue }
     const rtsp = parsePort(v.port ?? '', 554)
     const http = parsePort(v.http_port ?? '', 80)
@@ -44,7 +44,7 @@ export function parseStoresCsv(text: string): { rows: StoreRow[]; errors: RowErr
     const channelsText = (v.channels ?? '').trim()
     if (channelsText !== '' && !/^\d{1,3}$/.test(channelsText)) { fail('The number of channels must be a whole number up to 999.'); continue }
     const code = (v.code?.trim() || name).toUpperCase().slice(0, 50)
-    if (seen.has(code)) { fail(`The store code ${code} appears more than once in this file.`); continue }
+    if (seen.has(code)) { fail(`The location code ${code} appears more than once in this file.`); continue }
     seen.add(code)
     rows.push({
       line, code, name,

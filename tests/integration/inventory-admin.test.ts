@@ -92,7 +92,7 @@ describe('inventory administration', () => {
     const parsed = parseStoresCsv('name,ip,user,password\nGamma,192.0.2.12,viewer,\n')
     const res = await importStores(admin(), actor, parsed.rows)
     expect(res.created).toBe(0)
-    expect(res.errors).toEqual([{ line: 2, message: 'A new store needs a password for its NVR.' }])
+    expect(res.errors).toEqual([{ line: 2, message: 'A new location needs a password for its NVR.' }])
     const { data } = await admin().from('locations').select('id').eq('org_id', orgId).eq('code', 'GAMMA')
     expect(data).toEqual([])
   })
@@ -101,7 +101,7 @@ describe('inventory administration', () => {
     const parsed = parseDevicesCsv('name,type,store_code,ip,port\nERP,server,alpha,192.0.2.20,443\nHead office switch,other,,192.0.2.21,\nLost,server,nowhere,192.0.2.22,\n')
     const res = await importDevices(admin(), actor, parsed.rows)
     expect(res.created).toBe(2)
-    expect(res.errors).toEqual([{ line: 4, message: 'There is no store with the code NOWHERE.' }])
+    expect(res.errors).toEqual([{ line: 4, message: 'There is no location with the code NOWHERE.' }])
     const again = await importDevices(admin(), actor, parsed.rows.slice(0, 2))
     expect(again).toEqual({ created: 0, updated: 2, errors: [] })
     // (The stores' NVRs are assets too since P2-5a — recorders — and are not devices of the import.)
@@ -162,8 +162,8 @@ describe('inventory administration', () => {
     const nvr = (await admin().rpc('recorder_primary_of', { p_location: made.storeId })).data as string
     const before = (await admin().from('assets').select('name, ip, enabled, archived_at').eq('id', nvr).single()).data
     expect(await updateDevice(admin(), actor, nvr, { name: 'Renamed', type: 'server', ip: '192.0.2.61' }))
-      .toEqual({ ok: false, error: 'This is the NVR of a store. Change it on the Manage stores page.' })
-    expect(await deleteDevice(admin(), actor, nvr)).toEqual({ ok: false, error: 'This is the NVR of a store. Change it on the Manage stores page.' })
+      .toEqual({ ok: false, error: 'This is the NVR of a location. Change it under Locations and NVRs.' })
+    expect(await deleteDevice(admin(), actor, nvr)).toEqual({ ok: false, error: 'This is the NVR of a location. Change it under Locations and NVRs.' })
     expect((await admin().from('assets').select('name, ip, enabled, archived_at').eq('id', nvr).single()).data).toEqual(before)
   })
 

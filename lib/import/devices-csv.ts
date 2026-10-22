@@ -18,7 +18,8 @@ const orNull = (v: string | undefined) => (v && v.trim() !== '' ? v.trim() : nul
 export function parseDevicesCsv(text: string): { rows: DeviceRow[]; errors: RowError[] } {
   const raw = parseCsv(text)
   if (raw.length === 0) return { rows: [], errors: [{ line: 1, message: 'The file is empty.' }] }
-  const headers = raw[0].cells.map((h) => h.trim().toLowerCase())
+  // T-1: the column is location_code; the older store_code keeps working (the first of them that has a value is used).
+  const headers = raw[0].cells.map((h) => { const k = h.trim().toLowerCase(); return k === 'store_code' ? 'location_code' : k })
   if (!['name', 'type', 'ip'].every((h) => headers.includes(h))) {
     return { rows: [], errors: [{ line: 1, message: 'The first line must have the columns name, type and ip (see the sample file).' }] }
   }
@@ -26,7 +27,7 @@ export function parseDevicesCsv(text: string): { rows: DeviceRow[]; errors: RowE
   const errors: RowError[] = []
   for (const { line, cells } of raw.slice(1)) {
     const v: Record<string, string> = {}
-    headers.forEach((h, i) => (v[h] = cells[i] ?? ''))
+    headers.forEach((h, i) => { if (!v[h]) v[h] = cells[i] ?? '' })
     const fail = (message: string) => errors.push({ line, message })
     const name = v.name.trim()
     if (!name) { fail('The device name is empty.'); continue }
@@ -37,7 +38,7 @@ export function parseDevicesCsv(text: string): { rows: DeviceRow[]; errors: RowE
     if (v.port && v.port.trim() !== '' && port === null) { fail('The port must be a number from 1 to 65535.'); continue }
     rows.push({
       line, name, type: type as DeviceType,
-      store_code: orNull(v.store_code)?.toUpperCase() ?? null,
+      store_code: orNull(v.location_code)?.toUpperCase() ?? null,
       ip: v.ip.trim(), tcp_port: port, notes: orNull(v.notes),
     })
   }

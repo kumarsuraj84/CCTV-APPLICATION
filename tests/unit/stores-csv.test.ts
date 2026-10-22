@@ -28,7 +28,7 @@ describe('parseStoresCsv', () => {
   it('reports a repeated code on the later line', () => {
     const { rows, errors } = parseStoresCsv('code,name,ip,user\nA1,One,192.0.2.1,u\nA1,Two,192.0.2.2,u\n')
     expect(rows).toHaveLength(1)
-    expect(errors).toEqual([{ line: 3, message: 'The store code A1 appears more than once in this file.' }])
+    expect(errors).toEqual([{ line: 3, message: 'The location code A1 appears more than once in this file.' }])
   })
 
   it('refuses a file without the required columns', () => {

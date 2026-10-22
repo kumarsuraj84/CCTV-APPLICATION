@@ -36,7 +36,7 @@ export async function listVisibleStores(supabase: Client, q?: string): Promise<S
  */
 export async function getVisibleStore(supabase: Client, id: string) {
   const { data: store, error } = await supabase.from('locations').select('id, code, name, city, zone, state, address, is_active').eq('id', id).eq('is_active', true).maybeSingle()
-  if (error) throw new Error('Could not read the store.')
+  if (error) throw new Error('Could not read the location.')
   if (!store) return null
   // (Archived rows are never visible to signed-in people: row security leaves them out, so no archived filter is needed here.)
   const [rows, addresses, devices, recorders] = await Promise.all([

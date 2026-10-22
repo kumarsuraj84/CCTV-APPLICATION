@@ -94,14 +94,14 @@ describe('finding cameras on the NVR', () => {
     expect(await discoverStoreCameras(d(), actor, gone)).toEqual({ ok: false, error: 'The NVR did not answer.' })
     // A location without any NVR.
     const ho = await createLocation(orgId, { code: 'HO', kind: 'head_office' })
-    expect(await discoverStoreCameras(d(), actor, ho)).toEqual({ ok: false, error: 'This store has no NVR.' })
+    expect(await discoverStoreCameras(d(), actor, ho)).toEqual({ ok: false, error: 'This location has no NVR.' })
   })
 
   it('does not ask the NVR at all when it has no saved password', async () => {
     const id = (await site('NOPW', nvr.port)).locationId
     const asked = nvr.requests.length
     const res = await discoverStoreCameras(d(), actor, id)
-    expect(res).toEqual({ ok: false, error: 'This NVR has no password saved. Add it on the Manage stores page first.' })
+    expect(res).toEqual({ ok: false, error: 'This NVR has no password saved. Add it under Locations and NVRs first.' })
     expect(nvr.requests.length).toBe(asked)
     // M-8: a store's further NVR cannot be edited on that page: no advice that leads nowhere.
     const second = await createRecorder(orgId, id, { name: 'Second', host: '127.0.0.1', httpPort: 9, rtspPort: 8554 })
@@ -164,9 +164,9 @@ describe('finding cameras on the NVR', () => {
     expect(nvr.requests.length).toBe(asked)
     const other = await createOrg()
     const foreign = await createSite(other, { code: 'OTH', host: '127.0.0.1', httpPort: nvr.port, secret: 'secret-pass' })
-    expect(await discoverStoreCameras(d(), actor, foreign.locationId)).toEqual({ ok: false, error: 'Store not found.' })
+    expect(await discoverStoreCameras(d(), actor, foreign.locationId)).toEqual({ ok: false, error: 'Location not found.' })
     expect(await discoverRecorderCameras(d(), actor, foreign.recorderId)).toEqual({ ok: false, error: 'NVR not found.' })
-    expect(await discoverStoreCameras(d(), actor, 'not-an-id')).toEqual({ ok: false, error: 'Store not found.' })
+    expect(await discoverStoreCameras(d(), actor, 'not-an-id')).toEqual({ ok: false, error: 'Location not found.' })
     expect(await discoverRecorderCameras(d(), actor, 'not-an-id')).toEqual({ ok: false, error: 'NVR not found.' })
     expect((await admin().from('cameras').select('id').eq('location_id', foreign.locationId)).data).toEqual([])
     expect(nvr.requests.length).toBe(asked)

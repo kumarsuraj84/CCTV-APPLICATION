@@ -134,10 +134,10 @@ describe('P2-5b review round 1', () => {
     const same = await admin().rpc('recorder_save', { p_org: orgId, p_location: loc, p_recorder: null as unknown as string, p_host: '192.0.2.170', p_http_port: 80, p_rtsp_port: 554, p_username: 'viewer' })
     expect(same.error?.code).toBe('DR010')
     const made = await createStore(admin(), actor, { code: 'DUP2', name: 'Typo', ip: '192.0.2.170', nvr_user: 'viewer', nvr_password: 'Secret-D2', channels: 0 })
-    expect(made).toMatchObject({ ok: true, warning: 'This NVR address is also used by the NVR of another store. Check that it is right.' })
+    expect(made).toMatchObject({ ok: true, warning: 'This NVR address is also used by the NVR of another location. Check that it is right.' })
     const res = await importStores(admin(), actor, parseStoresCsv('code,name,ip,user,password,channels\nDUP3,Typo again,192.0.2.170,viewer,Secret-D3,0\n').rows)
     expect(res.errors).toEqual([])
-    expect(res.warnings).toEqual([{ line: 2, message: 'This NVR address is also used by the NVR of another store. Check that it is right.' }])
+    expect(res.warnings).toEqual([{ line: 2, message: 'This NVR address is also used by the NVR of another location. Check that it is right.' }])
   })
 
   // ═══ M-6 / M-7 / I-5 (CSV row whose NVR save fails) ═════════════════════════════════════════════════════════════════════════
@@ -156,7 +156,7 @@ describe('P2-5b review round 1', () => {
 
   it('M-6: when only the cameras could not be made, the CSV row says exactly that (the store and its NVR were saved)', async () => {
     const res = await importStores(failing({ insertInto: 'cameras' }), actor, parseStoresCsv('code,name,ip,user,password,channels\nCAMF,No cameras,192.0.2.183,viewer,Secret-C,2\n').rows)
-    expect(res.errors).toEqual([{ line: 2, message: 'The store was saved, but its cameras could not be created. Open the store and save it again.' }])
+    expect(res.errors).toEqual([{ line: 2, message: 'The location was saved, but its cameras could not be created. Open the location and save it again.' }])
     expect(res.created).toBe(1)
   })
 
@@ -164,7 +164,7 @@ describe('P2-5b review round 1', () => {
     const loc = await createLocation(orgId, { code: 'NOPW', name: 'No NVR yet' })
     expect(await updateStore(admin(), actor, loc, { name: 'No NVR yet', ip: '192.0.2.190', nvr_user: 'viewer', channels: 2 })).toEqual({ ok: false, error: 'Enter the NVR password.' })
     const res = await importStores(admin(), actor, parseStoresCsv('code,name,ip,user,channels\nNOPW,No NVR yet,192.0.2.190,viewer,2\n').rows)
-    expect(res.errors).toEqual([{ line: 2, message: 'This store has no NVR yet: give the password of its NVR.' }])
+    expect(res.errors).toEqual([{ line: 2, message: 'This location has no NVR yet: give the password of its NVR.' }])
     expect((await admin().from('recorders').select('id').eq('location_id', loc)).data).toEqual([])
     expect((await admin().from('cameras').select('id').eq('location_id', loc)).data).toEqual([])
   })

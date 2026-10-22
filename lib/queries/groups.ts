@@ -102,7 +102,7 @@ export async function listStoreCamerasForGroups(supabase: Client, storeId: strin
   const { data: store, error } = await supabase.from('locations').select('id').eq('id', storeId).eq('is_active', true).maybeSingle()
   if (error) {
     if (error.code === MALFORMED_ID) return null
-    throw new Error('Could not read the store.')
+    throw new Error('Could not read the location.')
   }
   if (!store) return null
   const [cameras, inGroup] = await Promise.all([

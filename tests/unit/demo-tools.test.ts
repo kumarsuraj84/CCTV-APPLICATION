@@ -83,6 +83,9 @@ describe('demo data plan', () => {
     const plan = demoPlan()
     expect(plan.stores.map((s) => s.code)).toEqual(['DEMO1', 'DEMO2', 'DEMO3'])
     for (const s of plan.stores) expect(s.name.startsWith('Demo ')).toBe(true)
+    // T-1 (ruling T-1): the demo places are locations, not stores.
+    expect(plan.stores.map((s) => s.name)).toEqual(['Demo location Patna', 'Demo location Ranchi', 'Demo location Gaya'])
+    expect(JSON.stringify(plan.stores.map((s) => s.name)).toLowerCase()).not.toContain('store')
     for (const d of plan.devices) expect(d.name.startsWith('Demo ')).toBe(true)
     expect(LOOPBACK).toBe('127.0.0.1')
     const source = readFileSync('scripts/seed-demo.ts', 'utf8') + readFileSync('scripts/lib/demo.ts', 'utf8')

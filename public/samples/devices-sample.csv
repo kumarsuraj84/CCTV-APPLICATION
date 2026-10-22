@@ -1,4 +1,4 @@
-name,type,store_code,ip,port,notes
+name,type,location_code,ip,port,notes
 Sample ERP server,server,,192.0.2.20,443,Head office
-Sample attendance machine,attendance,SAMPLE STORE A,192.0.2.21,4370,Entrance
-Sample footfall counter,footfall,SAMPLE STORE A,192.0.2.22,,Door counter
+Sample attendance machine,attendance,SAMPLE LOCATION A,192.0.2.21,4370,Entrance
+Sample footfall counter,footfall,SAMPLE LOCATION A,192.0.2.22,,Door counter

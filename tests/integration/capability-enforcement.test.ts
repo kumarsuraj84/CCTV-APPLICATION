@@ -158,7 +158,7 @@ describe('capability enforcement per operation (P2-2)', () => {
       }
       case 'discovery': {
         const r = await discoverStoreCameras(d, { ...actor, role }, s1, { nvr: (ep) => nvrClient({ ...ep }) })
-        if (!r.ok) expect(['Only administrators can look for cameras.', 'Store not found.']).toContain(r.error)
+        if (!r.ok) expect(['Only administrators can look for cameras.', 'Location not found.']).toContain(r.error)
         return r.ok
       }
     }
@@ -205,7 +205,7 @@ describe('capability enforcement per operation (P2-2)', () => {
     const stranger = await createUser(otherOrg, 'admin')
     await grant(otherOrg, stranger.id, 'admin.inventory')
     nvr.requests.length = 0
-    expect(await discoverStoreCameras({ admin: admin(), rls: stranger.client }, { id: stranger.id, orgId: otherOrg, role: 'admin' }, s1)).toEqual({ ok: false, error: 'Store not found.' })
+    expect(await discoverStoreCameras({ admin: admin(), rls: stranger.client }, { id: stranger.id, orgId: otherOrg, role: 'admin' }, s1)).toEqual({ ok: false, error: 'Location not found.' })
     expect(nvr.requests).toEqual([])
   })
 })

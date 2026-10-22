@@ -8,7 +8,7 @@ const optionalText = z.string().trim().max(200).nullish().transform((v) => (v ? 
 
 export const storeSchema = z.object({
   code: z.string().trim().max(50).nullish(),
-  name: z.string().trim().min(1, 'Enter the store name.').max(200),
+  name: z.string().trim().min(1, 'Enter the location name.').max(200),
   city: optionalText,
   zone: optionalText,
   state: optionalText,
