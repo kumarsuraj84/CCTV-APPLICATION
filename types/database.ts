@@ -691,14 +691,14 @@ isOneToOne: false
                   ]
                 },"media_sessions": {
                   Row: {
-                    "aal2": boolean,"asset_id": string | null,"camera_id": string | null,"capability": string,"closed_at": string | null,"connect_by": string,"created_at": string,"expires_at": string,"id": string,"kind": string,"last_validated_at": string | null,"open_count": number,"opened_at": string | null,"org_id": string,"revoke_reason": string | null,"revoked_at": string | null,"stream": string | null,"user_id": string,"media_session_problem": string | null
+                    "aal2": boolean,"asset_id": string | null,"camera_id": string | null,"capability": string,"closed_at": string | null,"connect_by": string,"created_at": string,"expires_at": string,"id": string,"kind": string,"last_validated_at": string | null,"location_id": string | null,"open_count": number,"opened_at": string | null,"org_id": string,"recorder_id": string | null,"revoke_reason": string | null,"revoked_at": string | null,"stream": string | null,"user_id": string,"media_session_problem": string | null
                   }
                   ComputedFields: "media_session_problem"
                   Insert: {
-                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability": string,"closed_at"?: string | null,"connect_by": string,"created_at"?: string,"expires_at": string,"id"?: string,"kind": string,"last_validated_at"?: string | null,"open_count"?: number,"opened_at"?: string | null,"org_id": string,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"user_id": string
+                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability": string,"closed_at"?: string | null,"connect_by": string,"created_at"?: string,"expires_at": string,"id"?: string,"kind": string,"last_validated_at"?: string | null,"location_id"?: string | null,"open_count"?: number,"opened_at"?: string | null,"org_id": string,"recorder_id"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"user_id": string
                   }
                   Update: {
-                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability"?: string,"closed_at"?: string | null,"connect_by"?: string,"created_at"?: string,"expires_at"?: string,"id"?: string,"kind"?: string,"last_validated_at"?: string | null,"open_count"?: number,"opened_at"?: string | null,"org_id"?: string,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"user_id"?: string
+                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability"?: string,"closed_at"?: string | null,"connect_by"?: string,"created_at"?: string,"expires_at"?: string,"id"?: string,"kind"?: string,"last_validated_at"?: string | null,"location_id"?: string | null,"open_count"?: number,"opened_at"?: string | null,"org_id"?: string,"recorder_id"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"user_id"?: string
                   }
                   Relationships: [
                     {
@@ -1599,6 +1599,11 @@ isOneToOne: false
 "media_sessions_age_test":
 { Args: { "p_seconds": number,"p_sid": string }; Returns: undefined
                            },
+"media_sessions_live_open":
+{ Args: { "p_fresh_sec"?: number,"p_org": string,"p_user": string }; Returns: {
+              "stream": string
+            }[]
+                           },
 "media_sessions_prune":
 { Args: { "p_keep"?: string,"p_org"?: string,"p_unopened_keep"?: string }; Returns: number
                            },
@@ -1799,6 +1804,11 @@ isOneToOne: false
 "status_reasons":
 { Args: { "p_ids": (string)[],"p_type": string }; Returns: {
               "reason": string,"target_id": string
+            }[]
+                           },
+"status_rollups":
+{ Args: { "p_cap"?: string }; Returns: {
+              "cameras_live": number,"cameras_not_checked": number,"cameras_off": number,"cameras_offline": number,"cameras_recorder_unreachable": number,"cameras_stale": number,"cameras_total": number,"level": string,"node_id": string,"recorders_down": number,"recorders_not_checked": number,"recorders_off": number,"recorders_stale": number,"recorders_total": number,"recorders_up": number
             }[]
                            },
 "targets_uptime":
