@@ -1,8 +1,20 @@
 import { createClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { createUser, getUserAccess, listCamerasForAccess, listStoresForAccess, listUsers, resetUserPassword, setUserAccess, updateUser } from '@/lib/admin/users'
+import { applyChange, loadEditor, previewChange, type AccessChange } from '@/lib/admin/access'
+import { createUser, listStoresForAccess, listUsers, resetUserPassword, updateUser } from '@/lib/admin/users'
 import type { Actor } from '@/lib/admin/types'
 import { adminClient, cleanupOrg, createOrg, createUser as makeUser, grant } from '../setup/fixtures'
+
+// P2-3 replaced the interim access editor (setUserAccess / getUserAccess, live + playback ticks) with the change editor in
+// lib/admin/access.ts (explicit grants and revocations, preview, expected version). The tests of the interim editor were moved to
+// the new one here and in tests/integration/access-editor.test.ts, each with the same claim (AC-5, AC-6, AC-8, AC-12).
+async function saveAccess(actor: Actor, userId: string, changes: AccessChange[]) {
+  const version = Number((await adminClient().from('profiles').select('access_version').eq('id', userId).maybeSingle()).data?.access_version ?? 0)
+  const p = await previewChange(adminClient(), actor, userId, { changes, expectedVersion: version })
+  if (!p.ok) return p
+  return applyChange(adminClient(), actor, userId, { changes, expectedVersion: p.version, token: p.token })
+}
+const live = (kind: 'location' | 'camera', id: string): AccessChange[] => (['cctv.live', 'cctv.playback'] as const).map((capability) => ({ op: 'grant', capability, scope_kind: kind, scope_id: id, valid_until: null, reason: '' }))
 
 const admin = () => adminClient()
 
@@ -25,6 +37,9 @@ describe('user administration', () => {
     const a = await makeUser(orgId, 'admin')
     owner = { id: o.id, orgId, role: 'platform_owner' }
     plainAdmin = { id: a.id, orgId, role: 'admin' }
+    // P2-3 grant rule: an administrator gives only what they hold, and needs admin.access.
+    await grant(orgId, o.id, ['admin.users', 'admin.access'])
+    await grant(orgId, a.id, ['admin.users', 'admin.access', 'cctv.live', 'cctv.playback'])
     const { data: s } = await admin().from('stores').insert({ org_id: orgId, code: 'U1', name: 'Store U1', zone: 'BR', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()
     storeId = s!.id
     const { data: cams } = await admin().from('cameras').insert([1, 2, 3].map((n) => ({ org_id: orgId, store_id: storeId, channel: n, name: `C${n}` }))).select('id')
@@ -102,42 +117,44 @@ describe('user administration', () => {
     if (!made.ok) throw new Error('setup failed')
     await admin().from('profiles').update({ must_reset_password: false }).eq('id', made.userId)
 
-    expect((await setUserAccess(admin(), plainAdmin, made.userId, { storeIds: [], zones: [], cameraIds: [cameraIds[0], cameraIds[1]] })).ok).toBe(true)
+    // A new person has no grants at all (AC-8): the create form offers "Assign access next".
+    expect((await admin().from('access_grants').select('id').eq('user_id', made.userId)).data).toEqual([])
+    expect((await saveAccess(plainAdmin, made.userId, [...live('camera', cameraIds[0]), ...live('camera', cameraIds[1])])).ok).toBe(true)
     const { client } = await signIn(email, made.oneTimePassword)
     const seen = await client.from('cameras').select('id')
     expect((seen.data ?? []).map((r) => r.id).sort()).toEqual([cameraIds[0], cameraIds[1]].sort())
-    expect(await getUserAccess(admin(), orgId, made.userId)).toEqual({ storeIds: [], zones: [], cameraIds: expect.arrayContaining([cameraIds[0], cameraIds[1]]), other: [] })
 
-    expect((await setUserAccess(admin(), plainAdmin, made.userId, { storeIds: [storeId], zones: [], cameraIds: [] })).ok).toBe(true)
+    // Widening to the location means granting it and revoking the camera grants, with a reason (P2-3: never by replacing a list).
+    const ed = await loadEditor(admin(), plainAdmin, made.userId)
+    const revokes: AccessChange[] = ed!.grants.filter((g) => g.state === 'active').map((g) => ({ op: 'revoke', grant_id: g.id, reason: 'Whole location instead' }))
+    expect((await saveAccess(plainAdmin, made.userId, [...revokes, ...live('location', storeId)])).ok).toBe(true)
     const all = await client.from('cameras').select('id')
     expect((all.data ?? []).length).toBe(3)
-    // P2-1: the list is saved as explicit live + playback grants; a removed camera grant is revoked, not deleted (history).
+    // Explicit live + playback grants; the removed camera grants are revoked, not deleted (history).
     const { data: grants } = await admin().from('access_grants').select('capability, scope_kind, scope_id, revoked_at').eq('user_id', made.userId)
-    const live = (grants ?? []).filter((g) => g.revoked_at === null).map((g) => `${g.capability}:${g.scope_kind}:${g.scope_id}`).sort()
-    expect(live).toEqual([`cctv.live:location:${storeId}`, `cctv.playback:location:${storeId}`])
+    const liveRows = (grants ?? []).filter((g) => g.revoked_at === null).map((g) => `${g.capability}:${g.scope_kind}:${g.scope_id}`).sort()
+    expect(liveRows).toEqual([`cctv.live:location:${storeId}`, `cctv.playback:location:${storeId}`])
     expect((grants ?? []).filter((g) => g.revoked_at !== null)).toHaveLength(4)
-    expect(await getUserAccess(admin(), orgId, made.userId)).toEqual({ storeIds: [storeId], zones: [], cameraIds: [], other: [] })
   })
 
   // AC-6 (P2-1): this used to be "camera grants inside a store narrow it". Now they only add.
-  it('a camera ticked next to its store adds nothing and takes nothing away, and a zone becomes its stores', async () => {
+  // P2-3: zones are no longer offered (P2-1 turned them into their locations); a change touches only the grants it names.
+  it('a camera next to its location adds nothing and takes nothing away, and a change leaves every other grant alone', async () => {
     const viewer = await makeUser(orgId, 'user')
-    expect((await setUserAccess(admin(), plainAdmin, viewer.id, { storeIds: [storeId], zones: [], cameraIds: [cameraIds[0]] })).ok).toBe(true)
+    expect((await saveAccess(plainAdmin, viewer.id, [...live('location', storeId), ...live('camera', cameraIds[0])])).ok).toBe(true)
     expect(((await viewer.client.from('cameras').select('id')).data ?? []).length).toBe(3)
-    const zoned = await makeUser(orgId, 'user')
-    expect((await setUserAccess(admin(), plainAdmin, zoned.id, { storeIds: [], zones: ['BR'], cameraIds: [] })).ok).toBe(true)
-    expect(((await zoned.client.from('cameras').select('id')).data ?? []).length).toBe(3)
-    expect(await getUserAccess(admin(), orgId, zoned.id)).toMatchObject({ storeIds: [storeId], zones: [], cameraIds: [], other: [] })
-    // The editor leaves other grants alone: an IT grant given elsewhere survives a save.
-    await grant(orgId, zoned.id, 'it.inventory.view')
-    expect((await setUserAccess(admin(), plainAdmin, zoned.id, { storeIds: [], zones: [], cameraIds: [] })).ok).toBe(true)
-    expect(((await zoned.client.from('cameras').select('id')).data ?? []).length).toBe(0)
-    expect((await zoned.client.rpc('has_capability', { p_cap: 'it.inventory.view' })).data).toBe(true)
+    // An IT grant given elsewhere survives removing the CCTV grants.
+    await grant(orgId, viewer.id, 'it.inventory.view')
+    const ed = await loadEditor(admin(), owner, viewer.id)
+    const cctv = ed!.grants.filter((g) => g.capability.startsWith('cctv.')).map((g): AccessChange => ({ op: 'revoke', grant_id: g.id, reason: 'Not needed any more' }))
+    expect((await saveAccess(plainAdmin, viewer.id, cctv)).ok).toBe(true)
+    expect(((await viewer.client.from('cameras').select('id')).data ?? []).length).toBe(0)
+    expect((await viewer.client.rpc('has_capability', { p_cap: 'it.inventory.view' })).data).toBe(true)
   })
 
-  // Review fix I-2: the interim editor shows as ticks only what is in effect now, and saving never re-dates a grant: an expired grant
-  // stays expired, a future one stays future, and neither is turned into a permanent grant.
-  it('expired and future grants are not ticks, are listed as other access, and a save keeps their dates', async () => {
+  // Review fix I-2 (kept in P2-3): saving never re-dates a grant: an expired grant stays expired, a future one stays future, and
+  // neither is turned into a permanent grant; the editor lists both with their state.
+  it('expired and future grants are listed with their state, and a save of other changes keeps their dates', async () => {
     const hour = 3_600_000
     const iso = (ms: number) => new Date(ms).toISOString()
     const mk = async (code: string) => {
@@ -154,52 +171,48 @@ describe('user administration', () => {
     const rowsOf = async () => (await admin().from('access_grants').select('id, scope_id, valid_from, valid_until, revoked_at').eq('user_id', viewer.id).order('id')).data ?? []
     const before = await rowsOf()
 
-    const shown = await getUserAccess(admin(), orgId, viewer.id)
-    expect(shown.storeIds).toEqual([storeId])
-    expect(shown.other.filter((o) => o.scopeId === past.s).map((o) => o.state)).toEqual(['expired', 'expired'])
-    expect(shown.other.filter((o) => o.scopeId === future.s).map((o) => o.state)).toEqual(['future', 'future'])
-
-    // The administrator ticks the expired store again: it stays expired (dates are changed in P2-3 only).
-    expect((await setUserAccess(admin(), plainAdmin, viewer.id, { storeIds: [storeId, past.s], zones: [], cameraIds: [] })).ok).toBe(true)
-    expect(await rowsOf()).toEqual(before)
+    const shown = await loadEditor(admin(), owner, viewer.id)
+    expect(shown!.grants.filter((o) => o.scopeId === past.s).map((o) => o.state)).toEqual(['expired', 'expired'])
+    expect(shown!.grants.filter((o) => o.scopeId === future.s).map((o) => o.state)).toEqual(['future', 'future'])
     const seen = async () => ((await viewer.client.from('cameras').select('id')).data ?? []).map((r) => r.id)
     expect(await seen()).not.toContain(past.c)
     expect(await seen()).not.toContain(future.c)
     // Removing everything that is in effect leaves the dated grants alone.
-    expect((await setUserAccess(admin(), plainAdmin, viewer.id, { storeIds: [], zones: [], cameraIds: [] })).ok).toBe(true)
+    const inEffect = shown!.grants.filter((o) => o.state === 'active').map((o): AccessChange => ({ op: 'revoke', grant_id: o.id, reason: 'Moving to another team' }))
+    expect((await saveAccess(plainAdmin, viewer.id, inEffect)).ok).toBe(true)
+    expect(before.length).toBe(6)
     const after = await rowsOf()
     for (const r of after.filter((x) => x.scope_id !== storeId)) expect(r).toEqual(before.find((b) => b.id === r.id))
     expect(after.filter((x) => x.scope_id === storeId).every((x) => x.revoked_at !== null)).toBe(true)
   })
 
-  // Review fix I-4: the screen shows every other live grant read-only, so organisation-wide (for example migrated) access is never invisible.
-  it('a migrated manager’s organisation-wide grants are listed as other access with source and review flag, and a save keeps them', async () => {
+  // Review fix I-4 (kept in P2-3): every grant is listed, organisation-wide (for example migrated) access included, and a change of
+  // other grants keeps it.
+  it('a migrated manager’s organisation-wide grants are listed with source and review flag, and a save of other changes keeps them', async () => {
     const manager = await makeUser(orgId, 'manager')
     const run = await admin().rpc('access_migrate_legacy_test', { p_run: crypto.randomUUID(), p_users: [manager.id] })
     expect(run.error).toBeNull()
-    const shown = await getUserAccess(admin(), orgId, manager.id)
-    expect(shown.storeIds).toEqual([])
-    const orgWide = shown.other.filter((o) => o.scopeKind === 'organization')
+    const shown = await loadEditor(admin(), owner, manager.id)
+    const orgWide = shown!.grants.filter((o) => o.scopeKind === 'organization')
     expect(orgWide.map((o) => o.capability).sort()).toEqual(['cctv.live', 'cctv.playback', 'it.inventory.view', 'it.monitoring.view'])
-    for (const o of orgWide) expect(o).toMatchObject({ source: 'migrated:manager', needsReview: true, scopeLabel: 'Whole organisation', state: 'effective', validUntil: null })
+    for (const o of orgWide) expect(o).toMatchObject({ source: 'migrated:manager', needsReview: true, scopeLabel: 'Whole organisation', state: 'active', validUntil: null })
     expect(orgWide[0].capabilityLabel.length).toBeGreaterThan(3)
-    expect((await setUserAccess(admin(), plainAdmin, manager.id, { storeIds: [storeId], zones: [], cameraIds: [] })).ok).toBe(true)
-    const again = await getUserAccess(admin(), orgId, manager.id)
-    expect(again.storeIds).toEqual([storeId])
-    expect(again.other.filter((o) => o.scopeKind === 'organization')).toHaveLength(4)
+    expect((await saveAccess(plainAdmin, manager.id, live('location', storeId))).ok).toBe(true)
+    const again = await loadEditor(admin(), owner, manager.id)
+    expect(again!.grants.filter((o) => o.scopeKind === 'organization' && o.state === 'active')).toHaveLength(4)
   })
 
-  // AC-8 (P2-1): this used to refuse a manager ("sees everything"). A manager now gets an access list like everyone else.
-  it('gives a manager an access list like anyone else, and refuses stores of another organisation', async () => {
+  // AC-8 (P2-1): this used to refuse a manager ("sees everything"). A manager now gets explicit grants like everyone else.
+  it('gives a manager explicit grants like anyone else, and refuses locations of another organisation', async () => {
     const manager = await makeUser(orgId, 'manager')
     expect(((await manager.client.from('cameras').select('id')).data ?? []).length).toBe(0)
-    expect((await setUserAccess(admin(), plainAdmin, manager.id, { storeIds: [storeId], zones: [], cameraIds: [] })).ok).toBe(true)
+    expect((await saveAccess(plainAdmin, manager.id, live('location', storeId))).ok).toBe(true)
     expect(((await manager.client.from('cameras').select('id')).data ?? []).length).toBe(3)
     const otherOrg = await createOrg()
     const { data: other } = await admin().from('stores').insert({ org_id: otherOrg, code: 'O1', name: 'Other', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()
     const viewer = await makeUser(orgId, 'user')
-    const res = await setUserAccess(admin(), plainAdmin, viewer.id, { storeIds: [other!.id], zones: [], cameraIds: [] })
-    expect(res.ok).toBe(false)
+    const res = await saveAccess(plainAdmin, viewer.id, live('location', other!.id))
+    expect(res).toMatchObject({ ok: false, error: 'One of the locations, cameras or assets was not found.' })
     await cleanupOrg(otherOrg)
   })
 
@@ -232,7 +245,8 @@ describe('user administration', () => {
       const notFound = { ok: false, error: 'User not found.' }
       expect(await updateUser(admin(), owner, stranger.id, { full_name: 'Hijacked' })).toEqual(notFound)
       expect(await resetUserPassword(admin(), owner, stranger.id)).toEqual(notFound)
-      expect(await setUserAccess(admin(), owner, stranger.id, { storeIds: [], zones: [], cameraIds: [] })).toEqual(notFound)
+      expect(await saveAccess(owner, stranger.id, live('camera', cameraIds[0]))).toEqual(notFound)
+      expect(await loadEditor(admin(), owner, stranger.id)).toBeNull()
       // Nothing changed, and the stranger's password still works.
       expect((await signIn(stranger.email, stranger.password)).error).toBeNull()
     } finally {
@@ -304,20 +318,23 @@ describe('user administration', () => {
       const ins = await admin().from('cameras').insert(rows)
       expect(ins.error).toBeNull()
 
-      const cams = await listCamerasForAccess(admin(), pagingOrg)
+      const v = await makeUser(pagingOrg, 'user')
+      const po = await makeUser(pagingOrg, 'platform_owner')
+      await grant(pagingOrg, po.id, ['admin.users', 'admin.access'])
+      const actor: Actor = { id: po.id, orgId: pagingOrg, role: 'platform_owner' }
+      const editor = await loadEditor(admin(), actor, v.id)
+      const cams = editor!.cameras
       expect(cams).toHaveLength(1002)
       expect(new Set(cams.map((c) => c.id)).size).toBe(1002)
+      expect(editor!.locations).toHaveLength(2)
       expect(await listStoresForAccess(admin(), pagingOrg)).toHaveLength(2)
 
       // A viewer granted every one of those cameras reads them all back.
-      const v = await makeUser(pagingOrg, 'user')
       const ids = cams.map((c) => c.id)
-      const po = await makeUser(pagingOrg, 'platform_owner')
-      const actor: Actor = { id: po.id, orgId: pagingOrg, role: 'platform_owner' }
-      expect((await setUserAccess(admin(), actor, v.id, { storeIds: [], zones: [], cameraIds: ids })).ok).toBe(true)
-      const back = await getUserAccess(admin(), pagingOrg, v.id)
-      expect(back.cameraIds).toHaveLength(1002)
-      expect(new Set(back.cameraIds).size).toBe(1002)
+      expect((await saveAccess(actor, v.id, ids.map((id): AccessChange => ({ op: 'grant', capability: 'cctv.live', scope_kind: 'camera', scope_id: id, valid_until: null, reason: '' })))).ok).toBe(true)
+      const back = (await loadEditor(admin(), actor, v.id))!.grants.filter((g) => g.state === 'active').map((g) => g.scopeId)
+      expect(back).toHaveLength(1002)
+      expect(new Set(back).size).toBe(1002)
 
       expect((await listUsers(admin(), pagingOrg)).length).toBe(2)
     } finally {
@@ -331,6 +348,7 @@ describe('user administration', () => {
     expect(actions).toContain('user_created')
     expect(actions).toContain('user_updated')
     expect(actions).toContain('user_password_reset')
-    expect(actions).toContain('user_access_set')
+    expect(actions).toContain('access_granted') // P2-3: was user_access_set (interim editor)
+    expect(actions).toContain('access_revoked')
   })
 })

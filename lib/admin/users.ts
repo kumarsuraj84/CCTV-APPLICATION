@@ -39,11 +39,10 @@ export const updateUserSchema = z.object({
   store_id: z.uuid().nullable().optional(),
 })
 
-export const accessSchema = z.object({
-  storeIds: z.array(z.uuid()).max(2000),
-  zones: z.array(z.string().trim().min(1).max(100)).max(200),
-  cameraIds: z.array(z.uuid()).max(10000),
-})
+// A person is created with NO grants (AC-8, P2-3): access is given afterwards in the access editor ("Assign access next"). A platform
+// owner ("Super administrator") is the exception of owner ruling P-1: they get every capability for the organisation at once.
+// A role change keeps the person's grants; a role is administrative authority only (lib/admin/roles.ts).
+export const MSG_LAST_SUPER_ADMIN = 'There must always be at least one active super administrator.'
 
 const firstIssue = (e: z.ZodError) => e.issues[0]?.message ?? 'Check the form and try again.'
 
@@ -52,7 +51,7 @@ async function loadTarget(admin: AdminClient, actor: Actor, userId: string) {
   return data
 }
 
-export async function createUser(admin: AdminClient, actor: Actor, input: unknown): Promise<Result<{ userId: string; oneTimePassword: string }>> {
+export async function createUser(admin: AdminClient, actor: Actor, input: unknown): Promise<Result<{ userId: string; oneTimePassword: string; warning?: string }>> {
   const parsed = createUserSchema.safeParse(input)
   if (!parsed.success) return { ok: false, error: firstIssue(parsed.error) }
   const v = parsed.data
@@ -61,7 +60,7 @@ export async function createUser(admin: AdminClient, actor: Actor, input: unknow
     try {
       await assertRefsInOrg(admin, actor.orgId, [{ table: 'stores', ids: [v.store_id] }])
     } catch {
-      return { ok: false, error: 'That store was not found.' }
+      return { ok: false, error: 'That location was not found.' }
     }
   }
   const oneTimePassword = generateOneTimePassword()
@@ -85,6 +84,15 @@ export async function createUser(admin: AdminClient, actor: Actor, input: unknow
     return { ok: false, error: sanitizeError(error, { route: 'createUser.profile', fallback: 'Could not create the user.' }) }
   }
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'user_created', entityType: 'profile', entityId: userId, detail: { role: v.role } })
+  if (v.role === 'platform_owner') {
+    // Ruling P-1: a super administrator holds every capability for the organisation (migration 20261021000016).
+    const full = await admin.rpc('grant_platform_owner_all', { p_org: actor.orgId, p_user: userId })
+    if (full.error) {
+      logger.error({ event: 'platform_owner_grants_failed', userId, errorCode: full.error.code })
+      return { ok: true, userId, oneTimePassword, warning: 'The person was added, but their full rights could not be given. Open their access and use “Full rights”.' }
+    }
+    await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'access_granted', entityType: 'profile', entityId: userId, detail: { preset: 'full-rights', added: Number(full.data ?? 0), reason: 'Platform owner: all capabilities' } })
+  }
   return { ok: true, userId, oneTimePassword }
 }
 
@@ -100,11 +108,19 @@ export async function updateUser(admin: AdminClient, actor: Actor, userId: strin
   }
   if (!canManageRole(actor.role, target.role)) return { ok: false, error: 'You are not allowed to change this user.' }
   if (patch.role && !canManageRole(actor.role, patch.role)) return { ok: false, error: 'You are not allowed to give that role.' }
+  // Ruling P-1: the organisation always keeps at least one active super administrator (platform_owner).
+  const leavesSuper = target.role === 'platform_owner' && target.is_active && (patch.is_active === false || (patch.role !== undefined && patch.role !== 'platform_owner'))
+  if (leavesSuper) {
+    const { count, error: cErr } = await admin.from('profiles').select('id', { count: 'exact', head: true })
+      .eq('org_id', actor.orgId).eq('role', 'platform_owner').eq('is_active', true).neq('id', target.id)
+    if (cErr) return { ok: false, error: sanitizeError(cErr, { route: 'updateUser.lastSuper', fallback: 'Could not save the changes.' }) }
+    if (!count) return { ok: false, error: MSG_LAST_SUPER_ADMIN }
+  }
   if (patch.store_id) {
     try {
       await assertRefsInOrg(admin, actor.orgId, [{ table: 'stores', ids: [patch.store_id] }])
     } catch {
-      return { ok: false, error: 'That store was not found.' }
+      return { ok: false, error: 'That location was not found.' }
     }
   }
   const { error } = await admin.from('profiles').update(patch).eq('id', userId).eq('org_id', actor.orgId)
@@ -150,159 +166,13 @@ export async function resetUserPassword(admin: AdminClient, actor: Actor, userId
   return { ok: true, oneTimePassword }
 }
 
-// The interim access editor (until P2-3 brings the full one with modes, expiry and preview) edits exactly one thing: a person's live
-// video and recordings (cctv.live + cctv.playback) for whole stores and single cameras. It is saved as explicit grants (P2-1, D-1):
-// grants only add (a camera never narrows a store, AC-6), a zone is turned into grants for the stores in it now, and every other grant
-// of the person (other capabilities, organisation-wide grants) is left as it is. Managers get access lists like everyone else (AC-8).
-const EDITOR_CAPABILITIES = ['cctv.live', 'cctv.playback'] as const
-const EDITOR_SCOPES = ['location', 'camera'] as const
-
-export async function setUserAccess(admin: AdminClient, actor: Actor, userId: string, input: unknown): Promise<Result<object>> {
-  const parsed = accessSchema.safeParse(input)
-  if (!parsed.success) return { ok: false, error: firstIssue(parsed.error) }
-  const target = await loadTarget(admin, actor, userId)
-  if (!target) return { ok: false, error: 'User not found.' }
-  if (!canManageRole(actor.role, target.role)) return { ok: false, error: 'You are not allowed to change this user.' }
-  const a = parsed.data
-  let zoneStores: string[] = []
-  if (a.zones.length > 0) {
-    try {
-      zoneStores = (await fetchAll((from, to) => admin.from('stores').select('id').eq('org_id', actor.orgId).in('zone', a.zones).order('id').range(from, to))).map((s) => s.id)
-    } catch (e) {
-      return { ok: false, error: sanitizeError(e, { route: 'setUserAccess.zones', fallback: 'Could not save the access list.' }) }
-    }
-  }
-  const stores = [...new Set([...a.storeIds, ...zoneStores].map((id) => id.toLowerCase()))]
-  const cameras = [...new Set(a.cameraIds.map((id) => id.toLowerCase()))]
-  // Review fix I-2: what the screen does not show as a tick (a grant that has expired or not started, or live without playback) is
-  // handed back with its own dates, so the save keeps it exactly as it is: nothing is re-dated, nothing comes back as permanent.
-  let current: Awaited<ReturnType<typeof getUserAccess>>
-  try {
-    current = await getUserAccess(admin, actor.orgId, userId)
-  } catch (e) {
-    return { ok: false, error: sanitizeError(e, { route: 'setUserAccess.current', fallback: 'Could not save the access list.' }) }
-  }
-  const keep = current.other
-    .filter((o) => (EDITOR_CAPABILITIES as readonly string[]).includes(o.capability) && (EDITOR_SCOPES as readonly string[]).includes(o.scopeKind))
-    .map((o) => ({ capability: o.capability, scope_kind: o.scopeKind, scope_id: o.scopeId, valid_from: o.validFrom, valid_until: o.validUntil }))
-  const grants = [
-    ...EDITOR_CAPABILITIES.flatMap((capability) => [
-      ...stores.map((id) => ({ capability, scope_kind: 'location', scope_id: id })),
-      ...cameras.map((id) => ({ capability, scope_kind: 'camera', scope_id: id })),
-    ]),
-    ...keep,
-  ]
-  const { data, error } = await admin.rpc('replace_user_grants', {
-    p_org: actor.orgId, p_user: userId, p_capabilities: [...EDITOR_CAPABILITIES], p_scope_kinds: [...EDITOR_SCOPES], p_grants: grants,
-    p_actor: actor.id, p_reason: 'Access list saved by an administrator.',
-  })
-  if (error) {
-    const msg = error.message.includes('outside organisation') ? 'One of the stores or cameras was not found.' : sanitizeError(error, { route: 'setUserAccess', fallback: 'Could not save the access list.' })
-    return { ok: false, error: msg }
-  }
-  const result = data as { added?: number; revoked?: number } | null
-  await addAudit(admin, {
-    orgId: actor.orgId, actorId: actor.id, action: 'user_access_set', entityType: 'profile', entityId: userId,
-    detail: { stores: stores.length, zones: a.zones.length, cameras: cameras.length, grants_added: result?.added ?? 0, grants_revoked: result?.revoked ?? 0 },
-  })
-  return { ok: true }
-}
-
 export async function listUsers(admin: AdminClient, orgId: string) {
   return fetchAll((from, to) =>
     admin.from('profiles').select('id, email, full_name, role, is_active, must_reset_password, store_id, created_at').eq('org_id', orgId).order('full_name').order('id').range(from, to),
   )
 }
 
-/** A live grant the interim editor does not edit, shown read-only (review fix I-4). */
-export type OtherGrant = {
-  id: string
-  capability: string
-  capabilityLabel: string
-  scopeKind: string
-  scopeId: string | null
-  scopeLabel: string
-  source: string
-  needsReview: boolean
-  validFrom: string
-  validUntil: string | null
-  /** In effect now, ended, or not started yet. */
-  state: 'effective' | 'expired' | 'future'
-}
-
-const CHUNK = 100
-async function byIds<T extends { id: string }>(ids: string[], read: (chunk: string[]) => PromiseLike<{ data: T[] | null; error: unknown }>): Promise<T[]> {
-  const out: T[] = []
-  for (let i = 0; i < ids.length; i += CHUNK) {
-    const { data, error } = await read(ids.slice(i, i + CHUNK))
-    if (error) throw new Error('Could not read the access list.')
-    out.push(...(data ?? []))
-  }
-  return out
-}
-
-/**
- * What the interim editor shows. Ticks: stores and cameras where the person has BOTH live video and recordings in effect now (what a
- * save writes). Everything else that is live (not revoked) is listed in `other`, read-only, with its dates and where it came from:
- * other capabilities, organisation-wide grants (for example a migrated manager's), and live/playback grants that have expired, have
- * not started, or exist for only one of the two. Zones are no grants any more.
- */
-export async function getUserAccess(admin: AdminClient, orgId: string, userId: string, now: Date = new Date()) {
-  const rows = await fetchAll((from, to) =>
-    admin
-      .from('access_grants')
-      .select('id, capability, scope_kind, scope_id, source, needs_review, valid_from, valid_until')
-      .eq('org_id', orgId)
-      .eq('user_id', userId)
-      .is('revoked_at', null)
-      .order('id')
-      .range(from, to),
-  )
-  const t = now.getTime()
-  const stateOf = (r: { valid_from: string; valid_until: string | null }): OtherGrant['state'] =>
-    new Date(r.valid_from).getTime() > t ? 'future' : r.valid_until !== null && new Date(r.valid_until).getTime() <= t ? 'expired' : 'effective'
-  const isEditorKind = (r: { capability: string; scope_kind: string }) =>
-    (EDITOR_CAPABILITIES as readonly string[]).includes(r.capability) && (EDITOR_SCOPES as readonly string[]).includes(r.scope_kind)
-  const inEffect = new Set(rows.filter((r) => isEditorKind(r) && stateOf(r) === 'effective').map((r) => `${r.capability}|${r.scope_kind}|${r.scope_id}`))
-  const editable = (r: { scope_kind: string; scope_id: string | null }) => EDITOR_CAPABILITIES.every((c) => inEffect.has(`${c}|${r.scope_kind}|${r.scope_id}`))
-  const ticks = rows.filter((r) => isEditorKind(r) && editable(r))
-  const of = (kind: string) => [...new Set(ticks.filter((r) => r.scope_kind === kind && r.scope_id).map((r) => r.scope_id as string))].sort()
-  const rest = rows.filter((r) => !(isEditorKind(r) && editable(r)))
-
-  const idsOf = (kind: string) => [...new Set(rest.filter((r) => r.scope_kind === kind && r.scope_id).map((r) => r.scope_id as string))]
-  const [caps, stores, cameras, devices] = await Promise.all([
-    rest.length ? admin.from('capabilities').select('key, description') : Promise.resolve({ data: [] as { key: string; description: string }[], error: null }),
-    byIds(idsOf('location'), (c) => admin.from('stores').select('id, code, name').eq('org_id', orgId).in('id', c)),
-    byIds(idsOf('camera'), (c) => admin.from('cameras').select('id, name, stores(code)').eq('org_id', orgId).in('id', c)),
-    byIds(idsOf('asset'), (c) => admin.from('devices').select('id, name').eq('org_id', orgId).in('id', c)),
-  ])
-  if (caps.error) throw new Error('Could not read the access list.')
-  const capLabel = new Map((caps.data ?? []).map((c) => [c.key, c.description]))
-  const label = new Map<string, string>([
-    ...stores.map((s) => [s.id, `${s.code} · ${s.name}`] as [string, string]),
-    ...cameras.map((c) => [c.id, `${(c.stores as unknown as { code: string } | null)?.code ?? ''} · ${c.name}`] as [string, string]),
-    ...devices.map((d) => [d.id, d.name] as [string, string]),
-  ])
-  const other: OtherGrant[] = rest.map((r) => ({
-    id: r.id,
-    capability: r.capability,
-    capabilityLabel: capLabel.get(r.capability) ?? r.capability,
-    scopeKind: r.scope_kind,
-    scopeId: r.scope_id,
-    scopeLabel: r.scope_kind === 'organization' ? 'Whole organisation' : (r.scope_id && label.get(r.scope_id)) || 'No longer exists',
-    source: r.source,
-    needsReview: r.needs_review,
-    validFrom: r.valid_from,
-    validUntil: r.valid_until,
-    state: stateOf(r),
-  }))
-  return { storeIds: of('location'), zones: [] as string[], cameraIds: of('camera'), other }
-}
-
+/** Locations for the home-location choice on the create form (information only: it gives no access, AC-7). */
 export async function listStoresForAccess(admin: AdminClient, orgId: string) {
   return fetchAll((from, to) => admin.from('stores').select('id, code, name, zone').eq('org_id', orgId).order('code').order('id').range(from, to))
-}
-
-export async function listCamerasForAccess(admin: AdminClient, orgId: string) {
-  return fetchAll((from, to) => admin.from('cameras').select('id, store_id, channel, name').eq('org_id', orgId).order('channel').order('id').range(from, to))
 }

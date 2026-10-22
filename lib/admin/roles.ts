@@ -6,7 +6,28 @@
 export const ROLES = ['user', 'operator', 'manager', 'admin', 'platform_owner'] as const
 export type Role = (typeof ROLES)[number]
 
-export const isAdminRole = (role: Role): boolean => role === 'admin' || role === 'platform_owner'
+/**
+ * What people read for each role (P2-3; owner ruling P-1: platform_owner is shown as "Super administrator", the stored value stays).
+ * Roles say what a person may administer, never what they may see.
+ */
+export const ROLE_LABELS: Record<Role, string> = {
+  user: 'Viewer',
+  operator: 'Operator',
+  manager: 'Manager',
+  admin: 'Administrator',
+  platform_owner: 'Super administrator',
+}
+export const ROLE_HELP: Record<Role, string> = {
+  user: 'Administers nothing.',
+  operator: 'May also edit camera groups (with live view of the cameras).',
+  manager: 'Administers nothing; a title for the person’s position.',
+  admin: 'May manage viewers, operators and managers and give them rights the administrator holds.',
+  platform_owner: 'Holds every right for the whole organisation and manages everyone, other super administrators included.',
+}
+export const MSG_ROLES_GIVE_NO_ACCESS =
+  'A role says what a person may administer. It gives no access to cameras, recordings, IT or Wi-Fi: that comes only from the access you assign (except a super administrator, who holds every right).'
+
+export const isAdminRole =(role: Role): boolean => role === 'admin' || role === 'platform_owner'
 
 // A platform owner manages everyone; a plain admin manages viewers, operators and managers; nobody else manages anyone.
 export function canManageRole(actorRole: Role, targetRole: Role): boolean {

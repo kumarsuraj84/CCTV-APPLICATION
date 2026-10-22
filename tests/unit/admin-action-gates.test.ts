@@ -13,13 +13,18 @@ vi.mock('@/lib/auth/profile', () => ({
     return { id: 'u1', org_id: 'o1', role: 'admin' }
   },
   requireProfile: async () => m.profile,
+  mayAdminister: () => true,
+}))
+vi.mock('@/lib/admin/access', () => ({
+  previewChange: async () => ({ ok: false, error: 'x' }), applyChange: async () => ({ ok: false, error: 'x' }), keepReviewed: async () => ({ ok: false, error: 'x' }),
+  liveGrantsOf: async () => null, revokeAll: async () => ({ ok: false, error: 'x' }), MSG_CONFLICT: 'conflict',
 }))
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => (m.clients++, { tag: 'admin' }) }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => (m.clients++, { tag: 'rls' }) }))
 vi.mock('@/lib/admin/users', () => ({
   createUser: async () => ({ ok: false, error: 'x' }), updateUser: async () => ({ ok: false, error: 'x' }),
-  resetUserPassword: async () => ({ ok: false, error: 'x' }), setUserAccess: async () => ({ ok: false, error: 'x' }),
+  resetUserPassword: async () => ({ ok: false, error: 'x' }),
 }))
 vi.mock('@/lib/inventory/stores', () => ({ createStore: async () => ({ ok: false, error: 'x' }), updateStore: async () => ({ ok: false, error: 'x' }), deleteStore: async () => ({ ok: false, error: 'x' }) }))
 vi.mock('@/lib/inventory/devices', () => ({ createDevice: async () => ({ ok: false, error: 'x' }), updateDevice: async () => ({ ok: false, error: 'x' }), deleteDevice: async () => ({ ok: false, error: 'x' }) }))
@@ -41,6 +46,7 @@ const fd = () => new FormData()
 describe('admin actions', () => {
   it('ask for the capability that matches what they change', async () => {
     const users = await import('@/lib/actions/admin/users')
+    const access = await import('@/lib/actions/admin/access')
     const inv = await import('@/lib/actions/admin/inventory')
     const mon = await import('@/lib/actions/admin/monitoring')
     const cases: [string, () => Promise<unknown>][] = [
@@ -48,7 +54,11 @@ describe('admin actions', () => {
       ['admin.users', () => users.setActiveAction('x', true)],
       ['admin.users', () => users.setRoleAction('x', 'user')],
       ['admin.users', () => users.resetPasswordAction('x')],
-      ['admin.access', () => users.saveAccessAction('x', { storeIds: [], zones: [], cameraIds: [] })],
+      ['admin.users', () => users.reactivationReviewAction('x')],
+      // P2-3: the access editor and the review (the interim saveAccessAction is gone).
+      ['admin.access', () => access.previewAccessAction('x', { changes: [], expectedVersion: 0 })],
+      ['admin.access', () => access.applyAccessAction('x', { changes: [], expectedVersion: 0, token: '' })],
+      ['admin.access', () => access.keepReviewedAction({ grantIds: [] })],
       ['admin.inventory', () => inv.saveStoreAction({}, fd())],
       ['admin.inventory', () => inv.deleteStoreAction('x')],
       ['admin.inventory', () => inv.saveDeviceAction({}, fd())],
@@ -67,9 +77,14 @@ describe('admin actions', () => {
   it('make no client and change nothing when the gate refuses', async () => {
     m.refuse = true
     const users = await import('@/lib/actions/admin/users')
+    const access = await import('@/lib/actions/admin/access')
     const inv = await import('@/lib/actions/admin/inventory')
     const mon = await import('@/lib/actions/admin/monitoring')
-    for (const call of [() => users.createUserAction({}, fd()), () => users.saveAccessAction('x', { storeIds: [], zones: [], cameraIds: [] }), () => inv.saveStoreAction({}, fd()), () => mon.discoverCamerasAction('x')]) {
+    for (const call of [
+      () => users.createUserAction({}, fd()), () => users.setActiveAction('x', true, { revokeAll: { grantIds: [], reason: 'x', expectedVersion: 0 } }),
+      () => access.previewAccessAction('x', { changes: [], expectedVersion: 0 }), () => access.applyAccessAction('x', { changes: [], expectedVersion: 0, token: '' }),
+      () => access.keepReviewedAction({ grantIds: [] }), () => inv.saveStoreAction({}, fd()), () => mon.discoverCamerasAction('x'),
+    ]) {
       await expect(call()).rejects.toThrow('REDIRECT:/home')
     }
     expect(m.clients).toBe(0)

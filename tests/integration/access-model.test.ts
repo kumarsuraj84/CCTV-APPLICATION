@@ -327,6 +327,9 @@ describe('capability access model (P2-1)', () => {
   it('minor 3: grant, revoke and replace refuse an acting administrator of another organisation', async () => {
     const p = await createUser(orgA, 'user')
     const mine = await createUser(orgA, 'admin')
+    // P2-3 grant rule (docs/drishti/access-model.md "Who may grant what", brief item 6): an acting administrator must hold admin.access
+    // and the right they give. Before P2-3 any administrator of the organisation could give anything; that is what the directive forbids.
+    await grant(orgA, mine.id, ['admin.access', 'cctv.live'])
     const stranger = await createUser(orgB, 'admin')
     const spec = [{ capability: 'cctv.live', scope_kind: 'location', scope_id: L1 }]
     const refused = await admin().rpc('grant_access', { p_org: orgA, p_user: p.id, p_grants: spec, p_actor: stranger.id })
@@ -668,6 +671,17 @@ describe('capability access model (P2-1)', () => {
       access_legacy_store_grants: [],
       access_grants_before_insert: [],
       access_grants_before_update: [],
+      // P2-3 (20261021000015): the editor's save, the review record and the people summary; the grant rules are internal.
+      apply_access_change: server,
+      access_review_keep: server,
+      access_grant_summary: server,
+      access_check_manager: [],
+      access_check_grantor: [],
+      // Ruling P-1 (20261021000016): super administrators hold every capability; the triggers run with their owner's rights.
+      grant_platform_owner_all: server,
+      access_catalogue_probe_test: server,
+      capabilities_after_insert: [],
+      profiles_platform_owner_after_update: [],
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)

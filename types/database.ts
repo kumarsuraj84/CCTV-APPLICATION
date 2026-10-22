@@ -23,7 +23,33 @@ export type Database = {
           }
         },"public": {
           Tables: {
-            "access_grants": {
+            "access_grant_reviews": {
+                  Row: {
+                    "decision": string,"grant_id": string,"id": string,"note": string | null,"org_id": string,"reviewed_at": string,"reviewed_by": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "decision": string,"grant_id": string,"id"?: string,"note"?: string | null,"org_id": string,"reviewed_at"?: string,"reviewed_by": string
+                  }
+                  Update: {
+                    "decision"?: string,"grant_id"?: string,"id"?: string,"note"?: string | null,"org_id"?: string,"reviewed_at"?: string,"reviewed_by"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "access_grant_reviews_grant_id_fkey"
+      columns: ["grant_id"]
+isOneToOne: false
+      referencedRelation: "access_grants"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "access_grant_reviews_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"access_grants": {
                   Row: {
                     "asset_id": string | null,"camera_id": string | null,"capability": string,"granted_at": string,"granted_by": string | null,"id": string,"location_id": string | null,"needs_review": boolean,"org_id": string,"reason": string | null,"revoke_reason": string | null,"revoked_at": string | null,"revoked_by": string | null,"scope_id": string | null,"scope_kind": string,"source": string,"user_id": string,"valid_from": string,"valid_until": string | null
                   }
@@ -608,8 +634,17 @@ isOneToOne: false
 "access_cameras_for":
 { Args: { "p_aal2": boolean,"p_at": string,"p_caps": (string)[],"p_ignore_status": boolean,"p_user": string }; Returns: string[]
                            },
+"access_catalogue_probe_test":
+{ Args: { "p_org": string }; Returns: Json
+                           },
 "access_check_actor":
 { Args: { "p_actor": string,"p_org": string }; Returns: undefined
+                           },
+"access_check_grantor":
+{ Args: { "p_actor": string,"p_org": string,"p_reason": string,"p_spec": Json,"p_user": string }; Returns: undefined
+                           },
+"access_check_manager":
+{ Args: { "p_actor": string,"p_org": string,"p_user": string }; Returns: Database["public"]['Enums']["user_role"]
                            },
 "access_check_spec":
 { Args: { "p_org": string,"p_spec": Json }; Returns: undefined
@@ -623,6 +658,11 @@ isOneToOne: false
 "access_expiring":
 { Args: { "p_org": string,"p_within": string }; Returns: {
               "capability": string,"grant_id": string,"org_id": string,"scope_id": string,"scope_kind": string,"user_id": string,"valid_until": string
+            }[]
+                           },
+"access_grant_summary":
+{ Args: { "p_org": string }; Returns: {
+              "assets": number,"cameras": number,"capability": string,"locations": number,"next_expiry": string,"organization_wide": boolean,"user_id": string
             }[]
                            },
 "access_grants_eval":
@@ -667,6 +707,9 @@ isOneToOne: false
 "access_put_grant":
 { Args: { "p_actor": string,"p_needs_review": boolean,"p_org": string,"p_reason": string,"p_source": string,"p_spec": Json,"p_user": string }; Returns: Record<string, unknown>
                            },
+"access_review_keep":
+{ Args: { "p_actor": string,"p_grant_ids": (string)[],"p_note"?: string,"p_org": string }; Returns: number
+                           },
 "access_session_capabilities":
 { Args: { "p_claims": Json,"p_mfa_enforced": boolean,"p_user": string }; Returns: string[]
                            },
@@ -681,6 +724,9 @@ isOneToOne: false
                            },
 "any_grant_store_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
+                           },
+"apply_access_change":
+{ Args: { "p_actor": string,"p_changes": Json,"p_expected_version"?: number,"p_org": string,"p_user": string }; Returns: Json
                            },
 "cameras_with_capability":
 { Args: { "p_cap": string,"p_ids": (string)[] }; Returns: string[]
@@ -710,6 +756,9 @@ isOneToOne: false
                            },
 "grant_access":
 { Args: { "p_actor"?: string,"p_expected_version"?: number,"p_grants": Json,"p_org": string,"p_reason"?: string,"p_user": string }; Returns: Json
+                           },
+"grant_platform_owner_all":
+{ Args: { "p_org": string,"p_user": string }; Returns: number
                            },
 "has_capability":
 { Args: { "p_cap": string }; Returns: boolean
