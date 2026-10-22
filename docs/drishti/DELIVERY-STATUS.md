@@ -247,6 +247,52 @@ No Wi-Fi code exists: a search of `app/`, `lib/`, `components/`, `services/`, `s
 
 ---
 
+## Legacy parity (owner handoff file `CCTV_Hub_Project_Handoff (1).md`)
+
+Full analysis and decisions needed: `docs/drishti/LEGACY-HANDOFF-GAP-ANALYSIS.md`. Statuses are today's truth; work packages P4-L1…P4-L4 are in Phase 4.
+
+| ID | Requirement | Relevant implementation files | Current status | Validation evidence | Remaining dependency / next work package |
+|---|---|---|---|---|---|
+| LG-1 | Live wall by location/group with search and status dots | `app/(app)/live/page.tsx`, `components/live/*` | Partially implemented | wall and chooser verified in the local demo | search + status dots on chooser — P4-L1 |
+| LG-2 | Grid sizes up to 5×5 (25) | `components/live/LiveWall.tsx` (1/2×2/3×3/4×4) | Partially implemented | unit tests for wall layouts | add 5×5 — P4-L1 |
+| LG-3 | Tour mode (auto-cycle pages/locations, skip recorder-down) | — | Not implemented | — | P4-L1 |
+| LG-4 | Click → fullscreen live; double-click → playback | `components/live/LiveWall.tsx` | Partially implemented | enlarge dialog tested | double-click → playback — P4-L1 |
+| LG-5 | Tile hover "add to group / remove" | `components/groups/*` (screens only) | Not implemented | — | P4-L1 |
+| LG-6 | Single-camera popup window, "open in new window" from lists | `/live?camera=<id>` | Partially implemented | route exists | links from reports/incidents — P4-L1/P4-L3 |
+| LG-7 | Status dots auto-refresh (60 s) | Stores list badges, `AutoRefresh` | Partially implemented | — | choosers — P4-L1 |
+| LG-8 | Same-time multi-camera playback | — | Not implemented | — | P4-L2 |
+| LG-9 | Calendar with recorded days; oldest-recording hint | `lib/streams/calendar.ts`, playback page | Partially implemented | `tests/unit/playback-*`, calendar tests | oldest-recording hint — P4-L2 |
+| LG-10 | Timeline: click to start, snap to nearest recording, hover time | `lib/streams/timeline.ts`, `components/live/Playback*` | Partially implemented | `tests/unit/playback-timeline.test.ts` | snap + hover + unavailable intervals — P4-L2 |
+| LG-11 | Timeline mouse-wheel zoom, full-day reset | — | Not implemented | — | P4-L2 |
+| LG-12 | Edge-dwell pan / previous-next day | — | Not implemented | — | P4-L2 |
+| LG-13 | Jump buttons ±1/5/10 min, keyboard ←/→ | `components/live/Playback*` ("Continue from here" only) | Not implemented | — | P4-L2 |
+| LG-14 | Speeds 1x/2x/4x/8x/16x | `lib/streams/vod.ts`, `speed.ts` (2x/4x/8x) | Partially implemented | vod unit/integration tests (real ffmpeg never run) | 16x; rights decision D-L1 — P4-L2 |
+| LG-15 | Fast mode: buffer gating, next-chunk prefetch, stall auto-downshift | `lib/streams/vod.ts` | Partially implemented | single-conversion path tested with fakes | chunked prefetch + downshift — P4-L2; real ffmpeg/NVR awaiting hardware validation |
+| LG-16 | Automatic NVR time convention (no manual Local/UTC toggle) | global `PLAYBACK_OFFSET_MIN` | Partially implemented | offset tests (R13) | per-recorder measured clock offset — P2-5/P4-L2/WP-5.2 |
+| LG-17 | Timeline failure fallback with NVR error | `lib/nvr/playback.ts`, playback actions | Partially implemented | truncated/skipped result handling tested | visible banner — P4-L2 |
+| LG-18 | H.265 handling (transcode option) | `lib/streams/vod.ts` (`hvc1` tag, codec message) | Partially implemented | unit tests | transcode option + browser/codec matrix — P4-L5 (WP-4.4); awaiting hardware validation |
+| LG-19 | Camera report cards (total/live/offline/not-checked/NVRs down/last check) | Home dashboard, Monitoring page | Partially implemented | demo verified | dedicated Reports area — P4-L3 |
+| LG-20 | Report tabs: location-wise, group-wise, offline cameras, offline NVRs + search + only-problems | — | Not implemented | — | P4-L3 |
+| LG-21 | Offline list with camera IP, NVR IP, offline since, duration, last seen; unknown vs offline | `lib/queries/status.ts` (location page only) | Partially implemented | status tests | P4-L3 + WP-4.1 |
+| LG-22 | Row click opens camera in new window / recorder's own web page | — | Not implemented | — | P4-L3 (IT-view only for recorder page) |
+| LG-23 | Check now with progress | `lib/monitor/check-now.ts`, Monitoring page | Implemented and locally verified | `tests/integration/check-now.test.ts`, demo | extend to reports — P4-L3 |
+| LG-24 | Excel export (3 sheets) | — | Not implemented | — | P4-L3 |
+| LG-25 | Validate report accuracy against ground truth | — | Blocked by a specific external dependency | — | real NVR pilot (lab Hikvision NVR + cameras) |
+| LG-26 | Exact outage start from last recording time | — | Not implemented | — | WP-5.2 |
+| LG-27 | Import the real estate (≈200 stores, 4,603 cameras, users) | `lib/import/*` (CSV import works) | Blocked by a specific external dependency | import tests | owner's CSV/export — decision D-L4; after P2-5c |
+| LG-28 | Discover cameras for ALL locations in one action | `lib/monitor/discovery.ts` (per location) | Not implemented | — | P2-5c |
+| LG-29 | Backup / clip export to disk; PS-wrapped download remux | — | Not implemented | — | P4-L4 (clip export jobs + evidence backup) |
+| LG-30 | Groups: cross-location membership, add by camera-name keyword | `lib/groups/*` | Implemented and locally verified | `tests/integration/groups*.test.ts` | — |
+| LG-31 | Users and roles with group-edit permission | `lib/admin/*`, access model | Partially implemented | access model tests | access admin UI — P2-3 (in progress) |
+| LG-32 | Branding block (logo + name/colour) | `public/brand/*` | Partially implemented | logo assets verified transparent | P3-0 (in progress); decision D-L2 |
+| LG-33 | go2rtc credentials never exposed; player scripts proxied | `lib/streams/gateway.ts`, `deploy/*` | Partially implemented | gateway tests | API credentials + listener review — P2-6/WP-4.3 |
+| LG-34 | HTTPS, login throttling, audit log, session expiry | `lib/rate-limit.ts`, GoTrue | Partially implemented | unit tests | P2-6, P3, P5.4 |
+| LG-35 | Names rendered safely (no XSS) | React rendering | Partially implemented | — | add hostile-name render test |
+| LG-36 | No plain-text secrets in launch scripts | `scripts/*`, `.env.example` | Partially implemented | — | P2-6 rotation runbook |
+| LG-37 | Version display, auto-start service, one-command update, pinned deps | version bar, `package-lock.json` | Partially implemented | — | P5.4 Windows services packaging |
+| LG-38 | Startup self-check (missing dependency must not crash silently) | `/api/health` | Partially implemented | health tests | P5.4 |
+| LG-40 | Non-translatable tokens (browser auto-translate) | — | Not implemented | — | P3.5 (`translate="no"` on codes/IDs/times); decision D-L3 for Hindi UI |
+
 ## Evidence log
 
 Append-only. Add one row per merged work package or per verification run; never edit or delete earlier rows (correct a mistake with a new row that refers to it). Evidence is a commit hash plus the exact test command and its result, or a screenshot path under `docs/drishti/evidence/`. "By" is the builder or reviewer.
