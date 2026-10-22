@@ -128,7 +128,9 @@ describe('SupabaseMonitorDb gaps and round times', () => {
 
 describe('what is sent to monitor_apply_results (minor 11)', () => {
   it('drops elements with an id that is not a UUID or a type that is not known, and keeps the rest', () => {
-    const good = { type: 'camera' as const, id: randomUUID(), ok: true, at: new Date().toISOString() }
+    // P2-6: camera results name their recorder (required).
+    const recorder = randomUUID()
+    const good = { type: 'camera' as const, id: randomUUID(), recorder, ok: true, at: new Date().toISOString() }
     const clean = cleanResults([
       { ...good, id: 'not-a-uuid' },
       { ...good, id: '' },
@@ -136,19 +138,20 @@ describe('what is sent to monitor_apply_results (minor 11)', () => {
       { ...good, type: 'bogus' as never },
       good,
     ])
-    expect(clean).toEqual([{ type: 'camera', id: good.id, ok: true, at: good.at }])
+    expect(clean).toEqual([{ type: 'camera', id: good.id, recorder, ok: true, at: good.at }])
   })
 
   it('one bad id does not stop the others in the batch from being saved', async () => {
     const org = await createOrg()
     try {
       const a = admin()
-      const cam = (await createSite(org, { code: 'CL', host: '127.0.0.1', username: 'u', cameras: 1 })).cameraIds[0]
+      const site = await createSite(org, { code: 'CL', host: '127.0.0.1', username: 'u', cameras: 1 })
+      const cam = site.cameraIds[0]
       vi.spyOn(console, 'log').mockImplementation(() => {})
       const at = new Date().toISOString()
       await new SupabaseMonitorDb(admin(), { orgId: org }).applyResults(
         org,
-        [{ type: 'camera', id: 'not-a-uuid', ok: false, at }, { type: 'camera', id: cam, ok: true, at }],
+        [{ type: 'camera', id: 'not-a-uuid', recorder: site.recorderId, ok: false, at }, { type: 'camera', id: cam, recorder: site.recorderId, ok: true, at }],
         2,
       )
       vi.restoreAllMocks()

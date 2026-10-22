@@ -8,7 +8,7 @@ import { createStore, updateStore } from '@/lib/inventory/stores'
 import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
 import type { Database } from '@/types/database'
 import {
-  adminClient, atLocation, cleanupOrg, createCamera, createLocation, createOrg, createRecorder, createUser, grant, mapCamera, type TestUser,
+  adminClient, atLocation, cleanupOrg, createCamera, createLocation, createOrg, createRecorder, createUser, grant, mapCamera, withRecorders, type TestUser,
 } from '../setup/fixtures'
 
 const admin = () => adminClient()
@@ -186,12 +186,27 @@ describe('P2-5b review round 1', () => {
     expect((await admin().from('check_state').select('status').eq('target_id', cam).single()).data?.status).toBe('down')
   })
 
+  // P2-6 (addendum): the recorder is REQUIRED in a camera result. A result that does not name it is ignored, like one naming another NVR.
+  it('P2-6: a camera result without its recorder is ignored; the same result naming it counts', async () => {
+    const loc = await createLocation(orgId, { code: 'NOREC' })
+    const rec = await createRecorder(orgId, loc, { host: '192.0.2.202' })
+    const cam = await createCamera(orgId, { locationId: loc, recorderId: rec, channel: 1 })
+    const result = { type: 'camera', id: cam, ok: false, at: ago(1) }
+    expect((await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: [result], p_threshold: 1 })).error).toBeNull()
+    expect((await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: [{ ...result, recorder: null }], p_threshold: 1 })).error).toBeNull()
+    expect((await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: [{ ...result, recorder: 42 }], p_threshold: 1 })).error).toBeNull()
+    expect((await admin().from('check_state').select('id').eq('target_id', cam)).data).toEqual([])
+    expect((await admin().from('outages').select('id').eq('target_id', cam)).data).toEqual([])
+    expect((await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: [{ ...result, recorder: rec.toUpperCase() }], p_threshold: 1 })).error).toBeNull()
+    expect((await admin().from('check_state').select('status').eq('target_id', cam).single()).data?.status).toBe('down')
+  })
+
   // ═══ M-5 ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
   it('M-5: switching an NVR\'s asset off stops the monitoring of its cameras too (open outages closed, state forgotten)', async () => {
     const loc = await createLocation(orgId, { code: 'DIS' })
     const rec = await createRecorder(orgId, loc, { host: '192.0.2.210' })
     const cam = await createCamera(orgId, { locationId: loc, recorderId: rec, channel: 1 })
-    await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: [{ type: 'camera', id: cam, ok: false, at: ago(5) }], p_threshold: 1 })
+    await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: await withRecorders([{ type: 'camera', id: cam, ok: false, at: ago(5) }]), p_threshold: 1 })
     expect((await admin().from('outages').select('id').eq('target_id', cam).is('ended_at', null)).data).toHaveLength(1)
     expect((await admin().from('assets').update({ enabled: false }).eq('id', rec)).error).toBeNull()
     expect((await admin().from('outages').select('id').eq('target_id', cam).is('ended_at', null)).data).toEqual([])

@@ -202,6 +202,20 @@ export async function createSite(orgId: string, o: {
   return { locationId, recorderId, cameraIds }
 }
 
+/**
+ * P2-6 (review M-3 of P2-5b made required): every camera result given to monitor_apply_results must name the recorder that produced
+ * it, as the worker does. Tests that write camera results by hand pass them through this: a camera result without `recorder` gets the
+ * camera's CURRENT recorder (its active mapping), exactly what the worker would send. Other results are returned unchanged.
+ */
+export async function withRecorders<T extends { type: string; id: string; recorder?: string }>(results: T[]): Promise<T[]> {
+  const ids = [...new Set(results.filter((r) => r.type === 'camera' && r.recorder === undefined).map((r) => r.id))]
+  if (ids.length === 0) return results
+  const { data, error } = await adminClient().from('cameras').select('id, recorder_id').in('id', ids)
+  if (error) throw new Error(`withRecorders failed: ${error.message}`)
+  const of = new Map((data ?? []).map((c) => [c.id, c.recorder_id]))
+  return results.map((r) => (r.type === 'camera' && r.recorder === undefined && of.get(r.id) ? { ...r, recorder: of.get(r.id)! } : r))
+}
+
 /** Moves a camera to another recorder/channel (closes the active mapping, opens a new one). Returns the new mapping id. */
 export async function mapCamera(orgId: string, cameraId: string, recorderId: string, channel: number, at?: string): Promise<string> {
   const { data, error } = await adminClient().rpc('camera_remap', { p_org: orgId, p_camera: cameraId, p_recorder: recorderId, p_channel: channel, ...(at ? { p_at: at } : {}) })

@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { useMemoryLimiter } from '../helpers/limiter-store'
+
+// P2-6 (D-11): the shared rate limiter counts in memory here (never the database).
+beforeEach(() => useMemoryLimiter())
 
 // P2-5c-1 review M-13 / I-1: the message after a move pairs "access follows at once" with the true statement about open video
 // (P2-4: the session registry stops it within a minute).

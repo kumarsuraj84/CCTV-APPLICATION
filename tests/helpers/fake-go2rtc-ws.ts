@@ -5,7 +5,8 @@ import WebSocket, { WebSocketServer } from 'ws'
 // A fake go2rtc WebSocket endpoint on loopback for the gateway session tests (P2-4): it records each upstream connection and echoes
 // what it gets. Never a real camera. (tests/integration/gateway.test.ts keeps its own richer copy.)
 
-export type FakeUpstream = { src: string | null; closed: boolean; socket: WebSocket; received: string[] }
+/** `authorization`: the Authorization header the gateway sent (P2-6: go2rtc's API credentials), or undefined. */
+export type FakeUpstream = { src: string | null; closed: boolean; socket: WebSocket; received: string[]; authorization?: string }
 export type FakeGo2rtcWs = { url: string; connections: FakeUpstream[]; close: () => Promise<void> }
 
 export async function startFakeGo2rtcWs(): Promise<FakeGo2rtcWs> {
@@ -13,7 +14,7 @@ export async function startFakeGo2rtcWs(): Promise<FakeGo2rtcWs> {
   const server = http.createServer((_req, res) => res.writeHead(404).end())
   const wss = new WebSocketServer({ server, path: '/api/ws' })
   wss.on('connection', (socket, req) => {
-    const conn: FakeUpstream = { src: new URL(req.url ?? '', 'http://x').searchParams.get('src'), closed: false, socket, received: [] }
+    const conn: FakeUpstream = { src: new URL(req.url ?? '', 'http://x').searchParams.get('src'), closed: false, socket, received: [], authorization: req.headers.authorization }
     connections.push(conn)
     socket.on('close', () => (conn.closed = true))
     socket.on('error', () => {})

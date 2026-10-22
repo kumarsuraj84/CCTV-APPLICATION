@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { checkCameras, type Deps } from '@/lib/monitor/checks'
 import { realProbes } from '@/lib/monitor/probes'
+import { registerEndpoints } from '@/lib/security/targets'
 import { NvrError } from '@/lib/nvr/client'
 import type { Probes } from '@/lib/monitor/types'
 import { startFakeNvr, startFakeRtsp } from '../helpers/fake-servers'
@@ -200,6 +201,7 @@ describe('the NVR timeout from the configuration is used', () => {
     const nvr = await startFakeNvr({ mode: 'slow', statuses: { 1: true } })
     try {
       const started = Date.now()
+      registerEndpoints([{ host: '127.0.0.1', port: nvr.port }]) // P2-6: as the database loaders register an NVR they read
       const client = realProbes.nvr({ host: '127.0.0.1', port: nvr.port, username: 'viewer', password: 'secret-pass' }, { timeoutMs: 300 })
       await expect(client.channelStatus()).rejects.toMatchObject({ kind: 'timeout' })
       expect(Date.now() - started).toBeLessThan(3000)

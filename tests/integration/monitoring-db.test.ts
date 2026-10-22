@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { adminClient, atCamera, CCTV_VIEW, cleanupOrg, createOrg, createSite, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, CCTV_VIEW, cleanupOrg, createOrg, createSite, createUser, grant, primaryRecorderOf, READ_EVERYTHING, withRecorders, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 const T0 = new Date('2026-03-10T10:00:00Z')
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000).toISOString()
 
 type R = { type: 'camera' | 'device' | 'recorder'; id: string; ok: boolean; at: string; method?: string; error?: string; cause?: 'nvr_down' }
-const apply = (org: string, results: R[], threshold = 2) => admin().rpc('monitor_apply_results', { p_org: org, p_results: results, p_threshold: threshold })
+// P2-6: camera results name their recorder (required), as the worker sends them.
+const apply = async (org: string, results: R[], threshold = 2) => admin().rpc('monitor_apply_results', { p_org: org, p_results: await withRecorders(results), p_threshold: threshold })
 
 describe('monitoring in the database', () => {
   let orgId: string

@@ -29,6 +29,8 @@ vi.mock('@/lib/supabase/admin', () => ({
     return { tag: 'admin', from: () => ({ insert: async (row: Record<string, unknown>) => (mocks.audit.push(row), { error: null }) }) }
   },
 }))
+// P2-6 (D-14): fast playback runs on the video path's own database role (media_service).
+vi.mock('@/lib/supabase/service-clients', () => ({ createMediaClient: () => ({ tag: 'media' }) }))
 vi.mock('@/lib/streams/vod', async (original) => ({ ...(await original<typeof import('@/lib/streams/vod')>()), serveVod: mocks.serve }))
 
 import { GET, HEAD } from '@/app/api/vod/route'
@@ -140,7 +142,7 @@ describe('GET /api/vod', () => {
     expect(res.status).toBe(200)
     expect(mocks.serve).toHaveBeenCalledTimes(1)
     const [deps, actor, query, signal] = mocks.serve.mock.calls[0]
-    expect(deps).toMatchObject({ rls: { tag: 'rls' }, admin: { tag: 'admin' }, limiter: exportRequestLimiter })
+    expect(deps).toMatchObject({ rls: { tag: 'rls' }, admin: { tag: 'media' }, limiter: exportRequestLimiter })
     // The organisation goes along so that every service-role read of the service is scoped to it (P2-1).
     expect(actor).toEqual({ id: 'user-1', orgId: 'org-1' })
     expect(query).toMatchObject({ camera: ID, minutes: 10, probe: true })

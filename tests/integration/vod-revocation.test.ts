@@ -183,7 +183,8 @@ describe('fast playback stops when access goes (P2-4)', () => {
     await res.arrayBuffer()
     const i = ok.calls.indexOf('media_session_create')
     expect(i).toBeGreaterThanOrEqual(0)
-    expect(ok.calls.indexOf('recorder_read_credential')).toBeGreaterThan(i)
+    // P2-6: the logged credential read (purpose vod).
+    expect(ok.calls.indexOf('recorder_credential_read')).toBeGreaterThan(i)
   })
 
   it('review m-7: a session that was made but could not be opened is closed again', async () => {

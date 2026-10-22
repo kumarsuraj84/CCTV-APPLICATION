@@ -1,6 +1,7 @@
 import { resetProcessSingletons } from '../helpers/reset-singletons'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createWindowLimiter } from '@/lib/streams/limiter'
+import { useMemoryLimiter } from '../helpers/limiter-store'
 
 describe('createWindowLimiter', () => {
   it('allows the limit, refuses the next, and frees a slot as the window moves on', () => {
@@ -47,11 +48,15 @@ const createClient = vi.fn(async () => ({ tag: 'rls' }))
 const audit: Record<string, unknown>[] = []
 const adminFake = { tag: 'admin', from: () => ({ insert: async (row: Record<string, unknown>) => (audit.push(row), { error: null }) }) }
 const createAdminClient = vi.fn(() => adminFake)
+// P2-6 (D-14): the video path uses its own database role (media_service); the audit row stays the web app's.
+const mediaFake = { tag: 'media' }
+const createMediaClient = vi.fn(() => mediaFake)
 const openStreams = vi.fn()
 
 vi.mock('@/lib/auth/profile', () => ({ requireProfile: () => requireProfile() }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: () => createClient() }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => createAdminClient() }))
+vi.mock('@/lib/supabase/service-clients', () => ({ createMediaClient: () => createMediaClient() }))
 vi.mock('@/lib/streams/open', async (orig) => ({ ...(await orig<typeof import('@/lib/streams/open')>()), openStreams: (...a: unknown[]) => openStreams(...a) }))
 
 const SOME = { organization: false, locations: ['l1'], cameras: [], assets: [] }
@@ -64,6 +69,7 @@ describe('stream actions', () => {
   beforeEach(() => {
     vi.resetModules()
     resetProcessSingletons()
+    useMemoryLimiter() // P2-6 (D-11): the shared live count, in memory here
     vi.clearAllMocks()
     audit.length = 0
     vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -89,7 +95,8 @@ describe('stream actions', () => {
     expect(ids).toEqual(['c1', 'c2'])
     expect(kind).toBe('main')
     expect(deps.rls).toEqual({ tag: 'rls' })
-    expect(deps.admin).toBe(adminFake)
+    // P2-6: the media path's own client (it may read the NVR login for `live`; the web app's own role may not).
+    expect(deps.admin).toBe(mediaFake)
   })
 
   it('P2-2: a person without cctv.live gets the same empty answer as for cameras they may not watch, and nothing is opened or asked', async () => {
@@ -101,6 +108,7 @@ describe('stream actions', () => {
     }
     expect(createClient).not.toHaveBeenCalled()
     expect(createAdminClient).not.toHaveBeenCalled()
+    expect(createMediaClient).not.toHaveBeenCalled()
     expect(openStreams).not.toHaveBeenCalled()
   })
 

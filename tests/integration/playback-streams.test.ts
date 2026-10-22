@@ -228,7 +228,8 @@ describe('playback streams', () => {
         },
       })
       await listDaySegments({ rls: viewer.client, admin: spy, nvr: nvrClient }, actorOf(viewer), a1, '2026-10-20', 0)
-      expect(calls).toEqual(['recorder_read_credential']) // P2-5b: keyed by the camera's recorder, never by its location
+      // P2-5b: keyed by the camera's recorder, never by its location; P2-6: the logged credential read.
+      expect(calls).toEqual(['recorder_credential_read'])
       calls.length = 0
       await listDaySegments({ rls: viewer.client, admin: spy, nvr: nvrClient }, actorOf(viewer), b1, '2026-10-20', 0)
       expect(calls).toEqual([])
@@ -683,7 +684,8 @@ describe('playback streams', () => {
       const res = okOf(await play(viewer, a1, START, 10, 0, { adminClient: spy }))
       // P2-4: and the one call that registers this playback's media session (person, camera, kind, stream; nothing secret).
       expect(calls).toEqual([
-        { name: 'recorder_read_credential', args: { p_recorder: recorderOf.get(sA) } },
+        // P2-6: the logged credential read, for playback, naming the person it is for.
+        { name: 'recorder_credential_read', args: { p_recorder: recorderOf.get(sA), p_purpose: 'playback', p_actor: viewer.id } },
         { name: 'media_session_create', args: { p_org: orgId, p_user: viewer.id, p_kind: 'playback', p_cameras: [a1], p_streams: [res.name] } },
       ])
     })
@@ -706,9 +708,12 @@ describe('playback streams', () => {
       expect(JSON.stringify(res)).not.toContain('ffmpeg')
     })
 
-    it('DEMO_VIDEO is ignored in production', async () => {
-      okOf(await play(viewer, a1, START, 10, 0, { env: { DEMO_VIDEO: '1', NODE_ENV: 'production' } }))
-      expect(fake.seen[0].src).toMatch(/^rtsp:\/\/viewer:/)
+    // P2-6 (SO-4) replaces "the real RTSP source is used instead": in production an NVR whose address is this computer is not reached
+    // at all (lib/security/targets.ts): no demo picture, no source, a plain refusal.
+    it('DEMO_VIDEO is ignored in production, and an NVR at this computer is not contacted there either', async () => {
+      const res = await play(viewer, a1, START, 10, 0, { env: { DEMO_VIDEO: '1', NODE_ENV: 'production' } })
+      expect(res.ok).toBe(false)
+      expect(fake.seen).toEqual([])
     })
 
     it('a playback stream is removed after being idle, but never while somebody is watching it', async () => {

@@ -105,6 +105,21 @@ describe('gateway and the session registry (P2-4)', () => {
     expect(CLOSE_ACCESS_CHANGED).toBe(4403)
   })
 
+  // P2-6 (D-13): go2rtc's API is protected by its own credentials; the gateway sends them on its upstream video socket (server → loopback).
+  it('sends go2rtc\'s API credentials on the upstream socket when they are configured, and nothing when they are not', async () => {
+    const auth = { username: 'drishti-gw', password: 'k'.repeat(40) }
+    const s = await start({ go2rtcAuth: auth })
+    const live = connect(s)
+    expect(await live.opened).toBe(true)
+    await waitFor(() => s.fake.connections.length === 1)
+    expect(s.fake.connections[0].authorization).toBe(`Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString('base64')}`)
+    const plain = await start({ go2rtcAuth: null })
+    const other = connect(plain)
+    expect(await other.opened).toBe(true)
+    await waitFor(() => plain.fake.connections.length === 1)
+    expect(plain.fake.connections[0].authorization).toBeUndefined()
+  })
+
   it('refuses to start without a registry', () => {
     expect(() => createGateway({ go2rtcUrl: 'http://127.0.0.1:1984', secret: SECRET, allowedOrigins: [APP] } as unknown as GatewayOptions)).toThrow(/registry/)
   })

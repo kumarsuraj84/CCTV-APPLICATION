@@ -21,7 +21,8 @@ vi.mock('@/lib/admin/access', () => ({
   reviewBeforeReactivation: async () => ({ ok: false, error: 'x' }), selfConfirmReview: async () => ({ ok: false, error: 'x' }), revokeAll: async () => ({ ok: false, error: 'x' }), MSG_CONFLICT: 'conflict',
 }))
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
-vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => (m.clients++, { tag: 'admin' }) }))
+// P2-6: the user-administration actions use the web app's role plus GoTrue's admin API (createUserAdminClient).
+vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => (m.clients++, { tag: 'admin' }), createUserAdminClient: () => (m.clients++, { tag: 'admin' }) }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => (m.clients++, { tag: 'rls' }) }))
 vi.mock('@/lib/admin/users', () => ({
   createUser: async () => ({ ok: false, error: 'x' }), updateUser: async () => ({ ok: false, error: 'x' }),
@@ -42,7 +43,8 @@ vi.mock('@/lib/inventory/assets', () => ({ saveAsset: no, addDependency: no, rem
 vi.mock('@/lib/inventory/archive', () => ({ archiveInventory: no, restoreInventory: no }))
 const checkNow = vi.fn(async () => ({ ok: true }))
 vi.mock('@/lib/monitor/check-now', () => ({ requestCheckNow: (...a: unknown[]) => checkNow(...(a as [])), MSG_CHECK_NOT_ALLOWED: 'You are not allowed to start a check.' }))
-vi.mock('@/lib/rate-limit', () => ({ rateLimit: async () => ({ limited: false }) }))
+// P2-6 (D-11): the counts are shared (lib/rate-limit-shared.ts); these tests are about the gates, so nobody is ever over a limit.
+vi.mock('@/lib/rate-limit-shared', async (orig) => ({ ...(await orig<typeof import('@/lib/rate-limit-shared')>()), refusalFor: async () => null, adminRefusalFor: async () => null }))
 
 beforeEach(() => {
   m.asked = []

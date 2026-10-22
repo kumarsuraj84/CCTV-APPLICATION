@@ -254,7 +254,8 @@ describe('access administration in the database (P2-3)', () => {
     const { data } = await admin().rpc('function_privileges')
     const byName = new Map((data ?? []).map((f) => [f.name, f]))
     for (const name of ['apply_access_change', 'access_review_keep', 'access_grant_summary']) {
-      expect(byName.get(name)?.grantees, name).toEqual(['service_role'])
+      // P2-6 (D-14): the server is the service key AND the web app's own database role (app_web); never a signed-in person.
+      expect(byName.get(name)?.grantees, name).toEqual(['app_web', 'service_role'])
       expect(byName.get(name)?.search_path, name).toBe('')
     }
     for (const name of ['access_check_manager', 'access_check_grantor']) expect(byName.get(name)?.grantees, name).toEqual([])

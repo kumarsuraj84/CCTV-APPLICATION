@@ -15,7 +15,7 @@ import { startFakeGo2rtc } from '../helpers/fake-go2rtc'
 import { startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
 import {
   adminClient, atCamera, atCluster, cleanupOrg, createAsset, createCamera, createCluster, createLocation, createOrg, createRecorder,
-  createRegion, createUser, grant, READ_EVERYTHING, type TestUser,
+  createRegion, createUser, grant, READ_EVERYTHING, withRecorders, type TestUser,
 } from '../setup/fixtures'
 
 const admin = () => adminClient()
@@ -229,7 +229,7 @@ describe('P2-5c-1 services', () => {
       const old = await createCamera(orgId, { locationId: loc, recorderId: a, channel: 3, name: 'Cash office', cameraIp: '192.0.2.3' })
       const viewer = await createUser(orgId, 'user')
       await grant(orgId, viewer.id, 'cctv.live', atCamera(old))
-      await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: [{ type: 'camera', id: old, ok: true, at: new Date().toISOString() }], p_threshold: 1 })
+      await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: await withRecorders([{ type: 'camera', id: old, ok: true, at: new Date().toISOString() }]), p_threshold: 1 })
       const history = (await admin().from('check_state').select('id').eq('target_id', old).single()).data!.id
       const g1 = (await admin().from('camera_groups').insert({ org_id: orgId, name: `Cash ${old.slice(0, 6)}` }).select('id').single()).data!.id
       await admin().from('camera_group_items').insert({ org_id: orgId, group_id: g1, camera_id: old })

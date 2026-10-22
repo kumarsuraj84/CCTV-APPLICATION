@@ -18,7 +18,8 @@ vi.mock('next/server', () => ({ after: (fn: () => unknown) => { m.scheduled++; v
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => (m.clients++, { tag: 'admin' }) }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => (m.clients++, { tag: 'rls' }) }))
 vi.mock('@/lib/streams/local-go2rtc', () => ({ localGo2rtc: () => ({ tag: 'go2rtc' }) }))
-vi.mock('@/lib/rate-limit', () => ({ rateLimit: async () => ({ limited: false }) }))
+// P2-6 (D-11): the counts are shared (lib/rate-limit-shared.ts); these tests are about the gates, so nobody is ever over a limit.
+vi.mock('@/lib/rate-limit-shared', async (orig) => ({ ...(await orig<typeof import('@/lib/rate-limit-shared')>()), refusalFor: async () => null, adminRefusalFor: async () => null }))
 vi.mock('@/lib/import/locations-import', () => ({
   checkLocationImport: async (_c: unknown, _a: unknown, text: string, o: { skipBadRows: boolean; keepNames: boolean }) => (m.calls.push(`check:${text}:${o.skipBadRows}:${o.keepNames}`), { ok: false, error: 'x' }),
   applyLocationImport: async (_c: unknown, _a: unknown, text: string, o: { skipBadRows: boolean; keepNames: boolean; archive: boolean; fingerprint: string }) =>

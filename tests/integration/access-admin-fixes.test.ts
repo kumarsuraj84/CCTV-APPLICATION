@@ -310,7 +310,9 @@ describe('P2-3 fix round 1', () => {
   it('privileges of the new functions', async () => {
     const { data } = await admin().rpc('function_privileges')
     const by = new Map((data ?? []).map((f) => [f.name, f.grantees]))
-    for (const n of ['change_person_role', 'set_person_active', 'access_review_self_confirm', 'access_teardown_test_org_people']) expect(by.get(n), n).toEqual(['service_role'])
+    // P2-6 (D-14): the screens' functions also for the web app's own database role (app_web); the test helper for the service key only.
+    for (const n of ['change_person_role', 'set_person_active', 'access_review_self_confirm']) expect(by.get(n), n).toEqual(['app_web', 'service_role'])
+    expect(by.get('access_teardown_test_org_people')).toEqual(['service_role'])
     for (const n of ['profiles_keep_super_admin', 'access_merge_plan', 'access_check_people_admin']) expect(by.get(n), n).toEqual([])
     expect((await admin().rpc('privilege_violations')).data).toEqual([])
     expect(ORG_SCOPE.kind).toBe('organization')

@@ -1,7 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { getDashboard, getStates, listStoreStatus, STALE_AFTER_MINUTES } from '@/lib/queries/status'
 import { uptimeFor } from '@/lib/monitor/uptime'
-import { adminClient, atLocation, CCTV_VIEW, cleanupOrg, createCamera, createLocation, createOrg, createRecorder, createSite, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { adminClient, atLocation, CCTV_VIEW, cleanupOrg, createCamera, createLocation, createOrg, createRecorder, createSite, createUser, grant, READ_EVERYTHING, withRecorders, type TestUser } from '../setup/fixtures'
+
+// P2-6: camera results name their recorder (required), as the worker sends them.
+const named = (results: object[]) => withRecorders(results as { type: string; id: string }[]) as never
 
 const admin = () => adminClient()
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
@@ -41,7 +44,7 @@ describe('status queries', () => {
     ]).select('id, name').order('name')).data!.map((d) => d.id)
     // ST1: camera 1 up, camera 2 down (own outage), camera 3 not checked; NVR up; ERP up, Mail down.
     // ST2: NVR down, its camera down because of the NVR.
-    const apply = (results: object[], threshold = 2) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: threshold })
+    const apply = async (results: object[], threshold = 2) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: await named(results), p_threshold: threshold })
     await apply([{ type: 'camera', id: cams1[0], ok: true, at: ago(5) }, { type: 'recorder', id: st1.rec, ok: true, at: ago(5) }, { type: 'device', id: dev[0], ok: true, at: ago(5) }])
     await apply([{ type: 'camera', id: cams1[1], ok: false, at: ago(20) }, { type: 'device', id: dev[1], ok: false, at: ago(20) }])
     await apply([{ type: 'camera', id: cams1[1], ok: false, at: ago(10) }, { type: 'device', id: dev[1], ok: false, at: ago(10) }])
@@ -125,7 +128,7 @@ describe('status queries: a location with two NVRs, one down (P2-5b)', () => {
     down = await createRecorder(orgId, loc, { name: 'Downstairs', host: '127.0.0.1', httpPort: 8080, rtspPort: 8554 })
     const onUp = await createCamera(orgId, { locationId: loc, recorderId: up, channel: 1, name: 'U1' })
     const onDown = await createCamera(orgId, { locationId: loc, recorderId: down, channel: 1, name: 'L1' })
-    const apply = (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: 1 })
+    const apply = async (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: await named(results), p_threshold: 1 })
     await apply([{ type: 'recorder', id: down, ok: false, at: ago(30) }, { type: 'recorder', id: up, ok: true, at: ago(1) }])
     // The down NVR's camera: caused by it, grouped. The other NVR's camera went down at the same time for its own reason (and its
     // outage carries the cause of an NVR that is NOT its own): it is listed.
@@ -161,7 +164,7 @@ describe('status queries: an archived NVR, and one stale NVR next to a fresh one
     spare = await createRecorder(orgId, loc, { name: 'Spare', host: '127.0.0.1', httpPort: 8081, rtspPort: 8555 })
     await createCamera(orgId, { locationId: loc, recorderId: fresh, channel: 1, name: 'F1' })
     await createCamera(orgId, { locationId: loc, recorderId: stale, channel: 1, name: 'S1' })
-    const apply = (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: 1 })
+    const apply = async (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: await named(results), p_threshold: 1 })
     await apply([
       { type: 'recorder', id: fresh, ok: true, at: ago(1) },
       { type: 'recorder', id: stale, ok: true, at: ago(STALE_AFTER_MINUTES + 5) },
@@ -205,7 +208,7 @@ describe('status queries: outages of cameras whose NVR was down', () => {
     const closed = await site(orgId, 'CLS', 'Shop CLS')
     const camOpen = (await a.from('cameras').insert({ org_id: orgId, location_id: open.loc, channel: 1, name: 'InOpen' }).select('id').single()).data!.id
     const camClosed = (await a.from('cameras').insert({ org_id: orgId, location_id: closed.loc, channel: 1, name: 'InClosed' }).select('id').single()).data!.id
-    const apply = (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: 1 })
+    const apply = async (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: await named(results), p_threshold: 1 })
     // OPN: the NVR is down and still down; its camera went down because of it.
     await apply([{ type: 'recorder', id: open.rec, ok: false, at: ago(30) }])
     await apply([{ type: 'camera', id: camOpen, ok: false, at: ago(30), cause: 'nvr_down' }])
@@ -247,7 +250,7 @@ describe('status queries: which camera outages hide under an NVR outage', () => 
     orgId = await createOrg()
     const a = admin()
     const cam = async (store: string, name: string) => (await a.from('cameras').insert({ org_id: orgId, location_id: store, channel: 1, name }).select('id').single()).data!.id
-    const apply = (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: 1 })
+    const apply = async (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: await named(results), p_threshold: 1 })
 
     // AGN: the NVR went down, the camera outage it caused ended, then the NVR went down again (open now). The ended camera outage stays listed.
     const agn = await site(orgId, 'AGN', 'Unit AGN')
@@ -292,7 +295,7 @@ describe('status queries: a capped scan of grouped outages', () => {
     const a = admin()
     const store = await site(orgId, 'BIG', 'Big store')
     const cams = (await a.from('cameras').insert([1, 2, 3, 4, 5].map((n) => ({ org_id: orgId, location_id: store.loc, channel: n, name: `G${n}` }))).select('id, channel').order('channel')).data!.map((c) => c.id)
-    const apply = (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: 1 })
+    const apply = async (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: await named(results), p_threshold: 1 })
     await apply([{ type: 'recorder', id: store.rec, ok: false, at: ago(60) }])
     await apply(cams.map((id, i) => ({ type: 'camera', id, ok: false, at: ago(50 - i), cause: 'nvr_down' })))
     manager = await createUser(orgId, 'manager')
@@ -322,7 +325,7 @@ describe('status queries: grouping uses the time an outage was recorded (I5)', (
     const a = admin()
     const store = await site(orgId, 'EAR', 'Early camera')
     const cam = (await a.from('cameras').insert({ org_id: orgId, location_id: store.loc, channel: 1, name: 'EarlyStart' }).select('id').single()).data!.id
-    const apply = (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: 1 })
+    const apply = async (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: await named(results), p_threshold: 1 })
     // The NVR's outage is recorded first and starts 30 minutes ago. The camera's, caused by it, is recorded afterwards but its first failure
     // (the round began a moment earlier) is dated before the NVR's: it still belongs under the NVR outage.
     await apply([{ type: 'recorder', id: store.rec, ok: false, at: ago(30) }])
@@ -362,7 +365,7 @@ describe('status queries: stale and switched-off targets', () => {
       { org_id: orgId, location_id: on.loc, type: 'server', name: 'OffDev', ip: '127.0.0.1', tcp_port: 3, enabled: true },
     ]).select('id, name').order('name')).data!
     const dev = Object.fromEntries(devs.map((d) => [d.name, d.id]))
-    const apply = (results: object[], threshold = 2) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: threshold })
+    const apply = async (results: object[], threshold = 2) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: await named(results), p_threshold: threshold })
     await apply([
       { type: 'camera', id: cams[0], ok: true, at: minutesAgo(2) },
       { type: 'camera', id: cams[1], ok: true, at: minutesAgo(STALE_AFTER_MINUTES + 5) },

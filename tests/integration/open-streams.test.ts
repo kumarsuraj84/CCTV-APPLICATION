@@ -338,8 +338,10 @@ describe('openStreams', () => {
     })
     streamsOf(await open(manager, [a1, a2, b1], 'sub', { adminClient: spy }))
     // P2-4: first the one call that registers the media sessions of the streams (no password is read for a refused one).
-    expect(calls.map((c) => c.name)).toEqual(['media_session_create', 'recorder_read_credential', 'recorder_read_credential'])
+    // P2-6: the logged credential read, for live video, naming the person it is for.
+    expect(calls.map((c) => c.name)).toEqual(['media_session_create', 'recorder_credential_read', 'recorder_credential_read'])
     expect(calls.slice(1).map((c) => (c.args as { p_recorder: string }).p_recorder).sort()).toEqual([rA, rB].sort())
+    for (const c of calls.slice(1)) expect(c.args).toMatchObject({ p_purpose: 'live', p_actor: manager.id })
   })
 
   it('with DEMO_VIDEO=1 and a loopback store the source is the generated test picture and no password is read', async () => {
@@ -363,10 +365,13 @@ describe('openStreams', () => {
     expect(JSON.stringify(streams)).not.toContain('ffmpeg')
   })
 
-  it('DEMO_VIDEO is ignored in production', async () => {
+  // P2-6 (SO-4) replaces "the real RTSP source is used instead": in production an NVR whose address is this computer is not reached
+  // at all (lib/security/targets.ts), so DEMO_VIDEO still gives no demo picture AND nothing is registered or read for that NVR.
+  it('DEMO_VIDEO is ignored in production, and an NVR at this computer is not contacted there either', async () => {
     const res = await open(viewer, [a1], 'sub', { env: { DEMO_VIDEO: '1', NODE_ENV: 'production' } })
-    expect(streamsOf(res)).toHaveLength(1)
-    expect(fake.seen[0].src).toMatch(/^rtsp:\/\/viewer:/)
+    expect(res.ok ? res.streams : []).toEqual([])
+    expect(fake.seen.filter((s) => s.src?.startsWith('ffmpeg:'))).toEqual([])
+    expect(fake.seen).toEqual([])
   })
 
   it('owner addition: a camera on an NVR with monitoring switched off is refused with a plain message; nothing is registered or read', async () => {

@@ -166,7 +166,7 @@ describe('a location with several NVRs, end to end', () => {
     expect(srcOf(b1)).toBe(`rtsp://viewer:pass-b@127.0.0.1:${bRtsp}/Streaming/Channels/102`)
     // One login read per recorder that is used, keyed by recorder — never C's, never a location-keyed function.
     const reads = calls.filter((c) => /credential/.test(c.name))
-    expect(reads.map((c) => c.name)).toEqual(['recorder_read_credential', 'recorder_read_credential'])
+    expect(reads.map((c) => c.name)).toEqual(['recorder_credential_read', 'recorder_credential_read']) // P2-6: logged, purpose live
     expect(reads.map((c) => c.args.p_recorder).sort()).toEqual([recA, recB].sort())
     // Only the switched-off camera, or only the unlinked one: a plain refusal and nothing registered.
     expect(await openStreams({ admin: admin(), rls: viewer.client, go2rtc: go2rtc.client, env: {} }, { id: viewer.id, orgId }, [c1], 'sub')).toEqual({ ok: false, error: MSG_MONITORING_OFF })

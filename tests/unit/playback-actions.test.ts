@@ -1,4 +1,5 @@
 import { resetProcessSingletons } from '../helpers/reset-singletons'
+import { useMemoryLimiter } from '../helpers/limiter-store'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const requireProfile = vi.fn()
@@ -6,6 +7,9 @@ const createClient = vi.fn(async () => ({ tag: 'rls' }))
 const audit: Record<string, unknown>[] = []
 const adminFake = { tag: 'admin', from: () => ({ insert: async (row: Record<string, unknown>) => (audit.push(row), { error: null }) }) }
 const createAdminClient = vi.fn(() => adminFake)
+// P2-6 (D-14): the video path uses its own database role (media_service); the audit rows stay the web app's.
+const mediaFake = { tag: 'media' }
+const createMediaClient = vi.fn(() => mediaFake)
 const listRecordedDays = vi.fn()
 const listDaySegments = vi.fn()
 const openPlayback = vi.fn()
@@ -13,6 +17,7 @@ const openPlayback = vi.fn()
 vi.mock('@/lib/auth/profile', () => ({ requireProfile: () => requireProfile() }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: () => createClient() }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => createAdminClient() }))
+vi.mock('@/lib/supabase/service-clients', () => ({ createMediaClient: () => createMediaClient() }))
 vi.mock('@/lib/streams/playback', async (orig) => ({
   ...(await orig<typeof import('@/lib/streams/playback')>()),
   listRecordedDays: (...a: unknown[]) => listRecordedDays(...a),
@@ -29,6 +34,7 @@ describe('playback actions', () => {
   beforeEach(() => {
     vi.resetModules()
     resetProcessSingletons()
+    useMemoryLimiter() // P2-6 (D-11): the shared video counts, in memory here
     vi.clearAllMocks()
     vi.unstubAllEnvs()
     audit.length = 0
@@ -61,7 +67,10 @@ describe('playback actions', () => {
     const [d1, who1, cam1, y, m, off1] = listRecordedDays.mock.calls[0]
     expect([who1, cam1, y, m, off1]).toEqual([{ id: 'u1', orgId: 'o1' }, CAM, 2026, 10, 330])
     expect(d1.rls).toEqual({ tag: 'rls' })
-    expect(d1.admin).toBe(adminFake)
+    // P2-6: the media path's own client reads the route and the NVR login.
+    expect(d1.admin).toBe(mediaFake)
+    expect(listDaySegments.mock.calls[0][0].admin).toBe(mediaFake)
+    expect(openPlayback.mock.calls[0][0].admin).toBe(mediaFake)
     expect(listDaySegments.mock.calls[0].slice(1)).toEqual([{ id: 'u1', orgId: 'o1' }, CAM, '2026-10-20', 330])
     const [d3, who3, cam3, start, minutes, off3] = openPlayback.mock.calls[0]
     expect([who3, cam3, minutes, off3]).toEqual([{ id: 'u1', orgId: 'o1' }, CAM, 30, 330])
@@ -120,11 +129,11 @@ describe('playback actions', () => {
     for (let i = 0; i < 30; i++) await live.openStreamsAction(['c'], 'sub')
     await a.openPlaybackAction(CAM, '2026-10-20T10:00:00Z', 10)
     expect(openPlayback).toHaveBeenCalledTimes(1)
-    const deps = openPlayback.mock.calls[0][0] as { limiter: { allow(k: string): boolean } }
+    const deps = openPlayback.mock.calls[0][0] as { limiter: { allow(k: string): boolean | Promise<boolean> } }
     expect(deps.limiter).toBe(limits.playbackRequestLimiter)
-    expect(deps.limiter.allow('u1')).toBe(true) // the used-up live count does not touch playback
+    expect(await deps.limiter.allow('u1')).toBe(true) // the used-up live count does not touch playback
     await a.listRecordedDaysAction(CAM, 2026, 10)
-    const lookup = (listRecordedDays.mock.calls[0][0] as { limiter: { allow(k: string): boolean } }).limiter
+    const lookup = (listRecordedDays.mock.calls[0][0] as { limiter: { allow(k: string): boolean | Promise<boolean> } }).limiter
     expect(lookup).toBe(limits.lookupRequestLimiter)
     expect(lookup).not.toBe(deps.limiter)
   })

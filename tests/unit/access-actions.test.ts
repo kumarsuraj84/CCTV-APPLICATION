@@ -17,8 +17,14 @@ vi.mock('@/lib/auth/profile', () => ({
   mayAdminister: () => m.mayAccess,
 }))
 vi.mock('next/cache', () => ({ revalidatePath: (p: string) => m.revalidated.push(p) }))
-vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => ({ tag: 'admin' }) }))
-vi.mock('@/lib/rate-limit', () => ({ rateLimit: async () => ({ limited: m.limited }) }))
+// P2-6: the user-administration actions use the web app's role plus GoTrue's admin API (createUserAdminClient).
+vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => ({ tag: 'admin' }), createUserAdminClient: () => ({ tag: 'admin' }) }))
+// P2-6 (D-11): the per-administrator counts are shared (lib/rate-limit-shared.ts); here the answer is the test's.
+vi.mock('@/lib/rate-limit-shared', async (orig) => {
+  const real = await orig<typeof import('@/lib/rate-limit-shared')>()
+  const answer = async () => (m.limited ? real.MSG_SLOW_DOWN : null)
+  return { ...real, refusalFor: answer, adminRefusalFor: answer }
+})
 const record = (fn: string) => async (...args: unknown[]) => (m.calls.push({ fn, args }), m.result)
 vi.mock('@/lib/admin/access', () => ({
   previewChange: record('previewChange'), applyChange: record('applyChange'), keepReviewed: record('keepReviewed'),

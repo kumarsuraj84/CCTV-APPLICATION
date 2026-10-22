@@ -73,6 +73,19 @@ describe('stream tokens', () => {
     expect(verifyStreamToken(signStreamToken(live(), SECRET), NOW, OTHER)).toBeNull()
   })
 
+  // P2-6 brief item 7 (docs/drishti/runbooks/secret-rotation.md): rotating STREAM_TOKEN_SECRET (web app and gateway together) makes every
+  // token signed before it worthless at once, while tokens signed after it work; viewers simply get new tokens on their next renewal.
+  it('rotating the stream_token secret invalidates every older token at once', () => {
+    process.env.STREAM_TOKEN_SECRET = SECRET
+    const before = signStreamToken(live())
+    expect(verifyStreamToken(before, NOW)).toEqual(live())
+    process.env.STREAM_TOKEN_SECRET = OTHER // the rotation
+    expect(verifyStreamToken(before, NOW)).toBeNull()
+    const after = signStreamToken(live())
+    expect(verifyStreamToken(after, NOW)).toEqual(live())
+    expect(verifyStreamToken(after, NOW, SECRET)).toBeNull()
+  })
+
   it('rejects a tampered payload', () => {
     const [, sig] = signStreamToken(live(), SECRET).split('.')
     const evil = b64(JSON.stringify(live({ c: '11111111-1111-4111-8111-111111111111' })))

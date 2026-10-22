@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { processSingleton } from '@/lib/process-singleton'
+import { useMemoryLimiter } from '../helpers/limiter-store'
 
 const NAMES = ['cctv.liveRequestLimiter', 'cctv.playbackRequestLimiter', 'cctv.lookupRequestLimiter', 'cctv.exportRequestLimiter', 'cctv.conversionLimiter', 'cctv.fastPlaybackAvailable', 'cctv.test-thing', 'app.rateLimitStore']
 afterEach(() => {
@@ -37,25 +38,28 @@ describe('the limiters when their modules are loaded twice (a second bundle, or 
     expect(b.lookupRequestLimiter).toBe(a.lookupRequestLimiter)
     expect(b.exportRequestLimiter).toBe(a.exportRequestLimiter)
 
+    // P2-6 (D-11): the count is the shared one (here on an in-memory store with the database's semantics); allow() is asynchronous.
+    useMemoryLimiter()
     const who = `person-${Math.random()}`
-    for (let i = 0; i < a.STREAM_REQUESTS_PER_MINUTE - 1; i++) expect(a.liveRequestLimiter.allow(who)).toBe(true)
-    expect(b.liveRequestLimiter.allow(who)).toBe(true) // the 30th, counted by the other copy
-    expect(a.liveRequestLimiter.allow(who)).toBe(false)
-    expect(b.liveRequestLimiter.allow(who)).toBe(false)
+    for (let i = 0; i < a.STREAM_REQUESTS_PER_MINUTE - 1; i++) expect(await a.liveRequestLimiter.allow(who)).toBe(true)
+    expect(await b.liveRequestLimiter.allow(who)).toBe(true) // the 30th, counted by the other copy
+    expect(await a.liveRequestLimiter.allow(who)).toBe(false)
+    expect(await b.liveRequestLimiter.allow(who)).toBe(false)
   })
 
   it('P2-2 (brief item 2): live, playback, recording search and export each have their own count', async () => {
     vi.resetModules()
+    useMemoryLimiter()
     const l = await import('@/lib/streams/request-limit')
     const all = [l.liveRequestLimiter, l.playbackRequestLimiter, l.lookupRequestLimiter, l.exportRequestLimiter]
     expect(new Set(all).size).toBe(4)
     const who = `person-${Math.random()}`
-    for (let i = 0; i < l.STREAM_REQUESTS_PER_MINUTE; i++) l.liveRequestLimiter.allow(who)
-    expect(l.liveRequestLimiter.allow(who)).toBe(false)
+    for (let i = 0; i < l.STREAM_REQUESTS_PER_MINUTE; i++) await l.liveRequestLimiter.allow(who)
+    expect(await l.liveRequestLimiter.allow(who)).toBe(false)
     // Using up live video leaves playback, the recording search and export untouched.
-    expect(l.playbackRequestLimiter.allow(who)).toBe(true)
-    expect(l.lookupRequestLimiter.allow(who)).toBe(true)
-    expect(l.exportRequestLimiter.allow(who)).toBe(true)
+    expect(await l.playbackRequestLimiter.allow(who)).toBe(true)
+    expect(await l.lookupRequestLimiter.allow(who)).toBe(true)
+    expect(await l.exportRequestLimiter.allow(who)).toBe(true)
     expect('streamRequestLimiter' in l).toBe(false)
   })
 

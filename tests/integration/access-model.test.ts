@@ -21,6 +21,7 @@ import {
   ORG_SCOPE,
   primaryRecorderOf,
   READ_EVERYTHING,
+  withRecorders,
   type TestUser,
 } from '../setup/fixtures'
 
@@ -139,11 +140,12 @@ describe('capability access model (P2-1)', () => {
     const at = new Date().toISOString()
     const applied = await admin().rpc('monitor_apply_results', {
       p_org: orgA,
-      p_results: [
+      // P2-6: camera results name their recorder (required), as the worker sends them.
+      p_results: await withRecorders([
         { type: 'camera', id: c11, ok: true, at },
         { type: 'device', id: d1, ok: true, at },
         { type: 'recorder', id: n1, ok: true, at },
-      ],
+      ]),
     })
     expect(applied.error).toBeNull()
     await admin().from('outages').insert([
@@ -641,6 +643,11 @@ describe('capability access model (P2-1)', () => {
     const byName = new Map((data ?? []).map((f) => [f.name, f]))
     const people = ['authenticated', 'service_role']
     const server = ['service_role']
+    // P2-6 (D-14): the per-service roles. The web app's own role (app_web) calls the server functions its screens use, never a credential
+    // read, a worker, gateway, test or diagnostic function; the worker (monitor_worker) and the video path (media_service) their own.
+    const web = ['service_role', 'app_web']
+    const worker = ['service_role', 'monitor_worker']
+    const limiter = ['service_role', 'app_web', 'media_service']
     const expected: Record<string, string[]> = {
       mfa_enforced: people,
       has_capability: people,
@@ -666,7 +673,7 @@ describe('capability access model (P2-1)', () => {
       grant_access: server,
       revoke_grant: server,
       replace_user_grants: server,
-      preview_access_change: server,
+      preview_access_change: web,
       access_expiring: server,
       // Reporting only (ignore MFA, never for authorisation): the old access_effective_* names are gone (fix minor 2).
       report_effective_camera_ids: server,
@@ -704,33 +711,34 @@ describe('capability access model (P2-1)', () => {
       access_grants_before_insert: [],
       access_grants_before_update: [],
       // P2-3 (20261021000015): the editor's save, the review record and the people summary; the grant rules are internal.
-      apply_access_change: server,
-      access_review_keep: server,
-      access_grant_summary: server,
+      apply_access_change: web,
+      access_review_keep: web,
+      access_grant_summary: web,
       access_check_manager: [],
       access_check_grantor: [],
       // Ruling P-1 (20261021000016): super administrators hold every capability; the triggers run with their owner's rights.
-      grant_platform_owner_all: server,
+      grant_platform_owner_all: web,
       access_catalogue_probe_test: server,
       capabilities_after_insert: [],
       profiles_platform_owner_after_update: [],
       // P2-5a (20261021000019..21): locations, recorders, mappings, archive, hierarchy moves, monitoring switch, credentials, migration.
-      access_target_ancestry: server,
-      recorder_store_credential: server,
+      access_target_ancestry: web,
+      // P2-6: the web app WRITES an NVR password (never reads one); reads go through recorder_credential_read (below).
+      recorder_store_credential: web,
       recorder_read_credential: server,
       recorder_delete_credential: server,
       recorder_credential_status: server,
-      recorder_primary_of: server,
-      recorder_set_monitoring: server,
-      monitor_apply_results: server,
-      camera_remap: server,
-      inventory_archive: server,
-      inventory_restore: server,
-      inventory_move_location: server,
-      inventory_move_cluster: server,
-      preview_hierarchy_change: server,
+      recorder_primary_of: web,
+      recorder_set_monitoring: web,
+      monitor_apply_results: worker,
+      camera_remap: web,
+      inventory_archive: web,
+      inventory_restore: web,
+      inventory_move_location: web,
+      inventory_move_cluster: web,
+      preview_hierarchy_change: web,
       inventory_purge_test_org: server,
-      inventory_propose_hierarchy: server,
+      inventory_propose_hierarchy: web,
       inventory_effective_snapshot: server,
       inventory_stale_name_scan: server,
       network_validate_address: server,
@@ -764,29 +772,58 @@ describe('capability access model (P2-1)', () => {
       locations_parent_check: [],
       assets_space_check: [],
       // P2-5b (20261021000023/24): one recorder saved by the server; the two stop helpers now with search_path ''.
-      recorder_save: server,
-      inventory_refresh_statistics: server,
+      recorder_save: web,
+      inventory_refresh_statistics: web,
       monitor_stop_targets: server,
       monitor_stop_target: server,
       // P2-5b review round 1 (20261021000025): one discovery saved in one transaction; NVR assets switched on with their location.
-      discovery_apply: server,
+      discovery_apply: web,
       locations_recorders_on: [],
       // P2-5c-1 (20261021000026): merging a duplicate camera identity; dynamic camera-group rules (resolved for the signed-in reader,
       // intersected with what they may see; the resolver itself is internal); the rule reference check is a trigger.
-      camera_merge: server,
+      camera_merge: web,
       group_rule_members: ['authenticated'],
       camera_group_rule_members: [],
       camera_group_rules_check: [],
       // P2-5c-1 review round 1 (20261021000027): group counts for the caller; the ticked zone proposals in one transaction (server).
       group_member_counts: ['authenticated'],
-      inventory_apply_proposals: server,
+      inventory_apply_proposals: web,
       // P2-5c-1 fix round 2 (20261021000030): the effect of ticked zone proposals on access, all rows in one call (server only).
-      preview_hierarchy_proposals: server,
+      preview_hierarchy_proposals: web,
       // P2-5c-2 (20261021000028, 31): the location import in one transaction and its placeholder twin (server only); the Wi-Fi
       // inventory for the signed-in reader (it applies the reader's own wifi.inventory.view grants).
-      inventory_import_apply: server,
+      inventory_import_apply: web,
       inventory_ensure_placeholders: server,
       wifi_inventory: ['authenticated'],
+      // P2-6 (20261021000033): logged credential reads per purpose and role, the lock of the service key, the shared rate limiter,
+      // housekeeping for the worker, the self-test of privilege_violations; internal helpers have no grant at all.
+      recorder_credential_read: ['service_role', 'media_service', 'monitor_worker'],
+      recorder_secret_equals: [],
+      service_caller_role: [],
+      credential_purpose_allowed: [],
+      service_role_may_read_credentials: [],
+      security_settings_set_test: server,
+      vault_reads_prune: worker,
+      rate_limit_hit: limiter,
+      rate_limit_state: limiter,
+      rate_limit_clear: limiter,
+      rate_limit_prune: worker,
+      rate_limit_window_start: [],
+      privilege_violations: server,
+      privilege_violations_selftest: server,
+      media_session_create: ['service_role', 'media_service'],
+      media_session_open: ['service_role', 'media_service', 'video_gateway'],
+      media_sessions_still_valid: ['service_role', 'media_service', 'video_gateway'],
+      media_session_close: ['service_role', 'media_service', 'video_gateway'],
+      media_sessions_revoke_user: web,
+      media_sessions_revalidate: web,
+      media_sessions_prune: worker,
+      monitor_request_check: web,
+      targets_uptime: web,
+      revoke_user_sessions: web,
+      set_person_active: web,
+      change_person_role: web,
+      access_review_self_confirm: web,
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)

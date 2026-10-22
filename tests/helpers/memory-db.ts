@@ -1,4 +1,5 @@
 import { isNvrKnownDown } from '@/lib/monitor/nvr-state'
+import { registerEndpoints } from '@/lib/security/targets'
 import type { CheckResult, DeviceJob, MonitorDb, NvrJob, RecorderJob, WorkerRequest } from '@/lib/monitor/types'
 
 /** In-memory MonitorDb: remembers every call so tests can look at what the checks decided. */
@@ -19,12 +20,22 @@ export class MemoryDb implements MonitorDb {
   rounds: { kind: 'devices' | 'cameras'; at: Date }[] = []
   staleBefore: (Date | undefined)[] = []
 
-  async loadDevices() { return this.devices }
-  async loadNvrs() { return this.nvrs }
+  // Like the real data layer (P2-6, lib/monitor/supabase-db.ts): what is read is a registered endpoint (lib/security/targets.ts), so the
+  // real probes may reach it and nothing else.
+  async loadDevices() {
+    registerEndpoints(this.devices.map((d) => ({ host: d.ip, port: d.tcp_port })))
+    return this.devices
+  }
+  async loadNvrs() {
+    registerEndpoints(this.nvrs.map((n) => ({ host: n.ip, port: n.rtsp_port })))
+    return this.nvrs
+  }
   async loadRecorderJobs(ids?: string[], staleBefore?: Date) {
     this.staleBefore.push(staleBefore)
+    const jobs = this.pick(ids)
+    registerEndpoints(jobs.flatMap((s) => [{ host: s.ip, port: s.http_port }, { host: s.ip, port: s.rtsp_port }]))
     // Like the real data layer: whether the NVR is known to be down is decided here, once.
-    return this.pick(ids).map((s) => ({ ...s, knownDown: isNvrKnownDown(s.nvr_status, s.nvr_checked_at, staleBefore) }))
+    return jobs.map((s) => ({ ...s, knownDown: isNvrKnownDown(s.nvr_status, s.nvr_checked_at, staleBefore) }))
   }
   private pick(ids?: string[]) { return ids ? this.recorders.filter((s) => ids.includes(s.id)) : this.recorders }
   async recordGap(from: Date, to: Date) { this.gaps.push({ from, to }) }

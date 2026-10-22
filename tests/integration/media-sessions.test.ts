@@ -598,10 +598,22 @@ describe('media session registry (P2-4)', () => {
       expect(v.data).toEqual([])
       const { data } = await admin().rpc('function_privileges')
       const by = new Map((data ?? []).map((f) => [f.name, f]))
-      const server = ['has_capability_for_user', 'media_session_create', 'media_session_open', 'media_sessions_still_valid', 'media_session_close',
-        'media_sessions_revoke_user', 'media_sessions_revalidate', 'media_sessions_prune', 'access_twin_violations', 'media_sessions_age_test']
-      for (const n of server) {
-        expect(by.get(n)?.grantees, n).toEqual(['service_role'])
+      // P2-6 (D-14): server functions belong to the service key plus exactly the service roles that use them — the gateway only the
+      // three registry calls, the video path its sessions, the web app the revocations, the worker the prune; never a signed-in person.
+      const server: Record<string, string[]> = {
+        has_capability_for_user: ['service_role'],
+        media_session_create: ['media_service', 'service_role'],
+        media_session_open: ['media_service', 'service_role', 'video_gateway'],
+        media_sessions_still_valid: ['media_service', 'service_role', 'video_gateway'],
+        media_session_close: ['media_service', 'service_role', 'video_gateway'],
+        media_sessions_revoke_user: ['app_web', 'service_role'],
+        media_sessions_revalidate: ['app_web', 'service_role'],
+        media_sessions_prune: ['monitor_worker', 'service_role'],
+        access_twin_violations: ['service_role'],
+        media_sessions_age_test: ['service_role'],
+      }
+      for (const [n, grantees] of Object.entries(server)) {
+        expect(by.get(n)?.grantees, n).toEqual(grantees)
         expect(by.get(n)?.security_definer, n).toBe(true)
         expect(by.get(n)?.search_path, n).toBe('')
       }

@@ -44,4 +44,11 @@ describe('camera results name their NVR', () => {
     expect(cleanResults([{ type: 'camera', id: C1, recorder: 'not-a-uuid', ok: true, at }])).toEqual([])
     expect(cleanResults([{ type: 'recorder', id: R1, recorder: R1, ok: true, at }])).toEqual([{ type: 'recorder', id: R1, ok: true, at }])
   })
+
+  // P2-6 (addendum, review M-3 made required): a camera result that does not name its NVR is never sent (the database ignores it too).
+  it('a camera result without its recorder is dropped by the last gate', () => {
+    const at = NOW.toISOString()
+    expect(cleanResults([{ type: 'camera', id: C1, ok: true, at }])).toEqual([])
+    expect(cleanResults([{ type: 'camera', id: C1, ok: true, at }, { type: 'recorder', id: R1, ok: true, at }])).toEqual([{ type: 'recorder', id: R1, ok: true, at }])
+  })
 })

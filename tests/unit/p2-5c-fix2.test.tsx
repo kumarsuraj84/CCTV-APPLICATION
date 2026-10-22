@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useMemoryLimiter } from '../helpers/limiter-store'
 
 // P2-5c-1 fix round 2 (Part A of .superpowers/sdd/drishti/p2-5c-2-review.md): A-N1 (a merge confirmation that could name one camera
 // and merge another), A-N2 (the merge sentence's "linked" test), A-N3 (cycling passwords around the login back-off), and the small
@@ -31,7 +32,8 @@ const B = '00000000-0000-4000-8000-00000000000b'
 const K = '00000000-0000-4000-8000-00000000000c'
 
 describe('A-N1: the merge that is done is the merge that was confirmed', () => {
-  beforeEach(() => { h.merge.mockClear(); h.preview.mockClear() })
+  // P2-6 (D-11): the shared rate limiter counts in memory here (never the database), with the database's semantics.
+  beforeEach(() => { h.merge.mockClear(); h.preview.mockClear(); useMemoryLimiter() })
   afterEach(() => vi.useRealTimers())
 
   it('changing the chosen camera after the question opened closes it: nothing can be merged until the new choice is asked about', async () => {

@@ -1,8 +1,17 @@
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { forgetTargetsForTest, registerEndpoints } from '@/lib/security/targets'
 import { Go2rtcClient, pruneStreams } from '@/lib/streams/go2rtc'
+import { demoSource } from '@/lib/streams/source'
 import { closedPort } from '../helpers/fake-servers'
+
+// P2-6 (D-13): go2rtc accepts only sources of registered recorder endpoints; the NVR these tests use is registered as the database
+// loaders would register it.
+beforeEach(() => {
+  forgetTargetsForTest()
+  registerEndpoints([{ host: '192.168.1.10', port: 554 }])
+})
 
 type Seen = { method: string; url: string; query: URLSearchParams; rawQuery: string }
 type Fake = { base: string; seen: Seen[]; close: () => Promise<void> }
@@ -215,13 +224,19 @@ describe('Go2rtcClient.register', () => {
     expect(f.seen.filter((s) => s.method === 'PUT')).toHaveLength(0)
   })
 
-  it('carries a source with spaces, braces and an ampersand intact', async () => {
+  // P2-6 (D-13) replaces "carries a source with spaces, braces and an ampersand intact": an ffmpeg: source with extra text is now refused
+  // (only the exact demo picture outside production, and rtsp:// to a registered NVR). What must still arrive intact is a playback source
+  // with a query (an ampersand) and the demo picture with its own query.
+  it('carries an rtsp playback source with a query, and the demo picture, intact', async () => {
     const f = await startGo2rtc(200, true)
-    const odd = 'ffmpeg:virtual?video=testsrc&size=640x360#video=h264 {x}'
-    await new Go2rtcClient(f.base).register(NAME, odd)
+    const playback = 'rtsp://viewer:p%40ss@192.168.1.10:554/Streaming/tracks/301?starttime=20261020T100000Z&endtime=20261020T101000Z'
+    await new Go2rtcClient(f.base).register(NAME, playback)
     const put = f.seen.find((s) => s.method === 'PUT')!
-    expect(put.query.get('src')).toBe(odd)
-    expect(put.query.get('size')).toBeNull()
+    expect(put.query.get('src')).toBe(playback)
+    expect(put.query.get('endtime')).toBeNull()
+    const demo = demoSource(1, '0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a')
+    await new Go2rtcClient(f.base).register('cam_0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a_sub', demo)
+    expect(f.seen.filter((s) => s.method === 'PUT').at(-1)!.query.get('src')).toBe(demo)
   })
 
   it('tolerates a trailing slash on the base address', async () => {
@@ -530,5 +545,86 @@ describe('pruneStreams', () => {
     const l = await new Go2rtcClient(f.base).list()
     expect(l).toEqual([{ name: cam(1), busy: true }])
     expect(JSON.stringify(l)).not.toContain('viewer')
+  })
+})
+
+// P2-6 (D-13, addendum): go2rtc's API is protected by its own credentials (GO2RTC_API_USERNAME / GO2RTC_API_PASSWORD: the go2rtc config
+// reads the same two, deploy/go2rtc.yaml), so its stream list — which holds NVR sources with their passwords — is shown to nobody else;
+// and only sources this server may use are ever sent (no exec:, echo:, expr:, other ffmpeg: inputs, unregistered or special addresses).
+describe('Go2rtcClient: API credentials and sources (P2-6, D-13)', () => {
+  const AUTH = { username: 'drishti-app', password: 'g'.repeat(40) }
+  const basic = `Basic ${Buffer.from(`${AUTH.username}:${AUTH.password}`).toString('base64')}`
+
+  /** A go2rtc that answers only requests with its credentials (go2rtc 1.9.9 with api.username/password: 401 otherwise). */
+  async function lockedGo2rtc() {
+    const streams = new Map<string, string>()
+    const headers: (string | undefined)[] = []
+    const f = await startFake((req, res, s) => {
+      headers.push(req.headers.authorization)
+      if (req.headers.authorization !== basic) {
+        res.statusCode = 401
+        return void res.end('Unauthorized')
+      }
+      if (req.method === 'PUT') streams.set(s.query.get('name') ?? '', s.query.get('src') ?? '')
+      res.setHeader('content-type', 'application/json')
+      const one = s.query.get('src')
+      if (req.method === 'GET' && one !== null) {
+        if (!streams.has(one)) res.statusCode = 404
+        return void res.end(streams.has(one) ? JSON.stringify({ producers: [{ url: streams.get(one) }], consumers: null }) : 'not found')
+      }
+      res.end(JSON.stringify(Object.fromEntries([...streams].map(([k, v]) => [k, { producers: [{ url: v }], consumers: null }]))))
+    })
+    return Object.assign(f, { streams, headers })
+  }
+
+  it('sends its credentials with every request; without them the API answers nothing', async () => {
+    const f = await lockedGo2rtc()
+    await new Go2rtcClient(f.base, undefined, undefined, AUTH).register(NAME, SRC)
+    expect(f.streams.get(NAME)).toBe(SRC)
+    expect(f.headers.every((h) => h === basic)).toBe(true)
+    expect(await messageOf(new Go2rtcClient(f.base, undefined, undefined, null).register('cam_x_sub', SRC))).toBe(PLAIN)
+  })
+
+  it('a /api/streams dump holds no credentials for anybody without the API password, and the app never hands a source on', async () => {
+    const f = await lockedGo2rtc()
+    const c = new Go2rtcClient(f.base, undefined, undefined, AUTH)
+    await c.register(NAME, SRC)
+    const anonymous = await fetch(`${f.base}/api/streams`)
+    const text = await anonymous.text()
+    expect(anonymous.status).toBe(401)
+    expect(text).not.toContain('viewer')
+    expect(text).not.toContain('p%40ss')
+    const listed = JSON.stringify(await c.list())
+    expect(listed).not.toContain('viewer')
+    expect(listed).not.toContain('rtsp://')
+    expect(JSON.stringify(await c.inspect(NAME))).not.toContain('rtsp://')
+  })
+
+  it.each([
+    'exec:ffmpeg -i rtsp://192.168.1.10/x -f rtsp {output}', 'echo:/bin/sh -c id', 'expr:1+1', 'ffmpeg:rtsp://192.168.1.10:554/x',
+    'rtsp://viewer:p@192.168.99.99:554/Streaming/Channels/101', 'rtsp://viewer:p@169.254.169.254:554/x', 'rtsp://viewer:p@192.168.1.10:8554/x',
+    'http://192.168.1.10/ISAPI/Streaming/channels/101/picture', 'rtsp://viewer:p@192.168.1.10:554/x#raw=-i /etc/passwd',
+  ])('refuses %j without any request to go2rtc and with the plain message', async (src) => {
+    const f = await startGo2rtc(200, true)
+    expect(await messageOf(new Go2rtcClient(f.base).register(NAME, src))).toBe(PLAIN)
+    expect(f.seen).toHaveLength(0)
+  })
+
+  it('takes its credentials from the environment (both or neither)', async () => {
+    const f = await lockedGo2rtc()
+    const before = { u: process.env.GO2RTC_API_USERNAME, p: process.env.GO2RTC_API_PASSWORD }
+    try {
+      process.env.GO2RTC_API_USERNAME = AUTH.username
+      process.env.GO2RTC_API_PASSWORD = AUTH.password
+      await new Go2rtcClient(f.base).register(NAME, SRC)
+      expect(f.streams.get(NAME)).toBe(SRC)
+      delete process.env.GO2RTC_API_PASSWORD
+      expect(await messageOf(new Go2rtcClient(f.base).register('cam_y_sub', SRC))).toBe(PLAIN) // a user name alone is no credential
+    } finally {
+      if (before.u === undefined) delete process.env.GO2RTC_API_USERNAME
+      else process.env.GO2RTC_API_USERNAME = before.u
+      if (before.p === undefined) delete process.env.GO2RTC_API_PASSWORD
+      else process.env.GO2RTC_API_PASSWORD = before.p
+    }
   })
 })

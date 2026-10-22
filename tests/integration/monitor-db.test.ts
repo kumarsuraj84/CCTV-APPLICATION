@@ -7,15 +7,20 @@ import { adminClient, cleanupOrg, createCamera, createLocation, createOrg, creat
 
 const admin = () => adminClient()
 
-/** The service-role client, with every recorder_read_credential call counted (by recorder id), and optionally failing. */
+/**
+ * The service-role client, with every credential read counted (by recorder id), and optionally failing. P2-6: the worker reads through
+ * the logged recorder_credential_read with purpose `monitoring` (and nothing else).
+ */
 function watched(fail = false) {
   const reads: string[] = []
   const real = admin()
   const client = new Proxy(real, {
     get(target, prop) {
       if (prop === 'rpc') {
-        return (name: string, args: { p_recorder?: string }) => {
-          if (name !== 'recorder_read_credential') return target.rpc(name as never, args as never)
+        return (name: string, args: { p_recorder?: string; p_purpose?: string }) => {
+          if (name === 'recorder_read_credential') throw new Error('the worker must use recorder_credential_read (P2-6)')
+          if (name !== 'recorder_credential_read') return target.rpc(name as never, args as never)
+          if (args.p_purpose !== 'monitoring') throw new Error(`the worker read a login for ${args.p_purpose}`)
           reads.push(args.p_recorder ?? '')
           return fail ? Promise.resolve({ data: null, error: { code: 'XX000', message: 'vault is down' } }) : target.rpc(name, args as never)
         }
@@ -166,7 +171,7 @@ describe('SupabaseMonitorDb (per recorder)', () => {
   })
 
   it('applies results, records camera addresses, and surfaces database errors', async () => {
-    await db.applyResults(orgId, [{ type: 'camera', id: camIds[0], ok: true, at: new Date().toISOString() }], 2)
+    await db.applyResults(orgId, [{ type: 'camera', id: camIds[0], recorder: recorderId, ok: true, at: new Date().toISOString() }], 2)
     const { data } = await admin().from('check_state').select('status').eq('target_id', camIds[0]).single()
     expect(data?.status).toBe('up')
     await db.saveCameraIps(orgId, [{ cameraId: camIds[0], ip: '192.0.2.77', recorderId }])
@@ -176,7 +181,7 @@ describe('SupabaseMonitorDb (per recorder)', () => {
     expect((await admin().from('cameras').select('camera_ip').eq('id', camIds[0]).single()).data?.camera_ip).toBe('192.0.2.77')
     // A database that refuses the call is an error the caller sees (here a client whose call fails).
     const refusing = { rpc: async () => ({ data: null, error: { message: 'boom' } }) } as unknown as SupabaseClient<Database>
-    await expect(new SupabaseMonitorDb(refusing).applyResults(orgId, [{ type: 'camera', id: camIds[0], ok: true, at: new Date().toISOString() }], 2)).rejects.toThrow('monitor_apply_results failed')
+    await expect(new SupabaseMonitorDb(refusing).applyResults(orgId, [{ type: 'camera', id: camIds[0], recorder: recorderId, ok: true, at: new Date().toISOString() }], 2)).rejects.toThrow('monitor_apply_results failed')
   })
 
   it('sends the function only complete results, once per target, the last one winning; the old \'nvr\' kind is never sent', async () => {
@@ -194,16 +199,18 @@ describe('SupabaseMonitorDb (per recorder)', () => {
     await new SupabaseMonitorDb(spying, { orgId }).applyResults(
       orgId,
       [
-        { type: 'camera', id: camIds[1], ok: false, at: at(0), error: 'first' },
-        { type: 'camera', id: camIds[1], ok: true, at: at(1) },
-        { type: 'camera', id: camIds[0], ok: undefined as never, at: at(1) },
-        { type: 'camera', id: camIds[0], ok: true, at: undefined as never },
+        { type: 'camera', id: camIds[1], recorder: recorderId, ok: false, at: at(0), error: 'first' },
+        { type: 'camera', id: camIds[1], recorder: recorderId, ok: true, at: at(1) },
+        { type: 'camera', id: camIds[0], recorder: recorderId, ok: undefined as never, at: at(1) },
+        { type: 'camera', id: camIds[0], recorder: recorderId, ok: true, at: undefined as never },
+        // P2-6: a camera result without its recorder is never sent.
+        { type: 'camera', id: camIds[0], ok: true, at: at(1) },
         { type: 'bogus' as never, id: camIds[0], ok: true, at: at(1) },
         { type: 'nvr' as never, id: storeId, ok: true, at: at(1) },
       ],
       2,
     )
-    expect(sent).toEqual([{ type: 'camera', id: camIds[1], ok: true, at: at(1) }])
+    expect(sent).toEqual([{ type: 'camera', id: camIds[1], recorder: recorderId, ok: true, at: at(1) }])
     const { data } = await admin().from('check_state').select('status, consecutive_failures').eq('target_id', camIds[1]).single()
     expect(data).toEqual({ status: 'up', consecutive_failures: 0 })
   })
