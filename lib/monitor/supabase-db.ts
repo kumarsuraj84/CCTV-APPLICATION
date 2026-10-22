@@ -3,6 +3,7 @@ import { mapLimit } from '@/lib/async/pool'
 import type { Database, Json } from '@/types/database'
 import { logger } from '@/lib/observability/logger'
 import { fetchAll } from '@/lib/supabase/fetch-all'
+import { isLeaseLost, LEASE_REFUSED_SQLSTATE, LeaseLostError, type LeaseFence } from '@/lib/monitor/lease'
 import { isNvrKnownDown } from '@/lib/monitor/nvr-state'
 import { registerEndpoints } from '@/lib/security/targets'
 import type { CheckResult, DeviceJob, MonitorDb, NvrJob, RecorderJob, WorkerRequest } from '@/lib/monitor/types'
@@ -57,17 +58,48 @@ export function cleanResults(results: CheckResult[]): Json[] {
 export type SupabaseMonitorDbOptions = {
   /** Only look at this organisation (tests use it so that they never touch other data in the database). The worker leaves it out: it serves all. */
   orgId?: string
+  /**
+   * P2-7 (D-8): the lease epoch this data layer writes for (WorkerLease.fence()). Every write carries its lease name and token and is
+   * checked by the database in the same transaction; without a valid token nothing is sent. Reads need no lease.
+   */
+  fence?: LeaseFence
 }
+
+type FenceArgs = { p_lease: string; p_fencing_token: number }
+type RpcError = { code?: string; message: string } | null
 
 /**
  * MonitorDb on the worker's database client (P2-6: the monitor_worker role, lib/supabase/service-clients.ts). NVR passwords are read
- * from the vault one recorder at a time (logged, never the value) and only held in memory.
+ * from the vault one recorder at a time (logged, never the value) and only held in memory. P2-7: every write is a fenced database
+ * function (monitor_apply_results, monitor_heartbeat, monitor_record_gap, monitor_mark_round, monitor_run_started/progress/finished,
+ * monitor_save_camera_ips); the worker's role can no longer write a table directly.
  */
 export class SupabaseMonitorDb implements MonitorDb {
   private orgId: string | undefined
+  private fence: LeaseFence | undefined
 
   constructor(private admin: Admin, opts: SupabaseMonitorDbOptions = {}) {
     this.orgId = opts.orgId
+    this.fence = opts.fence
+  }
+
+  /** The lease arguments of a write, or LeaseLostError when this worker holds no valid lease (then nothing is sent). */
+  private fenced(): FenceArgs {
+    const token = this.fence?.token() ?? null
+    if (!this.fence || token === null) throw new LeaseLostError('This worker holds no valid lease, so nothing is written (another worker may hold it).')
+    return { p_lease: this.fence.name, p_fencing_token: token }
+  }
+
+  /** A fenced write. A refusal by the fence ends this lease epoch (LeaseLostError); any other error keeps its old wording. */
+  private async write(fn: string, args: Record<string, unknown>, what: string): Promise<unknown> {
+    const fence = this.fenced()
+    const { data, error } = (await this.admin.rpc(fn as never, { ...args, ...fence } as never)) as { data: unknown; error: RpcError }
+    if (error?.code === LEASE_REFUSED_SQLSTATE) {
+      this.fence?.lost('write_refused')
+      throw new LeaseLostError(`The database refused the write (${fn}): ${error.message}`)
+    }
+    if (error) throw new Error(`${what} failed: ${error.message}`)
+    return data
   }
 
   loadDevices(): Promise<DeviceJob[]> {
@@ -167,21 +199,23 @@ export class SupabaseMonitorDb implements MonitorDb {
   async applyResults(orgId: string, results: CheckResult[], threshold: number): Promise<void> {
     const clean = cleanResults(results)
     if (clean.length === 0) return
-    const { error } = await this.admin.rpc('monitor_apply_results', { p_org: orgId, p_results: clean, p_threshold: threshold })
-    if (error) throw new Error(`monitor_apply_results failed: ${error.message}`)
+    await this.write('monitor_apply_results', { p_org: orgId, p_results: clean, p_threshold: threshold }, 'monitor_apply_results')
   }
 
   async saveCameraIps(orgId: string, rows: { cameraId: string; ip: string; recorderId: string }[]): Promise<void> {
-    for (const r of rows) {
-      // Only while the camera is still on the NVR that reported the address (a camera moved meanwhile keeps its new NVR's address).
-      const { error } = await this.admin.from('cameras').update({ camera_ip: r.ip }).eq('id', r.cameraId).eq('org_id', orgId).eq('recorder_id', r.recorderId)
-      if (error) logger.error({ event: 'camera_ip_save_failed', error })
+    if (rows.length === 0) return
+    // One fenced call. Only while the camera is still on the NVR that reported the address (a camera moved meanwhile keeps its new
+    // NVR's address); the database also skips anything that is not a plain address. A failure is logged: addresses are a bonus.
+    try {
+      await this.write('monitor_save_camera_ips', { p_org: orgId, p_rows: rows.map((r) => ({ camera: r.cameraId, ip: r.ip, recorder: r.recorderId })) }, 'saving camera addresses')
+    } catch (e) {
+      if (isLeaseLost(e)) throw e
+      logger.error({ event: 'camera_ip_save_failed', error: e })
     }
   }
 
   async touchHeartbeat(now: Date): Promise<void> {
-    const { error } = await this.admin.from('worker_state').update({ last_heartbeat: now.toISOString() }).eq('id', 1)
-    if (error) throw new Error(`heartbeat failed: ${error.message}`)
+    await this.write('monitor_heartbeat', { p_at: now.toISOString() }, 'heartbeat')
   }
 
   /** At start-up: if the last heartbeat is older than maxSilenceMs, the worker was not running in between. Remember that period. */
@@ -200,17 +234,12 @@ export class SupabaseMonitorDb implements MonitorDb {
   }
 
   async recordGap(from: Date, to: Date): Promise<void> {
-    const { error } = await this.admin.from('monitor_gaps').insert({ started_at: from.toISOString(), ended_at: to.toISOString() })
-    if (error) throw new Error(`recording the gap failed: ${error.message}`)
+    await this.write('monitor_record_gap', { p_from: from.toISOString(), p_to: to.toISOString() }, 'recording the gap')
   }
 
   async markRound(kind: 'devices' | 'cameras', at: Date): Promise<void> {
-    const time = at.toISOString()
-    const { error } = await this.admin
-      .from('worker_state')
-      .update(kind === 'devices' ? { last_devices_round_at: time } : { last_cameras_round_at: time })
-      .eq('id', 1)
-    if (error) throw new Error(`saving the time of the ${kind} round failed: ${error.message}`)
+    // The database calls the round of devices and NVRs 'assets' (the P2-5a word).
+    await this.write('monitor_mark_round', { p_kind: kind === 'devices' ? 'assets' : 'cameras', p_at: at.toISOString() }, `saving the time of the ${kind} round`)
   }
 
   async readRequest(): Promise<WorkerRequest> {
@@ -224,20 +253,14 @@ export class SupabaseMonitorDb implements MonitorDb {
   }
 
   async markRunStarted(at: Date, total: number): Promise<void> {
-    const { error } = await this.admin
-      .from('worker_state')
-      .update({ run_started_at: at.toISOString(), run_finished_at: null, progress_done: 0, progress_total: total })
-      .eq('id', 1)
-    if (error) throw new Error(`marking the run as started failed: ${error.message}`)
+    await this.write('monitor_run_started', { p_at: at.toISOString(), p_total: total }, 'marking the run as started')
   }
 
   async markProgress(done: number, total: number): Promise<void> {
-    const { error } = await this.admin.from('worker_state').update({ progress_done: done, progress_total: total }).eq('id', 1)
-    if (error) throw new Error(`saving the progress failed: ${error.message}`)
+    await this.write('monitor_run_progress', { p_done: done, p_total: total }, 'saving the progress')
   }
 
   async markRunFinished(at: Date): Promise<void> {
-    const { error } = await this.admin.from('worker_state').update({ run_finished_at: at.toISOString() }).eq('id', 1)
-    if (error) throw new Error(`marking the run as finished failed: ${error.message}`)
+    await this.write('monitor_run_finished', { p_at: at.toISOString() }, 'marking the run as finished')
   }
 }

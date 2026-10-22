@@ -1,10 +1,12 @@
 import { existsSync } from 'node:fs'
+import { hostname } from 'node:os'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { waitForSoleWorker } from '@/lib/monitor/guard'
 import { loadMonitorConfig } from '@/lib/monitor/config'
+import { WorkerLease } from '@/lib/monitor/lease'
 import { realProbes } from '@/lib/monitor/probes'
 import { MonitorRunner } from '@/lib/monitor/runner'
 import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
+import { WorkerSupervisor } from '@/lib/monitor/supervisor'
 import { HOUSEKEEPING_EVERY_MS, runHousekeeping } from '@/lib/monitor/housekeeping'
 import { logger } from '@/lib/observability/logger'
 import { refusalMessage, startupProblems } from '@/lib/startup-checks'
@@ -18,8 +20,7 @@ async function main() {
   // A forgotten rejection must not stop monitoring; it is logged and the loops carry on.
   process.on('unhandledRejection', (e) => logger.error({ event: 'worker_unhandled_rejection', error: e }))
 
-  const stop = new AbortController()
-  const started: { runner?: MonitorRunner } = {}
+  const started: { supervisor?: WorkerSupervisor } = {}
   let stopping = false
   // SIGBREAK is what Ctrl+Break and closing the console send on Windows.
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK'] as const) {
@@ -29,8 +30,9 @@ async function main() {
         process.exit(130) // a second request to stop: leave at once; 130 is the usual code for being stopped by Ctrl+C
       }
       stopping = true
-      stop.abort() // ends the wait at start-up, if that is where the worker is
-      void (started.runner ? started.runner.shutdown(SHUTDOWN_WAIT_MS) : Promise.resolve(true)).then((drained) => {
+      // P2-7: the checks in progress finish (their writes still fenced with a valid token), then the lease is handed back so that
+      // another worker can take it at once.
+      void (started.supervisor ? started.supervisor.stop(SHUTDOWN_WAIT_MS) : Promise.resolve(true)).then((drained) => {
         logger.info({ event: 'worker_stopped', signal, finishedCurrentChecks: drained })
         process.exit(0)
       })
@@ -56,40 +58,33 @@ async function main() {
   const cfg = loadMonitorConfig()
   const admin = createServiceClient('monitor_worker')
 
-  // Only one worker may run against a database. Refuse to start next to a live one; wait patiently if the database cannot be read.
-  const guard = await waitForSoleWorker(
-    {
-      readHeartbeat: async () => {
-        const { data, error } = await admin.from('worker_state').select('last_heartbeat').eq('id', 1).single()
-        if (error) throw new Error(`reading the heartbeat failed: ${error.message}`)
-        return data.last_heartbeat ? new Date(data.last_heartbeat) : null
-      },
-      now: () => new Date(),
-      sleep: (ms, signal) => sleep(ms, undefined, { signal }),
-      pollSec: cfg.pollSec,
-    },
-    {
-      retryMs: cfg.pollSec * 1000,
-      signal: stop.signal,
-      onError: (e) => logger.error({ event: 'worker_waiting_for_database', message: 'Could not check for another worker; trying again.', error: e }),
-    },
-  )
-  if (guard === 'aborted') return // the stop handler ends the process
-  if (guard === 'taken') {
-    logger.error({ event: 'worker_already_running', message: 'Another worker is already beating on this database. Stop it first, then start this one.' })
-    process.exit(1)
-  }
-
-  const runner = new MonitorRunner({ db: new SupabaseMonitorDb(admin), probes: realProbes, cfg, clock: () => new Date() })
-  started.runner = runner
-  // "Started" is logged once the database has accepted the worker (the start-up gap is recorded), not before.
-  await runner.start({
-    onReady: () => logger.info({ event: 'worker_started', deviceCheckSec: cfg.deviceCheckSec, cameraCheckSec: cfg.cameraCheckSec, failThreshold: cfg.failThreshold }),
+  // P2-7 (D-8, docs/drishti/worker-lease.md): only the worker holding the lease 'monitor' works. Two workers started together: exactly
+  // one gets it, the other waits in standby and takes over when the first stops or stops renewing (20 s). Every write carries the lease's
+  // fencing token and the database refuses it once the lease is no longer this worker's. The lease name is not configurable yet: shards
+  // ('monitor:shard-<n>') need the targets split between them first.
+  const lease = new WorkerLease({
+    rpc: (fn, args) => admin.rpc(fn as never, args as never) as unknown as PromiseLike<{ data: unknown; error: { code?: string; message: string } | null }>,
+    holderInfo: { host: hostname(), pid: process.pid },
   })
-  // P2-6: housekeeping under the worker's role (ended rate-limit windows, old media sessions, old credential-read log rows).
-  const tidy = () => void runHousekeeping({ rpc: (name, args) => admin.rpc(name as never, args as never) }, (e) => (e.event === 'housekeeping_failed' ? logger.warn(e) : logger.info(e)))
-  tidy()
+  const supervisor = new WorkerSupervisor({
+    lease,
+    sleep: (ms, signal) => sleep(ms, undefined, { signal }),
+    log: (e) => (e.event === 'worker_start_failed' || e.event === 'worker_shutdown_failed' ? logger.error(e) : logger.warn(e)),
+    makeRunner: (fence) => new MonitorRunner({ db: new SupabaseMonitorDb(admin, { fence }), probes: realProbes, cfg, clock: () => new Date() }),
+    onActive: (token) =>
+      logger.info({ event: 'worker_started', lease: lease.name, token, deviceCheckSec: cfg.deviceCheckSec, cameraCheckSec: cfg.cameraCheckSec, failThreshold: cfg.failThreshold }),
+  })
+  started.supervisor = supervisor
+  if (stopping) return
+  // P2-6: housekeeping under the worker's role (ended rate-limit windows, old media sessions, old credential-read log rows). P2-7: only
+  // while this worker holds the lease (the prunes are harmless twice, but a worker in standby does no work at all).
+  const tidy = () => {
+    if (!supervisor.isActive()) return
+    void runHousekeeping({ rpc: (name, args) => admin.rpc(name as never, args as never) }, (e) => (e.event === 'housekeeping_failed' ? logger.warn(e) : logger.info(e)))
+  }
+  setTimeout(tidy, 30_000).unref()
   setInterval(tidy, HOUSEKEEPING_EVERY_MS).unref()
+  await supervisor.run()
 }
 
 main().catch((e) => {

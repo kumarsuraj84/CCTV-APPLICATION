@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { DEFAULT_LEASE_NAME } from '@/lib/monitor/lease'
 import { logger } from '@/lib/observability/logger'
 import { maskSecrets } from '@/lib/observability/mask'
 import type { Database } from '@/types/database'
@@ -14,6 +15,25 @@ export type WorkerStatus = WorkerHealth & {
   running: boolean
   progressDone: number
   progressTotal: number
+  /** P2-7: the worker's lease ('monitor'): who holds it, with which token, and how long ago it was renewed. null = never taken / unreadable. */
+  lease: WorkerLeaseStatus | null
+}
+
+/**
+ * The lease as the database holds it (P2-7, docs/drishti/worker-lease.md). `held` and the ages are worked out with this server's clock
+ * for display only; who may write is decided by the database alone.
+ */
+export type WorkerLeaseStatus = {
+  name: string
+  holder: string
+  token: number
+  held: boolean
+  acquiredAt: string
+  renewedAt: string
+  leaseUntil: string
+  /** Seconds since the holder last renewed it (the lease age shown to people). */
+  renewedAgeSec: number
+  holderInfo: Record<string, unknown>
 }
 
 type Admin = SupabaseClient<Database>
@@ -35,8 +55,35 @@ export async function getWorkerHealth(admin: Admin, now = new Date(), maxAgeSec 
   return { ok: heartbeatAgeSec !== null && heartbeatAgeSec < maxAgeSec, heartbeatAgeSec }
 }
 
+/** The lease `name` (default the worker's 'monitor'), or null when nobody ever took it. Throws when it cannot be read. */
+export async function getWorkerLease(admin: Admin, name = DEFAULT_LEASE_NAME, now = new Date()): Promise<WorkerLeaseStatus | null> {
+  const { data, error } = await admin
+    .from('worker_leases')
+    .select('name, holder, fencing_token, lease_until, acquired_at, renewed_at, released_at, holder_info')
+    .eq('name', name)
+    .maybeSingle()
+  if (error) throw new Error(`Could not read the worker lease: ${error.message}`)
+  if (!data) return null
+  return {
+    name: data.name,
+    holder: data.holder,
+    token: Number(data.fencing_token),
+    held: !data.released_at && new Date(data.lease_until).getTime() > now.getTime(),
+    acquiredAt: data.acquired_at,
+    renewedAt: data.renewed_at,
+    leaseUntil: data.lease_until,
+    renewedAgeSec: age(data.renewed_at, now) ?? 0,
+    holderInfo: data.holder_info && typeof data.holder_info === 'object' && !Array.isArray(data.holder_info) ? (data.holder_info as Record<string, unknown>) : {},
+  }
+}
+
 export async function getWorkerStatus(admin: Admin, now = new Date()): Promise<WorkerStatus> {
   const s = await readState(admin)
+  // The lease is extra information: a failure to read it never hides the rest of the status.
+  const lease = await getWorkerLease(admin, DEFAULT_LEASE_NAME, now).catch((e: unknown) => {
+    logger.warn({ event: 'worker_lease_read_failed', error: e })
+    return null
+  })
   const heartbeatAgeSec = age(s.last_heartbeat, now)
   return {
     ok: heartbeatAgeSec !== null && heartbeatAgeSec < MAX_AGE_SEC,
@@ -49,6 +96,7 @@ export async function getWorkerStatus(admin: Admin, now = new Date()): Promise<W
     running: !!s.run_started_at && (!s.run_finished_at || new Date(s.run_finished_at) < new Date(s.run_started_at)),
     progressDone: s.progress_done,
     progressTotal: s.progress_total,
+    lease,
   }
 }
 

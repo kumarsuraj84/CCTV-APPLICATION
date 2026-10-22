@@ -1,12 +1,19 @@
 import { createHash } from 'node:crypto'
 import { isIP } from 'node:net'
 import { mapLimit } from '@/lib/async/pool'
+import { isLeaseLost } from '@/lib/monitor/lease'
 import { describeNvrError, NvrError } from '@/lib/nvr/client'
 import { logger } from '@/lib/observability/logger'
 import { isValidHost, isValidPort } from '@/lib/probes'
 import type { CheckResult, MonitorConfig, MonitorDb, Probes, RecorderJob } from '@/lib/monitor/types'
 
-export type Deps = { db: MonitorDb; probes: Probes; cfg: MonitorConfig; clock: () => Date }
+/**
+ * signal (P2-7): aborted when the worker's lease is lost. A check in progress then probes no further target and sends nothing (every
+ * write would be refused by the fence anyway; this stops the work itself).
+ */
+export type Deps = { db: MonitorDb; probes: Probes; cfg: MonitorConfig; clock: () => Date; signal?: AbortSignal }
+
+const halted = (deps: Deps): boolean => deps.signal?.aborted === true
 
 type WithOrg = CheckResult & { org: string }
 
@@ -50,9 +57,12 @@ async function applyGrouped(deps: Deps, results: WithOrg[], threshold: number): 
   }
   for (const [org, list] of byOrg) {
     for (let i = 0; i < list.length; i += CHUNK) {
+      if (halted(deps)) return
       try {
         await deps.db.applyResults(org, list.slice(i, i + CHUNK), threshold)
       } catch (e) {
+        // P2-7: without the lease nothing more can be saved; the loss is logged once by the lease (lease_lost).
+        if (isLeaseLost(e)) return
         logger.error({ event: 'apply_results_failed', org, error: e })
       }
     }
@@ -73,6 +83,7 @@ export function checkDevices(deps: Deps): Promise<number> {
       return 0
     }
     const results = await mapLimit(devices, deps.cfg.deviceConcurrency, async (d): Promise<WithOrg | null> => {
+      if (halted(deps)) return null
       try {
         const port = d.tcp_port
         const method = port === null ? 'icmp' : 'tcp'
@@ -105,6 +116,7 @@ export function checkNvrs(deps: Deps): Promise<number> {
       return 0
     }
     const results = await mapLimit(nvrs, deps.cfg.deviceConcurrency, async (n): Promise<WithOrg | null> => {
+      if (halted(deps)) return null
       try {
         if (!isValidHost(n.ip) || !isValidPort(n.rtsp_port)) {
           return { org: n.org_id, type: 'recorder', id: n.id, ok: false, at: deps.clock().toISOString(), method: 'tcp', error: BAD_NVR }
@@ -184,7 +196,7 @@ function pruneBackoffs(deps: Deps): void {
 const plainIp = (ip: string | null): ip is string => typeof ip === 'string' && isIP(ip) !== 0 && !ip.includes('%')
 
 async function runRecorderCameras(deps: Deps, s: RecorderJob): Promise<void> {
-  if (s.cameras.length === 0) return
+  if (s.cameras.length === 0 || halted(deps)) return
   const at = deps.clock().toISOString()
 
   // A recorder already known to be down: ITS cameras (only the ones mapped to it) are down for the same reason, at once, with nothing
@@ -313,6 +325,7 @@ async function runRecorderCameras(deps: Deps, s: RecorderJob): Promise<void> {
     logger.warn({ event: 'nvr_login_problem', location: s.code, recorder: s.id, message: `NVR login problem at location ${s.code} (NVR ${s.name}): no saved password` })
   }
 
+  if (halted(deps)) return // the lease was lost while this NVR was being asked: nothing is sent
   const results = s.cameras
     .filter((c) => !skipped.has(c.channel))
     .map((c): CheckResult => {
@@ -333,8 +346,8 @@ export function checkRecorderCameras(deps: Deps, s: RecorderJob): Promise<void> 
     try {
       await runRecorderCameras(deps, s)
     } catch (e) {
-      // One broken recorder must never stop the others.
-      logger.error({ event: 'recorder_check_failed', location: s.code, recorder: s.id, error: e })
+      // One broken recorder must never stop the others. A lost lease (P2-7) is logged once by the lease itself.
+      if (!isLeaseLost(e)) logger.error({ event: 'recorder_check_failed', location: s.code, recorder: s.id, error: e })
     }
   })
 }
@@ -352,6 +365,7 @@ export async function checkCameras(deps: Deps, onProgress?: (done: number, total
   pruneBackoffs(deps)
   let done = 0
   await mapLimit(jobs, deps.cfg.recorderConcurrency, async (s) => {
+    if (halted(deps)) return
     await checkRecorderCameras(deps, s)
     try {
       onProgress?.(++done, jobs.length)

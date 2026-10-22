@@ -1,6 +1,7 @@
 import { logger } from '@/lib/observability/logger'
 import { checkCameras, checkDevices, checkNvrs, type Deps } from '@/lib/monitor/checks'
 import { DistinctFailures } from '@/lib/monitor/failure-log'
+import { isLeaseLost } from '@/lib/monitor/lease'
 import type { MonitorDb } from '@/lib/monitor/types'
 
 const MAX_SILENCE_MS = 30_000
@@ -60,9 +61,11 @@ export class MonitorRunner {
   private deps: Deps
   private watchdogMs: number
   private beatGapMs: number
+  /** P2-7: aborted when the lease is lost (abandon): the checks in progress probe nothing further and send nothing. */
+  private halt = new AbortController()
 
   constructor(deps: Deps, opts: { cycleWatchdogMs?: number; beatGapMs?: number } = {}) {
-    this.deps = { ...deps, db: counting(deps.db, () => (this.dbFailures += 1)) }
+    this.deps = { ...deps, db: counting(deps.db, () => (this.dbFailures += 1)), signal: this.halt.signal }
     this.watchdogMs = opts.cycleWatchdogMs ?? DEFAULT_CYCLE_WATCHDOG_MS
     this.beatGapMs = opts.beatGapMs ?? DEFAULT_BEAT_GAP_MS
   }
@@ -147,10 +150,11 @@ export class MonitorRunner {
 
   /** Saves when a scheduled round finished, for the Home page. Only for a round this call ran whole, without database trouble. Never throws. */
   private async markRound(kind: 'devices' | 'cameras'): Promise<void> {
+    if (this.halt.signal.aborted) return // a round cut short by a lost lease did not finish
     try {
       await this.deps.db.markRound(kind, this.deps.clock())
     } catch (e) {
-      logger.error({ event: 'round_time_not_saved', kind, error: e })
+      if (!isLeaseLost(e)) logger.error({ event: 'round_time_not_saved', kind, error: e })
     }
   }
 
@@ -227,11 +231,13 @@ export class MonitorRunner {
    * saved is kept and tried again at the next beat.
    */
   async beat(): Promise<void> {
+    if (this.halt.signal.aborted) return
     const now = this.deps.clock()
     try {
       await this.deps.db.touchHeartbeat(now)
     } catch (e) {
-      logger.error({ event: 'heartbeat_failed', error: e })
+      // P2-7: a lost lease is logged once by the lease itself (lease_lost), not on every beat.
+      if (!isLeaseLost(e)) logger.error({ event: 'heartbeat_failed', error: e })
       return
     }
     const last = this.lastGoodBeat
@@ -255,6 +261,7 @@ export class MonitorRunner {
 
   /** Runs everything if someone asked for a check since the last run began. A failed read is logged; the next poll asks again. */
   async checkRequests(): Promise<void> {
+    if (this.halt.signal.aborted) return
     if (this.retryPending) {
       if (Date.now() < this.retryNotBefore) return
       await this.fullRun(true)
@@ -342,6 +349,15 @@ export class MonitorRunner {
     this.stopped = true
     for (const t of this.timers) clearTimeout(t)
     this.timers.clear()
+  }
+
+  /**
+   * P2-7: the lease was lost. Stops at once: no timer fires again, the checks in progress probe no further target and send nothing,
+   * and nothing is written on the way out (every write would be refused anyway: another worker owns the state now). Not waited for.
+   */
+  abandon(): void {
+    this.halt.abort()
+    this.stop()
   }
 
   /**
