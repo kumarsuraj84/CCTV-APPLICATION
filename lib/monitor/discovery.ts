@@ -358,40 +358,56 @@ export async function discoverStoreCameras(clients: Clients, actor: Actor, store
 
 export type BulkDiscoveryItem = { recorderId: string; locationId: string; code: string; name: string } & (
   | { ok: true; result: RecorderDiscovery }
-  | { ok: false; error: string; skipped?: 'monitoring_off' | 'location_off' }
+  | { ok: false; error: string; skipped?: 'monitoring_off' | 'location_off' | 'stopped' }
 )
+
+/** P2-5c-2 review B-M10: the person stopped the run before this NVR was asked. */
+export const MSG_STOPPED = 'Not asked: the search was stopped before this NVR.'
 
 /**
  * "Discover all recorders" (for the P2-5c screen): every NVR of the organisation, at most `concurrency` at a time (default 4, at most
  * 8), with progress after each one. Switched-off NVRs are skipped without any contact. Each NVR's result or plain error is listed;
  * one NVR's failure never stops the others. Needs an administrative role and admin.inventory for the organisation.
+ * P2-5c-2 review: `shouldStop` is asked before each NVR (the "Stop" button, B-M10); the NVR list is read page by page (B-M11: more
+ * than 1,000 NVRs are never cut off).
  */
 export async function discoverAllRecorders(
   clients: Clients,
   actor: Actor,
-  o: { concurrency?: number; onProgress?: (done: number, total: number) => void; deps?: Deps } = {},
+  o: { concurrency?: number; onProgress?: (done: number, total: number) => void; deps?: Deps; shouldStop?: () => boolean } = {},
 ): Promise<Result<{ items: BulkDiscoveryItem[] }>> {
   if (!isAdminRole(actor.role)) return { ok: false, error: DENIED }
   const caps = await readCapabilities(clients.rls)
   if (caps.failed) return { ok: false, error: MSG_ACCESS_CHECK_FAILED }
   if (!holdsOrgWide(caps, 'admin.inventory')) return { ok: false, error: DENIED }
-  const { data, error } = await clients.admin.from('recorders').select('id, assets!recorders_asset_fk!inner(archived_at), locations!recorders_location_fk!inner(archived_at)')
-    .eq('org_id', actor.orgId).is('assets.archived_at', null).is('locations.archived_at', null).order('location_id').order('created_at').order('id')
-  if (error) return { ok: false, error: sanitizeError(error, { route: 'discoverAllRecorders', fallback: 'Could not read the NVRs.' }) }
-  let recorders: Map<string, Recorder>
+  let data: { id: string }[]
   try {
-    recorders = await loadRecorders(clients.admin, actor.orgId, (data ?? []).map((r) => r.id))
+    data = await fetchAll((f, t) => clients.admin.from('recorders').select('id, assets!recorders_asset_fk!inner(archived_at), locations!recorders_location_fk!inner(archived_at)')
+      .eq('org_id', actor.orgId).is('assets.archived_at', null).is('locations.archived_at', null).order('location_id').order('created_at').order('id').range(f, t))
   } catch (e) {
     return { ok: false, error: sanitizeError(e, { route: 'discoverAllRecorders', fallback: 'Could not read the NVRs.' }) }
   }
-  const list = (data ?? []).map((r) => recorders.get(r.id)).filter((r): r is Recorder => r !== undefined)
+  let recorders: Map<string, Recorder>
+  try {
+    recorders = await loadRecorders(clients.admin, actor.orgId, data.map((r) => r.id))
+  } catch (e) {
+    return { ok: false, error: sanitizeError(e, { route: 'discoverAllRecorders', fallback: 'Could not read the NVRs.' }) }
+  }
+  const list = data.map((r) => recorders.get(r.id)).filter((r): r is Recorder => r !== undefined)
   const deps = o.deps ?? defaults
   const limit = Math.min(8, Math.max(1, Math.floor(o.concurrency ?? 4)))
   let done = 0
   const items = await mapLimit(list, limit, async (rec): Promise<BulkDiscoveryItem> => {
     const base = { recorderId: rec.id, locationId: rec.location_id, code: rec.code, name: rec.name }
     let item: BulkDiscoveryItem
-    if (!rec.monitored) item = { ...base, ok: false, error: MSG_MONITORING_OFF, skipped: 'monitoring_off' }
+    let stop = false
+    try {
+      stop = o.shouldStop?.() === true
+    } catch {
+      // A broken stop check never stops the run by itself.
+    }
+    if (stop) item = { ...base, ok: false, error: MSG_STOPPED, skipped: 'stopped' }
+    else if (!rec.monitored) item = { ...base, ok: false, error: MSG_MONITORING_OFF, skipped: 'monitoring_off' }
     else if (!rec.location_active) item = { ...base, ok: false, error: MSG_LOCATION_OFF, skipped: 'location_off' }
     else {
       try {

@@ -87,8 +87,10 @@ export function capabilitiesFor(asset: { vendor: string | null; model: string | 
 export function capabilitySummary(asset: { vendor: string | null; model: string | null; managementMode: string | null }, rows: readonly CapabilityRow[]): string {
   if (!asset.vendor || !asset.model) return 'Add the vendor and exact model to see what the documentation says.'
   if (!asset.managementMode) return 'Add the management mode (for example standalone) to see what the documentation says.'
+  const lab = rows.filter((r) => r.support === 'supported' && r.labValidated).length
   const n = (s: Support) => rows.filter((r) => r.support === s).length
-  return `${n('supported')} documented (none tested here), ${n('unsupported')} not supported, ${n('unverified')} unverified.`
+  // (review note: never "none tested here" when a row is lab-validated)
+  return `${lab} tested in the lab, ${n('supported') - lab} documented (not tested here), ${n('unsupported')} not supported, ${n('unverified')} unverified.`
 }
 
 export function reachabilityOf(r: { enabled: boolean; status: string | null; last_checked_at: string | null }, now: Date = new Date()): WifiItem['reachability'] {

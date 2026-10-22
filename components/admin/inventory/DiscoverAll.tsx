@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation'
 import { CircleCheck, CircleX, MinusCircle, ScanSearch } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { FormAlert } from '@/components/ui/form-alert'
-import { discoverAllStatusAction, startDiscoverAllAction } from '@/lib/actions/admin/discover-all'
+import { discoverAllStatusAction, startDiscoverAllAction, stopDiscoverAllAction } from '@/lib/actions/admin/discover-all'
 import type { RunItem, RunView } from '@/lib/inventory/discover-all'
 import { formatDateTime } from '@/lib/time'
 
@@ -29,7 +29,9 @@ export function DiscoverAll({ initial, counts }: { initial: RunView | null; coun
   const [run, setRun] = useState<RunView | null>(initial)
   const [error, setError] = useState<string | null>(null)
   const [pending, start] = useTransition()
-  const running = run !== null && run.finishedAt === null
+  /** Review B-M10: polling stops for good after an answer it cannot use (for example the server restarted and forgot the run). */
+  const [lost, setLost] = useState(false)
+  const running = run !== null && run.finishedAt === null && !lost
   useEffect(() => {
     if (!running || !run) return
     const id = run.id
@@ -38,18 +40,29 @@ export function DiscoverAll({ initial, counts }: { initial: RunView | null; coun
       if (s.ok) {
         setRun(s.run)
         if (s.run.finishedAt) router.refresh()
-      } else setError(s.error)
+      } else {
+        setError(s.error)
+        setLost(true)
+        clearInterval(t)
+      }
     }, 2000)
     return () => clearInterval(t)
   }, [running, run, router])
+  const onStop = () => start(async () => {
+    if (!run) return
+    const r = await stopDiscoverAllAction(run.id)
+    if (!r.ok) setError(r.error)
+    else setRun({ ...run, stopped: true })
+  })
   const onStart = () => start(async () => {
     setError(null)
+    setLost(false)
     const r = await startDiscoverAllAction()
     if (!r.ok) {
       setError(r.error)
       return
     }
-    setRun({ id: r.runId, startedAt: new Date().toISOString(), finishedAt: null, total: r.total, done: 0, concurrency: counts.concurrency, items: [], summary: { asked: 0, done: 0, failed: 0, skipped: 0, cameras: 0, created: 0, mapped: 0, moved: 0, toReconcile: 0 }, error: null })
+    setRun({ id: r.runId, startedAt: new Date().toISOString(), finishedAt: null, total: r.total, done: 0, concurrency: counts.concurrency, items: [], summary: { asked: 0, done: 0, failed: 0, skipped: 0, cameras: 0, created: 0, mapped: 0, moved: 0, toReconcile: 0 }, error: null, stopped: false })
   })
   const skipped = counts.switchedOff + counts.locationOff
   return (
@@ -77,6 +90,9 @@ export function DiscoverAll({ initial, counts }: { initial: RunView | null; coun
             <label htmlFor="discover-progress" className="block text-sm font-medium">{`${run.done} of ${plural(run.total, 'NVR', 'NVRs')} done`}</label>
             <progress id="discover-progress" value={run.done} max={Math.max(1, run.total)} className="h-2 w-full accent-primary" />
             <p className="text-xs text-muted-foreground">Started {formatDateTime(run.startedAt)}. You may leave this page: the search goes on, and its results are saved NVR by NVR.</p>
+            {run.stopped
+              ? <p className="text-sm">Stopping: the NVRs being asked now finish; no other NVR is asked.</p>
+              : <Button type="button" variant="outline" onClick={onStop} disabled={pending}>Stop the search</Button>}
           </div>
         )}
         {run && !running && <RunResults run={run} />}
@@ -93,6 +109,7 @@ export function RunResults({ run }: { run: RunView }) {
   return (
     <section aria-labelledby="discover-results" className="space-y-3">
       <h3 id="discover-results" className="text-base font-semibold">Last search: {run.finishedAt ? formatDateTime(run.finishedAt) : 'still running'}</h3>
+      {run.stopped && <p className="text-sm font-medium">This search was stopped: the NVRs not asked by then are listed as skipped.</p>}
       {run.error ? <FormAlert tone="error">{run.error}</FormAlert> : (
         <p className="text-sm">
           {plural(s.asked, 'NVR', 'NVRs')} asked: {s.done} answered, {s.failed} failed; {s.skipped} skipped. {plural(s.cameras, 'camera', 'cameras')} listed, {s.created} new,

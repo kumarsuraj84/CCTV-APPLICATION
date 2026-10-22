@@ -6,7 +6,7 @@
 import { after } from 'next/server'
 import { requireAdministration } from '@/lib/auth/profile'
 import type { Result } from '@/lib/admin/types'
-import { discoverAllStatus, startDiscoverAll, type RunView } from '@/lib/inventory/discover-all'
+import { discoverAllStatus, startDiscoverAll, stopDiscoverAll, type RunView } from '@/lib/inventory/discover-all'
 import { localGo2rtc } from '@/lib/streams/local-go2rtc'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
@@ -17,6 +17,12 @@ export async function startDiscoverAllAction(): Promise<Result<{ runId: string; 
     { admin: createAdminClient(), rls: await createClient(), go2rtc: localGo2rtc() }, { id: p.id, orgId: p.org_id, role: p.role },
     { schedule: (work) => after(work) },
   )
+}
+
+/** Review B-M10: "Stop" — no further NVR is asked. */
+export async function stopDiscoverAllAction(runId: string): Promise<Result<object>> {
+  const p = await requireAdministration('admin.inventory')
+  return stopDiscoverAll({ admin: createAdminClient(), rls: await createClient() }, { id: p.id, orgId: p.org_id, role: p.role }, String(runId))
 }
 
 export async function discoverAllStatusAction(runId: string): Promise<Result<{ run: RunView }>> {

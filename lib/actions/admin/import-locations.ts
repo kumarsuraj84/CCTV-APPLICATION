@@ -29,7 +29,9 @@ export async function checkLocationImportAction(f: FormData): Promise<ImportChec
   const p = await requireAdministration('admin.inventory')
   const text = await fileText(f)
   if (text === null) return { ok: false, error: MSG_FILE }
-  return checkLocationImport({ admin: createAdminClient(), rls: await createClient() }, { id: p.id, orgId: p.org_id, role: p.role }, text, { skipBadRows: on(f, 'skip_bad_rows') })
+  return checkLocationImport({ admin: createAdminClient(), rls: await createClient() }, { id: p.id, orgId: p.org_id, role: p.role }, text, {
+    skipBadRows: on(f, 'skip_bad_rows'), keepNames: on(f, 'keep_names'),
+  })
 }
 
 export async function applyLocationImportAction(f: FormData): Promise<ImportApplyState> {
@@ -38,7 +40,7 @@ export async function applyLocationImportAction(f: FormData): Promise<ImportAppl
   if (text === null) return { ok: false, error: MSG_FILE }
   const res = await applyLocationImport(
     { admin: createAdminClient(), rls: await createClient(), go2rtc: localGo2rtc() }, { id: p.id, orgId: p.org_id, role: p.role }, text,
-    { skipBadRows: on(f, 'skip_bad_rows'), archive: on(f, 'archive'), fingerprint: String(f.get('fingerprint') ?? '') },
+    { skipBadRows: on(f, 'skip_bad_rows'), keepNames: on(f, 'keep_names'), archive: on(f, 'archive'), fingerprint: String(f.get('fingerprint') ?? '') },
   )
   if (res.ok) for (const path of ['/admin/locations', '/admin/regions', '/admin/reconciliation', '/admin/stores', '/stores']) revalidatePath(path, 'layout')
   return res

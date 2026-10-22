@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { addAudit } from '@/lib/admin/audit'
 import type { Actor, Result } from '@/lib/admin/types'
 import { inventoryAdmin, type InventoryClients } from '@/lib/inventory/admin-gate'
-import { discoverAllRecorders, type BulkDiscoveryItem } from '@/lib/monitor/discovery'
+import { discoverAllRecorders, MSG_STOPPED, type BulkDiscoveryItem } from '@/lib/monitor/discovery'
 import { realProbes } from '@/lib/monitor/probes'
 import type { Probes } from '@/lib/monitor/types'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
@@ -24,6 +24,7 @@ import { fetchAll } from '@/lib/supabase/fetch-all'
 
 export const MSG_RUN_ACTIVE = 'Cameras are already being looked for on all NVRs. Wait until that search has finished.'
 export const MSG_RUN_NOT_FOUND = 'That search was not found (the server may have restarted). Start a new one.'
+export { MSG_STOPPED }
 
 /** How many NVRs are asked at once: DISCOVER_ALL_CONCURRENCY, default 4, at least 1 and at most 8. */
 export function discoverAllConcurrency(env: Record<string, string | undefined> = process.env): number {
@@ -48,6 +49,8 @@ export type RunView = {
   items: RunItem[]
   summary: RunSummary
   error: string | null
+  /** A person pressed "Stop" (review B-M10): NVRs not asked by then are listed as skipped. */
+  stopped: boolean
 }
 type Run = RunView & { orgId: string; startedBy: string }
 
@@ -88,7 +91,7 @@ export function summarise(items: readonly RunItem[]): RunSummary {
 
 const view = (r: Run): RunView => ({
   id: r.id, startedAt: r.startedAt, finishedAt: r.finishedAt, total: r.total, done: r.done, concurrency: r.concurrency, items: r.items.map((i) => ({ ...i })),
-  summary: { ...r.summary }, error: r.error,
+  summary: { ...r.summary }, error: r.error, stopped: r.stopped,
 })
 
 type Deps = {
@@ -104,16 +107,21 @@ export async function startDiscoverAll(clients: InventoryClients, actor: Actor, 
   const may = await inventoryAdmin(clients.rls, actor)
   if (!may.ok) return may
   forget(Date.now())
+  // Review B-M9: the check and the registration happen with no `await` in between, so two starts at the same moment make one run.
   if ([...runs.values()].some((r) => r.orgId === actor.orgId && r.finishedAt === null)) return { ok: false, error: MSG_RUN_ACTIVE }
-  const { count, error } = await clients.admin.from('recorders').select('id, assets!recorders_asset_fk!inner(archived_at), locations!recorders_location_fk!inner(archived_at)', { count: 'exact', head: true })
-    .eq('org_id', actor.orgId).is('assets.archived_at', null).is('locations.archived_at', null)
-  if (error) return { ok: false, error: sanitizeError(error, { route: 'startDiscoverAll', fallback: 'Could not read the NVRs.' }) }
   const concurrency = Math.min(8, Math.max(1, Math.floor(deps.concurrency ?? discoverAllConcurrency())))
   const run: Run = {
-    id: randomUUID(), orgId: actor.orgId, startedBy: actor.id, startedAt: new Date().toISOString(), finishedAt: null, total: count ?? 0, done: 0, concurrency,
-    items: [], summary: { ...EMPTY }, error: null,
+    id: randomUUID(), orgId: actor.orgId, startedBy: actor.id, startedAt: new Date().toISOString(), finishedAt: null, total: 0, done: 0, concurrency,
+    items: [], summary: { ...EMPTY }, error: null, stopped: false,
   }
   runs.set(run.id, run)
+  const { count, error } = await clients.admin.from('recorders').select('id, assets!recorders_asset_fk!inner(archived_at), locations!recorders_location_fk!inner(archived_at)', { count: 'exact', head: true })
+    .eq('org_id', actor.orgId).is('assets.archived_at', null).is('locations.archived_at', null)
+  if (error) {
+    runs.delete(run.id)
+    return { ok: false, error: sanitizeError(error, { route: 'startDiscoverAll', fallback: 'Could not read the NVRs.' }) }
+  }
+  run.total = count ?? 0
   await addAudit(clients.admin, { orgId: actor.orgId, actorId: actor.id, action: 'discover_all_started', entityType: 'organization', entityId: actor.orgId, detail: { recorders: run.total, concurrency } })
   const work = async () => {
     try {
@@ -124,6 +132,7 @@ export async function startDiscoverAll(clients: InventoryClients, actor: Actor, 
           run.done = done
           run.total = total
         },
+        shouldStop: () => run.stopped,
       })
       if (!r.ok) run.error = r.error
       else {
@@ -151,6 +160,22 @@ export async function discoverAllStatus(clients: InventoryClients, actor: Actor,
   const run = typeof runId === 'string' ? runs.get(runId) : undefined
   if (!run || run.orgId !== actor.orgId) return { ok: false, error: MSG_RUN_NOT_FOUND }
   return { ok: true, run: view(run) }
+}
+
+/**
+ * "Stop" (review B-M10): the run asks no further NVR; the ones being asked at that moment finish (one request each, read-only) and
+ * the rest are listed as skipped. Only a run of the caller's organisation.
+ */
+export async function stopDiscoverAll(clients: InventoryClients, actor: Actor, runId: string): Promise<Result<object>> {
+  const may = await inventoryAdmin(clients.rls, actor)
+  if (!may.ok) return may
+  const run = typeof runId === 'string' ? runs.get(runId) : undefined
+  if (!run || run.orgId !== actor.orgId) return { ok: false, error: MSG_RUN_NOT_FOUND }
+  if (run.finishedAt === null && !run.stopped) {
+    run.stopped = true
+    await addAudit(clients.admin, { orgId: actor.orgId, actorId: actor.id, action: 'discover_all_stopped', entityType: 'organization', entityId: actor.orgId, detail: { done: run.done, total: run.total } })
+  }
+  return { ok: true }
 }
 
 /**

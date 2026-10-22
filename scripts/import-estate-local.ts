@@ -7,7 +7,7 @@
 // --apply the same plan is saved in ONE transaction (all or nothing), like the Import page. It never contacts an NVR.
 //
 //   npx tsx scripts/import-estate-local.ts "\\10.0.0.45\Store Soft\stores_sample.csv"            dry run (nothing written)
-//   npx tsx scripts/import-estate-local.ts "<path>" --apply [--skip-bad-rows]                     writes to the local database
+//   npx tsx scripts/import-estate-local.ts "<path>" --apply [--skip-bad-rows] [--keep-names]      writes to the local database
 //
 // Needs the local stack (npm run db:start) and the local super administrator of the "citykart" organisation.
 import { readFileSync } from 'node:fs'
@@ -41,11 +41,11 @@ async function main() {
   if (!owner) throw new Error('No active platform owner found.')
   const actor = { id: owner.id, orgId: org.id, role: owner.role as Role }
   const started = Date.now()
-  const { preview, apply: plan } = await prepareImport(admin, actor, readFileSync(path!, 'utf8'), { skipBadRows })
+  const { preview, apply: plan } = await prepareImport(admin, actor, readFileSync(path!, 'utf8'), { skipBadRows, keepNames: process.argv.includes('--keep-names') })
   const c = preview.counts
   console.log(`Rows read: ${preview.rows}. Problems: ${preview.errors.length} (by column: ${byColumn(preview.errors)}). Worth a look: ${preview.warnings.length} (by column: ${byColumn(preview.warnings)}).`)
   console.log(`Locations: ${c.locationsNew} new, ${c.locationsChanged} changing, ${c.locationsUnchanged} unchanged, ${c.locationsSkipped} skipped.`)
-  console.log(`NVRs: ${c.recordersNew} new, ${c.recordersChanged} changing, ${c.recordersUnchanged} unchanged. Passwords to save: ${c.passwordsSet}. New cameras: ${c.camerasNew}.`)
+  console.log(`NVRs: ${c.recordersNew} new, ${c.recordersChanged} changing, ${c.recordersUnchanged} unchanged. Passwords given: ${c.passwordsSet} (written only where different). New cameras: ${c.camerasNew}, linked again: ${c.camerasRelinked}.`)
   const changes = preview.locations.flatMap((l) => l.changes.map((x) => `location ${x.replace(/ [A-Z0-9-]+$/, '')}`).concat(l.recorders.flatMap((r) => r.changes.map((x) => `NVR ${x.replace(/^\d+ /, 'n ')}`))))
   const kinds = Object.entries(changes.reduce<Record<string, number>>((m, k) => ((m[k] = (m[k] ?? 0) + 1), m), {})).map(([k, n]) => `${k}: ${n}`).join(', ') || 'none'
   console.log(`What changes (counts): ${kinds}.`)
@@ -61,6 +61,6 @@ async function main() {
   const done = await runImportPlan({ admin }, actor, plan, preview.warnings)
   if (!done.ok) throw new Error(done.error)
   const r = done.result
-  console.log(`Saved in one go in ${Date.now() - t} ms: locations ${r.locationsCreated} added / ${r.locationsUpdated} changed; NVRs ${r.recordersCreated} added / ${r.recordersUpdated} changed; passwords ${r.passwordsSet}; cameras ${r.camerasCreated} added, ${r.camerasRelinked} linked again.`)
+  console.log(`Saved in one go in ${Date.now() - t} ms: locations ${r.locationsCreated} added / ${r.locationsUpdated} changed; NVRs ${r.recordersCreated} added / ${r.recordersUpdated} changed; passwords given ${r.passwordsGiven} (written only where different); cameras ${r.camerasCreated} added, ${r.camerasRelinked} linked again.`)
 }
 main().catch((e) => { console.error(e instanceof Error ? e.message : String(e)); process.exit(1) })

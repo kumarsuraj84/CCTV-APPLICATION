@@ -22,6 +22,7 @@ export function LocationImport() {
   const router = useRouter()
   const [file, setFile] = useState<File | null>(null)
   const [skip, setSkip] = useState(false)
+  const [keepNames, setKeepNames] = useState(false)
   const [archive, setArchive] = useState(false)
   const [showUnchanged, setShowUnchanged] = useState(false)
   const [check, setCheck] = useState<ImportCheckState | null>(null)
@@ -31,6 +32,7 @@ export function LocationImport() {
     const f = new FormData()
     if (file) f.set('file', file)
     if (skip) f.set('skip_bad_rows', 'on')
+    if (keepNames) f.set('keep_names', 'on')
     for (const [k, v] of Object.entries(extra)) f.set(k, v)
     return f
   }
@@ -82,13 +84,22 @@ export function LocationImport() {
           <FileCheck2 aria-hidden="true" />
           {pending && !check ? 'Checking…' : 'Check the file'}
         </Button>
-        <div className="sm:col-span-2">
+        <div className="space-y-3 sm:col-span-2">
           <CheckField
             id="import-skip" label="Skip the rows with problems"
-            help="Without this, nothing is imported while the file has a problem. With it, a location with a problem in any of its rows is left out whole; the others are imported."
+            help="Without this, nothing is imported while the file has a problem. With it, a location with a problem in any of its rows is left out whole and the others are imported — but a refusal by the database still stops the whole file (nothing is saved), and a file that cannot be read as a whole is never imported."
             checked={skip}
             onChange={(e) => {
               setSkip(e.currentTarget.checked)
+              reset()
+            }}
+          />
+          <CheckField
+            id="import-keep-names" label="Keep the current display names"
+            help="Without this, a location whose display name is still its starting value (its code) gets “CODE - City”. A display_name column is always used."
+            checked={keepNames}
+            onChange={(e) => {
+              setKeepNames(e.currentTarget.checked)
               reset()
             }}
           />
@@ -145,9 +156,12 @@ function RecorderLine({ r }: { r: PlanRecorderView }) {
   return (
     <li>
       <span className="font-medium">{r.name}</span> <span className="text-muted-foreground">({r.host}, web port {r.http_port})</span> — {what}
-      {r.matchedBy === 'primary' && ' (the location’s main NVR: its address changes)'}. Password: {r.password}.
+      {r.matchedBy === 'primary' && ' (the location’s main NVR: its address changes)'}.
+      {/* Review B-I3: never compared with the saved one — "will be set" means: written if it differs. */}
+      {r.password === 'set' ? ' Password: will be set.' : ' Password: kept.'}
       {r.monitoring === 'off' && ' Monitoring: switched off.'}
-      {r.monitoring === 'on' && r.action !== 'create' && ' Monitoring: switched on.'}
+      {/* Review B-M5: a new NVR says that it will be checked once the monitoring service runs. */}
+      {r.monitoring === 'on' && (r.action === 'create' ? ' Monitoring: switched on (it is checked once the monitoring service runs).' : ' Monitoring: switched on.')}
       {r.camerasToAdd > 0 && r.action === 'create' && ` ${plural(r.camerasToAdd, 'camera', 'cameras')} to add.`}
     </li>
   )
@@ -161,7 +175,8 @@ export function PreviewPanel({ preview, archive, onArchive, showUnchanged, onSho
   const c = preview.counts
   const shown = preview.locations.filter((l) => showUnchanged || l.status !== 'unchanged')
   const unchanged = preview.locations.length - preview.locations.filter((l) => l.status !== 'unchanged').length
-  const archiveList = preview.archive.slice(0, 100)
+  // Review B-M1: "old → new" when the display name changes.
+  const nameOf = (l: PlanLocationView) => (l.previousName ? `${l.previousName} → ${l.name}` : l.name)
   return (
     <section aria-labelledby="import-preview" className="space-y-3 rounded-md border bg-card p-4 shadow-sm">
       <h3 id="import-preview" className="text-base font-semibold">What the import would do</h3>
@@ -172,8 +187,9 @@ export function PreviewPanel({ preview, archive, onArchive, showUnchanged, onSho
         <Tile label="Locations with no change" value={c.locationsUnchanged} />
         <Tile label="New NVRs" value={c.recordersNew} />
         <Tile label="NVRs that change" value={c.recordersChanged} />
-        <Tile label="Passwords to save" value={c.passwordsSet} />
+        <Tile label="Passwords given" value={c.passwordsSet} />
         <Tile label="New cameras" value={c.camerasNew} />
+        {c.camerasRelinked > 0 && <Tile label="Cameras linked again" value={c.camerasRelinked} />}
         <Tile label="New regions / clusters" value={`${c.regionsNew} / ${c.clustersNew}`} />
         {c.locationsSkipped > 0 && <Tile label="Skipped locations" value={c.locationsSkipped} />}
       </div>
@@ -196,7 +212,7 @@ export function PreviewPanel({ preview, archive, onArchive, showUnchanged, onSho
           {shown.map((l) => (
             <li key={`${l.line}-${l.code}`} className="space-y-1 rounded-md border p-3 text-sm">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <span><span className="font-mono">{l.code}</span> · {l.name}</span>
+                <span><span className="font-mono">{l.code}</span> · {nameOf(l)}</span>
                 <span className="text-xs text-muted-foreground">Line {l.line}</span>
               </div>
               <p>{STATUS[l.status]}{l.changes.length > 0 && `: ${l.changes.join(', ')}`}{l.cluster ? ` · Cluster ${l.cluster}` : ''}</p>
@@ -220,7 +236,7 @@ export function PreviewPanel({ preview, archive, onArchive, showUnchanged, onSho
                 <tr key={`${l.line}-${l.code}`} className="border-t align-top">
                   <td className="px-3 py-2 tabular-nums">{l.line}</td>
                   <td className="px-3 py-2 font-mono">{l.code}</td>
-                  <td className="px-3 py-2">{l.name}{l.cluster ? <span className="block text-xs text-muted-foreground">Cluster {l.cluster}</span> : null}</td>
+                  <td className="px-3 py-2">{nameOf(l)}{l.cluster ? <span className="block text-xs text-muted-foreground">Cluster {l.cluster}</span> : null}</td>
                   <td className="px-3 py-2">{STATUS[l.status]}{l.changes.length > 0 && <span className="block text-xs text-muted-foreground">{l.changes.join(', ')}</span>}</td>
                   <td className="px-3 py-2">
                     {l.recorders.length === 0 ? <span className="text-muted-foreground">{l.status === 'skipped' ? '—' : 'None in the file'}</span> : (
@@ -245,10 +261,15 @@ export function PreviewPanel({ preview, archive, onArchive, showUnchanged, onSho
           <div className="space-y-2 rounded-md border border-warning-strong/40 bg-warning-soft/40 p-3">
             <h4 className="text-sm font-semibold">Not in the file ({preview.archive.length})</h4>
             <p className="text-sm">These are kept as they are unless you tick the box. Archived means switched off and hidden, not deleted: history, access and passwords are kept, and they can be restored.</p>
-            <ul className="list-disc space-y-0.5 pl-5 text-sm">
-              {archiveList.map((a) => <li key={`${a.kind}-${a.id}`}>{a.kind === 'location' ? 'Location' : a.kind === 'recorder' ? 'NVR' : 'Camera'} {a.label}{a.kind !== 'camera' && a.cameras > 0 ? ` (${plural(a.cameras, 'camera', 'cameras')})` : ''}</li>)}
-              {preview.archive.length > archiveList.length && <li>and {preview.archive.length - archiveList.length} more</li>}
-            </ul>
+            {/* Review B-M6: every item the tick box would archive is listed (folded away when the list is long). */}
+            <details open={preview.archive.length <= 20}>
+              <summary className="cursor-pointer text-sm font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+                {`Show all ${plural(preview.archive.length, 'item', 'items')}`}
+              </summary>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm">
+                {preview.archive.map((a) => <li key={`${a.kind}-${a.id}`}>{a.kind === 'location' ? 'Location' : a.kind === 'recorder' ? 'NVR' : 'Camera'} {a.label}{a.kind !== 'camera' && a.cameras > 0 ? ` (${plural(a.cameras, 'camera', 'cameras')})` : ''}</li>)}
+              </ul>
+            </details>
             <CheckField id="import-archive" label={`Also archive these ${plural(preview.archive.length, 'item', 'items')}`} checked={archive} onChange={(e) => onArchive(e.currentTarget.checked)} />
           </div>
         )}
@@ -270,7 +291,7 @@ export function ImportResultPanel({ result }: { result: ImportOutcome }) {
   const r = result
   const lines = [
     `${plural(r.locationsCreated, 'location', 'locations')} added and ${r.locationsUpdated} changed.`,
-    `${plural(r.recordersCreated, 'NVR', 'NVRs')} added and ${r.recordersUpdated} changed; ${plural(r.passwordsSet, 'password', 'passwords')} saved (write-only).`,
+    `${plural(r.recordersCreated, 'NVR', 'NVRs')} added and ${r.recordersUpdated} changed; ${plural(r.passwordsGiven, 'password', 'passwords')} given (write-only; one equal to the saved password is not written again).`,
     `${plural(r.camerasCreated, 'camera', 'cameras')} added${r.camerasRelinked > 0 ? `, ${r.camerasRelinked} linked again to their channel` : ''}. Their real names come from “Find cameras”.`,
     ...(r.regionsCreated + r.clustersCreated > 0 ? [`${plural(r.regionsCreated, 'region', 'regions')} and ${plural(r.clustersCreated, 'cluster', 'clusters')} made (named by their code; rename them on Regions and clusters).`] : []),
     ...(r.archived.locations + r.archived.recorders + r.archived.cameras > 0 ? [`Archived: ${plural(r.archived.locations, 'location', 'locations')}, ${plural(r.archived.recorders, 'NVR', 'NVRs')}, ${plural(r.archived.cameras, 'camera', 'cameras')}.`] : []),

@@ -1,4 +1,4 @@
-import { parseCsv } from '@/lib/import/csv'
+import { parseCsvStrict } from '@/lib/import/csv'
 import { normalizeZone } from '@/lib/import/regions'
 import { isValidIp, parsePort } from '@/lib/import/validators'
 import { isLocationKind, normaliseCode, type LocationKind } from '@/lib/inventory/forms'
@@ -7,16 +7,25 @@ import { isLocationKind, normaliseCode, type LocationKind } from '@/lib/inventor
 // (name, city, zone, ip, port, http_port, user, password, channels — still read as "location + primary NVR + channels") with optional
 // columns: code, display_name, kind, region, cluster, state, address, nvr_name, monitoring. A location with several NVRs is given as
 // repeated rows with the same code (one row per NVR); a row without an NVR address is a location without an NVR (a head office).
-// Every problem names its line, its column and a plain reason. Passwords are kept only in the parsed rows (for the vault); they never
-// appear in a problem message or a warning.
+//
+// Review round 1:
+//   B-I1  A row is read whole or not at all: the strict reader (RFC 4180 quotes) and a cell count equal to the first line's; a row
+//         with a stray quote or another number of cells is a problem of that row, never merged with the next one, never shifted.
+//         A quote that is never closed stops the file (`fatal`): nothing can be imported, also with "skip bad rows". A line break
+//         inside a value is refused (every column is one line).
+//   B-I2  A message names the column and the problem — never a cell value (a password must never be echoed, whatever lands where).
+//   B-M2  An empty port cell is "not given" (null): an existing NVR keeps its ports, a new one gets 554 / 80.
+//   B-M7  A file that was not decoded as UTF-8 (U+FFFD inside) is refused whole: a password would be saved wrong.
+//   B-M8  A text value starting with =, +, - or @ is refused (spreadsheet formula); passwords and user names are not text values.
+// Passwords are kept only in the parsed rows (for the vault).
 
 export const MAX_IMPORT_ROWS = 5000
 
 export type ImportIssue = { line: number; column?: string; message: string }
 
-/** One NVR of a location, as one row of the file. `channels` null: not given (an existing NVR keeps its number). */
+/** One NVR of a location, as one row of the file. Null: not given (an existing NVR keeps what is saved). */
 export type RecorderRow = {
-  line: number; host: string; rtsp_port: number; http_port: number; username: string
+  line: number; host: string; rtsp_port: number | null; http_port: number | null; username: string
   /** Write-only: goes to the vault; empty keeps the saved one. */
   password: string
   channels: number | null; name: string | null
@@ -44,6 +53,8 @@ export type ParsedLocations = {
   rows: number
   /** Whether the file has an NVR address column at all (a file without one does not speak about NVRs). */
   listsRecorders: boolean
+  /** The file cannot be read as a whole (an unclosed quote, not UTF-8): nothing may be imported, whatever is chosen. */
+  fatal?: true
 }
 
 const KNOWN = new Set([
@@ -61,6 +72,17 @@ const KIND_WORDS: Record<string, LocationKind> = {
   store: 'store', shop: 'store', 'head office': 'head_office', head_office: 'head_office', ho: 'head_office', office: 'head_office',
   dc: 'dc', 'distribution centre': 'dc', 'distribution center': 'dc', warehouse: 'warehouse', other: 'other',
 }
+/** Columns whose value is free text people (and spreadsheets) read: a leading formula sign is refused (B-M8). */
+const TEXT_COLUMNS = ['display_name', 'city', 'zone', 'state', 'address', 'nvr_name'] as const
+const FORMULA = /^[=+\-@]/
+
+export const MSG_CELL_COUNT = (n: number, header: number) =>
+  `This row has ${n} cells; the first line has ${header}. Nothing of this row is read: check for a comma inside a value that is not in quotes.`
+export const MSG_STRAY_QUOTE = 'A quote (") in the middle of a value: put the whole value in quotes and write a quote inside it twice (""). Nothing of this row is read.'
+export const MSG_UNCLOSED_QUOTE = 'A quote (") opened on this line is never closed, so nothing from this line on can be read. Close it, then check the file again.'
+export const MSG_NOT_UTF8 = 'The file is not saved as UTF-8 text (some characters cannot be read). Save it as “CSV UTF-8” and choose it again.'
+const MSG_FORMULA = 'Starts with =, +, - or @ (a spreadsheet would read it as a formula): remove that sign.'
+const MSG_LINE_BREAK = 'A line break inside the value: put it on one line.'
 
 const headerKey = (h: string) => {
   const k = h.trim().toLowerCase().replace(/[\s-]+/g, '_')
@@ -76,7 +98,7 @@ function readCode(v: Record<string, string>, fail: Fail): string | null {
   const explicit = cell(v.code)
   if (explicit !== '') {
     const c = normaliseCode(explicit)
-    if (!c) fail('code', `“${explicit}” is not a location code: use letters, numbers and dashes, up to 50 (for example JCL).`)
+    if (!c) fail('code', 'Not a location code: use letters, numbers and dashes, up to 50 (for example JCL).')
     return c
   }
   const name = cell(v.name).replace(/\s+/g, ' ').toUpperCase()
@@ -105,7 +127,7 @@ function readMonitoring(raw: string, fail: Fail): boolean | null {
   if (t === '') return null
   if (['yes', 'y', 'on', 'true', '1'].includes(t)) return true
   if (['no', 'n', 'off', 'false', '0'].includes(t)) return false
-  fail('monitoring', `“${raw.trim()}” is not yes or no.`)
+  fail('monitoring', 'Use yes or no.')
   return null
 }
 
@@ -116,11 +138,19 @@ const LOCATION_FIELDS = [
 
 export function parseLocationsCsv(text: string): ParsedLocations {
   const out: ParsedLocations = { groups: [], errors: [], warnings: [], badCodes: [], bad: [], rows: 0, listsRecorders: false }
-  const raw = parseCsv(text)
-  if (raw.length === 0) {
+  const fatal = (line: number, message: string) => {
+    out.errors.push({ line, message })
+    out.fatal = true
+    return out
+  }
+  if (text.includes('�')) return fatal(1, MSG_NOT_UTF8)
+  const { rows: raw, unclosedAt } = parseCsvStrict(text)
+  if (raw.length === 0 && unclosedAt === undefined) {
     out.errors.push({ line: 1, message: 'The file is empty.' })
     return out
   }
+  if (unclosedAt !== undefined) return fatal(unclosedAt, MSG_UNCLOSED_QUOTE)
+  if (raw[0].problem || raw[0].multiline) return fatal(1, 'The first line cannot be read: it must be the column names, separated by commas.')
   const headers = raw[0].cells.map(headerKey)
   if (!headers.includes('code') && !headers.includes('name')) {
     out.errors.push({ line: 1, message: 'The first line must have a code or a name column (see the sample file).' })
@@ -131,19 +161,50 @@ export function parseLocationsCsv(text: string): ParsedLocations {
     return out
   }
   raw[0].cells.forEach((h, i) => {
-    if (h.trim() !== '' && !KNOWN.has(headers[i])) out.warnings.push({ line: 1, column: h.trim(), message: `The column “${h.trim()}” is not used.` })
+    if (h.trim() !== '' && !KNOWN.has(headers[i])) out.warnings.push({ line: 1, column: h.trim(), message: 'This column is not used.' })
   })
   out.listsRecorders = headers.includes('ip')
+  const codeAt = headers.indexOf('code')
+  const nameAt = headers.indexOf('name')
   const byCode = new Map<string, LocationGroup>()
   const bad = new Set<string>()
+  const markBad = (code: string | null, line: number) => {
+    if (!code) return
+    if (!bad.has(code)) out.bad.push({ code, line: byCode.get(code)?.line ?? line })
+    bad.add(code)
+  }
   /** NVR address + web port → the line and location that gave it first. */
   const addresses = new Map<string, { line: number; code: string }>()
   /** Which line first gave a location field (for the "contradicts line N" message). */
   const firstLines = new Map<string, number>()
   const firstLineWith = (group: LocationGroup, key: string) => firstLines.get(`${group.code}|${key}`) ?? group.line
 
-  for (const { line, cells } of raw.slice(1)) {
+  for (const row of raw.slice(1)) {
+    const { line, cells } = row
     out.rows++
+    // B-I1: a row that cannot be read exactly is not read at all. Its location (by the code cell, when that can be told) is skipped
+    // whole in "skip bad rows".
+    const roughCode = (() => {
+      const c = codeAt >= 0 ? cell(cells[codeAt]) : ''
+      if (c !== '') return normaliseCode(c)
+      const n = nameAt >= 0 ? cell(cells[nameAt]).replace(/\s+/g, ' ').toUpperCase() : ''
+      return n !== '' && n.length <= 50 ? n : null
+    })()
+    if (row.problem === 'stray_quote') {
+      out.errors.push({ line, message: MSG_STRAY_QUOTE })
+      markBad(roughCode, line)
+      continue
+    }
+    if (cells.length !== headers.length) {
+      out.errors.push({ line, message: MSG_CELL_COUNT(cells.length, headers.length) })
+      markBad(roughCode, line)
+      continue
+    }
+    if (row.multiline?.length) {
+      for (const at of row.multiline) out.errors.push({ line, column: raw[0].cells[at]?.trim() || headers[at], message: MSG_LINE_BREAK })
+      markBad(roughCode, line)
+      continue
+    }
     const v: Record<string, string> = {}
     headers.forEach((h, i) => {
       if (KNOWN.has(h) && v[h] === undefined) v[h] = cells[i] ?? ''
@@ -154,13 +215,14 @@ export function parseLocationsCsv(text: string): ParsedLocations {
       out.errors.push({ line, ...(column ? { column } : {}), message })
     }
     const code = readCode(v, fail)
+    for (const col of TEXT_COLUMNS) if (FORMULA.test(cell(v[col]))) fail(col, MSG_FORMULA)
 
     // Location columns.
     const kindText = cell(v.kind)
     let kind: LocationKind | null = null
     if (kindText !== '') {
       const k = KIND_WORDS[kindText.toLowerCase()] ?? (isLocationKind(kindText.toLowerCase()) ? (kindText.toLowerCase() as LocationKind) : null)
-      if (!k) fail('kind', `“${kindText}” is not a kind of location. Use store, head office, DC, warehouse or other.`)
+      if (!k) fail('kind', 'Not a kind of location: use store, head office, DC, warehouse or other.')
       kind = k
     }
     const displayName = readText(v, 'display_name', 200, fail, 'display name')
@@ -172,19 +234,19 @@ export function parseLocationsCsv(text: string): ParsedLocations {
     const clusterText = cell(v.cluster)
     const region = regionText === '' ? null : normaliseCode(regionText)
     const cluster = clusterText === '' ? null : normaliseCode(clusterText)
-    if (regionText !== '' && !region) fail('region', `“${regionText}” is not a region code: use letters, numbers and dashes, up to 50.`)
+    if (regionText !== '' && !region) fail('region', 'Not a region code: use letters, numbers and dashes, up to 50.')
     else if (region && clusterText === '') fail('region', 'A location joins a region through its cluster: give a cluster too, or leave the region empty.')
-    if (clusterText !== '' && !cluster) fail('cluster', `“${clusterText}” is not a cluster code: use letters, numbers and dashes, up to 50.`)
+    if (clusterText !== '' && !cluster) fail('cluster', 'Not a cluster code: use letters, numbers and dashes, up to 50.')
 
     // NVR columns: a row without an address is a location without an NVR.
     let recorder: RecorderRow | null = null
     const ip = cell(v.ip)
     if (ip !== '') {
-      if (!isValidIp(ip)) fail('ip', `“${ip}” is not a valid IP address.`)
-      const rtsp = parsePort(v.port ?? '', 554)
-      const http = parsePort(v.http_port ?? '', 80)
-      if (rtsp === null) fail('port', 'The video (RTSP) port must be a whole number from 1 to 65535.')
-      if (http === null) fail('http_port', 'The web (HTTP) port must be a whole number from 1 to 65535.')
+      if (!isValidIp(ip)) fail('ip', 'Not a valid IP address.')
+      const rtsp = cell(v.port) === '' ? null : parsePort(v.port ?? '', null)
+      const http = cell(v.http_port) === '' ? null : parsePort(v.http_port ?? '', null)
+      if (cell(v.port) !== '' && rtsp === null) fail('port', 'The video (RTSP) port must be a whole number from 1 to 65535.')
+      if (cell(v.http_port) !== '' && http === null) fail('http_port', 'The web (HTTP) port must be a whole number from 1 to 65535.')
       const user = cell(v.user)
       if (user === '') fail('user', 'Give the NVR user name (the row has an NVR address).')
       else if (user.length > 200) fail('user', 'The NVR user name is too long (at most 200 characters).')
@@ -198,7 +260,7 @@ export function parseLocationsCsv(text: string): ParsedLocations {
       }
       const name = readText(v, 'nvr_name', 200, fail, 'NVR name')
       const monitoring = readMonitoring(v.monitoring ?? '', fail)
-      if (rtsp !== null && http !== null) recorder = { line, host: ip, rtsp_port: rtsp, http_port: http, username: user, password, channels, name, monitoring }
+      recorder = { line, host: ip, rtsp_port: rtsp, http_port: http, username: user, password, channels, name, monitoring }
     } else if (cell(v.user) !== '' || cell(v.password) !== '' || cell(v.channels) !== '' || cell(v.nvr_name) !== '') {
       fail('ip', 'Give the NVR address (the row has other NVR columns), or leave the NVR columns empty for a location without an NVR.')
     }
@@ -214,24 +276,24 @@ export function parseLocationsCsv(text: string): ParsedLocations {
         const now = values[key]
         const before = group[key]
         if (now !== null && before !== null && now !== before) {
-          fail(column, `Line ${firstLineWith(group, key)} gives this location the ${what} “${before}”; a later row of the same location must give the same or leave it empty.`)
+          fail(column, `Line ${firstLineWith(group, key)} gives this location another ${what}; a later row of the same location must give the same or leave it empty.`)
         }
       }
     }
     if (recorder) {
-      const key = `${recorder.host.toLowerCase()}|${recorder.http_port}`
-      const same = group.recorders.find((r) => `${r.host.toLowerCase()}|${r.http_port}` === key)
-      if (same) fail('ip', `Line ${same.line} already gives this location an NVR at ${recorder.host} port ${recorder.http_port}.`)
+      // An empty web port is 80 for the purpose of "the same NVR twice" in one file.
+      const key = `${recorder.host.toLowerCase()}|${recorder.http_port ?? 80}`
+      const same = group.recorders.find((r) => `${r.host.toLowerCase()}|${r.http_port ?? 80}` === key)
+      if (same) fail('ip', `Line ${same.line} already gives this location an NVR at the same address and web port.`)
       else {
         const elsewhere = addresses.get(key)
         if (elsewhere && elsewhere.code !== code) {
-          out.warnings.push({ line, column: 'ip', message: `Line ${elsewhere.line} (location ${elsewhere.code}) has an NVR at the same address and port. Check that it is right.` })
+          out.warnings.push({ line, column: 'ip', message: `Line ${elsewhere.line} gives another location an NVR at the same address and web port. Check that it is right.` })
         } else if (!elsewhere) addresses.set(key, { line, code })
       }
     }
     if (failed) {
-      if (!bad.has(code)) out.bad.push({ code, line: byCode.get(code)?.line ?? line })
-      bad.add(code)
+      markBad(code, line)
       continue
     }
     if (!byCode.has(code)) {
@@ -254,4 +316,3 @@ export function parseLocationsCsv(text: string): ParsedLocations {
   out.errors.sort((a, b) => a.line - b.line)
   return out
 }
-
