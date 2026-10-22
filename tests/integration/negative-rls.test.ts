@@ -64,7 +64,8 @@ describe('row security: negative cases', () => {
       ['grant_access', { p_org: orgId, p_user: operator.id, p_grants: [{ capability: 'cctv.live', scope_kind: 'organization' }] }],
       ['replace_user_grants', { p_org: orgId, p_user: operator.id, p_capabilities: ['cctv.live'], p_scope_kinds: ['organization'], p_grants: [{ capability: 'cctv.live', scope_kind: 'organization' }] }],
       ['revoke_grant', { p_org: orgId, p_user: operator.id, p_grant_ids: [] }],
-      ['preview_access_change', { p_user: operator.id, p_changes: [] }],
+      ['preview_access_change', { p_org: orgId, p_user: operator.id, p_changes: [] }],
+      ['access_migrate_legacy_test', { p_run: crypto.randomUUID(), p_users: [operator.id] }],
       ['nvr_store_credential', { p_store: crypto.randomUUID(), p_secret: 'x' }],
       ['revoke_user_sessions', { p_user: crypto.randomUUID() }],
     ]

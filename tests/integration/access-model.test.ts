@@ -245,6 +245,131 @@ describe('capability access model (P2-1)', () => {
     expect(await ids(p, 'any_cctv_camera_ids')).toEqual(sorted([c11, c12, c13, c21]))
   })
 
+  // Review fix I-1 (AC-6 union rule): granting is monotonic. A grant never shortens or narrows an existing one; only revoke_grant takes away.
+  describe('fix I-1: granting never narrows (monotonic windows), and the preview says exactly what the write does', () => {
+    const hour = 3_600_000
+    const iso = (ms: number) => new Date(ms).toISOString()
+    const liveRows = async (userId: string) =>
+      (await admin().from('access_grants').select('id, valid_from, valid_until, revoked_at, revoke_reason').eq('user_id', userId).eq('capability', 'cctv.live')).data ?? []
+    const versionOf = async (userId: string) => (await admin().from('profiles').select('access_version').eq('id', userId).single()).data!.access_version
+    const previewCounts = async (userId: string, changes: unknown[], at?: string) => {
+      const { data, error } = await admin().rpc('preview_access_change', { p_org: orgA, p_user: userId, p_changes: changes as never, ...(at ? { p_at: at } : {}) })
+      expect(error).toBeNull()
+      const c = (data as { capabilities: Record<string, { added_count: number; removed_count: number }> }).capabilities['cctv.live']
+      return { added: c?.added_count ?? 0, removed: c?.removed_count ?? 0 }
+    }
+    const effectiveAt = async (userId: string, at: string) => {
+      const { data, error } = await admin().rpc('report_effective_camera_ids', { p_user: userId, p_cap: 'cctv.live', p_at: at })
+      expect(error).toBeNull()
+      return sorted((data as unknown as string[]) ?? [])
+    }
+
+    it('a dated grant over a permanent one leaves the permanent one as it is', async () => {
+      const p = await createUser(orgA, 'user')
+      const [g] = await grant(orgA, p.id, 'cctv.live', atLocation(L1))
+      const v = await versionOf(p.id)
+      const change = { op: 'grant', capability: 'cctv.live', scope_kind: 'location', scope_id: L1, valid_until: iso(Date.now() + hour) }
+      expect(await previewCounts(p.id, [change], iso(Date.now() + 2 * hour))).toEqual({ added: 0, removed: 0 })
+      const [again] = await grant(orgA, p.id, 'cctv.live', atLocation(L1), { validUntil: iso(Date.now() + hour) })
+      expect(again).toBe(g)
+      expect(await versionOf(p.id)).toBe(v)
+      const rowsNow = await liveRows(p.id)
+      expect(rowsNow).toHaveLength(1)
+      expect(rowsNow[0]).toMatchObject({ id: g, valid_until: null, revoked_at: null })
+      expect(await effectiveAt(p.id, iso(Date.now() + 2 * hour))).toEqual(sorted([c11, c12, c13]))
+    })
+
+    it('a future-dated grant over a live one does not take today’s access away', async () => {
+      const p = await createUser(orgA, 'user')
+      const [g] = await grant(orgA, p.id, 'cctv.live', atLocation(L1))
+      const future = { validFrom: iso(Date.now() + 24 * hour), validUntil: iso(Date.now() + 48 * hour) }
+      expect(await previewCounts(p.id, [{ op: 'grant', capability: 'cctv.live', scope_kind: 'location', scope_id: L1, valid_from: future.validFrom, valid_until: future.validUntil }])).toEqual({ added: 0, removed: 0 })
+      const [again] = await grant(orgA, p.id, 'cctv.live', atLocation(L1), future)
+      expect(again).toBe(g)
+      expect(await rows(p, 'cameras')).toEqual(sorted([c11, c12, c13]))
+    })
+
+    it('a later window over a dated live grant widens it to the union of both, and the preview counts match the write', async () => {
+      const p = await createUser(orgA, 'user')
+      const start = Date.now() - hour
+      const [g] = await grant(orgA, p.id, 'cctv.live', atLocation(L1), { validFrom: iso(start), validUntil: iso(Date.now() + 2 * hour) })
+      const later = { validFrom: iso(Date.now() + 24 * hour), validUntil: iso(Date.now() + 48 * hour) }
+      const at = iso(Date.now() + 3 * hour) // between the two windows: the union covers it
+      const before = await effectiveAt(p.id, iso(Date.now()))
+      const predicted = await previewCounts(p.id, [{ op: 'grant', capability: 'cctv.live', scope_kind: 'location', scope_id: L1, valid_from: later.validFrom, valid_until: later.validUntil }], at)
+      expect(predicted).toEqual({ added: 0, removed: 0 })
+      await grant(orgA, p.id, 'cctv.live', atLocation(L1), later)
+      const after = await effectiveAt(p.id, at)
+      expect({ added: after.filter((x) => !before.includes(x)).length, removed: before.filter((x) => !after.includes(x)).length }).toEqual(predicted)
+      const all = await liveRows(p.id)
+      const old = all.find((r) => r.id === g)!
+      expect(old.revoked_at).not.toBeNull()
+      expect(old.revoke_reason).toMatch(/wider/i)
+      const merged = all.find((r) => r.revoked_at === null)!
+      expect(new Date(merged.valid_from).getTime()).toBe(new Date(iso(start)).getTime())
+      expect(new Date(merged.valid_until!).getTime()).toBe(new Date(later.validUntil).getTime())
+      expect(await rows(p, 'cameras')).toEqual(sorted([c11, c12, c13])) // today's access never stopped
+    })
+
+    it('an open-ended grant over a dated one becomes open-ended; only revoke_grant takes access away', async () => {
+      const p = await createUser(orgA, 'user')
+      await grant(orgA, p.id, 'cctv.live', atLocation(L2), { validUntil: iso(Date.now() + hour) })
+      const predicted = await previewCounts(p.id, [{ op: 'grant', capability: 'cctv.live', scope_kind: 'location', scope_id: L2 }], iso(Date.now() + 2 * hour))
+      expect(predicted).toEqual({ added: 0, removed: 0 }) // at +2 h: open-ended, so still the two cameras
+      const [g] = await grant(orgA, p.id, 'cctv.live', atLocation(L2))
+      expect((await liveRows(p.id)).find((r) => r.id === g)?.valid_until).toBeNull()
+      expect(await effectiveAt(p.id, iso(Date.now() + 2 * hour))).toEqual(sorted([c21, c22]))
+    })
+  })
+
+  it('minor 3: grant, revoke and replace refuse an acting administrator of another organisation', async () => {
+    const p = await createUser(orgA, 'user')
+    const mine = await createUser(orgA, 'admin')
+    const stranger = await createUser(orgB, 'admin')
+    const spec = [{ capability: 'cctv.live', scope_kind: 'location', scope_id: L1 }]
+    const refused = await admin().rpc('grant_access', { p_org: orgA, p_user: p.id, p_grants: spec, p_actor: stranger.id })
+    expect(refused.error?.message).toMatch(/actor/i)
+    const ok = await admin().rpc('grant_access', { p_org: orgA, p_user: p.id, p_grants: spec, p_actor: mine.id })
+    expect(ok.error).toBeNull()
+    const [g] = (ok.data as { grant_ids: string[] }).grant_ids
+    expect((await admin().rpc('revoke_grant', { p_org: orgA, p_user: p.id, p_grant_ids: [g], p_actor: stranger.id })).error?.message).toMatch(/actor/i)
+    expect((await admin().rpc('replace_user_grants', { p_org: orgA, p_user: p.id, p_capabilities: ['cctv.live'], p_scope_kinds: ['location'], p_grants: [], p_actor: stranger.id })).error?.message).toMatch(/actor/i)
+    expect(await rows(p, 'cameras')).toEqual(sorted([c11, c12, c13]))
+    const { data: row } = await admin().from('access_grants').select('granted_by').eq('id', g).single()
+    expect(row?.granted_by).toBe(mine.id)
+  })
+
+  it('minor 4: grants outlive their person (history), and give a deleted person nothing', async () => {
+    const p = await createUser(orgA, 'user')
+    const [g] = await grant(orgA, p.id, 'cctv.live', atLocation(L1))
+    expect((await admin().from('profiles').delete().eq('id', p.id)).error).toBeNull()
+    expect((await admin().auth.admin.deleteUser(p.id)).error).toBeNull()
+    const { data } = await admin().from('access_grants').select('id, user_id').eq('id', g)
+    expect(data).toEqual([{ id: g, user_id: p.id }])
+    expect((await admin().rpc('report_effective_camera_ids', { p_user: p.id, p_cap: 'cctv.live', p_ignore_status: true })).data).toEqual([])
+    // A grant for somebody who is not a person of the organisation is refused.
+    const nobodyHere = await admin().rpc('grant_access', { p_org: orgA, p_user: p.id, p_grants: [{ capability: 'cctv.live', scope_kind: 'organization' }] })
+    expect(nobodyHere.error).not.toBeNull()
+  })
+
+  it('minor 2: requires_mfa capabilities count only in an aal2 session once MFA is enforced (crafted claims)', async () => {
+    const p = await createUser(orgA, 'user')
+    await grant(orgA, p.id, ['cctv.live', 'cctv.export'], atLocation(L1))
+    const caps = async (claims: object, mfa: boolean) => {
+      const { data, error } = await admin().rpc('access_session_capabilities', { p_user: p.id, p_claims: claims as never, p_mfa_enforced: mfa })
+      expect(error).toBeNull()
+      return sorted((data as unknown as string[]) ?? [])
+    }
+    expect(await caps({ sub: p.id, aal: 'aal1' }, true)).toEqual(['cctv.live'])
+    expect(await caps({ sub: p.id }, true)).toEqual(['cctv.live'])
+    expect(await caps({ sub: p.id, aal: 'aal2' }, true)).toEqual(['cctv.export', 'cctv.live'])
+    expect(await caps({ sub: p.id, aal: 'aal1' }, false)).toEqual(['cctv.export', 'cctv.live'])
+    // With MFA not enforced (until P3), the real aal1 session of the person keeps export.
+    expect(await can(p, 'cctv.export')).toBe(true)
+    // The diagnostic is for the server only.
+    expect((await p.client.rpc('access_session_capabilities', { p_user: p.id, p_claims: { aal: 'aal2' }, p_mfa_enforced: false })).error?.code).toBe('42501')
+  })
+
   it('VA-9 (AC-12): grants count only between valid_from and valid_until', async () => {
     const p = await createUser(orgA, 'user')
     const hour = 3_600_000
@@ -256,10 +381,13 @@ describe('capability access model (P2-1)', () => {
     expect(await rows(p, 'cameras')).toEqual([c31])
     expect(await canFor(p, 'cctv.live', 'camera', c11)).toBe(false)
     expect(await canFor(p, 'cctv.live', 'camera', c21)).toBe(false)
-    const soon = await admin().rpc('access_expiring', { p_within: '2 hours' })
+    const soon = await admin().rpc('access_expiring', { p_org: orgA, p_within: '2 hours' })
     expect(soon.error).toBeNull()
     const mine = (soon.data ?? []).filter((g) => g.user_id === p.id)
     expect(mine.map((g) => g.scope_id)).toEqual([L3])
+    // Minor 11: organisation-scoped.
+    const other = await admin().rpc('access_expiring', { p_org: orgB, p_within: '2 hours' })
+    expect((other.data ?? []).some((g) => g.user_id === p.id)).toBe(false)
   })
 
   it('VA-10 (AC-12): a revoked grant stops access at once and stays in the history', async () => {
@@ -400,10 +528,15 @@ describe('capability access model (P2-1)', () => {
   it('VA-15 (AC-9): preview_access_change counts what a change adds and removes, and writes nothing', async () => {
     const p = await createUser(orgA, 'user')
     const preview = async (changes: unknown[], at?: string) => {
-      const { data, error } = await admin().rpc('preview_access_change', { p_user: p.id, p_changes: changes as never, ...(at ? { p_at: at } : {}) })
+      const { data, error } = await admin().rpc('preview_access_change', { p_org: orgA, p_user: p.id, p_changes: changes as never, ...(at ? { p_at: at } : {}) })
       expect(error).toBeNull()
       return data as { version: number; capabilities: Record<string, { added_count: number; removed_count: number; sample_added: { id: string; label: string }[]; sample_removed: { id: string; label: string }[] }> }
     }
+    // Minor 1: the preview is organisation-scoped, and its revoke path accepts only the person's own live grants.
+    expect((await admin().rpc('preview_access_change', { p_org: orgB, p_user: p.id, p_changes: [] })).error).not.toBeNull()
+    const otherPerson = await createUser(orgA, 'user')
+    const [foreignGrant] = await grant(orgA, otherPerson.id, 'cctv.live', atLocation(L3))
+    expect((await admin().rpc('preview_access_change', { p_org: orgA, p_user: p.id, p_changes: [{ op: 'revoke', grant_id: foreignGrant }] })).error).not.toBeNull()
     const addL1 = await preview([{ op: 'grant', capability: 'cctv.live', scope_kind: 'location', scope_id: L1 }])
     expect(addL1.capabilities['cctv.live']).toMatchObject({ added_count: 3, removed_count: 0 })
     expect(sorted(addL1.capabilities['cctv.live'].sample_added.map((s) => s.id))).toEqual(sorted([c11, c12, c13]))
@@ -420,6 +553,10 @@ describe('capability access model (P2-1)', () => {
 
     const revoke = await preview([{ op: 'revoke', grant_id: g }])
     expect(revoke.capabilities['cctv.live']).toMatchObject({ added_count: 0, removed_count: 3 })
+    // A grant that is already revoked cannot be "revoked" in a preview either.
+    const [gone] = await grant(orgA, p.id, 'cctv.live', atLocation(L3))
+    await admin().rpc('revoke_grant', { p_org: orgA, p_user: p.id, p_grant_ids: [gone] })
+    expect((await admin().rpc('preview_access_change', { p_org: orgA, p_user: p.id, p_changes: [{ op: 'revoke', grant_id: gone }] })).error).not.toBeNull()
 
     await grant(orgA, p.id, 'cctv.playback', atLocation(L2), { validUntil: new Date(Date.now() + 3_600_000).toISOString() })
     const later = await preview([], new Date(Date.now() + 2 * 3_600_000).toISOString())
@@ -490,14 +627,23 @@ describe('capability access model (P2-1)', () => {
       replace_user_grants: server,
       preview_access_change: server,
       access_expiring: server,
-      access_effective_camera_ids: server,
-      access_effective_device_ids: server,
+      // Reporting only (ignore MFA, never for authorisation): the old access_effective_* names are gone (fix minor 2).
+      report_effective_camera_ids: server,
+      report_effective_device_ids: server,
+      access_session_capabilities: server,
       access_legacy_camera_ids: server,
       access_legacy_device_ids: server,
-      access_migrate_legacy: server,
+      access_legacy_store_ids: server,
+      // Fix I-3: the migration itself is for the database owner only; tests use the wrapper that works only on test organisations.
+      access_migrate_legacy: [],
+      access_migrate_legacy_test: server,
       function_privileges: server,
       // Internal building blocks: nobody but their owner may call them (the functions above call them with the owner's rights).
       access_caller_aal2: [],
+      access_aal2_of: [],
+      access_grants_eval: [],
+      access_merge_window: [],
+      access_check_actor: [],
       access_grants_of: [],
       access_camera_set: [],
       access_device_set: [],
@@ -520,10 +666,28 @@ describe('capability access model (P2-1)', () => {
       expect(sorted(f!.grantees), name).toEqual(sorted(grantees))
       if (f!.security_definer) expect(f!.search_path, name).toBe('')
     }
-    // The old model is gone.
-    for (const old of ['is_staff_all', 'granted_store_ids', 'visible_store_ids', 'visible_camera_ids', 'visible_device_ids', 'replace_user_access']) {
+    // The old model is gone, and so are the names replaced in fix round 1.
+    for (const old of ['is_staff_all', 'granted_store_ids', 'visible_store_ids', 'visible_camera_ids', 'visible_device_ids', 'replace_user_access',
+      'access_effective_camera_ids', 'access_effective_device_ids']) {
       expect(byName.has(old), old).toBe(false)
     }
+    // One signature each (no stale overloads left behind by a changed parameter list).
+    for (const name of ['preview_access_change', 'access_expiring', 'access_migrate_legacy', 'replace_user_grants', 'grant_access', 'revoke_grant']) {
+      expect((data ?? []).filter((f) => f.name === name), name).toHaveLength(1)
+    }
+    // Minor 8, the sweep: no function of schema public is callable by anon or PUBLIC, and signed-in people only the allow-list.
+    const forPeople = new Set([
+      'current_org_id', 'current_user_role', 'monitor_stale_after_minutes', 'mfa_enforced', 'has_capability', 'has_capability_for',
+      'capability_camera_ids', 'capability_store_ids', 'capability_device_ids', 'any_cctv_camera_ids', 'cameras_with_capability',
+      'any_grant_store_ids', 'it_view_store_ids', 'it_view_device_ids', 'cctv_visible_group_ids',
+    ])
+    for (const f of data ?? []) {
+      expect(f.grantees.filter((g) => g === 'anon' || g.startsWith('PUBLIC')), `${f.name}(${f.args})`).toEqual([])
+      if (f.grantees.includes('authenticated')) expect(forPeople.has(f.name), `${f.name} is callable by signed-in people`).toBe(true)
+      if (f.security_definer) expect(f.search_path, `${f.name} search_path`).not.toBeNull()
+    }
+    // The two identity helpers used by every policy now run with an empty search_path too.
+    for (const name of ['current_org_id', 'current_user_role']) expect(byName.get(name)?.search_path, name).toBe('')
     // Nobody signed in or anonymous may call the server-only ones.
     const anon = createClient<Database>(URL_(), ANON(), { auth: { persistSession: false } })
     const someone = await createUser(orgA, 'operator')
@@ -531,15 +695,18 @@ describe('capability access model (P2-1)', () => {
       ['grant_access', { p_org: orgA, p_user: someone.id, p_grants: [] }],
       ['revoke_grant', { p_org: orgA, p_user: someone.id, p_grant_ids: [] }],
       ['replace_user_grants', { p_org: orgA, p_user: someone.id, p_capabilities: [], p_scope_kinds: [], p_grants: [] }],
-      ['preview_access_change', { p_user: someone.id, p_changes: [] }],
-      ['access_expiring', { p_within: '1 day' }],
-      ['access_migrate_legacy', { p_run: randomUUID(), p_users: [someone.id] }],
-      ['access_effective_camera_ids', { p_user: someone.id, p_cap: 'cctv.live' }],
+      ['preview_access_change', { p_org: orgA, p_user: someone.id, p_changes: [] }],
+      ['access_expiring', { p_org: orgA, p_within: '1 day' }],
+      ['access_migrate_legacy_test', { p_run: randomUUID(), p_users: [someone.id] }],
+      ['report_effective_camera_ids', { p_user: someone.id, p_cap: 'cctv.live' }],
+      ['access_session_capabilities', { p_user: someone.id, p_claims: {}, p_mfa_enforced: false }],
     ]
     for (const [fn, args] of calls) {
       expect((await anon.rpc(fn, args as never)).error?.code, `anon ${fn}`).toBe('42501')
       expect((await someone.client.rpc(fn, args as never)).error?.code, `operator ${fn}`).toBe('42501')
     }
+    // Not even the service role may run the real migration again (fix I-3).
+    expect((await admin().rpc('access_migrate_legacy', { p_run: randomUUID(), p_users: [someone.id] } as never)).error?.code).toBe('42501')
     expect((await anon.rpc('has_capability', { p_cap: 'cctv.live' })).error?.code).toBe('42501')
     for (const t of ['access_grants', 'access_migration_report', 'capabilities'] as const) {
       expect((await anon.from(t).select('*').limit(1)).error?.code, t).toBe('42501')

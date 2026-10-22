@@ -1,6 +1,8 @@
 -- Undoes 20261021000011_capability_access_rls.sql: row security reads the old grant tables again (the old model of 0002, 0005, 0007).
 -- WARNING: this brings back the behaviours the directive forbids (manager sees everything, home store grants access, store grants show
--- IT devices, camera grants narrow store grants). Grants made in access_grants after the migration are NOT copied back.
+-- IT devices, camera grants narrow store grants). Grants made in access_grants after the migration are NOT copied back, and access
+-- that was REVOKED in access_grants after the migration COMES BACK, because the old tables still hold the pre-migration rows. Review
+-- the migration report and the revocations before running this.
 -- Order: 0011, 0010, 0009, 0008 rollbacks.
 BEGIN;
 

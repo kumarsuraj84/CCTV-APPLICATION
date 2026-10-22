@@ -12,12 +12,15 @@ const sorted = (a: readonly string[]) => [...a].sort()
 
 type Person = { u: TestUser; stores?: string[]; zones?: string[]; cameras?: string[] }
 
-async function setOf(fn: 'access_legacy_camera_ids' | 'access_legacy_device_ids', userId: string, ignoreStatus: boolean): Promise<string[]> {
+async function setOf(fn: 'access_legacy_camera_ids' | 'access_legacy_device_ids' | 'access_legacy_store_ids', userId: string, ignoreStatus: boolean): Promise<string[]> {
   const { data, error } = await admin().rpc(fn, { p_user: userId, p_ignore_status: ignoreStatus })
   if (error) throw new Error(`${fn}: ${error.message}`)
   return sorted((data as unknown as string[]) ?? [])
 }
-async function effective(fn: 'access_effective_camera_ids' | 'access_effective_device_ids', userId: string, cap: string, ignoreStatus: boolean): Promise<string[]> {
+// Fix I-3: the real migration function is owner-only; tests go through the wrapper that only touches organisations made by tests.
+const migrate = (users: string[] | null, force = false) =>
+  admin().rpc('access_migrate_legacy_test', { p_run: randomUUID(), ...(users ? { p_users: users } : {}), p_force: force })
+async function effective(fn: 'report_effective_camera_ids' | 'report_effective_device_ids', userId: string, cap: string, ignoreStatus: boolean): Promise<string[]> {
   const { data, error } = await admin().rpc(fn, { p_user: userId, p_cap: cap, p_ignore_status: ignoreStatus })
   if (error) throw new Error(`${fn}: ${error.message}`)
   return sorted((data as unknown as string[]) ?? [])
@@ -110,19 +113,36 @@ describe('VA-18: migration of the old access model (AC-6, AC-7, AL-7, D-2a)', ()
   })
 
   it('migrates, after which every person has exactly the same live and playback cameras as before, and no export', async () => {
-    const res = await admin().rpc('access_migrate_legacy', { p_run: run, p_users: Object.values(people).map((p) => p.u.id) })
+    const res = await admin().rpc('access_migrate_legacy_test', { p_run: run, p_users: Object.values(people).map((p) => p.u.id) })
     expect(res.error).toBeNull()
     migrated = res.data as number
     expect(migrated).toBeGreaterThan(0)
     for (const [key, cams] of Object.entries(expectedBefore())) {
       const id = people[key].u.id
       for (const cap of ['cctv.live', 'cctv.playback']) {
-        expect(await effective('access_effective_camera_ids', id, cap, true), `${key} ${cap}`).toEqual(sorted(cams))
-        expect(await effective('access_effective_camera_ids', id, cap, false), `${key} ${cap} (status)`).toEqual(await setOf('access_legacy_camera_ids', id, false))
+        expect(await effective('report_effective_camera_ids', id, cap, true), `${key} ${cap}`).toEqual(sorted(cams))
+        expect(await effective('report_effective_camera_ids', id, cap, false), `${key} ${cap} (status)`).toEqual(await setOf('access_legacy_camera_ids', id, false))
       }
-      const exportCams = await effective('access_effective_camera_ids', id, 'cctv.export', true)
+      const exportCams = await effective('report_effective_camera_ids', id, 'cctv.export', true)
       expect(exportCams, `${key} export`).toEqual(key === 'admin' || key === 'owner' ? sorted(cams) : [])
     }
+  })
+
+  // Fix minor 9: nobody but administrators received an administrative or Wi-Fi capability, and every person who can sign in sees
+  // exactly the stores they saw before (no deliberate change to store visibility is documented).
+  it('no non-administrator received admin.* or wifi.*, and each person’s visible stores are unchanged', async () => {
+    const { data } = await admin().from('access_grants').select('user_id, capability').eq('org_id', orgId).is('revoked_at', null)
+    const adminIds = new Set([people.admin.u.id, people.owner.u.id])
+    for (const g of data ?? []) {
+      if (!adminIds.has(g.user_id)) expect(g.capability, g.user_id).not.toMatch(/^(admin|wifi)\./)
+    }
+    for (const [key, p] of Object.entries(people)) {
+      if (key === 'inactive' || key === 'mustReset') continue
+      const seen = sorted(((await p.u.client.from('stores').select('id')).data ?? []).map((r) => r.id))
+      expect(seen, key).toEqual(await setOf('access_legacy_store_ids', p.u.id, false))
+    }
+    expect(await setOf('access_legacy_store_ids', people.storePlusCam.u.id, false)).toEqual([M1])
+    expect(await setOf('access_legacy_store_ids', people.camOnly.u.id, false)).toEqual(sorted([M1, M3]))
   })
 
   it('people see the same cameras through their own sign-in, and the retired tables no longer matter', async () => {
@@ -139,11 +159,11 @@ describe('VA-18: migration of the old access model (AC-6, AC-7, AL-7, D-2a)', ()
   it('IT device visibility that came through a store, zone or home grant is not migrated (AC-4); managers and administrators keep theirs', async () => {
     for (const key of ['storeOnly', 'zoneOnly', 'homeOnly', 'storePlusCam', 'operator', 'inactive']) {
       for (const cap of ['it.inventory.view', 'it.monitoring.view']) {
-        expect(await effective('access_effective_device_ids', people[key].u.id, cap, true), `${key} ${cap}`).toEqual([])
+        expect(await effective('report_effective_device_ids', people[key].u.id, cap, true), `${key} ${cap}`).toEqual([])
       }
     }
     for (const key of ['manager', 'admin', 'owner']) {
-      expect(await effective('access_effective_device_ids', people[key].u.id, 'it.inventory.view', true), key).toEqual(sorted([e0, e1, e2, e3]))
+      expect(await effective('report_effective_device_ids', people[key].u.id, 'it.inventory.view', true), key).toEqual(sorted([e0, e1, e2, e3]))
     }
     const devices = async (u: TestUser) => ((await u.client.from('devices').select('id')).data ?? []).length
     expect(await devices(people.storeOnly.u)).toBe(0)
@@ -197,9 +217,35 @@ describe('VA-18: migration of the old access model (AC-6, AC-7, AL-7, D-2a)', ()
 
   it('running the migration again adds nothing', async () => {
     const before = (await admin().from('access_grants').select('id', { count: 'exact', head: true }).eq('org_id', orgId)).count
-    const again = await admin().rpc('access_migrate_legacy', { p_run: randomUUID(), p_users: Object.values(people).map((p) => p.u.id) })
+    const again = await migrate(Object.values(people).map((p) => p.u.id))
     expect(again.error).toBeNull()
     expect(again.data).toBe(0)
     expect((await admin().from('access_grants').select('id', { count: 'exact', head: true }).eq('org_id', orgId)).count).toBe(before)
+  })
+
+  // Fix I-3: a later run never brings back what an administrator revoked, not for listed people and not for everybody.
+  it('a revoked migrated grant stays revoked when the migration runs again, even for everybody', async () => {
+    const homeOnly = people.homeOnly.u
+    const { data: rows } = await admin().from('access_grants').select('id').eq('user_id', homeOnly.id).is('revoked_at', null)
+    expect((await admin().rpc('revoke_grant', { p_org: orgId, p_user: homeOnly.id, p_grant_ids: (rows ?? []).map((r) => r.id), p_reason: 'review: no' })).error).toBeNull()
+    expect(((await homeOnly.client.from('cameras').select('id')).data ?? []).length).toBe(0)
+    for (const users of [[homeOnly.id], null]) {
+      const res = await migrate(users)
+      expect(res.error).toBeNull()
+      expect(res.data).toBe(0)
+      expect(((await homeOnly.client.from('cameras').select('id')).data ?? []).length).toBe(0)
+    }
+    const live = await admin().from('access_grants').select('id').eq('user_id', homeOnly.id).is('revoked_at', null)
+    expect(live.data).toEqual([])
+    // Only an explicit force runs a person again (a deliberate administrative act).
+    expect((await migrate([homeOnly.id], true)).data).toBeGreaterThan(0)
+    expect(((await homeOnly.client.from('cameras').select('id')).data ?? []).length).toBe(1)
+  })
+
+  it('the test wrapper refuses people of organisations that tests did not make', async () => {
+    const { data: real } = await admin().from('profiles').select('id, organizations!inner(slug)').not('organizations.slug', 'like', 'test-%').limit(1)
+    if (!real?.length) return
+    const res = await migrate([real[0].id])
+    expect(res.error).not.toBeNull()
   })
 })

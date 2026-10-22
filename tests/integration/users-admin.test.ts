@@ -106,7 +106,7 @@ describe('user administration', () => {
     const { client } = await signIn(email, made.oneTimePassword)
     const seen = await client.from('cameras').select('id')
     expect((seen.data ?? []).map((r) => r.id).sort()).toEqual([cameraIds[0], cameraIds[1]].sort())
-    expect(await getUserAccess(admin(), orgId, made.userId)).toEqual({ storeIds: [], zones: [], cameraIds: expect.arrayContaining([cameraIds[0], cameraIds[1]]) })
+    expect(await getUserAccess(admin(), orgId, made.userId)).toEqual({ storeIds: [], zones: [], cameraIds: expect.arrayContaining([cameraIds[0], cameraIds[1]]), other: [] })
 
     expect((await setUserAccess(admin(), plainAdmin, made.userId, { storeIds: [storeId], zones: [], cameraIds: [] })).ok).toBe(true)
     const all = await client.from('cameras').select('id')
@@ -116,7 +116,7 @@ describe('user administration', () => {
     const live = (grants ?? []).filter((g) => g.revoked_at === null).map((g) => `${g.capability}:${g.scope_kind}:${g.scope_id}`).sort()
     expect(live).toEqual([`cctv.live:location:${storeId}`, `cctv.playback:location:${storeId}`])
     expect((grants ?? []).filter((g) => g.revoked_at !== null)).toHaveLength(4)
-    expect(await getUserAccess(admin(), orgId, made.userId)).toEqual({ storeIds: [storeId], zones: [], cameraIds: [] })
+    expect(await getUserAccess(admin(), orgId, made.userId)).toEqual({ storeIds: [storeId], zones: [], cameraIds: [], other: [] })
   })
 
   // AC-6 (P2-1): this used to be "camera grants inside a store narrow it". Now they only add.
@@ -127,12 +127,66 @@ describe('user administration', () => {
     const zoned = await makeUser(orgId, 'user')
     expect((await setUserAccess(admin(), plainAdmin, zoned.id, { storeIds: [], zones: ['BR'], cameraIds: [] })).ok).toBe(true)
     expect(((await zoned.client.from('cameras').select('id')).data ?? []).length).toBe(3)
-    expect(await getUserAccess(admin(), orgId, zoned.id)).toEqual({ storeIds: [storeId], zones: [], cameraIds: [] })
+    expect(await getUserAccess(admin(), orgId, zoned.id)).toMatchObject({ storeIds: [storeId], zones: [], cameraIds: [], other: [] })
     // The editor leaves other grants alone: an IT grant given elsewhere survives a save.
     await grant(orgId, zoned.id, 'it.inventory.view')
     expect((await setUserAccess(admin(), plainAdmin, zoned.id, { storeIds: [], zones: [], cameraIds: [] })).ok).toBe(true)
     expect(((await zoned.client.from('cameras').select('id')).data ?? []).length).toBe(0)
     expect((await zoned.client.rpc('has_capability', { p_cap: 'it.inventory.view' })).data).toBe(true)
+  })
+
+  // Review fix I-2: the interim editor shows as ticks only what is in effect now, and saving never re-dates a grant: an expired grant
+  // stays expired, a future one stays future, and neither is turned into a permanent grant.
+  it('expired and future grants are not ticks, are listed as other access, and a save keeps their dates', async () => {
+    const hour = 3_600_000
+    const iso = (ms: number) => new Date(ms).toISOString()
+    const mk = async (code: string) => {
+      const s = (await admin().from('stores').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+      const c = (await admin().from('cameras').insert({ org_id: orgId, store_id: s, channel: 1, name: `${code} cam` }).select('id').single()).data!.id
+      return { s, c }
+    }
+    const past = await mk('UEXP')
+    const future = await mk('UFUT')
+    const viewer = await makeUser(orgId, 'user')
+    await grant(orgId, viewer.id, ['cctv.live', 'cctv.playback'], { kind: 'location', id: storeId })
+    await grant(orgId, viewer.id, ['cctv.live', 'cctv.playback'], { kind: 'location', id: past.s }, { validFrom: iso(Date.now() - 2 * hour), validUntil: iso(Date.now() - hour) })
+    await grant(orgId, viewer.id, ['cctv.live', 'cctv.playback'], { kind: 'location', id: future.s }, { validFrom: iso(Date.now() + 24 * hour) })
+    const rowsOf = async () => (await admin().from('access_grants').select('id, scope_id, valid_from, valid_until, revoked_at').eq('user_id', viewer.id).order('id')).data ?? []
+    const before = await rowsOf()
+
+    const shown = await getUserAccess(admin(), orgId, viewer.id)
+    expect(shown.storeIds).toEqual([storeId])
+    expect(shown.other.filter((o) => o.scopeId === past.s).map((o) => o.state)).toEqual(['expired', 'expired'])
+    expect(shown.other.filter((o) => o.scopeId === future.s).map((o) => o.state)).toEqual(['future', 'future'])
+
+    // The administrator ticks the expired store again: it stays expired (dates are changed in P2-3 only).
+    expect((await setUserAccess(admin(), plainAdmin, viewer.id, { storeIds: [storeId, past.s], zones: [], cameraIds: [] })).ok).toBe(true)
+    expect(await rowsOf()).toEqual(before)
+    const seen = async () => ((await viewer.client.from('cameras').select('id')).data ?? []).map((r) => r.id)
+    expect(await seen()).not.toContain(past.c)
+    expect(await seen()).not.toContain(future.c)
+    // Removing everything that is in effect leaves the dated grants alone.
+    expect((await setUserAccess(admin(), plainAdmin, viewer.id, { storeIds: [], zones: [], cameraIds: [] })).ok).toBe(true)
+    const after = await rowsOf()
+    for (const r of after.filter((x) => x.scope_id !== storeId)) expect(r).toEqual(before.find((b) => b.id === r.id))
+    expect(after.filter((x) => x.scope_id === storeId).every((x) => x.revoked_at !== null)).toBe(true)
+  })
+
+  // Review fix I-4: the screen shows every other live grant read-only, so organisation-wide (for example migrated) access is never invisible.
+  it('a migrated manager’s organisation-wide grants are listed as other access with source and review flag, and a save keeps them', async () => {
+    const manager = await makeUser(orgId, 'manager')
+    const run = await admin().rpc('access_migrate_legacy_test', { p_run: crypto.randomUUID(), p_users: [manager.id] })
+    expect(run.error).toBeNull()
+    const shown = await getUserAccess(admin(), orgId, manager.id)
+    expect(shown.storeIds).toEqual([])
+    const orgWide = shown.other.filter((o) => o.scopeKind === 'organization')
+    expect(orgWide.map((o) => o.capability).sort()).toEqual(['cctv.live', 'cctv.playback', 'it.inventory.view', 'it.monitoring.view'])
+    for (const o of orgWide) expect(o).toMatchObject({ source: 'migrated:manager', needsReview: true, scopeLabel: 'Whole organisation', state: 'effective', validUntil: null })
+    expect(orgWide[0].capabilityLabel.length).toBeGreaterThan(3)
+    expect((await setUserAccess(admin(), plainAdmin, manager.id, { storeIds: [storeId], zones: [], cameraIds: [] })).ok).toBe(true)
+    const again = await getUserAccess(admin(), orgId, manager.id)
+    expect(again.storeIds).toEqual([storeId])
+    expect(again.other.filter((o) => o.scopeKind === 'organization')).toHaveLength(4)
   })
 
   // AC-8 (P2-1): this used to refuse a manager ("sees everything"). A manager now gets an access list like everyone else.

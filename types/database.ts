@@ -78,17 +78,11 @@ isOneToOne: false
       referencedRelation: "stores"
       referencedColumns: ["id","org_id"]
     },{
-      foreignKeyName: "access_grants_org_id_fkey"
+      foreignKeyName: "access_grants_org_fk"
       columns: ["org_id"]
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
-    },{
-      foreignKeyName: "access_grants_user_fk"
-      columns: ["user_id","org_id"]
-isOneToOne: false
-      referencedRelation: "profiles"
-      referencedColumns: ["id","org_id"]
     }
                   ]
                 },"access_migration_report": {
@@ -599,7 +593,10 @@ isOneToOne: false
                 }
           }
           Functions: {
-            "access_bump_version":
+            "access_aal2_of":
+{ Args: { "p_claims": Json }; Returns: boolean
+                           },
+"access_bump_version":
 { Args: { "p_user": string }; Returns: number
                            },
 "access_caller_aal2":
@@ -611,6 +608,9 @@ isOneToOne: false
 "access_cameras_for":
 { Args: { "p_aal2": boolean,"p_at": string,"p_caps": (string)[],"p_ignore_status": boolean,"p_user": string }; Returns: string[]
                            },
+"access_check_actor":
+{ Args: { "p_actor": string,"p_org": string }; Returns: undefined
+                           },
 "access_check_spec":
 { Args: { "p_org": string,"p_spec": Json }; Returns: undefined
                            },
@@ -620,15 +620,14 @@ isOneToOne: false
 "access_devices_for":
 { Args: { "p_aal2": boolean,"p_at": string,"p_caps": (string)[],"p_ignore_status": boolean,"p_user": string }; Returns: string[]
                            },
-"access_effective_camera_ids":
-{ Args: { "p_at"?: string,"p_cap": string,"p_ignore_status"?: boolean,"p_user": string }; Returns: string[]
-                           },
-"access_effective_device_ids":
-{ Args: { "p_at"?: string,"p_cap": string,"p_ignore_status"?: boolean,"p_user": string }; Returns: string[]
-                           },
 "access_expiring":
-{ Args: { "p_within": string }; Returns: {
+{ Args: { "p_org": string,"p_within": string }; Returns: {
               "capability": string,"grant_id": string,"org_id": string,"scope_id": string,"scope_kind": string,"user_id": string,"valid_until": string
+            }[]
+                           },
+"access_grants_eval":
+{ Args: { "p_aal2": boolean,"p_at": string,"p_ignore_status": boolean,"p_mfa_enforced": boolean,"p_user": string }; Returns: {
+              "area": string,"capability": string,"org_id": string,"scope_id": string,"scope_kind": string
             }[]
                            },
 "access_grants_of":
@@ -650,14 +649,26 @@ isOneToOne: false
 "access_legacy_store_grants":
 { Args: { "p_ignore_status": boolean,"p_user": string }; Returns: string[]
                            },
+"access_legacy_store_ids":
+{ Args: { "p_ignore_status"?: boolean,"p_user": string }; Returns: string[]
+                           },
 "access_lock_person":
 { Args: { "p_expected": number,"p_org": string,"p_user": string }; Returns: number
                            },
+"access_merge_window":
+{ Args: { "p_new_from": string,"p_new_until": string,"p_old_from": string,"p_old_until": string }; Returns: Record<string, unknown>
+                           },
 "access_migrate_legacy":
-{ Args: { "p_run": string,"p_users"?: (string)[] }; Returns: number
+{ Args: { "p_force"?: boolean,"p_run": string,"p_users"?: (string)[] }; Returns: number
+                           },
+"access_migrate_legacy_test":
+{ Args: { "p_force"?: boolean,"p_run": string,"p_users"?: (string)[] }; Returns: number
                            },
 "access_put_grant":
 { Args: { "p_actor": string,"p_needs_review": boolean,"p_org": string,"p_reason": string,"p_source": string,"p_spec": Json,"p_user": string }; Returns: Record<string, unknown>
+                           },
+"access_session_capabilities":
+{ Args: { "p_claims": Json,"p_mfa_enforced": boolean,"p_user": string }; Returns: string[]
                            },
 "access_store_set":
 { Args: { "p_locations": (string)[],"p_org": string,"p_org_wide": boolean }; Returns: string[]
@@ -737,13 +748,19 @@ isOneToOne: false
 { Args: { "p_secret": string,"p_store": string }; Returns: string
                            },
 "preview_access_change":
-{ Args: { "p_at"?: string,"p_changes": Json,"p_sample"?: number,"p_user": string }; Returns: Json
+{ Args: { "p_at"?: string,"p_changes": Json,"p_org": string,"p_sample"?: number,"p_user": string }; Returns: Json
                            },
 "privilege_violations":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },
 "replace_user_grants":
 { Args: { "p_actor"?: string,"p_capabilities": (string)[],"p_expected_version"?: number,"p_grants": Json,"p_org": string,"p_reason"?: string,"p_scope_kinds": (string)[],"p_user": string }; Returns: Json
+                           },
+"report_effective_camera_ids":
+{ Args: { "p_at"?: string,"p_cap": string,"p_ignore_status"?: boolean,"p_user": string }; Returns: string[]
+                           },
+"report_effective_device_ids":
+{ Args: { "p_at"?: string,"p_cap": string,"p_ignore_status"?: boolean,"p_user": string }; Returns: string[]
                            },
 "revoke_grant":
 { Args: { "p_actor"?: string,"p_expected_version"?: number,"p_grant_ids": (string)[],"p_org": string,"p_reason"?: string,"p_user": string }; Returns: Json

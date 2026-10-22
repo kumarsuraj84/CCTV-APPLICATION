@@ -3,8 +3,59 @@
 import { useMemo, useState, useTransition } from 'react'
 import { toast } from 'sonner'
 import { saveAccessAction } from '@/lib/actions/admin/users'
+import type { OtherGrant } from '@/lib/admin/users'
+import { formatDateTime } from '@/lib/time'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+
+const SOURCE_LABELS: Record<string, string> = {
+  manual: 'Given by an administrator',
+  'migrated:store': 'Moved over from an old store grant',
+  'migrated:zone': 'Moved over from an old zone grant',
+  'migrated:home': 'Moved over from the old home-store rule',
+  'migrated:manager': 'Moved over from the old manager role',
+  'migrated:camera': 'Moved over from an old camera grant',
+  'migrated:admin': 'Moved over from the administrator role',
+}
+
+function validity(o: OtherGrant): string {
+  if (o.state === 'expired') return `Expired ${formatDateTime(o.validUntil)}`
+  if (o.state === 'future') return `Starts ${formatDateTime(o.validFrom)}${o.validUntil ? `, ends ${formatDateTime(o.validUntil)}` : ''}`
+  return o.validUntil ? `Until ${formatDateTime(o.validUntil)}` : 'No end date'
+}
+
+/** Read-only: access this screen does not edit, so that none of it is invisible to the administrator (review fix I-4). */
+function OtherAccess({ other }: { other: OtherGrant[] }) {
+  if (other.length === 0) return null
+  return (
+    <section className="space-y-2" aria-labelledby="other-access">
+      <h2 id="other-access" className="font-medium">Other access</h2>
+      <p role="note" className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+        This person also has access that this screen does not edit. Saving keeps it as it is.
+      </p>
+      <div className="overflow-x-auto rounded-lg border">
+        <table className="w-full text-sm">
+          <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
+            <tr><th className="px-3 py-2">Access</th><th className="px-3 py-2">Where</th><th className="px-3 py-2">When</th><th className="px-3 py-2">Came from</th></tr>
+          </thead>
+          <tbody>
+            {other.map((o) => (
+              <tr key={o.id} className="border-t">
+                <td className="px-3 py-2">{o.capabilityLabel}</td>
+                <td className="px-3 py-2">{o.scopeLabel}</td>
+                <td className="px-3 py-2">{validity(o)}</td>
+                <td className="px-3 py-2">
+                  {SOURCE_LABELS[o.source] ?? o.source}
+                  {o.needsReview && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-900 dark:bg-amber-900 dark:text-amber-100">Please review</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
 
 type StoreRef = { id: string; code: string; name: string; zone: string | null }
 type CameraRef = { id: string; store_id: string; channel: number; name: string }
@@ -20,7 +71,7 @@ export function AccessEditor(props: {
   userId: string
   stores: StoreRef[]
   cameras: CameraRef[]
-  initial: { storeIds: string[]; zones: string[]; cameraIds: string[] }
+  initial: { storeIds: string[]; zones: string[]; cameraIds: string[]; other: OtherGrant[] }
 }) {
   const [storeIds, setStoreIds] = useState(new Set(props.initial.storeIds))
   const [zones, setZones] = useState(new Set(props.initial.zones))
@@ -48,6 +99,8 @@ export function AccessEditor(props: {
         Ticking a zone ticks the stores that are in it now. Individual cameras add to that; they never take anything away.
         This list gives no IT devices and no other rights.
       </p>
+
+      <OtherAccess other={props.initial.other} />
 
       <section className="space-y-2">
         <h2 className="font-medium">Zones</h2>
