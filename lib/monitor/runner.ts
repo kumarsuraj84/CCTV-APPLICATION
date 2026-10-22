@@ -14,7 +14,7 @@ export const DEFAULT_CYCLE_WATCHDOG_MS = 10 * 60_000
 type Kind = 'devices' | 'nvrs' | 'cameras'
 
 /** The calls whose failure the checks log and swallow. The runner counts them, so that a run is never reported clean when its database work failed. */
-const COUNTED: ReadonlySet<string | symbol> = new Set(['loadDevices', 'loadNvrs', 'loadStoreJobs', 'applyResults'])
+const COUNTED: ReadonlySet<string | symbol> = new Set(['loadDevices', 'loadNvrs', 'loadRecorderJobs', 'applyResults'])
 
 /**
  * The checks never throw: a database error is logged and the round carries on. That is right for a schedule, but a "check now" must not say
@@ -154,7 +154,7 @@ export class MonitorRunner {
     }
   }
 
-  /** Everything now: devices, NVRs, then every store's cameras, with progress for the Monitoring page. */
+  /** Everything now: devices, NVRs, then every NVR's cameras (progress per recorder), for the Monitoring page. */
   async runFull(): Promise<void> {
     await this.fullRun(false)
   }

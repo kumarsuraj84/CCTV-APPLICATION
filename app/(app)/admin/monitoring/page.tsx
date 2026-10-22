@@ -4,7 +4,6 @@ import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { coversSomeWholeLocation } from '@/lib/auth/capabilities'
 import { requireAdministration } from '@/lib/auth/profile'
-import { pickPrimaries } from '@/lib/inventory/recorders'
 import { getWorkerStatus } from '@/lib/monitor/health'
 import { describeRounds } from '@/lib/monitor/last-checked'
 import { isStale, nvrLoginProblem, type StateRow } from '@/lib/queries/status'
@@ -14,7 +13,7 @@ import { formatDateTime } from '@/lib/time'
 
 export const metadata = { title: 'Monitoring' }
 
-const NAMES = { camera: 'Cameras', nvr: 'NVRs', device: 'Devices' } as const
+const NAMES = { camera: 'Cameras', recorder: 'NVRs', device: 'Devices' } as const
 const GAP_DAYS = 7
 const GAPS_SHOWN = 5
 
@@ -39,9 +38,9 @@ export default async function MonitoringPage() {
       admin.from('check_state').select('target_type, target_id, status, down_since, last_checked_at, last_up_at').eq('org_id', me.org_id).order('id').range(from, to),
     ),
     fetchAll((from, to) => admin.from('locations').select('id, code, name').eq('org_id', me.org_id).eq('is_active', true).is('archived_at', null).order('code').range(from, to)),
-    fetchAll((from, to) => admin.from('cameras').select('id, store_id:location_id').eq('org_id', me.org_id).eq('is_active', true).is('archived_at', null).order('id').range(from, to)),
-    // P2-5a: NVR states are recorder states; until P2-5b the page shows each location's primary recorder (its legacy NVR, else the first one made).
-    fetchAll((from, to) => admin.from('recorders').select('id, location_id, migrated_from_location_id').eq('org_id', me.org_id).order('created_at').order('id').range(from, to)),
+    fetchAll((from, to) => admin.from('cameras').select('id, recorder_id').eq('org_id', me.org_id).eq('is_active', true).is('archived_at', null).order('id').range(from, to)),
+    // P2-5b: every NVR (recorder) of the organisation, each with its own state and its own cameras (their active mappings).
+    fetchAll((from, to) => admin.from('recorders').select('id, location_id, assets!recorders_asset_fk!inner(name, archived_at)').eq('org_id', me.org_id).is('assets.archived_at', null).order('created_at').order('id').range(from, to)),
     // The gaps are about the whole checker, not one organisation. A failed read only leaves this list out.
     admin.from('monitor_gaps').select('id, started_at, ended_at').gte('ended_at', since).order('started_at', { ascending: false }).limit(GAPS_SHOWN),
   ])
@@ -50,31 +49,32 @@ export default async function MonitoringPage() {
 
   // "Live" here means live and checked lately: a live result older than the limit is counted as not checked lately.
   const counts: Record<string, { up: number; down: number; unknown: number; stale: number }> = {}
-  const nvrByStore = new Map<string, StateRow>()
+  const nvrStates = new Map<string, StateRow>()
   const cameraStates = new Map<string, StateRow>()
-  const primaryLocation = new Map<string, string>()
-  for (const [loc, r] of pickPrimaries(recorders)) primaryLocation.set(r.id, loc)
   for (const s of states) {
-    const kind = s.target_type === 'recorder' ? 'nvr' : s.target_type
-    const c = (counts[kind] ??= { up: 0, down: 0, unknown: 0, stale: 0 })
+    const c = (counts[s.target_type] ??= { up: 0, down: 0, unknown: 0, stale: 0 })
     if (s.status === 'up' && isStale(s.last_checked_at, now)) c.stale++
     else c[s.status as 'up' | 'down' | 'unknown']++
     const row: StateRow = { ...s, status: s.status as StateRow['status'], error: null }
-    if (s.target_type === 'recorder' && primaryLocation.has(s.target_id)) nvrByStore.set(primaryLocation.get(s.target_id)!, row)
+    if (s.target_type === 'recorder') nvrStates.set(s.target_id, row)
     else if (s.target_type === 'camera') cameraStates.set(s.target_id, row)
   }
 
-  // "The NVR answers but refuses our login": only meaningful while the checker is running, because it is judged from how recent the results are.
-  const camerasByStore = new Map<string, string[]>()
-  for (const c of cameras) camerasByStore.set(c.store_id, [...(camerasByStore.get(c.store_id) ?? []), c.id])
+  // "The NVR answers but refuses our login": per NVR, judged from its OWN cameras; only meaningful while the checker is running,
+  // because it is judged from how recent the results are.
+  const camerasByRecorder = new Map<string, string[]>()
+  for (const c of cameras) if (c.recorder_id) camerasByRecorder.set(c.recorder_id, [...(camerasByRecorder.get(c.recorder_id) ?? []), c.id])
+  const storeById = new Map(stores.map((s) => [s.id, s]))
   const loginProblems = worker.ok
-    ? stores.filter((s) => nvrLoginProblem({ nvr: nvrByStore.get(s.id), cameraIds: camerasByStore.get(s.id) ?? [], cameraStates, now }))
+    ? (recorders as unknown as { id: string; location_id: string; assets: { name: string } }[])
+        .filter((r) => storeById.has(r.location_id) && nvrLoginProblem({ nvr: nvrStates.get(r.id), cameraIds: camerasByRecorder.get(r.id) ?? [], cameraStates, now }))
+        .map((r) => ({ id: r.id, store: storeById.get(r.location_id)!, name: r.assets.name }))
     : []
 
   const asked = worker.requestedAt && (!worker.runStartedAt || new Date(worker.requestedAt) > new Date(worker.runStartedAt))
   const activity = worker.running
     ? worker.progressTotal > 0
-      ? `Checking: ${worker.progressDone} of ${worker.progressTotal} stores done`
+      ? `Checking: ${worker.progressDone} of ${worker.progressTotal} NVRs done`
       : 'Checking: starting'
     : asked
       ? worker.ok
@@ -122,9 +122,9 @@ export default async function MonitoringPage() {
             A store that was only just added looks the same for a few minutes.
           </p>
           <ul className="divide-y rounded-xl border bg-card text-sm">
-            {loginProblems.map((s) => (
-              <li key={s.id} className="px-3 py-2">
-                {s.code} · {s.name}
+            {loginProblems.map((p) => (
+              <li key={p.id} className="px-3 py-2">
+                {p.store.code} · {p.store.name} · NVR {p.name}
               </li>
             ))}
           </ul>
@@ -134,7 +134,7 @@ export default async function MonitoringPage() {
       <section className="space-y-2">
         <h2 className="font-medium">What it found</h2>
         <div className="grid gap-3 sm:grid-cols-3">
-          {(['camera', 'nvr', 'device'] as const).map((t) => {
+          {(['camera', 'recorder', 'device'] as const).map((t) => {
             const c = counts[t] ?? { up: 0, down: 0, unknown: 0, stale: 0 }
             return (
               <div key={t} className="rounded-xl border bg-card p-4">

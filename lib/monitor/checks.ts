@@ -4,7 +4,7 @@ import { mapLimit } from '@/lib/async/pool'
 import { describeNvrError, NvrError } from '@/lib/nvr/client'
 import { logger } from '@/lib/observability/logger'
 import { isValidHost, isValidPort } from '@/lib/probes'
-import type { CheckResult, MonitorConfig, MonitorDb, Probes, StoreJob } from '@/lib/monitor/types'
+import type { CheckResult, MonitorConfig, MonitorDb, Probes, RecorderJob } from '@/lib/monitor/types'
 
 export type Deps = { db: MonitorDb; probes: Probes; cfg: MonitorConfig; clock: () => Date }
 
@@ -13,7 +13,8 @@ type WithOrg = CheckResult & { org: string }
 const CHUNK = 200
 
 const BAD_DEVICE = 'The address or port saved for this device is not valid.'
-const BAD_NVR = 'The NVR address saved for this store is not valid.'
+// P2-5b: the address is the recorder's own (a location may have several NVRs).
+const BAD_NVR = 'The address saved for this NVR is not valid.'
 
 /**
  * Runs `fn` after every earlier call with the same key (on the same database) has finished. monitor_apply_results trusts its caller:
@@ -92,7 +93,7 @@ export function checkDevices(deps: Deps): Promise<number> {
   })
 }
 
-/** The NVR itself: can its video port be reached? */
+/** Every NVR (recorder) itself: can its video port be reached? One result per recorder: ('recorder', recorder id). */
 export function checkNvrs(deps: Deps): Promise<number> {
   return serialised(deps.db, 'nvrs', async () => {
     const began = deps.clock()
@@ -106,12 +107,12 @@ export function checkNvrs(deps: Deps): Promise<number> {
     const results = await mapLimit(nvrs, deps.cfg.deviceConcurrency, async (n): Promise<WithOrg | null> => {
       try {
         if (!isValidHost(n.ip) || !isValidPort(n.rtsp_port)) {
-          return { org: n.org_id, type: 'nvr', id: n.id, ok: false, at: deps.clock().toISOString(), method: 'tcp', error: BAD_NVR }
+          return { org: n.org_id, type: 'recorder', id: n.id, ok: false, at: deps.clock().toISOString(), method: 'tcp', error: BAD_NVR }
         }
         const r = await deps.probes.tcp(n.ip, n.rtsp_port, deps.cfg.tcpTimeoutMs)
-        return { org: n.org_id, type: 'nvr', id: n.id, ok: r.ok, at: deps.clock().toISOString(), method: 'tcp', error: r.error }
+        return { org: n.org_id, type: 'recorder', id: n.id, ok: r.ok, at: deps.clock().toISOString(), method: 'tcp', error: r.error }
       } catch (e) {
-        logger.error({ event: 'nvr_check_failed', store: n.id, error: e })
+        logger.error({ event: 'nvr_check_failed', recorder: n.id, error: e })
         return null
       }
     })
@@ -142,9 +143,10 @@ function logRound(deps: Deps, kind: 'devices' | 'nvrs' | 'cameras', began: Date,
 }
 
 /**
- * Back-off after a refused NVR login. A recorder that keeps getting a wrong password locks the account, so after an ISAPI "auth" or
- * "forbidden" answer the store's NVR is not asked again (no ISAPI, no RTSP) until the window is over or its saved login changes.
- * Kept in memory only, per database object, and holds a hash of the login, never the password.
+ * Back-off after a refused NVR login (ruling R9, per recorder since P2-5b). A recorder that keeps getting a wrong password locks the
+ * account, so after an ISAPI "auth" or "forbidden" answer that recorder is not asked again (no ISAPI, no RTSP) until the window is over or
+ * its saved login changes; other NVRs of the same location go on as normal. Kept in memory only, per database object, keyed by recorder id,
+ * and holds a hash of the login, never the password.
  */
 type Backoff = { until: number; login: string }
 const backoffs = new WeakMap<object, Map<string, Backoff>>()
@@ -154,13 +156,13 @@ const backoffOf = (db: object): Map<string, Backoff> => {
   return m
 }
 /** Identifies the saved login (address, port, user name, password) without keeping any of it readable. */
-const loginFingerprint = (s: StoreJob): string => createHash('sha256').update(`${s.ip}|${s.http_port}|${s.username}:${s.password}`).digest('hex')
+const loginFingerprint = (s: RecorderJob): string => createHash('sha256').update(`${s.ip}|${s.http_port}|${s.username}:${s.password}`).digest('hex')
 
-/** How many stores are being left alone right now (for tests). */
+/** How many recorders are being left alone right now (for tests). */
 export const loginBackoffCount = (db: object): number => backoffOf(db).size
 
-/** True while the NVR of this store must not be asked. An ended back-off, or one for a login that has since changed, is removed. */
-function inBackoff(deps: Deps, s: StoreJob): boolean {
+/** True while this recorder must not be asked. An ended back-off, or one for a login that has since changed, is removed. */
+function inBackoff(deps: Deps, s: RecorderJob): boolean {
   const map = backoffOf(deps.db)
   const entry = map.get(s.id)
   if (!entry) return false
@@ -171,7 +173,7 @@ function inBackoff(deps: Deps, s: StoreJob): boolean {
   return true
 }
 
-/** Forgets the back-off of every store whose window is over, also for stores that are never checked again. */
+/** Forgets the back-off of every recorder whose window is over, also for recorders that are never checked again. */
 function pruneBackoffs(deps: Deps): void {
   const map = backoffOf(deps.db)
   const now = deps.clock().getTime()
@@ -181,11 +183,12 @@ function pruneBackoffs(deps: Deps): void {
 /** A camera address the NVR reports is kept only when it is a plain IP address. */
 const plainIp = (ip: string | null): ip is string => typeof ip === 'string' && isIP(ip) !== 0 && !ip.includes('%')
 
-async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
+async function runRecorderCameras(deps: Deps, s: RecorderJob): Promise<void> {
   if (s.cameras.length === 0) return
   const at = deps.clock().toISOString()
 
-  // A store whose NVR is already known to be down: its cameras are down for the same reason, at once, with nothing else to ask.
+  // A recorder already known to be down: ITS cameras (only the ones mapped to it) are down for the same reason, at once, with nothing
+  // else to ask. Cameras of the location's other NVRs are their own jobs and are not touched.
   if (s.knownDown) {
     await deps.db.applyResults(
       s.org_id,
@@ -257,7 +260,7 @@ async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
     let sawRefusal = false
     let loginProven = false
     // The camera is asked through the NVR (its video port, the camera's channel), never at an address the NVR reported.
-    const probe = async (c: StoreJob['cameras'][number]): Promise<void> => {
+    const probe = async (c: RecorderJob['cameras'][number]): Promise<void> => {
       if (stopRtsp) {
         skipped.add(c.channel)
         return
@@ -284,15 +287,15 @@ async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
         online.set(c.channel, code === 200)
       } catch (e) {
         skipped.add(c.channel)
-        logger.error({ event: 'camera_rtsp_failed', store: s.code, channel: c.channel, error: e })
+        logger.error({ event: 'camera_rtsp_failed', location: s.code, recorder: s.id, channel: c.channel, error: e })
       }
     }
     // Without a working web login the first camera goes alone, so that a refused login is seen before the others are sent.
     const [first, ...rest] = unconfirmed
-    if (verified) await mapLimit(unconfirmed, deps.cfg.rtspPerStore, probe)
+    if (verified) await mapLimit(unconfirmed, deps.cfg.rtspPerRecorder, probe)
     else {
       await probe(first)
-      await mapLimit(rest, deps.cfg.rtspPerStore, probe)
+      await mapLimit(rest, deps.cfg.rtspPerRecorder, probe)
     }
     method = method === 'isapi' ? 'isapi+rtsp' : 'rtsp'
     // A refusal with no proof anywhere in this round that the login works is the first sign of a wrong password: start the back-off.
@@ -305,9 +308,9 @@ async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
   if (refused) {
     // One line when the back-off starts, not one per round.
     backoffOf(deps.db).set(s.id, { until: deps.clock().getTime() + deps.cfg.nvrLoginBackoffSec * 1000, login: loginFingerprint(s) })
-    logger.warn({ event: 'nvr_login_problem', store: s.code, message: `NVR login problem for store ${s.code}; it will not be asked again for ${deps.cfg.nvrLoginBackoffSec} seconds` })
+    logger.warn({ event: 'nvr_login_problem', location: s.code, recorder: s.id, message: `NVR login problem at location ${s.code} (NVR ${s.name}); it will not be asked again for ${deps.cfg.nvrLoginBackoffSec} seconds` })
   } else if (loginProblem) {
-    logger.warn({ event: 'nvr_login_problem', store: s.code, message: `NVR login problem for store ${s.code}: no saved password` })
+    logger.warn({ event: 'nvr_login_problem', location: s.code, recorder: s.id, message: `NVR login problem at location ${s.code} (NVR ${s.name}): no saved password` })
   }
 
   const results = s.cameras
@@ -323,37 +326,39 @@ async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
   if (changed.length > 0) await deps.db.saveCameraIps(s.org_id, changed.map((c) => ({ cameraId: c.id, ip: addresses.get(c.channel)! })))
 }
 
-/** All cameras of one store. Asks the NVR first; cameras it does not report online get an RTSP check. Never throws. */
-export function checkStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
-  return serialised(deps.db, `store:${s.id}`, async () => {
+/** All cameras of one recorder. Asks the NVR first; cameras it does not report online get an RTSP check. Never throws. */
+export function checkRecorderCameras(deps: Deps, s: RecorderJob): Promise<void> {
+  // One lane per recorder: two runs over the same recorder never overlap (two NVRs of one location run side by side).
+  return serialised(deps.db, `recorder:${s.id}`, async () => {
     try {
-      await runStoreCameras(deps, s)
+      await runRecorderCameras(deps, s)
     } catch (e) {
-      // One broken store must never stop the others.
-      logger.error({ event: 'store_check_failed', store: s.code, error: e })
+      // One broken recorder must never stop the others.
+      logger.error({ event: 'recorder_check_failed', location: s.code, recorder: s.id, error: e })
     }
   })
 }
 
-export async function checkCameras(deps: Deps, onProgress?: (done: number, total: number) => void, storeIds?: string[]): Promise<number> {
-  let stores: StoreJob[]
+/** Every recorder's cameras (or only the recorders asked for), with progress per recorder. Never throws. */
+export async function checkCameras(deps: Deps, onProgress?: (done: number, total: number) => void, recorderIds?: string[]): Promise<number> {
+  let jobs: RecorderJob[]
   const began = deps.clock()
   try {
-    stores = await deps.db.loadStoreJobs(storeIds, new Date(began.getTime() - nvrStateMaxAgeMs(deps.cfg)))
+    jobs = await deps.db.loadRecorderJobs(recorderIds, new Date(began.getTime() - nvrStateMaxAgeMs(deps.cfg)))
   } catch (e) {
-    logger.error({ event: 'stores_load_failed', error: e })
+    logger.error({ event: 'recorders_load_failed', error: e })
     return 0
   }
   pruneBackoffs(deps)
   let done = 0
-  await mapLimit(stores, deps.cfg.storeConcurrency, async (s) => {
-    await checkStoreCameras(deps, s)
+  await mapLimit(jobs, deps.cfg.recorderConcurrency, async (s) => {
+    await checkRecorderCameras(deps, s)
     try {
-      onProgress?.(++done, stores.length)
+      onProgress?.(++done, jobs.length)
     } catch (e) {
       logger.error({ event: 'progress_callback_failed', error: e })
     }
   })
-  logRound(deps, 'cameras', began, stores.length)
-  return stores.length
+  logRound(deps, 'cameras', began, jobs.length)
+  return jobs.length
 }

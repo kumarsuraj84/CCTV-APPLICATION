@@ -159,18 +159,35 @@ export type FoundSegments = {
 }
 
 /**
- * Every recording that touches the local day `day` (yyyy-mm-dd, as shown to people), with times as shown (NVR time + offsetMin).
+ * Every recording that touches the local day `day` (yyyy-mm-dd, as shown to people), with times as shown (NVR time + offset; the
+ * offset is the recorder's own, in seconds, or the global default in minutes).
  * Nothing is clipped to the day. Pages are read until the NVR stops saying MORE, a page of usable recordings brings nothing new, 50 pages
  * have been read or 5000 segments are held, all under one deadline. A page whose items are all unusable does not end the reading while the
  * NVR says MORE. With more than 5000 segments the FIRST 5000 (earliest) are kept, so the end of the day is cut; `truncated` says so.
  * Wrong input is a plain Error; NVR trouble is an NvrError. The `uri` of a segment stays on the server.
  */
-export async function findSegments(client: NvrClient, o: { channel: number; day: string; offsetMin: number }): Promise<FoundSegments> {
+/** The NVR clock offset of a request (ruling R13 direction), given as EITHER whole minutes (the old global setting) OR whole seconds (P2-5b). */
+export type ClockOffset = { offsetMin: number; offsetSec?: undefined } | { offsetSec: number; offsetMin?: undefined }
+
+/**
+ * The offset in milliseconds, or null when it is not exactly one of the two, not a whole number, or more than a day either way.
+ * NVR time = shown time - offset; shown time = NVR time + offset.
+ */
+export function clockOffsetMs(o: { offsetMin?: unknown; offsetSec?: unknown }): number | null {
+  const min = o.offsetMin
+  const sec = o.offsetSec
+  if ((min === undefined) === (sec === undefined)) return null
+  if (min !== undefined) return typeof min === 'number' && Number.isInteger(min) && Math.abs(min) <= MAX_OFFSET_MIN ? min * 60_000 : null
+  return typeof sec === 'number' && Number.isInteger(sec) && Math.abs(sec) <= MAX_OFFSET_MIN * 60 ? sec * 1000 : null
+}
+
+export async function findSegments(client: NvrClient, o: { channel: number; day: string } & ClockOffset): Promise<FoundSegments> {
   const m = typeof o.day === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(o.day) : null
-  if (!m || !isChannel(o.channel) || typeof o.offsetMin !== 'number' || !Number.isInteger(o.offsetMin) || Math.abs(o.offsetMin) > MAX_OFFSET_MIN) throw new Error(BAD_INPUT)
+  const offset = clockOffsetMs(o)
+  if (!m || !isChannel(o.channel) || offset === null) throw new Error(BAD_INPUT)
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
   if (y < 2000 || y > 2100 || mo < 1 || mo > 12 || d < 1 || new Date(Date.UTC(y, mo - 1, d)).getUTCDate() !== d) throw new Error(BAD_INPUT)
-  const shift = o.offsetMin * 60_000
+  const shift = offset
   const start = new Date(Date.UTC(y, mo - 1, d) - shift)
   const end = new Date(Date.UTC(y, mo - 1, d + 1) - shift)
 

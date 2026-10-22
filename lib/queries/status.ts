@@ -2,7 +2,6 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
 import { mapLimit } from '@/lib/async/pool'
 import { fetchAll } from '@/lib/supabase/fetch-all'
-import { pickPrimaries } from '@/lib/inventory/recorders'
 
 type Client = SupabaseClient<Database>
 
@@ -34,9 +33,13 @@ type KindCounts = { total: number; up: number; down: number; unknown: number; st
 export type Dashboard = {
   /** live excludes stale; the five numbers add up to total. */
   cameras: { total: number; live: number; down: number; unknown: number; stale: number }
-  stores: { total: number; nvrDown: { id: string; code: string; name: string; since: string | null }[]; nvrStale: number }
+  /**
+   * P2-5b: `nvrDown` lists every NVR (recorder) that is down — one entry per recorder, with its location — and `nvrStale` counts the
+   * recorders that were live but have not been checked lately. Recorders are IT information: both are empty without the IT view.
+   */
+  stores: { total: number; nvrDown: { id: string; locationId: string; code: string; name: string; recorder: string; since: string | null }[]; nvrStale: number }
   devices: Record<string, KindCounts>
-  recentOutages: { id: string; kind: 'camera' | 'device' | 'nvr'; label: string; store: string | null; startedAt: string; endedAt: string | null }[]
+  recentOutages: { id: string; kind: 'camera' | 'device' | 'recorder'; label: string; store: string | null; startedAt: string; endedAt: string | null }[]
   /** True when the list may be missing problems because reading stopped at its cap (many outages hidden under NVR outages). */
   recentOutagesLimited: boolean
 }
@@ -123,23 +126,10 @@ export async function listStoreStatus(supabase: Client): Promise<Map<string, Sto
 }
 
 /**
- * The status of targets the person may see. 'nvr' takes location ids and answers per location with its primary recorder (the
- * P2-5a seam; only people with the IT view see recorders at all); 'recorder' takes recorder ids. A camera or NVR whose monitoring is
- * switched off comes back as status 'off'.
+ * The status of targets the person may see: cameras, devices or recorders (NVRs, by recorder id; only people with the IT view of the
+ * recorder see them at all). A camera or NVR whose monitoring is switched off comes back as status 'off'.
  */
-export async function getStates(supabase: Client, type: 'camera' | 'device' | 'nvr' | 'recorder', ids: string[]): Promise<Map<string, StateRow>> {
-  if (type === 'nvr') {
-    const { data, error } = await supabase.from('recorders').select('id, location_id, created_at, migrated_from_location_id').in('location_id', ids).order('created_at').order('id')
-    if (error) throw new Error('Could not read the status.')
-    const primary = pickPrimaries(data ?? []) // the legacy NVR of the location first (review M3), as recorder_primary_of
-    const states = await getStates(supabase, 'recorder', [...primary.values()].map((r) => r.id))
-    const out = new Map<string, StateRow>()
-    for (const [loc, r] of primary) {
-      const st = states.get(r.id)
-      if (st) out.set(loc, { ...st, target_id: loc })
-    }
-    return out
-  }
+export async function getStates(supabase: Client, type: 'camera' | 'device' | 'recorder', ids: string[]): Promise<Map<string, StateRow>> {
   const out = new Map<string, StateRow>()
   const chunks: string[][] = []
   for (let i = 0; i < ids.length; i += 100) chunks.push(ids.slice(i, i + 100))
@@ -191,40 +181,36 @@ const OUTAGE_MAX_PAGES = 5
 export type DashboardOptions = { outagePageSize?: number; outageMaxPages?: number }
 
 /**
- * The newest outages, newest first, for stores, cameras and devices that are switched on. A camera outage is hidden (the NVR outage
- * already says it) only when all of these hold: it is still open, caused by the NVR being down, its store's NVR outage is still open,
- * and it was recorded at or after that NVR outage was recorded. Recorded, not started: the time an outage started is the time of the
- * first failure, which a slow camera round can place just before the NVR's own first failure. Anything else, such as an outage that
- * ended, or one left over from an earlier NVR outage, is listed on its own.
- * Reads page by page so that a store with many grouped cameras cannot crowd out everything else. `limited` is true when the reading
+ * The newest outages, newest first, for recorders, cameras and devices that are switched on. A camera outage is hidden (the NVR outage
+ * already says it) only when all of these hold: it is still open, caused by the NVR being down, the open outage of THE CAMERA'S OWN
+ * RECORDER (its active mapping; P2-5b) is still open, and it was recorded at or after that NVR outage was recorded. Recorded, not
+ * started: the time an outage started is the time of the first failure, which a slow camera round can place just before the NVR's own
+ * first failure. Anything else, such as an outage that ended, one left over from an earlier NVR outage, or a camera of ANOTHER NVR of
+ * the same location, is listed on its own.
+ * Reads page by page so that a recorder with many grouped cameras cannot crowd out everything else. `limited` is true when the reading
  * stopped at its cap with fewer than the wanted number of rows, so that an empty list may only mean "not found yet".
  */
 async function recentOutages(
   supabase: Client,
   storeById: Map<string, { id: string; code: string; name: string }>,
+  recorderById: Map<string, { location_id: string; name: string }>,
   opts: DashboardOptions = {},
 ): Promise<{ list: Recent[]; limited: boolean }> {
   const pageSize = opts.outagePageSize ?? OUTAGE_PAGE
   const maxPages = opts.outageMaxPages ?? OUTAGE_MAX_PAGES
-  // P2-5a: NVR outages are recorder outages ('recorder', recorder id); recorders are visible to the IT view only, exactly like the old
-  // 'nvr' rows. Until P2-5b groups per recorder, a camera outage is grouped under an open outage of an NVR of its location.
-  const recorderLocation = new Map(
-    (await fetchAll((from, to) => supabase.from('recorders').select('id, location_id').order('id').range(from, to))).map((r) => [r.id, r.location_id] as const),
-  )
+  // NVR outages are recorder outages ('recorder', recorder id); recorders (and the camera-to-recorder mappings) are visible to the IT
+  // view of the recorder only, so for everybody else nothing is grouped and no recorder outage is listed.
   const openNvr = new Map<string, string>()
   for (const o of await fetchAll((from, to) => supabase.from('outages').select('target_id, created_at').eq('target_type', 'recorder').is('ended_at', null).order('target_id').order('id').range(from, to))) {
-    const loc = recorderLocation.get(o.target_id)
-    if (!loc) continue
-    const prev = openNvr.get(loc)
-    if (!prev || new Date(o.created_at).getTime() < new Date(prev).getTime()) openNvr.set(loc, o.created_at)
+    if (recorderById.has(o.target_id)) openNvr.set(o.target_id, o.created_at)
   }
-  const groupedUnderNvr = (o: OutageRow, storeId: string): boolean => {
-    if (o.cause !== 'nvr_down' || o.ended_at !== null) return false
-    const nvrRecorded = openNvr.get(storeId)
+  const groupedUnderNvr = (o: OutageRow, recorderId: string | undefined): boolean => {
+    if (o.cause !== 'nvr_down' || o.ended_at !== null || !recorderId) return false
+    const nvrRecorded = openNvr.get(recorderId)
     return nvrRecorded !== undefined && new Date(o.created_at).getTime() >= new Date(nvrRecorded).getTime()
   }
   let exhausted = false
-  const collected: { o: OutageRow; camera?: { name: string; store_id: string }; device?: { name: string; store_id: string | null } }[] = []
+  const collected: { o: OutageRow; camera?: { name: string; store_id: string }; device?: { name: string; store_id: string | null }; recorder?: { location_id: string; name: string } }[] = []
 
   for (let page = 0; page < maxPages && collected.length < RECENT_COUNT; page++) {
     const { data, error } = await supabase
@@ -238,16 +224,25 @@ async function recentOutages(
 
     // Only things that are switched on are listed: an outage of a store, camera or device that was switched off is history, not a problem.
     const cameras = new Map<string, { name: string; store_id: string }>()
+    const recorderOfCamera = new Map<string, string>()
     const cameraIds = rows.filter((o) => o.target_type === 'camera').map((o) => o.target_id)
     for (let i = 0; i < cameraIds.length; i += 100) {
-      const res = await supabase.from('cameras').select('id, name, store_id:location_id').eq('is_active', true).in('id', cameraIds.slice(i, i + 100))
+      const part = cameraIds.slice(i, i + 100)
+      const res = await supabase.from('cameras').select('id, name, store_id:location_id').eq('is_active', true).in('id', part)
       if (res.error) throw new Error('Could not read the cameras.')
       for (const c of res.data ?? []) cameras.set(c.id, c)
+      if (openNvr.size > 0) {
+        // The camera's own recorder: its active mapping (readable with the IT view of that recorder only).
+        const maps = await supabase.from('camera_channel_mappings').select('camera_id, recorder_id').in('camera_id', part).is('valid_to', null)
+        if (maps.error) throw new Error('Could not read the cameras.')
+        for (const m of maps.data ?? []) recorderOfCamera.set(m.camera_id, m.recorder_id)
+      }
     }
     const devices = new Map<string, { name: string; store_id: string | null }>()
     const deviceIds = rows.filter((o) => o.target_type === 'device').map((o) => o.target_id)
     for (let i = 0; i < deviceIds.length; i += 100) {
-      const res = await supabase.from('assets').select('id, name, store_id:location_id').eq('enabled', true).in('id', deviceIds.slice(i, i + 100))
+      // An NVR that was a device before it became a recorder: its old device history is not a device problem (5a carry-forward).
+      const res = await supabase.from('assets').select('id, name, store_id:location_id').eq('enabled', true).eq('is_recorder', false).in('id', deviceIds.slice(i, i + 100))
       if (res.error) throw new Error('Could not read the devices.')
       for (const d of res.data ?? []) devices.set(d.id, d)
     }
@@ -256,16 +251,16 @@ async function recentOutages(
       if (o.target_type === 'camera') {
         const camera = cameras.get(o.target_id)
         if (!camera || !storeById.has(camera.store_id)) continue
-        if (groupedUnderNvr(o, camera.store_id)) continue
+        if (groupedUnderNvr(o, recorderOfCamera.get(o.target_id))) continue
         collected.push({ o, camera })
       } else if (o.target_type === 'device') {
         const device = devices.get(o.target_id)
         if (!device) continue
         collected.push({ o, device })
       } else if (o.target_type === 'recorder') {
-        const loc = recorderLocation.get(o.target_id)
-        if (!loc || !storeById.has(loc)) continue
-        collected.push({ o: { ...o, target_id: loc } })
+        const recorder = recorderById.get(o.target_id)
+        if (!recorder || !storeById.has(recorder.location_id)) continue
+        collected.push({ o, recorder })
       }
     }
     if (rows.length < pageSize) {
@@ -274,41 +269,46 @@ async function recentOutages(
     }
   }
 
-  const list = collected.map(({ o, camera, device }): Recent => {
+  const list = collected.map(({ o, camera, device, recorder }): Recent => {
     const base = { id: o.id, startedAt: o.started_at, endedAt: o.ended_at }
     if (camera) return { ...base, kind: 'camera', label: camera.name, store: storeById.get(camera.store_id)?.code ?? null }
     if (device) return { ...base, kind: 'device', label: device.name, store: device.store_id ? (storeById.get(device.store_id)?.code ?? null) : null }
-    const s = storeById.get(o.target_id)
-    return { ...base, kind: 'nvr', label: s?.name ?? 'NVR', store: s?.code ?? null }
+    return { ...base, kind: 'recorder', label: recorder?.name ?? 'NVR', store: recorder ? (storeById.get(recorder.location_id)?.code ?? null) : null }
   })
   return { list, limited: !exhausted && collected.length < RECENT_COUNT }
 }
 
 export async function getDashboard(supabase: Client, opts: DashboardOptions = {}, now: Date = new Date()): Promise<Dashboard> {
-  // Only stores and devices that are switched on are counted (store_status already leaves out the rest).
-  const [statuses, stores, devices, deviceStates] = await Promise.all([
+  // Only locations, recorders and devices that are switched on are counted (location_status and recorder_status leave out the rest).
+  const [statuses, stores, devices, deviceStates, recorders] = await Promise.all([
     listStoreStatus(supabase),
     fetchAll((from, to) => supabase.from('locations').select('id, code, name').eq('is_active', true).order('code').order('id').range(from, to)),
     // The NVRs are recorders (counted as NVRs), not devices.
     fetchAll((from, to) => supabase.from('assets').select('id, type, name, store_id:location_id').eq('enabled', true).eq('is_recorder', false).order('id').range(from, to)),
     fetchAll((from, to) => supabase.from('check_state').select('target_id, status, last_checked_at').eq('target_type', 'device').order('target_id').range(from, to)),
+    // P2-5b: every recorder the person has the IT view of, with its own state (none for everybody else).
+    fetchAll((from, to) => supabase.from('recorder_status').select('recorder_id, location_id, name, status, down_since, stale, monitoring_enabled').order('recorder_id').range(from, to)),
   ])
 
   const cameras = { total: 0, live: 0, down: 0, unknown: 0, stale: 0 }
-  let nvrStale = 0
   for (const s of statuses.values()) {
     cameras.total += s.cameras_total
     cameras.live += s.cameras_live
     cameras.down += s.cameras_down
     cameras.unknown += s.cameras_unknown
     cameras.stale += s.cameras_stale
-    if (s.nvr_stale) nvrStale++
   }
   const storeById = new Map(stores.map((s) => [s.id, s]))
-  const nvrDown = [...statuses.values()]
-    .filter((s) => s.nvr_status === 'down')
-    .map((s) => ({ id: s.store_id, code: storeById.get(s.store_id)?.code ?? '', name: storeById.get(s.store_id)?.name ?? '', since: s.nvr_down_since }))
-    .sort((a, b) => a.code.localeCompare(b.code))
+  const visibleRecorders = recorders.filter((r) => r.recorder_id && r.location_id && storeById.has(r.location_id))
+  const recorderById = new Map(visibleRecorders.map((r) => [r.recorder_id as string, { location_id: r.location_id as string, name: r.name ?? 'NVR' }]))
+  const nvrStale = visibleRecorders.filter((r) => r.monitoring_enabled && r.stale).length
+  const nvrDown = visibleRecorders
+    .filter((r) => r.monitoring_enabled && r.status === 'down')
+    .map((r) => {
+      const s = storeById.get(r.location_id as string)
+      return { id: r.recorder_id as string, locationId: r.location_id as string, code: s?.code ?? '', name: s?.name ?? '', recorder: r.name ?? 'NVR', since: r.down_since }
+    })
+    .sort((a, b) => a.code.localeCompare(b.code) || a.recorder.localeCompare(b.recorder) || a.id.localeCompare(b.id))
 
   const stateOf = new Map(deviceStates.map((d) => [d.target_id, { status: d.status as Status, lastCheckedAt: d.last_checked_at }]))
   const deviceCounts: Dashboard['devices'] = {}
@@ -321,6 +321,6 @@ export async function getDashboard(supabase: Client, opts: DashboardOptions = {}
     else c.unknown++
   }
 
-  const recent = await recentOutages(supabase, storeById, opts)
+  const recent = await recentOutages(supabase, storeById, recorderById, opts)
   return { cameras, stores: { total: stores.length, nvrDown, nvrStale }, devices: deviceCounts, recentOutages: recent.list, recentOutagesLimited: recent.limited }
 }

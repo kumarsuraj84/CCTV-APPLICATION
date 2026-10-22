@@ -35,32 +35,41 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
   if (!store) notFound()
 
   // P2-2 (AC-4). What is shown follows the person's capabilities; the rows themselves come through their own client (row security),
-  // so a display decision can never reveal data. The NVR status, the login hint and the checker's own words about cameras are IT
-  // information: only with the IT view of this store. Devices: only with an IT view (row security narrows them to the granted assets).
-  // Live / Playback links only where the person may use them; the screens behind them check each camera again in the database.
+  // so a display decision can never reveal data. P2-5b (ruling C-1): a location may have several NVRs. People with the IT view of an
+  // NVR see that NVR — its status, the login hint, its cameras grouped under it and the checker's own words about them; everybody else
+  // sees all the cameras of the location they may see, with no recorder detail. Devices: only with an IT view. Live / Playback links
+  // only where the person may use them; the screens behind them check each camera again in the database.
   const caps = profile.capabilities
   const itStore = coversLocation(caps, IT_VIEW, store.id)
   const devices = holdsItView(caps) ? store.devices : []
-  const cam = (c: { id: string }) => ({ id: c.id, store_id: store.id })
+  const cam = (c: { id: string }) => ({ id: c.id, location_id: store.id })
   const anyLive = store.cameras.some((c) => coversCamera(caps, 'cctv.live', cam(c)))
 
   // Status comes through the person's own client. The ids passed to the uptime function came from rows they may see.
   const admin = createAdminClient()
   const cameraIds = store.cameras.map((c) => c.id)
   const deviceIds = devices.map((d) => d.id)
+  const recorderIds = store.recorders.map((r) => r.id)
   const monitoring = await getMonitoringState(admin)
   const [cameraStates, deviceStates, nvrStates, camUp24, camUp7, devUp24] = await Promise.all([
     getStates(supabase, 'camera', cameraIds),
     getStates(supabase, 'device', deviceIds),
-    itStore ? getStates(supabase, 'nvr', [id]) : Promise.resolve(new Map<string, StateRow>()),
+    getStates(supabase, 'recorder', recorderIds),
     uptimeForPage(admin, profile.org_id, 'camera', cameraIds, '24h', monitoring),
     uptimeForPage(admin, profile.org_id, 'camera', cameraIds, '7d', monitoring),
     uptimeForPage(admin, profile.org_id, 'device', deviceIds, '24h', monitoring),
   ])
-  const nvr = nvrStates.get(id)
   const now = new Date()
-  const loginProblem = itStore && monitoring.running && nvrLoginProblem({ nvr, cameraIds, cameraStates, now })
   const stale = (st: StateRow | undefined) => !!st && isStale(st.last_checked_at, now)
+  const camerasOf = (recorderId: string | null) => store.cameras.filter((c) => c.recorder_id === recorderId)
+  // The cameras grouped by their NVR for people who see the NVRs; one list for everybody else.
+  const groups: { key: string; title: string | null; cameras: typeof store.cameras }[] =
+    store.recorders.length === 0
+      ? [{ key: 'all', title: null, cameras: store.cameras }]
+      : [
+          ...store.recorders.map((r) => ({ key: r.id, title: `Cameras on NVR ${r.name}`, cameras: camerasOf(r.id) })),
+          ...(camerasOf(null).length > 0 ? [{ key: 'other', title: 'Other cameras', cameras: camerasOf(null) }] : []),
+        ]
 
   return (
     <div className="space-y-6">
@@ -70,63 +79,76 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
         actions={anyLive ? <Link href={`/live?store=${store.id}`} className={cn(buttonVariants())}>Watch live</Link> : undefined}
       />
       <MonitoringBanner monitoring={monitoring} />
-      {itStore && (
-      <section className="space-y-1 text-sm">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium">NVR</span>
-          <StatusBadge status={nvr?.status} stale={stale(nvr)} />
-          {nvr?.status === 'down' && <span className="text-muted-foreground">Offline since {formatDateTime(nvr.down_since)}</span>}
-          {nvr?.status === 'up' && <span className="text-muted-foreground">Checked {formatDateTime(nvr.last_checked_at)}</span>}
-        </div>
-        {nvr?.status === 'down' && nvr.error && <div className="break-words text-muted-foreground">Reason: {nvr.error}</div>}
-        {loginProblem && (
-          <div role="status" className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-2 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-            <TriangleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-            <span>
-              <span className="font-medium">NVR login problem?</span> The NVR is reachable, but none of its cameras has been checked lately. The NVR user name or password saved for this store may be wrong. Ask an administrator to check them.
-            </span>
-          </div>
-        )}
-      </section>
-      )}
-      <section>
-        <h2 className="mb-2 font-medium">Cameras ({store.cameras.length})</h2>
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          {store.cameras.map((c) => {
-            const st = cameraStates.get(c.id)
-            const u24 = camUp24.get(c.id)
-            const u7 = camUp7.get(c.id)
+      {store.recorders.length > 0 && (
+        <section className="space-y-2 text-sm" aria-label="NVRs">
+          {store.recorders.map((r) => {
+            const nvr = nvrStates.get(r.id)
+            const ids = camerasOf(r.id).map((c) => c.id)
+            const loginProblem = monitoring.running && nvrLoginProblem({ nvr, cameraIds: ids, cameraStates, now })
             return (
-              <div key={c.id} className="space-y-1 rounded-lg border bg-card p-3 text-sm">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="min-w-0 break-words font-medium">{c.channel} · {c.name}</span>
-                  <StatusBadge status={st?.status} stale={stale(st)} />
+              <div key={r.id} className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">NVR {r.name}</span>
+                  <StatusBadge status={nvr?.status} stale={stale(nvr)} />
+                  {nvr?.status === 'down' && <span className="text-muted-foreground">Offline since {formatDateTime(nvr.down_since)}</span>}
+                  {nvr?.status === 'up' && <span className="text-muted-foreground">Checked {formatDateTime(nvr.last_checked_at)}</span>}
                 </div>
-                {/* Camera addresses are for people with the IT view of this store only (P2-1). */}
-                {store.showsAddresses && <div className="text-muted-foreground">{c.camera_ip ?? 'Address not known yet'}</div>}
-                <Since state={st} />
-                <div className="text-muted-foreground">
-                  {u24 == null && u7 == null ? 'Uptime: no data yet' : `Uptime 24h ${formatUptime(u24)} · 7d ${formatUptime(u7)}${uptimeSuffix(monitoring)}`}
-                </div>
-                {st?.status === 'down' && cameraReason(st.error, { itView: itStore }) && (
-                  <div className="break-words text-muted-foreground">Reason: {cameraReason(st.error, { itView: itStore })}</div>
-                )}
-                {(coversCamera(caps, 'cctv.live', cam(c)) || coversCamera(caps, 'cctv.playback', cam(c))) && (
-                  <div className="flex flex-wrap gap-x-3 gap-y-1 pt-1">
-                    {coversCamera(caps, 'cctv.live', cam(c)) && (
-                      <Link href={`/live?camera=${c.id}`} className="underline underline-offset-2" aria-label={`Watch ${c.name} live`}>Live</Link>
-                    )}
-                    {coversCamera(caps, 'cctv.playback', cam(c)) && (
-                      <Link href={`/playback?camera=${c.id}`} className="underline underline-offset-2" aria-label={`Play back recordings of ${c.name}`}>Playback</Link>
-                    )}
+                {nvr?.status === 'down' && nvr.error && <div className="break-words text-muted-foreground">Reason: {nvr.error}</div>}
+                {loginProblem && (
+                  <div role="status" className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-2 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+                    <TriangleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+                    <span>
+                      <span className="font-medium">NVR login problem?</span> This NVR is reachable, but none of its cameras has been checked lately. The NVR user name or password saved for it may be wrong. Ask an administrator to check them.
+                    </span>
                   </div>
                 )}
               </div>
             )
           })}
-          {store.cameras.length === 0 && <p className="text-sm text-muted-foreground">No cameras to show.</p>}
-        </div>
-      </section>
+        </section>
+      )}
+      {groups.map((g) => (
+        <section key={g.key}>
+          <h2 className="mb-2 font-medium">{`${g.title ?? 'Cameras'} (${g.cameras.length})`}</h2>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {g.cameras.map((c) => {
+              const st = cameraStates.get(c.id)
+              const u24 = camUp24.get(c.id)
+              const u7 = camUp7.get(c.id)
+              // The checker's own words only with the IT view of the camera's NVR (the database decides the same in status_reasons).
+              const itView = itStore || c.recorder_id !== null
+              return (
+                <div key={c.id} className="space-y-1 rounded-lg border bg-card p-3 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="min-w-0 break-words font-medium">{c.channel} · {c.name}</span>
+                    <StatusBadge status={st?.status} stale={stale(st)} />
+                  </div>
+                  {/* Camera addresses are for people with the IT view of the camera's NVR only (P2-1, review I-1). */}
+                  {store.showsAddresses && <div className="text-muted-foreground">{c.camera_ip ?? 'Address not known yet'}</div>}
+                  <Since state={st} />
+                  <div className="text-muted-foreground">
+                    {u24 == null && u7 == null ? 'Uptime: no data yet' : `Uptime 24h ${formatUptime(u24)} · 7d ${formatUptime(u7)}${uptimeSuffix(monitoring)}`}
+                  </div>
+                  {st?.status === 'down' && cameraReason(st.error, { itView }) && (
+                    <div className="break-words text-muted-foreground">Reason: {cameraReason(st.error, { itView })}</div>
+                  )}
+                  {(coversCamera(caps, 'cctv.live', cam(c)) || coversCamera(caps, 'cctv.playback', cam(c))) && (
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 pt-1">
+                      {coversCamera(caps, 'cctv.live', cam(c)) && (
+                        <Link href={`/live?camera=${c.id}`} className="underline underline-offset-2" aria-label={`Watch ${c.name} live`}>Live</Link>
+                      )}
+                      {coversCamera(caps, 'cctv.playback', cam(c)) && (
+                        <Link href={`/playback?camera=${c.id}`} className="underline underline-offset-2" aria-label={`Play back recordings of ${c.name}`}>Playback</Link>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+            {g.cameras.length === 0 && <p className="text-sm text-muted-foreground">No cameras to show.</p>}
+          </div>
+        </section>
+      ))}
       {devices.length > 0 && (
         <section>
           <h2 className="mb-2 font-medium">Devices</h2>

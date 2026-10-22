@@ -1,5 +1,6 @@
 // A pretend NVR, camera port and devices on this computer only (127.0.0.1), so the whole app can be shown without any hardware.
-// Run: npm run fake:nvr                 (add --flip to make camera 5 go off and on every 90 seconds, --port=NNNN to choose the NVR port)
+// Run: npm run fake:nvr                 (add --flip to make camera 5 go off and on every 90 seconds, --port=NNNN to choose the NVR port,
+//                                        --second-port=NNNN for the second pretend NVR; P2-5b: one demo location has two NVRs)
 // There is no option to listen on another address: the servers in tests/helpers/fake-servers.ts bind 127.0.0.1 and nothing else.
 import { startFakeNvr, startFakeRtsp, startFakeTcp } from '../tests/helpers/fake-servers'
 import {
@@ -8,12 +9,14 @@ import {
   FAKE_ATTENDANCE_2_PORT,
   FAKE_ATTENDANCE_PORT,
   FAKE_ERP_PORT,
+  FAKE_RTSP_2_PORT,
   FAKE_RTSP_PORT,
   LOOPBACK,
   parseFakeNvrArgs,
 } from './lib/demo'
 
 const NAMES = ['Entrance', 'Billing counter', 'Stockroom', 'Back door', 'Parking', 'Trial room']
+const SECOND_NAMES = ['Loading bay', 'Cash office', 'Staff entrance', 'Roof']
 
 /** Whatever is listening right now, so that it can be closed again on a stop or on a failure. */
 const running: { close: () => Promise<void> }[] = []
@@ -43,7 +46,7 @@ async function main() {
     process.exitCode = 1
     return
   }
-  const { port, flip } = options
+  const { port, secondPort, flip } = options
   // Documentation addresses (192.0.2.x): the NVR reports them as camera addresses, and nothing ever connects to them.
   const statuses: Record<number, boolean> = { 1: true, 2: true, 3: false, 4: true, 5: true, 6: true }
   const nvr = await startFakeNvr({
@@ -56,6 +59,17 @@ async function main() {
   running.push(nvr)
   const rtsp = await startFakeRtsp('refuse', FAKE_RTSP_PORT)
   running.push(rtsp)
+  // P2-5b: a second pretend NVR (the first NVR of a location that has two), with its own video port and the same channel numbers 1..4.
+  const second = await startFakeNvr({
+    port: secondPort,
+    username: DEMO_NVR_USER,
+    password: DEMO_NVR_PASSWORD,
+    statuses: { 1: true, 2: true, 3: true, 4: true },
+    channels: SECOND_NAMES.map((name, i) => ({ channel: i + 1, name, ip: `192.0.2.${31 + i}` })),
+  })
+  running.push(second)
+  const rtsp2 = await startFakeRtsp('refuse', FAKE_RTSP_2_PORT)
+  running.push(rtsp2)
   const erp = await startFakeTcp(FAKE_ERP_PORT)
   running.push(erp)
   const attendance = await startFakeTcp(FAKE_ATTENDANCE_PORT)
@@ -63,7 +77,7 @@ async function main() {
   const attendance2 = await startFakeTcp(FAKE_ATTENDANCE_2_PORT)
   running.push(attendance2)
   console.log(
-    `Pretend NVR on ${nvr.host}:${nvr.port} (user ${DEMO_NVR_USER}), camera port ${rtsp.port}, devices on ${erp.port}, ${attendance.port} and ${attendance2.port}. Only this computer (${LOOPBACK}) can reach them.`,
+    `Pretend NVR on ${nvr.host}:${nvr.port} (user ${DEMO_NVR_USER}), camera port ${rtsp.port}; second pretend NVR on ${second.host}:${second.port}, camera port ${rtsp2.port}; devices on ${erp.port}, ${attendance.port} and ${attendance2.port}. Only this computer (${LOOPBACK}) can reach them.`,
   )
   console.log('Camera 3 is offline. Press Ctrl+C to stop.')
   if (flip) {

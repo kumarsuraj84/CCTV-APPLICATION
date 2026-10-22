@@ -13,10 +13,11 @@ export const storeSchema = z.object({
   zone: optionalText,
   state: optionalText,
   address: z.string().trim().max(500).nullish().transform((v) => (v ? v : null)),
+  // P2-5b: the NVR fields describe the location's primary recorder (its own row; the location has no NVR columns any more).
   ip,
   rtsp_port: port.default(554),
   http_port: port.default(80),
-  nvr_username: z.string().trim().min(1, 'Enter the NVR user name.').max(100),
+  nvr_user: z.string().trim().min(1, 'Enter the NVR user name.').max(100),
   nvr_password: z.string().max(200).nullish(),
   channels: z.number().int().min(0).max(999).default(0),
   is_active: z.boolean().default(true),

@@ -4,17 +4,28 @@ import type { Database, Json } from '@/types/database'
 import { logger } from '@/lib/observability/logger'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import { isNvrKnownDown } from '@/lib/monitor/nvr-state'
-import { isMonitored, pickPrimaries } from '@/lib/inventory/recorders'
-import type { CheckResult, DeviceJob, MonitorDb, NvrJob, StoreJob, WorkerRequest } from '@/lib/monitor/types'
+import type { CheckResult, DeviceJob, MonitorDb, NvrJob, RecorderJob, WorkerRequest } from '@/lib/monitor/types'
 
 type Admin = SupabaseClient<Database>
 
 const ID_CHUNK = 100
 const chunks = <T>(list: T[], size: number): T[][] => Array.from({ length: Math.ceil(list.length / size) }, (_, i) => list.slice(i * size, (i + 1) * size))
 
-// P2-5a: 'recorder' is the NVR target (recorders.id). The worker still sends 'nvr' + location id during the seam (decision D5-7);
-// the database writes that to the location's primary recorder.
-const TARGET_TYPES = new Set(['camera', 'device', 'nvr', 'recorder'])
+// P2-5b: the NVR target is the recorder ('recorder', recorders.id). The old ('nvr', location id) kind is gone (contract migration).
+const TARGET_TYPES = new Set(['camera', 'device', 'recorder'])
+
+/**
+ * A monitored recorder: monitoring switched on (owner addition), its asset enabled, not archived and with an address, its location
+ * active and not archived. Anything else is never contacted (no TCP, ISAPI or RTSP) and writes no state.
+ */
+const RECORDER_COLUMNS =
+  'id, org_id, location_id, http_port, rtsp_port, username, monitoring_enabled, assets!recorders_asset_fk!inner(name, ip, enabled, archived_at), locations!recorders_location_fk!inner(code, is_active, archived_at)'
+type RecorderRead = {
+  id: string; org_id: string; location_id: string; http_port: number; rtsp_port: number; username: string | null; monitoring_enabled: boolean
+  assets: { name: string; ip: string | null; enabled: boolean; archived_at: string | null }
+  locations: { code: string; is_active: boolean; archived_at: string | null }
+}
+type MappingRead = { recorder_id: string; channel: number; cameras: { id: string; camera_ip: string | null } }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
@@ -44,7 +55,7 @@ export type SupabaseMonitorDbOptions = {
   orgId?: string
 }
 
-/** MonitorDb on the service-role client. NVR passwords are read from the vault one store at a time and only held in memory. */
+/** MonitorDb on the service-role client. NVR passwords are read from the vault one recorder at a time and only held in memory. */
 export class SupabaseMonitorDb implements MonitorDb {
   private orgId: string | undefined
 
@@ -53,7 +64,7 @@ export class SupabaseMonitorDb implements MonitorDb {
   }
 
   loadDevices(): Promise<DeviceJob[]> {
-    // P2-5a: an NVR is a recorder asset now; it is checked as the location's NVR, never a second time as a device.
+    // An NVR is a recorder asset; it is checked as a recorder, never a second time as a device.
     return fetchAll((from, to) => {
       let q = this.admin.from('assets').select('id, org_id, ip, tcp_port').eq('enabled', true).is('archived_at', null).eq('is_recorder', false)
         .not('ip', 'is', null).order('id')
@@ -62,111 +73,81 @@ export class SupabaseMonitorDb implements MonitorDb {
     }).then((rows) => rows.map((r) => ({ id: r.id, org_id: r.org_id, ip: r.ip as string, tcp_port: r.tcp_port })))
   }
 
-  /**
-   * The primary recorder of each location (the first one made that is not archived: the one the legacy NVR columns describe during
-   * the P2-5a seam) and whether its monitoring is switched on. Owner addition: a location whose NVR has monitoring switched off is
-   * never contacted (no TCP, ISAPI or RTSP) and writes no state.
-   */
-  private async primaries(locationIds?: string[]): Promise<Map<string, { id: string; monitoring: boolean }>> {
-    const parts: (string[] | undefined)[] = locationIds ? chunks([...new Set(locationIds)], ID_CHUNK) : [undefined]
-    const rows = []
+  /** The monitored recorders (see RECORDER_COLUMNS), optionally only these ids. Never one that is switched off, disabled or archived. */
+  private async monitoredRecorders(ids?: string[]): Promise<RecorderRead[]> {
+    const parts: (string[] | undefined)[] = ids ? chunks([...new Set(ids)], ID_CHUNK) : [undefined]
+    const out: RecorderRead[] = []
     for (const part of parts) {
-      rows.push(...(await fetchAll((from, to) => {
-        let q = this.admin.from('recorders').select('id, location_id, created_at, migrated_from_location_id, monitoring_enabled, assets!recorders_asset_fk!inner(archived_at, enabled)')
-          .is('assets.archived_at', null).order('created_at').order('id')
+      if (part && part.length === 0) continue
+      const rows = await fetchAll((from, to) => {
+        let q = this.admin.from('recorders').select(RECORDER_COLUMNS)
+          .eq('monitoring_enabled', true).eq('assets.enabled', true).is('assets.archived_at', null).not('assets.ip', 'is', null)
+          .eq('locations.is_active', true).is('locations.archived_at', null).order('id')
         if (this.orgId) q = q.eq('org_id', this.orgId)
-        if (part) q = q.in('location_id', part)
+        if (part) q = q.in('id', part)
         return q.range(from, to)
-      })))
+      })
+      out.push(...(rows as unknown as RecorderRead[]))
     }
-    // The legacy NVR of the location (seam, review M3), monitored only when switched on and its asset enabled (review M4).
-    const out = new Map<string, { id: string; monitoring: boolean }>()
-    for (const [loc, r] of pickPrimaries(rows)) out.set(loc, { id: r.id, monitoring: isMonitored(r) })
     return out
   }
 
   async loadNvrs(): Promise<NvrJob[]> {
-    const rows = await fetchAll((from, to) => {
-      let q = this.admin.from('locations').select('id, org_id, nvr_ip, rtsp_port').eq('is_active', true).is('archived_at', null).not('nvr_ip', 'is', null).order('id')
-      if (this.orgId) q = q.eq('org_id', this.orgId)
-      return q.range(from, to)
-    })
-    const primary = await this.primaries()
-    return rows
-      .filter((r) => primary.get(r.id)?.monitoring === true)
-      .map((r) => ({ id: r.id, org_id: r.org_id, ip: r.nvr_ip as string, rtsp_port: r.rtsp_port }))
+    return (await this.monitoredRecorders()).map((r) => ({ id: r.id, org_id: r.org_id, location_id: r.location_id, ip: r.assets.ip as string, rtsp_port: r.rtsp_port }))
   }
 
-  async loadStoreJobs(storeIds?: string[], staleBefore?: Date): Promise<StoreJob[]> {
-    const parts: (string[] | undefined)[] = storeIds ? chunks([...new Set(storeIds)], ID_CHUNK) : [undefined]
-    const found = []
-    const cameras = []
-    for (const part of parts) {
-      found.push(
-        ...(await fetchAll((from, to) => {
-          let q = this.admin.from('locations').select('id, org_id, code, nvr_ip, rtsp_port, http_port, nvr_username').eq('is_active', true)
-            .is('archived_at', null).not('nvr_ip', 'is', null).order('id')
-          if (this.orgId) q = q.eq('org_id', this.orgId)
-          if (part) q = q.in('id', part)
-          return q.range(from, to)
-        })),
-      )
-      cameras.push(
-        ...(await fetchAll((from, to) => {
-          let q = this.admin.from('cameras').select('id, store_id:location_id, recorder_id, channel, camera_ip').eq('is_active', true).is('archived_at', null)
-            .order('location_id').order('channel')
-          if (this.orgId) q = q.eq('org_id', this.orgId)
-          if (part) q = q.in('location_id', part)
-          return q.range(from, to)
-        })),
-      )
+  async loadRecorderJobs(recorderIds?: string[], staleBefore?: Date): Promise<RecorderJob[]> {
+    if (recorderIds && recorderIds.length === 0) return []
+    const recorders = await this.monitoredRecorders(recorderIds)
+    if (recorders.length === 0) return []
+    const ids = recorders.map((r) => r.id)
+    const cameras = new Map<string, RecorderJob['cameras']>()
+    const state = new Map<string, { status: 'up' | 'down' | 'unknown'; checkedAt: string | null }>()
+    for (const part of chunks(ids, ID_CHUNK)) {
+      // The truth for "which camera is on which channel of which NVR" is the ACTIVE mapping (camera_channel_mappings, valid_to null). A
+      // camera without one (just restored, or never mapped) is never probed: it stays "Not checked yet" until it is mapped (review M5).
+      const mapped = await fetchAll((from, to) => {
+        let q = this.admin.from('camera_channel_mappings')
+          .select('recorder_id, channel, cameras!camera_channel_mappings_camera_fk!inner(id, camera_ip)')
+          .is('valid_to', null).in('recorder_id', part).eq('cameras.is_active', true).is('cameras.archived_at', null)
+        if (this.orgId) q = q.eq('org_id', this.orgId)
+        return q.order('recorder_id').order('channel').range(from, to)
+      })
+      for (const m of mapped as unknown as MappingRead[]) {
+        const row = { id: m.cameras.id, channel: m.channel, camera_ip: m.cameras.camera_ip }
+        const list = cameras.get(m.recorder_id)
+        if (list) list.push(row)
+        else cameras.set(m.recorder_id, [row])
+      }
+      const states = await fetchAll((from, to) => {
+        let q = this.admin.from('check_state').select('target_id, status, last_checked_at').eq('target_type', 'recorder').in('target_id', part)
+        if (this.orgId) q = q.eq('org_id', this.orgId)
+        return q.order('target_id').range(from, to)
+      })
+      for (const s of states) state.set(s.target_id, { status: s.status as 'up' | 'down' | 'unknown', checkedAt: s.last_checked_at })
     }
-    // Until P2-5b checks per recorder, a location's job uses its primary NVR (the legacy columns) and only the cameras on it: a camera
-    // of another NVR of the location is never probed through the wrong box. A switched-off primary NVR leaves the location out.
-    const primary = await this.primaries(found.map((s) => s.id))
-    const stores = found.filter((s) => primary.get(s.id)?.monitoring === true)
-    if (stores.length === 0) return []
-    const wanted = new Set(stores.map((s) => s.id))
-    const recorderOf = new Map(stores.map((s) => [primary.get(s.id)!.id, s.id]))
-    const states = await fetchAll((from, to) => {
-      let q = this.admin.from('check_state').select('target_id, status, last_checked_at').eq('target_type', 'recorder').order('target_id')
-      if (this.orgId) q = q.eq('org_id', this.orgId)
-      return q.range(from, to)
-    })
-    const nvrState = new Map(
-      states.filter((s) => recorderOf.has(s.target_id))
-        .map((s) => [recorderOf.get(s.target_id)!, { status: s.status as 'up' | 'down' | 'unknown', checkedAt: s.last_checked_at }]),
-    )
-    const byStore = new Map<string, StoreJob['cameras']>()
-    for (const c of cameras) {
-      if (!wanted.has(c.store_id)) continue
-      // Review M5: only cameras mapped to that NVR; an unmapped camera (e.g. just restored) is not checked until it is mapped again.
-      if (c.recorder_id !== primary.get(c.store_id)?.id) continue
-      const row = { id: c.id, channel: c.channel, camera_ip: c.camera_ip }
-      const list = byStore.get(c.store_id)
-      if (list) list.push(row)
-      else byStore.set(c.store_id, [row])
-    }
-    const jobs = await mapLimit(stores, 10, async (s): Promise<StoreJob | null> => {
-      const state = nvrState.get(s.id)
-      const cameras = byStore.get(s.id) ?? []
+    const jobs = await mapLimit(recorders, 10, async (r): Promise<RecorderJob | null> => {
+      const st = state.get(r.id)
+      const own = cameras.get(r.id) ?? []
       // The one place that decides whether the NVR is known to be down: the checks use the answer as it is.
-      const knownDown = isNvrKnownDown(state?.status, state?.checkedAt, staleBefore)
-      const job = (password: string): StoreJob => ({
-        id: s.id, org_id: s.org_id, code: s.code, ip: s.nvr_ip as string, rtsp_port: s.rtsp_port, http_port: s.http_port,
-        username: s.nvr_username ?? '', password, nvr_status: state?.status ?? 'unknown', nvr_checked_at: state?.checkedAt ?? null, knownDown, cameras,
+      const knownDown = isNvrKnownDown(st?.status, st?.checkedAt, staleBefore)
+      const job = (password: string): RecorderJob => ({
+        id: r.id, org_id: r.org_id, location_id: r.location_id, code: r.locations.code, name: r.assets.name,
+        ip: r.assets.ip as string, rtsp_port: r.rtsp_port, http_port: r.http_port, username: r.username ?? '', password,
+        nvr_status: st?.status ?? 'unknown', nvr_checked_at: st?.checkedAt ?? null, knownDown, cameras: own,
       })
       // Nothing needs the password when there are no cameras, or when the NVR is known to be down (its cameras are then marked down without logging in).
-      if (cameras.length === 0 || knownDown) return job('')
-      const { data, error } = await this.admin.rpc('nvr_read_credential', { p_store: s.id })
+      if (own.length === 0 || knownDown) return job('')
+      // The login of THIS recorder, through the one server function keyed by recorder (it refuses a switched-off NVR).
+      const { data, error } = await this.admin.rpc('recorder_read_credential', { p_recorder: r.id })
       if (error) {
-        // Not being able to read the password says nothing about the cameras: leave this store out of this round instead of reporting a false outage.
-        logger.error({ event: 'nvr_credential_read_failed', store: s.code, errorCode: error.code })
+        // Not being able to read the password says nothing about the cameras: leave this recorder out of this round instead of reporting a false outage.
+        logger.error({ event: 'nvr_credential_read_failed', location: r.locations.code, recorder: r.id, errorCode: error.code })
         return null
       }
-      return job(data ?? '')
+      return job(typeof data === 'string' ? data : '')
     })
-    return jobs.filter((j): j is StoreJob => j !== null)
+    return jobs.filter((j): j is RecorderJob => j !== null)
   }
 
   async applyResults(orgId: string, results: CheckResult[], threshold: number): Promise<void> {

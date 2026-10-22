@@ -1,10 +1,11 @@
-// Puts three demo stores, their cameras, four demo devices and one demo user for each role into the LOCAL database, in a separate
-// organisation called "DEMO organisation (sample data)". Nothing else in the database is touched, and every address is 127.0.0.1.
+// Puts three demo locations, their NVRs (one location has two) and cameras, four demo devices and one demo user for each role into the
+// LOCAL database, in a separate organisation called "DEMO organisation (sample data)". Nothing else in the database is touched, and every
+// address is 127.0.0.1.
 //
 //   npm run demo:seed                  adds the demo data (does nothing when it is already there)
 //   npm run demo:seed -- --reset       removes the demo organisation and everything in it, and nothing else
 //   npm run demo:seed -- --fresh       removes it and adds it again (new passwords)
-//   add --nvr-port=NNNN if the pretend NVR (npm run fake:nvr) was started on another port
+//   add --nvr-port=NNNN / --second-nvr-port=NNNN if the pretend NVRs (npm run fake:nvr) were started on other ports
 //
 // Needs the local stack (npm run db:start). Start `npm run fake:nvr` and `npm run worker` next to it. Stop the worker before --reset.
 // The demo passwords are made up on the spot, shown once in this window and kept nowhere (not in a file, not in the database in clear).
@@ -23,8 +24,10 @@ import {
   FAKE_ATTENDANCE_2_PORT,
   FAKE_ATTENDANCE_PORT,
   FAKE_ERP_PORT,
+  FAKE_RTSP_2_PORT,
   FAKE_RTSP_PORT,
   LOOPBACK,
+  SECOND_NVR_PORT,
   demoEmail,
   demoGrants,
   demoPlan,
@@ -42,20 +45,23 @@ function fail(message: string): never {
   throw new Stop(message)
 }
 
-function parseArgs(args: string[]): { reset: boolean; fresh: boolean; nvrPort: number } {
-  const unknown = args.find((a) => !(a === '--reset' || a === '--fresh' || a.startsWith('--nvr-port=')))
-  if (unknown) fail(`Unknown option "${unknown}". Use --reset, --fresh or --nvr-port=NNNN.`)
+function parseArgs(args: string[]): { reset: boolean; fresh: boolean; nvrPort: number; secondNvrPort: number } {
+  const unknown = args.find((a) => !(a === '--reset' || a === '--fresh' || a.startsWith('--nvr-port=') || a.startsWith('--second-nvr-port=')))
+  if (unknown) fail(`Unknown option "${unknown}". Use --reset, --fresh, --nvr-port=NNNN or --second-nvr-port=NNNN.`)
   const reset = args.includes('--reset')
   const fresh = args.includes('--fresh')
   if (reset && fresh) fail('Use either --reset or --fresh, not both.')
   let nvrPort = DEFAULT_NVR_PORT
+  let secondNvrPort = SECOND_NVR_PORT
   try {
     const given = args.find((a) => a.startsWith('--nvr-port='))
     if (given) nvrPort = parseNvrPort(given.slice('--nvr-port='.length))
+    const second = args.find((a) => a.startsWith('--second-nvr-port='))
+    if (second) secondNvrPort = parseNvrPort(second.slice('--second-nvr-port='.length))
   } catch (e) {
     fail(e instanceof Error ? e.message : String(e))
   }
-  return { reset, fresh, nvrPort }
+  return { reset, fresh, nvrPort, secondNvrPort }
 }
 
 async function findDemoOrg(admin: Admin): Promise<{ id: string; slug: string; name: string } | null> {
@@ -105,37 +111,40 @@ async function removeLeftoverDemoUsers(admin: Admin): Promise<void> {
   }
 }
 
-async function addDemo(admin: Admin, nvrPort: number): Promise<void> {
+async function addDemo(admin: Admin, nvrPort: number, secondNvrPort: number): Promise<void> {
   // The offline targets must really be offline: ports that nothing listens on, checked now and written into the rows.
-  const [nvrHttp, nvrRtsp, device] = await findClosedPorts(3, new Set([nvrPort, FAKE_RTSP_PORT, FAKE_ERP_PORT, FAKE_ATTENDANCE_PORT, FAKE_ATTENDANCE_2_PORT]))
-  const plan = demoPlan(nvrPort, { nvrHttp, nvrRtsp, device })
+  const [nvrHttp, nvrRtsp, device, nvr2Http, nvr2Rtsp] = await findClosedPorts(5, new Set([nvrPort, secondNvrPort, FAKE_RTSP_PORT, FAKE_RTSP_2_PORT, FAKE_ERP_PORT, FAKE_ATTENDANCE_PORT, FAKE_ATTENDANCE_2_PORT]))
+  const plan = demoPlan(nvrPort, { nvrHttp, nvrRtsp, device, nvr2Http, nvr2Rtsp }, secondNvrPort)
   await removeLeftoverDemoUsers(admin)
   const { data: org, error: orgError } = await admin.from('organizations').insert({ name: DEMO_ORG_NAME, slug: DEMO_SLUG }).select('id').single()
   if (orgError || !org) throw new Error(`Could not create the demo organisation: ${orgError?.message}`)
   const orgId = org.id
   const authIds: string[] = [] // every sign-in made here, so that a failure can remove them even if their profile was never made
   const passwords: { role: (typeof DEMO_ROLES)[number]; email: string; password: string }[] = []
+  let cameraCount = 0
   try {
     const storeIds: Record<string, string> = {}
     for (const s of plan.stores) {
-      const { data, error } = await admin
-        // P2-5a: written the old way (NVR columns on the location); the database makes it the location's primary recorder (seam D5-7).
-        .from('locations')
-        .insert({
-          org_id: orgId, code: s.code, name: s.name, city: s.city, zone: s.zone,
-          nvr_ip: LOOPBACK, http_port: s.httpPort, rtsp_port: s.rtspPort, nvr_username: DEMO_NVR_USER, expected_channels: s.cameras,
-        })
-        .select('id')
-        .single()
+      const { data, error } = await admin.from('locations').insert({ org_id: orgId, code: s.code, name: s.name, city: s.city, zone: s.zone }).select('id').single()
       if (error || !data) throw new Error(`store ${s.code}: ${error?.message}`)
       storeIds[s.code] = data.id
-      // The NVR password goes into the vault through the same helper the app uses, never into a table.
-      const cred = await admin.rpc('nvr_store_credential', { p_store: data.id, p_secret: DEMO_NVR_PASSWORD })
-      if (cred.error) throw new Error(`password for ${s.code}: ${cred.error.message}`)
-      const cams = await admin
-        .from('cameras')
-        .insert(Array.from({ length: s.cameras }, (_, i) => ({ org_id: orgId, location_id: data.id, channel: i + 1, name: `Camera ${i + 1}` })))
-      if (cams.error) throw new Error(`cameras of ${s.code}: ${cams.error.message}`)
+      // P2-5b: each NVR is a recorder of its own (the same function the app uses; two NVRs of one location may both have channel 1).
+      for (const r of s.recorders) {
+        const rec = await admin.rpc('recorder_save', {
+          p_org: orgId, p_location: data.id, p_recorder: null as unknown as string, p_host: LOOPBACK, p_http_port: r.httpPort, p_rtsp_port: r.rtspPort,
+          p_username: DEMO_NVR_USER, p_expected_channels: r.cameras, p_name: r.name,
+        })
+        if (rec.error || !rec.data) throw new Error(`NVR ${r.name} of ${s.code}: ${rec.error?.message}`)
+        const recorderId = rec.data as string
+        // The NVR password goes into the vault through the same helper the app uses, never into a table.
+        const cred = await admin.rpc('recorder_store_credential', { p_recorder: recorderId, p_secret: DEMO_NVR_PASSWORD })
+        if (cred.error) throw new Error(`password for ${s.code} ${r.name}: ${cred.error.message}`)
+        const cams = await admin.from('cameras').insert(
+          Array.from({ length: r.cameras }, (_, i) => ({ org_id: orgId, location_id: data.id, recorder_id: recorderId, channel: i + 1, name: `${r.name} camera ${i + 1}` })),
+        )
+        if (cams.error) throw new Error(`cameras of ${s.code} ${r.name}: ${cams.error.message}`)
+        cameraCount += r.cameras
+      }
     }
     const devs = await admin.from('assets').insert(
       plan.devices.map((d) => ({ org_id: orgId, location_id: d.storeCode ? storeIds[d.storeCode] : null, type: d.type, name: d.name, ip: LOOPBACK, tcp_port: d.port })),
@@ -175,18 +184,19 @@ async function addDemo(admin: Admin, nvrPort: number): Promise<void> {
     throw e
   }
 
-  console.log('Demo data added: stores DEMO1, DEMO2, DEMO3 (14 cameras) and 4 devices, all pointing at this computer (127.0.0.1).')
-  console.log('DEMO2 has no NVR listening on purpose (shows as down), and neither has the footfall counter (ports checked to be closed). Camera 3 on the pretend NVR is offline.')
+  console.log(`Demo data added: locations DEMO1, DEMO2, DEMO3 (${cameraCount} cameras on 4 NVRs) and 4 devices, all pointing at this computer (127.0.0.1).`)
+  console.log('DEMO2 has no NVR listening on purpose (shows as down); DEMO3 has two NVRs, the second of which nobody answers (only its cameras are down);')
+  console.log('the footfall counter is offline too (ports checked to be closed). Camera 3 on the first pretend NVR is offline.')
   console.log('')
   console.log('Demo people. These passwords are shown now and are NOT saved anywhere:')
   for (const p of passwords) console.log(`  ${DEMO_ROLE_LABELS[p.role].padEnd(15)} ${p.email.padEnd(40)} ${p.password}`)
   console.log('')
-  console.log('Next: run `npm run fake:nvr` and `npm run worker`, sign in, press "Find cameras" for DEMO1 on Manage stores, then "Check now" on Monitoring.')
+  console.log('Next: run `npm run fake:nvr` and `npm run worker`, sign in, press "Find cameras" for DEMO1 and DEMO3 on Manage stores, then "Check now" on Monitoring.')
   console.log('Remove all of it with `npm run demo:seed -- --reset` (stop the worker first).')
 }
 
 async function main() {
-  const { reset, fresh, nvrPort } = parseArgs(process.argv.slice(2))
+  const { reset, fresh, nvrPort, secondNvrPort } = parseArgs(process.argv.slice(2))
   if (existsSync('.env.local')) process.loadEnvFile('.env.local')
   try {
     assertLocalStack()
@@ -204,7 +214,7 @@ async function main() {
     console.log('The demo data is already there, so nothing was changed. (Use --fresh to remove it and add it again with new passwords.)')
     return
   }
-  await addDemo(admin, nvrPort)
+  await addDemo(admin, nvrPort, secondNvrPort)
 }
 
 // Not process.exit(): on Windows that can crash node while connections are still closing. Setting the code lets it end by itself.

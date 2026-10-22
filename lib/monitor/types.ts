@@ -3,18 +3,26 @@ import type { NvrChannel } from '@/lib/nvr/isapi'
 import type { NvrEndpoint } from '@/lib/nvr/client'
 import type { RtspTarget } from '@/lib/rtsp/describe'
 
-// 'recorder' (P2-5a): an NVR by recorder id. The worker still reports 'nvr' + location id during the seam (D5-7).
-export type TargetType = 'camera' | 'device' | 'nvr' | 'recorder'
+// P2-5b: the worker runs on the recorder model. An NVR is a recorder (recorders.id); its results are ('recorder', recorder id). A camera
+// is checked through the recorder of its ACTIVE channel mapping only; a camera without one is never probed.
+export type TargetType = 'camera' | 'device' | 'recorder'
 export type CheckResult = { type: TargetType; id: string; ok: boolean; at: string; method?: string; error?: string; cause?: 'nvr_down' }
 export type DeviceJob = { id: string; org_id: string; ip: string; tcp_port: number | null }
-export type NvrJob = { id: string; org_id: string; ip: string; rtsp_port: number }
-export type StoreJob = {
-  id: string; org_id: string; code: string; ip: string; rtsp_port: number; http_port: number; username: string; password: string
+/** One NVR's own reachability check: `id` is the recorder id. */
+export type NvrJob = { id: string; org_id: string; location_id: string; ip: string; rtsp_port: number }
+/**
+ * The cameras of ONE recorder (NVR). A location with three NVRs is three jobs. `id` is the recorder id; `code` is its location's code
+ * (for log lines only), `name` the recorder's name. The address, ports, user name and password are this recorder's own.
+ */
+export type RecorderJob = {
+  id: string; org_id: string; location_id: string; code: string; name: string
+  ip: string; rtsp_port: number; http_port: number; username: string; password: string
   nvr_status: 'up' | 'down' | 'unknown'
   /** When the NVR's own reachability check last ran (ISO time); null if never. */
   nvr_checked_at: string | null
   /** The NVR is known to be down right now (its "down" is recent enough to trust): its cameras are down for the same reason and its password was not read. Decided once, by the data layer. */
   knownDown: boolean
+  /** The cameras whose active mapping is this recorder, with the channel of that mapping. */
   cameras: { id: string; channel: number; camera_ip: string | null }[]
 }
 export type WorkerRequest = {
@@ -26,12 +34,14 @@ export type WorkerRequest = {
 
 export interface MonitorDb {
   loadDevices(): Promise<DeviceJob[]>
+  /** Every monitored recorder (switched on, asset enabled and not archived, location active): their own TCP check. */
   loadNvrs(): Promise<NvrJob[]>
   /**
-   * staleBefore: an NVR "down" last checked before this time is out of date. The password of a store whose NVR is down and not out of
-   * date, or that has no cameras, is not read (nothing needs it) and comes back as ''.
+   * One job per monitored recorder (optionally only these recorder ids), with the cameras mapped to it. staleBefore: an NVR "down" last
+   * checked before this time is out of date. The password of a recorder that is down and not out of date, or that has no cameras, is
+   * not read (nothing needs it) and comes back as ''.
    */
-  loadStoreJobs(storeIds?: string[], staleBefore?: Date): Promise<StoreJob[]>
+  loadRecorderJobs(recorderIds?: string[], staleBefore?: Date): Promise<RecorderJob[]>
   applyResults(orgId: string, results: CheckResult[], threshold: number): Promise<void>
   saveCameraIps(orgId: string, rows: { cameraId: string; ip: string }[]): Promise<void>
   touchHeartbeat(now: Date): Promise<void>
@@ -59,7 +69,8 @@ export type Probes = {
 
 export type MonitorConfig = {
   deviceCheckSec: number; cameraCheckSec: number; pollSec: number; failThreshold: number
-  deviceConcurrency: number; storeConcurrency: number; rtspPerStore: number; tcpTimeoutMs: number; nvrTimeoutMs: number
+  /** How many recorders (NVRs) are checked at the same time; RTSP checks per recorder. */
+  deviceConcurrency: number; recorderConcurrency: number; rtspPerRecorder: number; tcpTimeoutMs: number; nvrTimeoutMs: number
   /** After an NVR refuses the login, it is left alone for this long (seconds), so a wrong password cannot lock the account. */
   nvrLoginBackoffSec: number
 }

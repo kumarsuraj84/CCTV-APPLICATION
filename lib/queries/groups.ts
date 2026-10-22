@@ -33,7 +33,7 @@ export async function listVisibleGroups(supabase: Client, only?: { capabilities:
   )) as unknown as { group_id: string; camera_id: string; cameras: { store_id: string } }[]
   const counts = new Map<string, number>()
   for (const i of items) {
-    if (only && !coversCamera(only.capabilities, only.capability, { id: i.camera_id, store_id: i.cameras.store_id })) continue
+    if (only && !coversCamera(only.capabilities, only.capability, { id: i.camera_id, location_id: i.cameras.store_id })) continue
     counts.set(i.group_id, (counts.get(i.group_id) ?? 0) + 1)
   }
   return groups.map((g) => ({ id: g.id, name: g.name, created_by: g.created_by, camera_count: counts.get(g.id) ?? 0 }))

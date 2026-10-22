@@ -6,10 +6,10 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
+/** P2-5b: the NVR fields are the location's primary recorder (its own record); a head office may have none. */
 export type StoreFormValues = {
-  id?: string; code?: string; name?: string; city?: string | null; zone?: string | null; state?: string | null; address?: string | null
-  // (P2-5a: the NVR columns of a location may be empty — a head office has none.)
-  nvr_ip?: string | null; rtsp_port?: number; http_port?: number; nvr_username?: string | null; expected_channels?: number; is_active?: boolean
+  id?: string; code?: string; name?: string; city?: string | null; zone?: string | null; state?: string | null; address?: string | null; is_active?: boolean
+  recorder?: { host: string | null; rtsp_port: number; http_port: number; username: string | null; expected_channels: number } | null
 }
 
 function Field({ id, label, ...props }: { id: string; label: string } & React.ComponentProps<typeof Input>) {
@@ -25,6 +25,7 @@ export function StoreForm({ store }: { store?: StoreFormValues }) {
   const [state, action, pending] = useActionState<FormResult, FormData>(saveStoreAction, {})
   // After an error the form keeps what was typed (never the password, which stays empty).
   const v = (name: string, fallback: string | number | null | undefined) => state.values?.[name] ?? fallback ?? ''
+  const rec = store?.recorder
   return (
     <form action={action} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       <input type="hidden" name="id" value={store?.id ?? ''} />
@@ -34,12 +35,12 @@ export function StoreForm({ store }: { store?: StoreFormValues }) {
       <Field id="zone" label="Zone" defaultValue={v('zone', store?.zone)} />
       <Field id="state" label="State" defaultValue={v('state', store?.state)} />
       <Field id="address" label="Address" defaultValue={v('address', store?.address)} />
-      <Field id="ip" label="NVR IP address" defaultValue={v('ip', store?.nvr_ip)} required />
-      <Field id="rtsp_port" label="Video port" type="number" defaultValue={v('rtsp_port', store?.rtsp_port ?? 554)} />
-      <Field id="http_port" label="Web port" type="number" defaultValue={v('http_port', store?.http_port ?? 80)} />
-      <Field id="nvr_username" label="NVR user name" defaultValue={v('nvr_username', store?.nvr_username)} required />
+      <Field id="ip" label="NVR IP address" defaultValue={v('ip', rec?.host)} required />
+      <Field id="rtsp_port" label="Video port" type="number" defaultValue={v('rtsp_port', rec?.rtsp_port ?? 554)} />
+      <Field id="http_port" label="Web port" type="number" defaultValue={v('http_port', rec?.http_port ?? 80)} />
+      <Field id="nvr_user" label="NVR user name" defaultValue={v('nvr_user', rec?.username)} required />
       <Field id="nvr_password" label={store?.id ? 'NVR password (leave empty to keep it)' : 'NVR password'} type="password" autoComplete="new-password" required={!store?.id} />
-      <Field id="channels" label="Number of cameras" type="number" defaultValue={v('channels', store?.expected_channels ?? 0)} />
+      <Field id="channels" label="Number of cameras" type="number" defaultValue={v('channels', rec?.expected_channels ?? 0)} />
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" name="is_active" defaultChecked={state.values ? state.values.is_active === 'on' : (store?.is_active ?? true)} /> Active
       </label>

@@ -28,22 +28,37 @@ export async function listVisibleStores(supabase: Client, q?: string): Promise<S
   return rows.map((s) => ({ id: s.id, code: s.code, name: s.name, city: s.city, zone: s.zone, camera_count: countOf.get(s.id) ?? 0 }))
 }
 
-/** A store with its cameras and devices, or null when it does not exist, is switched off or may not be seen. A read that fails throws. */
+/**
+ * A store with its cameras and devices, or null when it does not exist, is switched off or may not be seen. A read that fails throws.
+ * P2-5b: `recorders` are the location's NVRs the person has the IT view of (row security; empty for everybody else), and each camera's
+ * `recorder_id` is the NVR of its active mapping when the person may see that NVR (null otherwise). A viewer sees every camera of the
+ * location they may see, without any recorder detail (ruling C-1).
+ */
 export async function getVisibleStore(supabase: Client, id: string) {
   const { data: store, error } = await supabase.from('locations').select('id, code, name, city, zone, state, address, is_active').eq('id', id).eq('is_active', true).maybeSingle()
   if (error) throw new Error('Could not read the store.')
   if (!store) return null
   // (Archived rows are never visible to signed-in people: row security leaves them out, so no archived filter is needed here.)
-  const [rows, addresses, devices] = await Promise.all([
+  const [rows, addresses, devices, recorders] = await Promise.all([
     fetchAll((from, to) => supabase.from('cameras').select('id, channel, name').eq('location_id', id).eq('is_active', true).order('channel').order('id').range(from, to)),
-    // Camera addresses only for people with the IT view of this location (P2-1, AC-4/AC-10); for everyone else this is empty.
+    // Camera addresses only for people with the IT view of the camera's NVR (P2-1, AC-4/AC-10; review I-1); for everyone else this is empty.
     fetchAll((from, to) => supabase.from('camera_endpoints').select('camera_id, camera_ip').eq('location_id', id).order('camera_id').range(from, to)),
     // The location's NVRs are recorders (shown in the NVR section), not devices (P2-5a).
     fetchAll((from, to) => supabase.from('assets').select('id, type, name, ip, tcp_port').eq('location_id', id).eq('enabled', true).eq('is_recorder', false).order('name').order('id').range(from, to)),
+    fetchAll((from, to) => supabase.from('recorder_status').select('recorder_id, name, monitoring_enabled').eq('location_id', id).order('name').order('recorder_id').range(from, to)),
   ])
+  const visible = recorders.filter((r): r is typeof r & { recorder_id: string } => !!r.recorder_id)
+  // The active mappings onto the visible NVRs (readable with the IT view of the recorder only).
+  const onVisible = visible.length === 0 ? [] : await fetchAll((from, to) =>
+    supabase.from('camera_channel_mappings').select('camera_id, recorder_id').is('valid_to', null).in('recorder_id', visible.map((r) => r.recorder_id)).order('camera_id').range(from, to),
+  )
   const ipOf = new Map(addresses.map((a) => [a.camera_id, a.camera_ip]))
-  const cameras = rows.map((c) => ({ ...c, camera_ip: ipOf.get(c.id) ?? null }))
-  return { ...store, cameras, devices, showsAddresses: addresses.length > 0 }
+  const recorderOf = new Map(onVisible.map((m) => [m.camera_id, m.recorder_id]))
+  const cameras = rows.map((c) => ({ ...c, camera_ip: ipOf.get(c.id) ?? null, recorder_id: recorderOf.get(c.id) ?? null }))
+  return {
+    ...store, cameras, devices, showsAddresses: addresses.length > 0,
+    recorders: visible.map((r) => ({ id: r.recorder_id, name: r.name ?? 'NVR', monitored: r.monitoring_enabled === true })),
+  }
 }
 
 export async function listVisibleDevices(supabase: Client, type?: string) {

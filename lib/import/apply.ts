@@ -3,30 +3,31 @@ import { addAudit } from '@/lib/admin/audit'
 import { isAdminRole } from '@/lib/admin/roles'
 import type { DeviceRow } from '@/lib/import/devices-csv'
 import type { RowError, StoreRow } from '@/lib/import/stores-csv'
-import { ensurePlaceholderCameras } from '@/lib/inventory/stores'
+import { ensurePlaceholderCameras, savePrimaryRecorder } from '@/lib/inventory/stores'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 
 export type ImportResult = { created: number; updated: number; errors: RowError[] }
 
-/** Saves parsed store rows one by one: a bad row is reported with its line number and never stops the others. */
+/**
+ * Saves parsed store rows one by one: a bad row is reported with its line number and never stops the others. P2-5b: the legacy columns
+ * keep working as "location + primary recorder + channels": the location (by code), its primary recorder (ip, port, http_port, user;
+ * the password into the vault) and cameras on channels 1..channels of that recorder. A location's other NVRs are never touched.
+ */
 export async function importStores(admin: AdminClient, actor: Actor, rows: StoreRow[]): Promise<ImportResult> {
   const result: ImportResult = { created: 0, updated: 0, errors: [] }
   if (!isAdminRole(actor.role)) return { ...result, errors: [{ line: 1, message: 'Only administrators can import.' }] }
   for (const r of rows) {
     try {
       const { data: existing } = await admin.from('locations').select('id').eq('org_id', actor.orgId).eq('code', r.code).is('archived_at', null).maybeSingle()
-      const fields = {
-        name: r.name, city: r.city, zone: r.zone, state: r.state, address: r.address, nvr_ip: r.nvr_ip,
-        rtsp_port: r.rtsp_port, http_port: r.http_port, nvr_username: r.nvr_username, expected_channels: r.channels,
-      }
+      const fields = { name: r.name, city: r.city, zone: r.zone, state: r.state, address: r.address }
       let storeId: string
       if (existing) {
-        const { error } = await admin.from('locations').update(fields).eq('id', existing.id)
+        const { error } = await admin.from('locations').update(fields).eq('id', existing.id).eq('org_id', actor.orgId)
         if (error) throw error
         storeId = existing.id
       } else {
-        if (!r.nvr_password) {
+        if (!r.recorder.password) {
           result.errors.push({ line: r.line, message: 'A new store needs a password for its NVR.' })
           continue
         }
@@ -34,15 +35,25 @@ export async function importStores(admin: AdminClient, actor: Actor, rows: Store
         if (error || !data) throw error
         storeId = data.id
       }
-      if (r.nvr_password) {
-        const { error } = await admin.rpc('nvr_store_credential', { p_store: storeId, p_secret: r.nvr_password })
+      // P2-5a: never deleted, archived (the archived location frees its code for the next attempt).
+      const undo = async () => {
+        if (!existing) await admin.rpc('inventory_archive', { p_org: actor.orgId, p_kind: 'location', p_id: storeId, p_actor: actor.id })
+      }
+      let recorderId: string
+      try {
+        recorderId = (await savePrimaryRecorder(admin, actor, storeId, r.recorder)).recorderId
+      } catch (e) {
+        await undo()
+        throw e
+      }
+      if (r.recorder.password) {
+        const { error } = await admin.rpc('recorder_store_credential', { p_recorder: recorderId, p_secret: r.recorder.password })
         if (error) {
-          // P2-5a: never deleted, archived (the archived location frees its code for the next attempt).
-          if (!existing) await admin.rpc('inventory_archive', { p_org: actor.orgId, p_kind: 'location', p_id: storeId, p_actor: actor.id })
+          await undo()
           throw error
         }
       }
-      await ensurePlaceholderCameras(admin, actor.orgId, storeId, r.channels)
+      await ensurePlaceholderCameras(admin, actor.orgId, storeId, recorderId, r.recorder.channels)
       if (existing) result.updated++
       else result.created++
     } catch (err) {
@@ -50,7 +61,14 @@ export async function importStores(admin: AdminClient, actor: Actor, rows: Store
     }
   }
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'import_stores', detail: { created: result.created, updated: result.updated, errors: result.errors.length } })
+  // A bulk import changes the inventory faster than autovacuum re-analyses it: fresh planner statistics keep the pages fast at once.
+  if (result.created + result.updated >= 20) await refreshStatistics(admin)
   return result
+}
+
+async function refreshStatistics(admin: AdminClient): Promise<void> {
+  const { error } = await admin.rpc('inventory_refresh_statistics')
+  if (error) sanitizeError(error, { route: 'importStores.statistics' }) // logged; the import itself is done
 }
 
 /** Devices are matched by IP address and port, so importing the same file again updates instead of duplicating. */

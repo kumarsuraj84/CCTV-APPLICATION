@@ -3,6 +3,8 @@ import { normalizeZone } from '@/lib/import/regions'
 import { isValidIp, parsePort } from '@/lib/import/validators'
 
 export type RowError = { line: number; message: string }
+/** The NVR part of a row: the location's primary recorder (P2-5b). The password is never kept anywhere but the vault. */
+export type RecorderFields = { host: string; rtsp_port: number; http_port: number; username: string; password: string; channels: number }
 export type StoreRow = {
   line: number
   code: string
@@ -11,17 +13,13 @@ export type StoreRow = {
   zone: string | null
   state: string | null
   address: string | null
-  nvr_ip: string
-  rtsp_port: number
-  http_port: number
-  nvr_username: string
-  nvr_password: string
-  channels: number
+  recorder: RecorderFields
 }
 
 const orNull = (v: string | undefined) => (v && v.trim() !== '' ? v.trim() : null)
 
 // Columns follow the legacy stores file: name, city, zone, ip, port, http_port, user, password, channels; plus optional code, state, address.
+// P2-5b: one row is a location plus its primary recorder (the NVR at ip/port/http_port with that login) and its number of channels.
 export function parseStoresCsv(text: string): { rows: StoreRow[]; errors: RowError[] } {
   const raw = parseCsv(text)
   if (raw.length === 0) return { rows: [], errors: [{ line: 1, message: 'The file is empty.' }] }
@@ -51,9 +49,10 @@ export function parseStoresCsv(text: string): { rows: StoreRow[]; errors: RowErr
     rows.push({
       line, code, name,
       city: orNull(v.city), zone: normalizeZone(v.zone), state: normalizeZone(v.state), address: orNull(v.address),
-      nvr_ip: v.ip.trim(), rtsp_port: rtsp, http_port: http,
-      nvr_username: v.user.trim(), nvr_password: v.password ?? '',
-      channels: channelsText === '' ? 0 : Number(channelsText),
+      recorder: {
+        host: v.ip.trim(), rtsp_port: rtsp, http_port: http, username: v.user.trim(), password: v.password ?? '',
+        channels: channelsText === '' ? 0 : Number(channelsText),
+      },
     })
   }
   return { rows, errors }

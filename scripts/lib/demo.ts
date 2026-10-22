@@ -10,7 +10,10 @@ export const DEMO_SLUG = 'demo-sample-data'
 export const DEMO_ORG_NAME = 'DEMO organisation (sample data)'
 
 export const DEFAULT_NVR_PORT = 8081
+/** P2-5b: the second pretend NVR (one demo location has two NVRs), with its own video port. */
+export const SECOND_NVR_PORT = 8083
 export const FAKE_RTSP_PORT = 8554
+export const FAKE_RTSP_2_PORT = 8556
 export const FAKE_ERP_PORT = 9101
 export const FAKE_ATTENDANCE_PORT = 9102
 export const FAKE_ATTENDANCE_2_PORT = 9103
@@ -22,14 +25,21 @@ export const FAKE_ATTENDANCE_2_PORT = 9103
 export const DEAD_NVR_HTTP_PORT = 8082
 export const DEAD_NVR_RTSP_PORT = 8555
 export const DEAD_DEVICE_PORT = 9199
-export type DeadPorts = { nvrHttp: number; nvrRtsp: number; device: number }
-export const DEFAULT_DEAD_PORTS: DeadPorts = { nvrHttp: DEAD_NVR_HTTP_PORT, nvrRtsp: DEAD_NVR_RTSP_PORT, device: DEAD_DEVICE_PORT }
+export const DEAD_NVR_2_HTTP_PORT = 8084
+export const DEAD_NVR_2_RTSP_PORT = 8557
+export type DeadPorts = { nvrHttp: number; nvrRtsp: number; device: number; nvr2Http: number; nvr2Rtsp: number }
+export const DEFAULT_DEAD_PORTS: DeadPorts = {
+  nvrHttp: DEAD_NVR_HTTP_PORT, nvrRtsp: DEAD_NVR_RTSP_PORT, device: DEAD_DEVICE_PORT, nvr2Http: DEAD_NVR_2_HTTP_PORT, nvr2Rtsp: DEAD_NVR_2_RTSP_PORT,
+}
 
-/** The login of the pretend NVR. It protects nothing: the fake only listens on this computer. */
+/** The login of the pretend NVRs. It protects nothing: the fakes only listen on this computer. */
 export const DEMO_NVR_USER = 'viewer'
 export const DEMO_NVR_PASSWORD = 'demo-pass'
 
-const RESERVED_PORTS = new Set([FAKE_RTSP_PORT, FAKE_ERP_PORT, FAKE_ATTENDANCE_PORT, FAKE_ATTENDANCE_2_PORT, DEAD_NVR_HTTP_PORT, DEAD_NVR_RTSP_PORT, DEAD_DEVICE_PORT])
+const RESERVED_PORTS = new Set([
+  FAKE_RTSP_PORT, FAKE_RTSP_2_PORT, FAKE_ERP_PORT, FAKE_ATTENDANCE_PORT, FAKE_ATTENDANCE_2_PORT, DEAD_NVR_HTTP_PORT, DEAD_NVR_RTSP_PORT, DEAD_DEVICE_PORT,
+  DEAD_NVR_2_HTTP_PORT, DEAD_NVR_2_RTSP_PORT,
+])
 
 /** A port for the pretend NVR: a whole number from 1024 to 65535 that the demo does not use for anything else. */
 export function parseNvrPort(value: string | number): number {
@@ -42,48 +52,66 @@ export function parseNvrPort(value: string | number): number {
 const ADDRESS_OPTIONS = /^--(host|hostname|bind|listen|address|interface|ip)\b/i
 
 /**
- * The options of `npm run fake:nvr`: `--flip` and `--port=NNNN` (or `--port NNNN`, or FAKE_NVR_PORT). Nothing else is accepted. There is
- * deliberately no way to choose an address: the fake servers listen on 127.0.0.1 only, so only this computer can reach them.
+ * The options of `npm run fake:nvr`: `--flip`, `--port=NNNN` (or `--port NNNN`, or FAKE_NVR_PORT) for the first pretend NVR and
+ * `--second-port=NNNN` for the second one (P2-5b). Nothing else is accepted. There is deliberately no way to choose an address: the fake
+ * servers listen on 127.0.0.1 only, so only this computer can reach them.
  */
-export function parseFakeNvrArgs(argv: string[], env: Record<string, string | undefined> = {}): { port: number; flip: boolean } {
+export function parseFakeNvrArgs(argv: string[], env: Record<string, string | undefined> = {}): { port: number; secondPort: number; flip: boolean } {
   let port: number = env.FAKE_NVR_PORT ? parseNvrPort(env.FAKE_NVR_PORT) : DEFAULT_NVR_PORT
+  let secondPort = SECOND_NVR_PORT
   let flip = false
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--flip') flip = true
     else if (a.startsWith('--port=')) port = parseNvrPort(a.slice('--port='.length))
     else if (a === '--port') port = parseNvrPort(argv[++i] ?? '')
+    else if (a.startsWith('--second-port=')) secondPort = parseNvrPort(a.slice('--second-port='.length))
+    else if (a === '--second-port') secondPort = parseNvrPort(argv[++i] ?? '')
     else if (ADDRESS_OPTIONS.test(a)) throw new Error('The pretend NVR only listens on 127.0.0.1 (this computer). It cannot be given another address.')
-    else throw new Error(`Unknown option "${a}". Use --flip and --port=NNNN only.`)
+    else throw new Error(`Unknown option "${a}". Use --flip, --port=NNNN and --second-port=NNNN only.`)
   }
-  return { port, flip }
+  if (port === secondPort) throw new Error('The two pretend NVRs must use ports that differ from each other.')
+  return { port, secondPort, flip }
 }
 
+/** One NVR (recorder) of a demo location: its web port, video port and how many cameras it has (channels 1..cameras). */
+export type DemoRecorderPlan = { name: string; httpPort: number; rtspPort: number; cameras: number }
 export type DemoStorePlan = {
   code: string
   name: string
   city: string
   zone: string
-  httpPort: number
-  rtspPort: number
-  cameras: number
+  /** P2-5b: a location may have several NVRs; every one is 127.0.0.1 with its own ports. */
+  recorders: DemoRecorderPlan[]
 }
 export type DemoDevicePlan = { type: 'server' | 'attendance' | 'footfall'; name: string; storeCode: string | null; port: number }
 
-/** The sample stores and devices. Every address is 127.0.0.1; names say DEMO so that they are never mistaken for real ones. */
-export function demoPlan(nvrPort: number = DEFAULT_NVR_PORT, dead: DeadPorts = DEFAULT_DEAD_PORTS): { stores: DemoStorePlan[]; devices: DemoDevicePlan[] } {
+/**
+ * The sample locations, their NVRs and devices. Every address is 127.0.0.1; names say DEMO so that they are never mistaken for real
+ * ones. DEMO3 has TWO NVRs (P2-5b): the second pretend NVR (up) and one nobody answers (down), both with channels starting at 1.
+ */
+export function demoPlan(nvrPort: number = DEFAULT_NVR_PORT, dead: DeadPorts = DEFAULT_DEAD_PORTS, secondNvrPort: number = SECOND_NVR_PORT): { stores: DemoStorePlan[]; devices: DemoDevicePlan[] } {
   const nvr = parseNvrPort(nvrPort)
-  const open = new Set([nvr, FAKE_RTSP_PORT, FAKE_ERP_PORT, FAKE_ATTENDANCE_PORT, FAKE_ATTENDANCE_2_PORT])
-  const closed = [dead.nvrHttp, dead.nvrRtsp, dead.device]
-  if (new Set(closed).size !== 3 || closed.some((p) => open.has(p))) {
+  const second = parseNvrPort(secondNvrPort)
+  if (nvr === second) throw new Error('The two pretend NVRs must use ports that differ from each other.')
+  const open = new Set([nvr, second, FAKE_RTSP_PORT, FAKE_RTSP_2_PORT, FAKE_ERP_PORT, FAKE_ATTENDANCE_PORT, FAKE_ATTENDANCE_2_PORT])
+  const closed = [dead.nvrHttp, dead.nvrRtsp, dead.device, dead.nvr2Http, dead.nvr2Rtsp]
+  if (new Set(closed).size !== closed.length || closed.some((p) => open.has(p))) {
     throw new Error('The ports for the offline demo targets must differ from each other and from the ports the pretend servers use.')
   }
   return {
     stores: [
-      { code: 'DEMO1', name: 'Demo Store Patna', city: 'Patna', zone: 'BR', httpPort: nvr, rtspPort: FAKE_RTSP_PORT, cameras: 6 },
+      { code: 'DEMO1', name: 'Demo Store Patna', city: 'Patna', zone: 'BR', recorders: [{ name: 'NVR 1', httpPort: nvr, rtspPort: FAKE_RTSP_PORT, cameras: 6 }] },
       // Nothing listens on these two ports: the NVR is down.
-      { code: 'DEMO2', name: 'Demo Store Ranchi', city: 'Ranchi', zone: 'Jharkhand', httpPort: dead.nvrHttp, rtspPort: dead.nvrRtsp, cameras: 4 },
-      { code: 'DEMO3', name: 'Demo Store Gaya', city: 'Gaya', zone: 'BR', httpPort: nvr, rtspPort: FAKE_RTSP_PORT, cameras: 4 },
+      { code: 'DEMO2', name: 'Demo Store Ranchi', city: 'Ranchi', zone: 'Jharkhand', recorders: [{ name: 'NVR 1', httpPort: dead.nvrHttp, rtspPort: dead.nvrRtsp, cameras: 4 }] },
+      {
+        code: 'DEMO3', name: 'Demo Store Gaya', city: 'Gaya', zone: 'BR',
+        recorders: [
+          { name: 'NVR 1', httpPort: second, rtspPort: FAKE_RTSP_2_PORT, cameras: 4 },
+          // Nothing listens here: only THIS NVR's cameras show the recorder as the cause; NVR 1's cameras are unaffected.
+          { name: 'NVR 2', httpPort: dead.nvr2Http, rtspPort: dead.nvr2Rtsp, cameras: 3 },
+        ],
+      },
     ],
     devices: [
       { type: 'server', name: 'Demo ERP server', storeCode: null, port: FAKE_ERP_PORT },

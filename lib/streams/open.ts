@@ -1,11 +1,11 @@
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { mapLimit } from '@/lib/async/pool'
 import { camerasFor } from '@/lib/auth/resource'
-import { legacyReachable, MSG_MONITORING_OFF } from '@/lib/inventory/recorders'
+import { MSG_MONITORING_OFF, MSG_NOT_MAPPED, readRecorderPassword, resolveCameraRoutes, type RouteAnswer } from '@/lib/inventory/recorders'
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 import type { Go2rtcClient } from '@/lib/streams/go2rtc'
-import { buildRtspUrl, demoSource, isDemoStore } from '@/lib/streams/source'
+import { buildRtspUrl, demoSource, isDemoRecorder } from '@/lib/streams/source'
 import { signStreamToken, streamName, TOKEN_LIFETIME_SEC } from '@/lib/streams/token'
 
 // Opens live streams for the cameras a person may watch live: registers each in go2rtc under its stream name and signs a token for it.
@@ -23,9 +23,6 @@ const MSG_TOO_MANY = `You can open at most ${MAX_STREAMS_PER_REQUEST} cameras at
 const MSG_FAILED = 'Could not open the video. Please try again.'
 const REGISTER_PARALLEL = 6
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-type StoreRow = { code: string; nvr_ip: string; rtsp_port: number; nvr_username: string }
-type CameraRow = { id: string; name: string; channel: number; store_id: string; recorder_id: string | null; stores: StoreRow | null }
 
 export type OpenDeps = {
   admin: AdminClient
@@ -60,64 +57,53 @@ export async function openStreams(
   if (!allowed.ok) return { ok: false, error: MSG_FAILED }
   const mayWatch = allowed.ids
   if (mayWatch.length === 0) return { ok: true, streams: [] }
-  const found = await deps.admin
-    .from('cameras')
-    .select('id, name, channel, store_id:location_id, recorder_id, stores:locations!inner(code, nvr_ip, rtsp_port, nvr_username, is_active)')
-    .eq('org_id', actor.orgId)
-    .in('id', mayWatch)
-    .eq('is_active', true)
-    .is('archived_at', null)
-    .eq('stores.is_active', true)
-  if (found.error) {
-    logger.error({ event: 'open_streams_read_failed', errorCode: found.error.code })
-    return { ok: false, error: MSG_FAILED }
-  }
-  const byId = new Map((found.data as unknown as CameraRow[]).filter((c) => c.stores !== null && c.stores.nvr_ip).map((c) => [c.id, c]))
-  const listed = wanted.map((id) => byId.get(id)).filter((c): c is CameraRow => c !== undefined)
-  if (listed.length === 0) return { ok: true, streams: [] }
-  // Owner addition: nothing is opened towards an NVR whose monitoring is switched off (no credential read, no go2rtc call).
-  let route
+  // P2-5b: each camera is reached through the recorder of its ACTIVE channel mapping — that NVR's address, video port, login and
+  // password, and the channel of the mapping. Owner addition: nothing is opened towards an NVR whose monitoring is switched off (no
+  // credential read, no go2rtc call); a camera without a mapping cannot be opened at all.
+  let answers
   try {
-    route = await legacyReachable(deps.admin, actor.orgId, listed.map((c) => ({ id: c.id, location_id: c.store_id, recorder_id: c.recorder_id })))
+    answers = await resolveCameraRoutes(deps.admin, actor.orgId, mayWatch)
   } catch {
+    logger.error({ event: 'open_streams_read_failed' })
     return { ok: false, error: MSG_FAILED }
   }
-  const cameras = listed.filter((c) => route.usable.has(c.id))
-  if (cameras.length === 0) return route.off.size > 0 ? { ok: false, error: MSG_MONITORING_OFF } : { ok: true, streams: [] }
+  const listed = wanted.map((id) => answers.get(id)).filter((a): a is RouteAnswer => a !== undefined)
+  if (listed.length === 0) return { ok: true, streams: [] }
+  const routes = listed.flatMap((a) => (a.kind === 'ok' ? [a.route] : []))
+  if (routes.length === 0) return { ok: false, error: listed.some((a) => a.kind === 'off') ? MSG_MONITORING_OFF : MSG_NOT_MAPPED }
 
   const env = deps.env ?? process.env
-  // One password read per store, and only for stores that need one (a demo store has no real camera behind it).
+  // One password read per recorder, and only for recorders that need one (a demo NVR has no real camera behind it).
   const passwords = new Map<string, string | null>()
-  const storeIds = [...new Set(cameras.map((c) => c.store_id))]
-  await mapLimit(storeIds, 4, async (storeId) => {
-    const store = cameras.find((c) => c.store_id === storeId)!.stores!
-    if (isDemoStore({ code: store.code, nvr_ip: store.nvr_ip }, env)) return
-    const { data, error } = await deps.admin.rpc('nvr_read_credential', { p_store: storeId })
-    if (error) logger.error({ event: 'open_streams_credential_failed', store: store.code, errorCode: error.code })
-    passwords.set(storeId, !error && typeof data === 'string' && data !== '' ? data : null)
+  const recorders = [...new Map(routes.map((r) => [r.recorder.id, r.recorder])).values()]
+  await mapLimit(recorders, 4, async (rec) => {
+    if (isDemoRecorder(rec, env)) return
+    const read = await readRecorderPassword(deps.admin, rec.id)
+    if (!read.ok) logger.error({ event: 'open_streams_credential_failed', location: rec.code, recorder: rec.id, errorCode: read.code })
+    passwords.set(rec.id, read.ok ? read.password : null)
   })
 
   const now = deps.now ?? Date.now
   const exp = Math.floor(now() / 1000) + TOKEN_LIFETIME_SEC
   let failed = 0
-  const opened = await mapLimit(cameras, REGISTER_PARALLEL, async (c): Promise<OpenedStream | null> => {
-    const store = c.stores!
+  const opened = await mapLimit(routes, REGISTER_PARALLEL, async ({ camera: c, recorder: rec }): Promise<OpenedStream | null> => {
     try {
       let src: string
-      const demo = isDemoStore({ code: store.code, nvr_ip: store.nvr_ip }, env)
+      const demo = isDemoRecorder(rec, env)
       if (demo) src = demoSource(c.channel, c.id)
       else {
-        const password = passwords.get(c.store_id)
-        if (!password) return null // no saved NVR password: this camera cannot be opened (and the others still can)
-        src = buildRtspUrl({ host: store.nvr_ip, port: store.rtsp_port, username: store.nvr_username, password, channel: c.channel, kind })
+        const password = passwords.get(rec.id)
+        if (!password || !rec.host) return null // no saved NVR password: this camera cannot be opened (and the others still can)
+        src = buildRtspUrl({ host: rec.host, port: rec.rtsp_port, username: rec.username, password, channel: c.channel, kind })
       }
+      // The stream is named by the camera, never by the channel: a remapped camera keeps its stream name (and its viewers' tokens).
       const name = streamName({ c: c.id, k: kind })
       await deps.go2rtc.register(name, src, { keepExisting: demo })
       const token = signStreamToken({ u: actor.id, c: c.id, k: kind, exp }, secret)
-      return { cameraId: c.id, name: c.name, storeCode: store.code, channel: c.channel, token, kind }
+      return { cameraId: c.id, name: c.name, storeCode: c.code, channel: c.channel, token, kind }
     } catch {
       failed++
-      logger.error({ event: 'open_stream_failed', store: store.code, channel: c.channel, kind }) // no address, no error text: they can carry a password
+      logger.error({ event: 'open_stream_failed', location: c.code, recorder: rec.id, channel: c.channel, kind }) // no address, no error text: they can carry a password
       return null
     }
   })

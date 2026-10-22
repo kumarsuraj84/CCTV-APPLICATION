@@ -7,8 +7,10 @@ import { parseDevicesCsv } from '@/lib/import/devices-csv'
 import { parseStoresCsv, type RowError } from '@/lib/import/stores-csv'
 import { createDevice, deleteDevice, updateDevice } from '@/lib/inventory/devices'
 import { submittedValues } from '@/lib/forms/submitted-values'
+import { archiveInventory, restoreInventory, type ArchiveKind } from '@/lib/inventory/archive'
 import { createStore, deleteStore, updateStore } from '@/lib/inventory/stores'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { createClient } from '@/lib/supabase/server'
 
 /** `values` carries the submitted non-secret fields back after an error, so the form keeps what was typed. */
 export type FormResult = { error?: string; ok?: boolean; values?: Record<string, string> }
@@ -21,7 +23,7 @@ async function ctx() {
 }
 
 const text = (f: FormData, k: string) => String(f.get(k) ?? '')
-const STORE_FIELDS = ['name', 'code', 'city', 'zone', 'state', 'address', 'ip', 'rtsp_port', 'http_port', 'nvr_username', 'channels']
+const STORE_FIELDS = ['name', 'code', 'city', 'zone', 'state', 'address', 'ip', 'rtsp_port', 'http_port', 'nvr_user', 'channels']
 const DEVICE_FIELDS = ['name', 'type', 'store_id', 'ip', 'tcp_port', 'notes']
 
 const num = (f: FormData, k: string) => (text(f, k).trim() === '' ? undefined : Number(text(f, k)))
@@ -30,7 +32,7 @@ function storeInput(f: FormData) {
   return {
     code: text(f, 'code') || null, name: text(f, 'name'), city: text(f, 'city'), zone: text(f, 'zone'), state: text(f, 'state'), address: text(f, 'address'),
     ip: text(f, 'ip'), rtsp_port: num(f, 'rtsp_port'), http_port: num(f, 'http_port'),
-    nvr_username: text(f, 'nvr_username'), nvr_password: text(f, 'nvr_password') || null,
+    nvr_user: text(f, 'nvr_user'), nvr_password: text(f, 'nvr_password') || null,
     channels: num(f, 'channels'), is_active: f.get('is_active') === 'on',
   }
 }
@@ -69,6 +71,21 @@ export async function deleteDeviceAction(deviceId: string): Promise<FormResult> 
   const { admin, actor } = await ctx()
   const res = await deleteDevice(admin, actor, deviceId)
   revalidatePath('/admin/devices')
+  return res.ok ? { ok: true } : { error: res.error }
+}
+
+/** P2-5b: archive / restore a location, NVR, camera, asset, cluster or region (the screens arrive with P2-5c). */
+export async function archiveInventoryAction(kind: ArchiveKind, id: string): Promise<FormResult> {
+  const p = await requireAdministration('admin.inventory')
+  const res = await archiveInventory({ admin: createAdminClient(), rls: await createClient() }, { id: p.id, orgId: p.org_id, role: p.role }, kind, String(id))
+  revalidatePath('/admin/stores')
+  return res.ok ? { ok: true } : { error: res.error }
+}
+
+export async function restoreInventoryAction(kind: ArchiveKind, id: string): Promise<FormResult> {
+  const p = await requireAdministration('admin.inventory')
+  const res = await restoreInventory({ admin: createAdminClient(), rls: await createClient() }, { id: p.id, orgId: p.org_id, role: p.role }, kind, String(id))
+  revalidatePath('/admin/stores')
   return res.ok ? { ok: true } : { error: res.error }
 }
 

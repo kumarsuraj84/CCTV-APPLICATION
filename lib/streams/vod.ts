@@ -5,12 +5,12 @@ import { Readable } from 'node:stream'
 import type { ReadableStream as NodeWebStream } from 'node:stream/web'
 import type { AdminClient, Result } from '@/lib/admin/types'
 import { auditAccess } from '@/lib/auth/access-audit'
-import { MSG_MONITORING_OFF } from '@/lib/inventory/recorders'
+import { MSG_MONITORING_OFF, MSG_NOT_MAPPED } from '@/lib/inventory/recorders'
 import { describeNvrError, MAX_DOWNLOAD_BYTES, MAX_DOWNLOAD_MS, NvrClient, NvrError, type NvrEndpoint } from '@/lib/nvr/client'
-import { findSegments } from '@/lib/nvr/playback'
+import { clockOffsetMs, findSegments } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
 import { processSingleton } from '@/lib/process-singleton'
-import { findCamera, MSG_CAMERA_NOT_FOUND, MSG_BAD_START, MSG_NO_LOGIN, MSG_RECORDINGS_UNREACHABLE, parsePlaybackOffset, recorderMessage, startInBounds } from '@/lib/streams/playback'
+import { findCamera, MSG_CAMERA_NOT_FOUND, MSG_BAD_START, MSG_NO_LOGIN, MSG_RECORDINGS_UNREACHABLE, parsePlaybackOffset, recorderMessage, recorderOffset, startInBounds } from '@/lib/streams/playback'
 import { MSG_TOO_MANY_REQUESTS, type RequestLimiter } from '@/lib/streams/request-limit'
 import { parseStartIso } from '@/lib/streams/timeline'
 
@@ -632,6 +632,7 @@ function cameraFailure(error: string): Response {
   if (error === MSG_NO_LOGIN) return fail(409, error)
   if (error === MSG_RECORDINGS_UNREACHABLE) return fail(502, error) // camera terms: no status that tells login trouble apart (fix I-2)
   if (error === MSG_MONITORING_OFF) return fail(409, error) // owner addition: the NVR is switched off, nothing was contacted
+  if (error === MSG_NOT_MAPPED) return fail(409, error) // P2-5b: the camera has no active mapping, so there is no NVR to ask
   return fail(500, error)
 }
 
@@ -668,8 +669,8 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
   // "ended" is written only after "started", and only for a conversion that started (the process can end before this code goes on).
   const audit = { started: null as Promise<void> | null, exited: false }
   const auditEnded = () => void audit.started?.then(() => auditAccess(deps.admin, { ...exported, action: 'cctv_export_ended' }))
-  const { camera, password } = c
-  const store = camera.stores
+  // P2-5b: the recorder of the camera's active mapping, with its own address, login and clock offset.
+  const { camera, recorder, password } = c
   if (signal?.aborted) return new Response(null, { status: 499 })
 
   const limits = deps.conversions ?? conversionLimiter
@@ -696,26 +697,27 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
   let handedOver = false
   try {
     if (signal?.aborted || transfer.signal.aborted) return new Response(null, { status: 499 })
-    const offsetMin = deps.offsetMin ?? parsePlaybackOffset(env.PLAYBACK_OFFSET_MIN)
-    const client = (deps.nvr ?? ((ep) => new NvrClient(ep)))({ host: store.nvr_ip, port: store.http_port, username: store.nvr_username, password: password! })
+    // The recorder's own clock offset when it has one (P2-5b), else PLAYBACK_OFFSET_MIN.
+    const offset = recorderOffset(recorder, deps.offsetMin ?? parsePlaybackOffset(env.PLAYBACK_OFFSET_MIN))
+    const client = (deps.nvr ?? ((ep) => new NvrClient(ep)))({ host: recorder.host!, port: recorder.http_port, username: recorder.username, password: password! })
 
     // Shown time (ruling R13): the NVR is asked for shown time - offset.
     const startMs = query.start.getTime()
     let uri: string
     let family: 'h264' | 'h265' | null
     try {
-      const found = await findSegments(client, { channel: camera.channel, day: query.start.toISOString().slice(0, 10), offsetMin })
+      const found = await findSegments(client, { channel: camera.channel, day: query.start.toISOString().slice(0, 10), ...offset })
       const segment = found.segments.find((s) => s.start.getTime() <= startMs && startMs < s.end.getTime())
       if (!segment) return fail(404, MSG_NO_RECORDING)
       if (segment.uri === undefined) return fail(404, MSG_NOT_DOWNLOADABLE)
-      const shift = offsetMin * 60_000
+      const shift = clockOffsetMs(offset) ?? 0
       const to = Math.min(startMs + query.minutes * 60_000, segment.end.getTime())
       const clipped = clipPlaybackUri(segment.uri, new Date(startMs - shift), new Date(to - shift))
       if (clipped === null) return fail(404, MSG_NOT_DOWNLOADABLE) // no starttime / endtime to narrow the download: not used
       uri = clipped
       family = videoFamily(segment.codec)
     } catch (e) {
-      return await nvrFailure(e, store.code, 'vod_search_failed', deps.rls, camera.store_id)
+      return await nvrFailure(e, camera.code, 'vod_search_failed', deps.rls, recorder.id)
     }
     if (signal?.aborted || transfer.signal.aborted) return new Response(null, { status: 499 })
 
@@ -738,7 +740,7 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
       source = await client.postStream(DOWNLOAD_PATH, body, { signal: transfer.signal, maxMs: deps.timing?.transferMs ?? MAX_DOWNLOAD_MS, maxBytes: deps.timing?.maxBytes ?? MAX_DOWNLOAD_BYTES })
     } catch (e) {
       if (transfer.signal.aborted) return new Response(null, { status: 499 })
-      return await nvrFailure(e, store.code, 'vod_download_failed', deps.rls, camera.store_id)
+      return await nvrFailure(e, camera.code, 'vod_download_failed', deps.rls, recorder.id)
     }
 
     handedOver = true
@@ -762,11 +764,11 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
     })
     if (!converted.ok) {
       if (converted.reason === 'missing') {
-        logger.error({ event: 'vod_ffmpeg_missing', store: store.code })
+        logger.error({ event: 'vod_ffmpeg_missing', location: camera.code })
         return fail(500, MSG_NO_FFMPEG)
       }
       if (converted.reason === 'cancelled') return new Response(null, { status: 499 })
-      if (converted.reason === 'timeout') return fail(502, await recorderMessage(deps.rls, camera.store_id, describeNvrError(new NvrError('timeout', 'slow')), 'nvr_timeout'))
+      if (converted.reason === 'timeout') return fail(502, await recorderMessage(deps.rls, recorder.id, describeNvrError(new NvrError('timeout', 'slow')), 'nvr_timeout'))
       if (converted.reason === 'format') return fail(502, MSG_FORMAT_UNSUPPORTED)
       return fail(502, MSG_CONVERT_FAILED)
     }
@@ -786,8 +788,8 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
  * NVR trouble as a 502 in plain words: the NVR's own words only with the IT view of the store, camera terms otherwise (fix I-2).
  * Anything unexpected is logged by its kind only: its text can carry an address or a password.
  */
-async function nvrFailure(e: unknown, store: string, event: string, rls: AdminClient, storeId: string): Promise<Response> {
-  if (e instanceof NvrError) return fail(502, await recorderMessage(rls, storeId, describeNvrError(e), `nvr_${e.kind}`))
-  logger.error({ event, store, errorName: e instanceof Error ? e.name : typeof e })
+async function nvrFailure(e: unknown, location: string, event: string, rls: AdminClient, recorderId: string): Promise<Response> {
+  if (e instanceof NvrError) return fail(502, await recorderMessage(rls, recorderId, describeNvrError(e), `nvr_${e.kind}`))
+  logger.error({ event, location, errorName: e instanceof Error ? e.name : typeof e })
   return fail(502, MSG_NVR_FAILED)
 }

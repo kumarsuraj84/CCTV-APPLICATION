@@ -24,9 +24,10 @@ export function loadMonitorConfig(env: Record<string, string | undefined> = proc
     // Zero or negative makes no sense and is ignored (default 2); more than 10 is pulled down to 10.
     failThreshold: threshold !== undefined && threshold >= 1 ? Math.min(10, threshold) : 2,
     deviceConcurrency: 50,
-    // How many stores are checked at the same time (each store may use its own NVR connections).
-    storeConcurrency: interval(env.STORE_CONCURRENCY, 10, 1, 50),
-    rtspPerStore: 4,
+    // How many recorders (NVRs) are checked at the same time (each uses its own connections). P2-5b: RECORDER_CONCURRENCY; the old
+    // name STORE_CONCURRENCY is still accepted when the new one is not set.
+    recorderConcurrency: interval(whole(env.RECORDER_CONCURRENCY) === undefined ? env.STORE_CONCURRENCY : env.RECORDER_CONCURRENCY, 10, 1, 50),
+    rtspPerRecorder: 4,
     tcpTimeoutMs: 3000,
     nvrTimeoutMs: 8000,
     nvrLoginBackoffSec: interval(env.NVR_LOGIN_BACKOFF_SEC, 900, 60, DAY_SEC),

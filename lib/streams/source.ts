@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { isIP } from 'node:net'
+import { clockOffsetMs, type ClockOffset } from '@/lib/nvr/playback'
 import { isValidHost, isValidPort } from '@/lib/probes'
 
 // The camera password is part of what these functions return. Keep the result on the server: it goes to go2rtc and nowhere else.
@@ -26,21 +27,24 @@ export function buildRtspUrl(o: { host: string; port: number; username: string; 
 }
 
 const two = (n: number) => String(n).padStart(2, '0')
-const MAX_OFFSET_MIN = 1440
-function nvrInstant(d: Date, offsetMin: number): string {
-  const t = new Date(d.getTime() - offsetMin * 60_000)
+function nvrInstant(d: Date, offsetMs: number): string {
+  const t = new Date(d.getTime() - offsetMs)
   if (!Number.isFinite(t.getTime())) throw new Error(BAD_ADDRESS)
   return `${t.getUTCFullYear()}${two(t.getUTCMonth() + 1)}${two(t.getUTCDate())}T${two(t.getUTCHours())}${two(t.getUTCMinutes())}${two(t.getUTCSeconds())}Z`
 }
 
-/** NVR time = true time + offset, so both instants are shifted back by offsetMin. */
-export function buildPlaybackUrl(o: { host: string; port: number; username: string; password: string; channel: number; start: Date; end: Date; offsetMin: number }): string {
+/**
+ * Ruling R13: the NVR is asked for shown time - offset, so both instants are shifted back by the offset. The offset is the recorder's
+ * own (`offsetSec`, P2-5b) or the global default (`offsetMin`, PLAYBACK_OFFSET_MIN): exactly one of the two.
+ */
+export function buildPlaybackUrl(o: { host: string; port: number; username: string; password: string; channel: number; start: Date; end: Date } & ClockOffset): string {
   const ok = (d: unknown): d is Date => d instanceof Date && Number.isFinite(d.getTime())
   if (!ok(o.start) || !ok(o.end) || o.end.getTime() <= o.start.getTime()) throw new Error(BAD_ADDRESS)
-  if (typeof o.offsetMin !== 'number' || !Number.isFinite(o.offsetMin) || Math.abs(o.offsetMin) > MAX_OFFSET_MIN) throw new Error(BAD_ADDRESS)
+  const offset = clockOffsetMs(o)
+  if (offset === null) throw new Error(BAD_ADDRESS)
   const base = authority(o)
-  const starttime = nvrInstant(o.start, o.offsetMin)
-  const endtime = nvrInstant(o.end, o.offsetMin)
+  const starttime = nvrInstant(o.start, offset)
+  const endtime = nvrInstant(o.end, offset)
   return `${base}/Streaming/tracks/${o.channel}01?starttime=${starttime}&endtime=${endtime}`
 }
 
@@ -63,7 +67,7 @@ export function demoSource(channel: number, cameraId?: string): string {
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1'])
 
-/** True only on a development machine with DEMO_VIDEO=1 and a store whose NVR address is this machine. */
-export function isDemoStore(o: { code: string; nvr_ip: string }, env: Record<string, string | undefined> = process.env): boolean {
-  return env.DEMO_VIDEO === '1' && env.NODE_ENV !== 'production' && LOOPBACK.has(o.nvr_ip)
+/** True only on a development machine with DEMO_VIDEO=1 and a recorder (NVR) whose address is this machine (P2-5b: per recorder). */
+export function isDemoRecorder(o: { host: string | null }, env: Record<string, string | undefined> = process.env): boolean {
+  return env.DEMO_VIDEO === '1' && env.NODE_ENV !== 'production' && typeof o.host === 'string' && LOOPBACK.has(o.host)
 }

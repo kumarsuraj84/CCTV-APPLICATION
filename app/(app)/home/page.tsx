@@ -29,8 +29,8 @@ function OutageList({ items, empty }: { items: Outage[]; empty: string }) {
       {items.map((o) => (
         <li key={o.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
           <span className="min-w-0 break-words">
-            {o.kind === 'nvr' ? 'NVR' : o.kind === 'camera' ? 'Camera' : 'Device'} · {o.label}
-            {o.store && o.kind !== 'nvr' ? <span className="text-muted-foreground"> · {o.store}</span> : null}
+            {o.kind === 'recorder' ? 'NVR' : o.kind === 'camera' ? 'Camera' : 'Device'} · {o.label}
+            {o.store ? <span className="text-muted-foreground"> · {o.store}</span> : null}
           </span>
           <span className="flex flex-wrap items-center gap-2 text-muted-foreground">
             {formatDateTime(o.startedAt)}
@@ -147,11 +147,11 @@ export default async function HomePage() {
           )}
           {d.stores.nvrDown.length > 0 && (
             <div className="space-y-2">
-              <h3 className="text-sm font-medium">Stores with the NVR down ({d.stores.nvrDown.length})</h3>
+              <h3 className="text-sm font-medium">NVRs that are down ({d.stores.nvrDown.length})</h3>
               <ul className="divide-y rounded-xl border bg-card text-sm">
                 {d.stores.nvrDown.map((s) => (
                   <li key={s.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-2">
-                    <Link href={`/stores/${s.id}`} className="underline">{s.code} · {s.name}</Link>
+                    <Link href={`/stores/${s.locationId}`} className="underline">{s.code} · {s.name} · {s.recorder}</Link>
                     <span className="text-muted-foreground">Offline since {formatDateTime(s.since)}</span>
                   </li>
                 ))}
@@ -184,7 +184,7 @@ export default async function HomePage() {
               items={itProblems}
               empty={
                 d.recentOutagesLimited
-                  ? 'Showing the most recent problems: there is nothing else to list. Most recent problems are cameras that are offline because their NVR is offline (see the stores above).'
+                  ? 'Showing the most recent problems: there is nothing else to list. Most recent problems are cameras that are offline because their NVR is offline (see the NVRs above).'
                   : 'No device or recorder problems have been recorded yet.'
               }
             />

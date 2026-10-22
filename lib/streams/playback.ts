@@ -1,15 +1,15 @@
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { IT_VIEW } from '@/lib/auth/capabilities'
-import { cameraFor, locationFor } from '@/lib/auth/resource'
-import { legacyReachable, MSG_MONITORING_OFF } from '@/lib/inventory/recorders'
+import { cameraFor, recorderFor } from '@/lib/auth/resource'
+import { MSG_MONITORING_OFF, MSG_NOT_MAPPED, readRecorderPassword, resolveCameraRoutes, type CameraRoute, type Recorder, type RouteAnswer } from '@/lib/inventory/recorders'
 import { describeNvrError, NvrClient, NvrError, type NvrEndpoint } from '@/lib/nvr/client'
-import { findSegments, recordedDays } from '@/lib/nvr/playback'
+import { findSegments, recordedDays, type ClockOffset } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 import type { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { MSG_NOT_SET_UP, MSG_UNAVAILABLE } from '@/lib/streams/open'
 import { MSG_TOO_MANY_REQUESTS, type RequestLimiter } from '@/lib/streams/request-limit'
-import { buildPlaybackUrl, demoSource, isDemoStore } from '@/lib/streams/source'
+import { buildPlaybackUrl, demoSource, isDemoRecorder } from '@/lib/streams/source'
 import { parseDay, shownNowMs } from '@/lib/streams/timeline'
 import { signStreamToken, streamName, TOKEN_LIFETIME_SEC } from '@/lib/streams/token'
 
@@ -41,7 +41,8 @@ export function startInBounds(startMs: number, nowMs: number): boolean {
 }
 
 export const MSG_CAMERA_NOT_FOUND = 'Camera not found.'
-export const MSG_NO_LOGIN = 'This store has no saved NVR login.'
+// P2-5b: the login is the recorder's own (a location may have several NVRs).
+export const MSG_NO_LOGIN = 'This NVR has no saved login.'
 export const MSG_READ_CAMERA = 'Could not read the camera.'
 export const MSG_READ_LOGIN = 'Could not read the NVR login.'
 const MSG_READ_RECORDINGS = 'Could not read the recordings. Please try again.'
@@ -52,8 +53,6 @@ export const MSG_TOO_BUSY = 'Too many people are watching this recording right n
 /** After this many answers in a row that could not be read, go2rtc is taken to be down. */
 const MAX_UNREADABLE_IN_A_ROW = 3
 
-export type StoreRow = { code: string; nvr_ip: string; http_port: number; rtsp_port: number; nvr_username: string }
-export type CameraRow = { id: string; name: string; channel: number; store_id: string; recorder_id: string | null; stores: StoreRow | null }
 
 export type PlaybackDeps = {
   /** The person's own signed-in client: whatever it can read is what they may see. */
@@ -90,14 +89,27 @@ export function parsePlaybackOffset(raw: string | undefined): number {
   return 0
 }
 
-export type Found = { camera: CameraRow & { stores: StoreRow }; password: string | null; demo: boolean }
+/**
+ * P2-5b: the camera (with the channel of its ACTIVE mapping) and the recorder of that mapping (its own address, ports, login and clock
+ * offset), the NVR password unless it is not needed, and whether the recorder is the demo (loopback) one.
+ */
+export type Found = CameraRoute & { password: string | null; demo: boolean }
+
+/**
+ * The clock offset to use for this recorder (ruling R13 direction): its own measured or manual `clock_offset_sec` when it has one,
+ * else the global default PLAYBACK_OFFSET_MIN (minutes) that the caller passes in.
+ */
+export function recorderOffset(recorder: Pick<Recorder, 'clock_offset_sec'>, defaultMin: number): ClockOffset {
+  return recorder.clock_offset_sec === null ? { offsetMin: defaultMin } : { offsetSec: recorder.clock_offset_sec }
+}
 
 /** What looking at recordings needs: cctv.playback (search, calendar, 1x playback) or cctv.export (fast playback is a savable file, D-6a). */
 export type RecordingCapability = 'cctv.playback' | 'cctv.export'
 
 /**
- * The camera if this person holds the capability for it (and it and its store are switched on), and the NVR password unless it is not
- * needed. Without the capability the answer is "Camera not found.", the same as for a camera that does not exist (P2-1, AC-2).
+ * The camera if this person holds the capability for it (and it and its location are switched on), the recorder of its active mapping,
+ * and that NVR's password unless it is not needed. Without the capability the answer is "Camera not found.", the same as for a camera
+ * that does not exist (P2-1, AC-2).
  */
 export async function findCamera(
   deps: PlaybackDeps,
@@ -113,69 +125,59 @@ export async function findCamera(
     if (!allowed.ok) return { ok: false, error: MSG_READ_CAMERA }
     if (!allowed.allowed) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
   }
-  // Only then the NVR address and login, with the service role: signed-in people cannot read them any more (AC-10).
-  const found = await deps.admin
-    .from('cameras')
-    .select('id, name, channel, store_id:location_id, recorder_id, stores:locations!inner(code, nvr_ip, http_port, rtsp_port, nvr_username, is_active)')
-    .eq('id', id)
-    .eq('org_id', o.orgId)
-    .eq('is_active', true)
-    .is('archived_at', null)
-    .eq('stores.is_active', true)
-    .maybeSingle()
-  if (found.error) {
-    logger.error({ event: 'playback_camera_read_failed', errorCode: found.error.code })
-    return { ok: false, error: MSG_READ_CAMERA }
-  }
-  const row = found.data as unknown as CameraRow | null
-  if (!row || !row.stores || !row.stores.nvr_ip) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
-  const camera = row as Found['camera']
-  // Owner addition: a switched-off NVR is never contacted (no login read, no NVR or go2rtc request). Until P2-5b, recordings are reached
-  // through the location's primary NVR only (seam D5-7): a camera of another NVR of the location is not opened through the wrong box.
-  let route
+  // Only then the camera's route, with the service role: the recorder of its ACTIVE mapping, with that NVR's address and login, which
+  // signed-in people cannot read (AC-10).
+  let answer: RouteAnswer | undefined
   try {
-    route = await legacyReachable(deps.admin, o.orgId, [{ id: camera.id, location_id: camera.store_id, recorder_id: camera.recorder_id }])
+    answer = (await resolveCameraRoutes(deps.admin, o.orgId, [id])).get(id)
   } catch {
+    logger.error({ event: 'playback_camera_read_failed' })
     return { ok: false, error: MSG_READ_CAMERA }
   }
-  if (route.off.has(camera.id)) return { ok: false, error: MSG_MONITORING_OFF }
-  if (!route.usable.has(camera.id)) return { ok: false, error: MSG_RECORDINGS_UNREACHABLE }
+  if (!answer) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
+  // Owner addition: a switched-off NVR is never contacted (no login read, no NVR or go2rtc request). A camera without an active
+  // mapping is reached through no NVR at all (never a guessed one).
+  if (answer.kind === 'off') return { ok: false, error: MSG_MONITORING_OFF }
+  if (answer.kind === 'unmapped') return { ok: false, error: MSG_NOT_MAPPED }
+  const { camera, recorder } = answer.route
+  if (!recorder.host) return { ok: false, error: MSG_NOT_MAPPED }
 
-  const demo = o.password === 'unless-demo' && isDemoStore({ code: camera.stores.code, nvr_ip: camera.stores.nvr_ip }, o.env ?? process.env)
-  if (demo) return { ok: true, camera, password: null, demo }
-  const { data, error } = await deps.admin.rpc('nvr_read_credential', { p_store: camera.store_id })
-  if (error) {
-    logger.error({ event: 'playback_credential_failed', store: camera.stores.code, errorCode: error.code })
-    return { ok: false, error: await recorderMessage(deps.rls, camera.store_id, MSG_READ_LOGIN, 'credential_read_failed') }
+  const demo = o.password === 'unless-demo' && isDemoRecorder(recorder, o.env ?? process.env)
+  if (demo) return { ok: true, camera, recorder, password: null, demo }
+  const read = await readRecorderPassword(deps.admin, recorder.id)
+  if (!read.ok) {
+    logger.error({ event: 'playback_credential_failed', location: camera.code, recorder: recorder.id, errorCode: read.code })
+    return { ok: false, error: await recorderMessage(deps.rls, recorder.id, MSG_READ_LOGIN, 'credential_read_failed') }
   }
-  if (typeof data !== 'string' || data === '') return { ok: false, error: await recorderMessage(deps.rls, camera.store_id, MSG_NO_LOGIN, 'no_saved_login') }
-  return { ok: true, camera, password: data, demo }
+  if (!read.password) return { ok: false, error: await recorderMessage(deps.rls, recorder.id, MSG_NO_LOGIN, 'no_saved_login') }
+  return { ok: true, camera, recorder, password: read.password, demo }
 }
 
 // ── NVR and credential trouble, for whom (P2-2 fix round 1, I-2) ──────────────
-// Which login is saved, whether the NVR refused it, whether it answered: recorder information, for people with the IT view of the
-// camera's store (it.inventory.view or it.monitoring.view covering the location, asked as the person). Everybody else gets one
-// message in camera terms. The kind of trouble is always logged on the server (never its text).
+// Which login is saved, whether the NVR refused it, whether it answered: recorder information, for people with the IT view of THAT
+// recorder (it.inventory.view or it.monitoring.view at organisation, region, cluster, location or recorder scope — the same rule as
+// it_view_recorder_ids, review I-1 — asked as the person). Everybody else gets one message in camera terms. The kind of trouble is
+// always logged on the server (never its text).
 export const MSG_RECORDINGS_UNREACHABLE = 'The recordings of this camera cannot be reached right now.'
 
-/** Whether the person has the IT view of the store (whole location or the organisation), asked in the database. */
-export async function recorderDetailsAllowed(rls: AdminClient, storeId: string): Promise<boolean> {
+/** Whether the person has the IT view of the recorder (has_capability_for(…, 'recorder', id)), asked in the database. */
+export async function recorderDetailsAllowed(rls: AdminClient, recorderId: string): Promise<boolean> {
   for (const cap of IT_VIEW) {
-    const r = await locationFor(rls, cap, storeId)
+    const r = await recorderFor(rls, cap, recorderId)
     if (r.ok && r.allowed) return true
   }
   return false
 }
 
-/** `specific` for a person with the IT view of the store, the camera-terms message for everybody else. */
-export async function recorderMessage(rls: AdminClient, storeId: string, specific: string, kind: string): Promise<string> {
+/** `specific` for a person with the IT view of the recorder, the camera-terms message for everybody else. */
+export async function recorderMessage(rls: AdminClient, recorderId: string, specific: string, kind: string): Promise<string> {
   logger.warn({ event: 'recorder_problem', kind })
-  return (await recorderDetailsAllowed(rls, storeId)) ? specific : MSG_RECORDINGS_UNREACHABLE
+  return (await recorderDetailsAllowed(rls, recorderId)) ? specific : MSG_RECORDINGS_UNREACHABLE
 }
 
 /** NVR trouble in plain words (camera terms without the IT view). Anything unexpected is logged by its kind only: its text can carry an address or a password. */
-async function nvrFailure(e: unknown, event: string, rls: AdminClient, storeId: string): Promise<{ ok: false; error: string }> {
-  if (e instanceof NvrError) return { ok: false, error: await recorderMessage(rls, storeId, describeNvrError(e), `nvr_${e.kind}`) }
+async function nvrFailure(e: unknown, event: string, rls: AdminClient, recorderId: string): Promise<{ ok: false; error: string }> {
+  if (e instanceof NvrError) return { ok: false, error: await recorderMessage(rls, recorderId, describeNvrError(e), `nvr_${e.kind}`) }
   logger.error({ event, errorName: e instanceof Error ? e.name : typeof e })
   return { ok: false, error: MSG_READ_RECORDINGS }
 }
@@ -191,12 +193,12 @@ export async function listRecordedDays(deps: LookupDeps, actor: Who, cameraId: s
   if (deps.limiter && !deps.limiter.allow(actor.id)) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
   const c = await findCamera(deps, cameraId, { password: 'always', capability: 'cctv.playback', orgId: actor.orgId })
   if (!c.ok) return c
-  const { camera, password } = c
+  const { camera, recorder, password } = c
   try {
-    const client = (deps.nvr ?? defaultNvr)({ host: camera.stores.nvr_ip, port: camera.stores.http_port, username: camera.stores.nvr_username, password: password! })
+    const client = (deps.nvr ?? defaultNvr)({ host: recorder.host!, port: recorder.http_port, username: recorder.username, password: password! })
     return { ok: true, days: await recordedDays(client, { channel: camera.channel, year, month }) }
   } catch (e) {
-    return await nvrFailure(e, 'playback_days_failed', deps.rls, camera.store_id)
+    return await nvrFailure(e, 'playback_days_failed', deps.rls, recorder.id)
   }
 }
 
@@ -216,10 +218,11 @@ export async function listDaySegments(
   if (deps.limiter && !deps.limiter.allow(actor.id)) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
   const c = await findCamera(deps, cameraId, { password: 'always', capability: 'cctv.playback', orgId: actor.orgId })
   if (!c.ok) return c
-  const { camera, password } = c
+  const { camera, recorder, password } = c
   try {
-    const client = (deps.nvr ?? defaultNvr)({ host: camera.stores.nvr_ip, port: camera.stores.http_port, username: camera.stores.nvr_username, password: password! })
-    const found = await findSegments(client, { channel: camera.channel, day, offsetMin })
+    const client = (deps.nvr ?? defaultNvr)({ host: recorder.host!, port: recorder.http_port, username: recorder.username, password: password! })
+    // The recorder's own clock offset when it has one (P2-5b), else the default `offsetMin`.
+    const found = await findSegments(client, { channel: camera.channel, day, ...recorderOffset(recorder, offsetMin) })
     return {
       ok: true,
       segments: found.segments.map((s) => ({ start: s.start.toISOString(), end: s.end.toISOString() })), // only the times: never `uri`
@@ -227,7 +230,7 @@ export async function listDaySegments(
       skipped: found.skipped,
     }
   } catch (e) {
-    return await nvrFailure(e, 'playback_segments_failed', deps.rls, camera.store_id)
+    return await nvrFailure(e, 'playback_segments_failed', deps.rls, recorder.id)
   }
 }
 
@@ -256,8 +259,7 @@ export async function openPlayback(deps: OpenPlaybackDeps, actor: Who, cameraId:
 
   const c = await findCamera(deps, cameraId, { password: 'unless-demo', env: deps.env, capability: 'cctv.playback', orgId: actor.orgId })
   if (!c.ok) return c
-  const { camera, password, demo } = c
-  const store = camera.stores
+  const { camera, recorder, password, demo } = c
   try {
     let unreadable = 0
     for (let shift = 0; shift < MAX_START_SHIFTS; shift++) {
@@ -275,7 +277,10 @@ export async function openPlayback(deps: OpenPlaybackDeps, actor: Who, cameraId:
       if (busy) continue
       const src = demo
         ? demoSource(camera.channel, `${camera.id}:${s}`)
-        : buildPlaybackUrl({ host: store.nvr_ip, port: store.rtsp_port, username: store.nvr_username, password: password!, channel: camera.channel, start: new Date(s * 1000), end: new Date(e * 1000), offsetMin })
+        : buildPlaybackUrl({
+            host: recorder.host!, port: recorder.rtsp_port, username: recorder.username, password: password!, channel: camera.channel,
+            start: new Date(s * 1000), end: new Date(e * 1000), ...recorderOffset(recorder, offsetMin),
+          })
       await deps.go2rtc.register(name, src, { keepExisting: demo })
       const token = signStreamToken({ u: actor.id, c: camera.id, k: 'pb', exp: Math.floor(now() / 1000) + TOKEN_LIFETIME_SEC, s, e }, secret)
       // Streams nobody has watched for a long time are removed from go2rtc (at most once a minute; never waits, never fails the request).
@@ -285,7 +290,7 @@ export async function openPlayback(deps: OpenPlaybackDeps, actor: Who, cameraId:
     }
     return { ok: false, error: MSG_TOO_BUSY }
   } catch {
-    logger.error({ event: 'open_playback_failed', store: store.code, channel: camera.channel }) // no address, no error text: they can carry a password
+    logger.error({ event: 'open_playback_failed', location: camera.code, recorder: recorder.id, channel: camera.channel }) // no address, no error text: they can carry a password
     return { ok: false, error: MSG_UNAVAILABLE }
   }
 }

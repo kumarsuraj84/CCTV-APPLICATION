@@ -111,11 +111,12 @@ export const holdsNothing = (c: Capabilities): boolean => Object.keys(c.grants).
 /**
  * Display only: whether the summary covers one camera for a capability (organisation; its location covered whole by a location,
  * cluster or region grant; its recorder; or the camera itself). Used for lists and links; the operation behind the link checks again
- * in the database (lib/auth/resource.ts). `store_id` is the camera's location id (the old field name, kept until P2-5b).
+ * in the database (lib/auth/resource.ts). The hierarchy is never recomputed here: `coveredLocations` and `recorderCameras` come from the
+ * database's expansion (my_access_summary); tests/integration/capability-parity.test.ts compares the answers with has_capability_for.
  */
-export function coversCamera(c: Capabilities, cap: Capability, camera: { id: string; store_id: string }): boolean {
+export function coversCamera(c: Capabilities, cap: Capability, camera: { id: string; location_id: string }): boolean {
   const s = c.grants[cap]
-  return !!s && (s.organization || covered(s).includes(camera.store_id) || s.cameras.includes(camera.id) || (s.recorderCameras ?? []).includes(camera.id))
+  return !!s && (s.organization || covered(s).includes(camera.location_id) || s.cameras.includes(camera.id) || (s.recorderCameras ?? []).includes(camera.id))
 }
 
 /** Display only: whether a whole location is covered for any of the capabilities (organisation, region, cluster or location scope). */
