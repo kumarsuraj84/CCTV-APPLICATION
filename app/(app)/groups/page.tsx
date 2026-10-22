@@ -6,8 +6,9 @@ import { buttonVariants } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { deleteGroupAction } from '@/lib/actions/groups'
-import { canManageGroups, isAdminRole } from '@/lib/admin/roles'
-import { requireProfile } from '@/lib/auth/profile'
+import { hasGroupEditingAuthority, isAdminRole } from '@/lib/admin/roles'
+import { CCTV_CAPABILITIES, holds } from '@/lib/auth/capabilities'
+import { requireCapability } from '@/lib/auth/profile'
 import { LIVE_WALL_ENABLED, liveWallHref } from '@/lib/groups/live-wall'
 import { listVisibleGroups } from '@/lib/queries/groups'
 import { cn } from '@/lib/utils'
@@ -15,11 +16,17 @@ import { createClient } from '@/lib/supabase/server'
 
 export const metadata = { title: 'Camera groups' }
 
+// P2-2: any CCTV capability opens this page (groups show only cameras the person may see); changing groups needs the operator or
+// administrator role AND cctv.live; the live wall link needs a camera the person may watch live.
 export default async function GroupsPage() {
-  const profile = await requireProfile()
+  const profile = await requireCapability(CCTV_CAPABILITIES)
   const supabase = await createClient()
-  const groups = await listVisibleGroups(supabase)
-  const canManage = canManageGroups(profile.role)
+  const [groups, liveCounts] = await Promise.all([
+    listVisibleGroups(supabase),
+    holds(profile.capabilities, 'cctv.live') ? listVisibleGroups(supabase, { capabilities: profile.capabilities, capability: 'cctv.live' }) : Promise.resolve([]),
+  ])
+  const liveCount = new Map(liveCounts.map((g) => [g.id, g.camera_count]))
+  const canManage = hasGroupEditingAuthority(profile.role) && holds(profile.capabilities, 'cctv.live')
   return (
     <div className="space-y-4">
       <PageHeader title="Camera groups" description="Sets of cameras you can look at together, for example all the entrance doors." />
@@ -45,7 +52,7 @@ export default async function GroupsPage() {
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  {LIVE_WALL_ENABLED && g.camera_count > 0 && (
+                  {LIVE_WALL_ENABLED && (liveCount.get(g.id) ?? 0) > 0 && (
                     <Link href={liveWallHref(g.id)} className={cn(buttonVariants({ size: 'sm' }))}>Open live wall</Link>
                   )}
                   <Link href={`/groups/${g.id}`} className={cn(buttonVariants({ size: 'sm', variant: 'outline' }))}>{canManage ? 'Open and change' : 'Open'}</Link>

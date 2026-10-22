@@ -1,71 +1,115 @@
 import { describe, expect, it } from 'vitest'
-import { ROLES } from '@/lib/admin/roles'
+import { ROLES, type Role } from '@/lib/admin/roles'
 import { ICONS } from '@/components/layout/icons'
-import { mobileNavFor, NAV, navFor, type Role } from '@/lib/nav'
+import { type Capabilities, type Capability, type ScopeSummary } from '@/lib/auth/capabilities'
+import { homeSections, mobileNavFor, NAV, navFor } from '@/lib/nav'
 
-const hrefs = (role: Role) => navFor(role).map((i) => i.href)
+// P2-2 (directive AC-1/AC-8, brief item 6): navigation follows capabilities, not roles. Roles only add the administrative authority that
+// the admin pages need on top of their admin.* capability. Hiding a link is not a security control: every page and action checks again.
 
-describe('navigation per role', () => {
-  it('a viewer sees monitoring pages only', () => {
-    const h = hrefs('user')
-    expect(h).toEqual(['/home', '/stores', '/devices', '/live', '/playback', '/groups'])
+const ORG: ScopeSummary = { organization: true, locations: [], cameras: [], assets: [] }
+const AT_ONE: ScopeSummary = { organization: false, locations: ['00000000-0000-4000-8000-000000000001'], cameras: [], assets: [] }
+const caps = (list: Capability[], scope: ScopeSummary = AT_ONE): Capabilities => ({ failed: false, grants: Object.fromEntries(list.map((c) => [c, scope])) })
+const NONE = caps([])
+const hrefs = (role: Role, c: Capabilities) => navFor({ role, capabilities: c }).map((i) => i.href)
+
+describe('navigation by capability', () => {
+  it('a person with nothing assigned sees only Home, whatever their role', () => {
+    for (const role of ROLES) expect(hrefs(role, NONE), role).toEqual(['/home'])
   })
 
-  it('an operator and a manager see the same pages as a viewer', () => {
-    expect(hrefs('operator')).toEqual(hrefs('user'))
-    expect(hrefs('manager')).toEqual(hrefs('user'))
+  it('cctv.live shows Live, Stores and Groups; not Playback or Devices', () => {
+    expect(hrefs('user', caps(['cctv.live']))).toEqual(['/home', '/stores', '/live', '/groups'])
   })
 
-  it('every role that can open the app sees Live, Playback and Groups, in the Monitoring group', () => {
-    for (const role of ROLES) {
-      expect(hrefs(role)).toContain('/live')
-      expect(hrefs(role)).toContain('/playback')
-      expect(hrefs(role)).toContain('/groups')
+  it('cctv.playback shows Playback, Stores and Groups; not Live', () => {
+    expect(hrefs('user', caps(['cctv.playback']))).toEqual(['/home', '/stores', '/playback', '/groups'])
+  })
+
+  it('cctv.export alone shows Stores and Groups (it is a CCTV capability) but neither Live nor Playback', () => {
+    expect(hrefs('user', caps(['cctv.export']))).toEqual(['/home', '/stores', '/groups'])
+  })
+
+  it('the IT view shows Devices and Stores, never the CCTV pages', () => {
+    expect(hrefs('user', caps(['it.inventory.view']))).toEqual(['/home', '/stores', '/devices'])
+    expect(hrefs('user', caps(['it.monitoring.view']))).toEqual(['/home', '/stores', '/devices'])
+    expect(hrefs('operator', caps(['it.monitoring.operate']))).toEqual(['/home', '/stores'])
+  })
+
+  it('a Wi-Fi grant shows Stores only', () => {
+    expect(hrefs('user', caps(['wifi.inventory.view']))).toEqual(['/home', '/stores'])
+  })
+
+  it('administrative capabilities show admin pages only together with an administrative role, and never data pages', () => {
+    const adminSet = caps(['admin.users', 'admin.access', 'admin.inventory'], ORG)
+    expect(hrefs('admin', adminSet)).toEqual(['/home', '/admin/users', '/admin/monitoring', '/admin/stores', '/admin/devices', '/admin/import'])
+    expect(hrefs('platform_owner', adminSet)).toEqual(hrefs('admin', adminSet))
+    for (const role of ['user', 'operator', 'manager'] as const) expect(hrefs(role, adminSet), role).toEqual(['/home'])
+  })
+
+  it('each admin page needs its own capability, organisation-wide', () => {
+    expect(hrefs('admin', caps(['admin.users'], ORG))).toEqual(['/home', '/admin/users'])
+    expect(hrefs('admin', caps(['admin.inventory'], ORG))).toEqual(['/home', '/admin/monitoring', '/admin/stores', '/admin/devices', '/admin/import'])
+    expect(hrefs('admin', caps(['admin.access'], ORG))).toEqual(['/home']) // the access screen is reached from Users
+    // An administrator role with no admin.* capability sees no admin page (P2-2 rule: role AND capability).
+    expect(hrefs('admin', caps(['cctv.live'], ORG))).toEqual(['/home', '/stores', '/live', '/groups'])
+  })
+
+  it('the old role rules are gone: a manager or admin role alone opens nothing', () => {
+    expect(hrefs('manager', NONE)).toEqual(['/home'])
+    expect(hrefs('admin', NONE)).toEqual(['/home'])
+  })
+
+  it('a summary that could not be read shows Home only', () => {
+    expect(hrefs('admin', { failed: true, grants: {} })).toEqual(['/home'])
+  })
+
+  it('every item has an icon that exists, and items carry only data (they go to a client component)', () => {
+    for (const item of NAV) {
+      expect(ICONS[item.icon]).toBeDefined()
+      expect(JSON.parse(JSON.stringify(item))).toEqual(item)
     }
-    for (const [href, label] of [['/live', 'Live'], ['/playback', 'Playback'], ['/groups', 'Groups']]) {
-      const item = NAV.find((i) => i.href === href)
-      expect(item).toMatchObject({ label, group: 'Monitoring' })
-      expect(item?.roles).toBeUndefined()
-    }
   })
 
-  it('an admin also sees the admin pages', () => {
-    const h = hrefs('admin')
-    expect(h).toContain('/admin/users')
-    expect(h).toContain('/admin/stores')
-    expect(h).toContain('/admin/devices')
-    expect(h).toContain('/admin/import')
-    expect(h).toContain('/admin/monitoring')
-  })
-
-  it('nobody below an admin sees the Monitoring page', () => {
-    for (const role of ['user', 'operator', 'manager'] as const) expect(hrefs(role)).not.toContain('/admin/monitoring')
-  })
-
-  it('a platform owner sees what an admin sees', () => {
-    expect(hrefs('platform_owner')).toEqual(hrefs('admin'))
-  })
-
-  it('every item has an icon that exists', () => {
-    for (const item of NAV) expect(ICONS[item.icon]).toBeDefined()
-  })
-
-  it('Playback has its own icon and is not on the small mobile bar', () => {
+  it('Live and Playback keep their own icons; Playback is not on the small mobile bar', () => {
+    expect(NAV.find((i) => i.href === '/live')?.icon).toBe('video')
     expect(NAV.find((i) => i.href === '/playback')?.icon).toBe('history')
-    expect(ICONS.history).toBeDefined()
     expect(NAV.find((i) => i.href === '/playback')?.mobile).toBeUndefined()
   })
+})
 
-  it('Live has its own icon', () => {
-    expect(NAV.find((i) => i.href === '/live')?.icon).toBe('video')
-    expect(ICONS.video).toBeDefined()
+// P2-2 brief items 4 and 6: the home page has a CCTV section and an IT section, each only with its capability, and a clear state
+// when nothing is assigned.
+describe('home sections', () => {
+  it('nothing assigned (any role): the "Nothing is assigned" state, no sections, no Check now', () => {
+    for (const role of ROLES) {
+      expect(homeSections({ role, capabilities: NONE }), role).toEqual({ state: 'nothing', cctv: false, it: false, checkNow: false, adminPages: false })
+    }
+  })
+  it('an unreadable summary says so, instead of "nothing assigned"', () => {
+    expect(homeSections({ role: 'admin', capabilities: { failed: true, grants: {} } }).state).toBe('unreadable')
+  })
+  it('CCTV only: the camera section, never the IT one', () => {
+    for (const cap of ['cctv.live', 'cctv.playback', 'cctv.export'] as const) {
+      expect(homeSections({ role: 'user', capabilities: caps([cap]) })).toEqual({ state: 'ok', cctv: true, it: false, checkNow: false, adminPages: false })
+    }
+  })
+  it('IT view only: the IT section; it.monitoring.operate adds Check now', () => {
+    expect(homeSections({ role: 'user', capabilities: caps(['it.inventory.view']) })).toEqual({ state: 'ok', cctv: false, it: true, checkNow: false, adminPages: false })
+    expect(homeSections({ role: 'user', capabilities: caps(['it.monitoring.view', 'it.monitoring.operate']) })).toMatchObject({ it: true, checkNow: true })
+    // Operate without a view: the button, and the state says nothing to show beyond it.
+    expect(homeSections({ role: 'operator', capabilities: caps(['it.monitoring.operate']) })).toEqual({ state: 'nothing', cctv: false, it: false, checkNow: true, adminPages: false })
+  })
+  it('administrative capabilities alone: nothing to monitor, but the admin pages are pointed to', () => {
+    expect(homeSections({ role: 'admin', capabilities: caps(['admin.users'], ORG) })).toEqual({ state: 'nothing', cctv: false, it: false, checkNow: false, adminPages: true })
   })
 })
 
 describe('mobile navigation', () => {
-  it('shows only the pages everybody uses, taken from the same list as the sidebar: Live is on the small bar, Groups is not', () => {
-    for (const role of ['user', 'operator', 'manager', 'admin', 'platform_owner'] as const) {
-      expect(mobileNavFor(role).map((i) => i.href)).toEqual(['/home', '/stores', '/devices', '/live'])
-    }
+  it('shows the small-bar pages the person may use, from the same list as the sidebar', () => {
+    const everything = caps(['cctv.live', 'cctv.playback', 'it.inventory.view'], ORG)
+    expect(mobileNavFor({ role: 'user', capabilities: everything }).map((i) => i.href)).toEqual(['/home', '/stores', '/devices', '/live'])
+    expect(mobileNavFor({ role: 'user', capabilities: caps(['cctv.playback']) }).map((i) => i.href)).toEqual(['/home', '/stores'])
+    expect(mobileNavFor({ role: 'admin', capabilities: NONE }).map((i) => i.href)).toEqual(['/home'])
   })
 })

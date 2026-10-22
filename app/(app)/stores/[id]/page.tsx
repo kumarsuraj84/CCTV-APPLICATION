@@ -6,11 +6,12 @@ import { MonitoringBanner } from '@/components/monitor/MonitoringBanner'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { buttonVariants } from '@/components/ui/button'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { coversCamera, coversLocation, holdsAnyLocationGrant, holdsItView, IT_VIEW } from '@/lib/auth/capabilities'
 import { requireProfile } from '@/lib/auth/profile'
 import { DEVICE_TYPE_LABELS, type DeviceType } from '@/lib/inventory/device-types'
 import { getMonitoringState, uptimeForPage, uptimeSuffix } from '@/lib/monitor/uptime'
 import { getVisibleStore } from '@/lib/queries/inventory'
-import { formatUptime, getStates, isStale, nvrLoginProblem, type StateRow } from '@/lib/queries/status'
+import { cameraReason, formatUptime, getStates, isStale, nvrLoginProblem, type StateRow } from '@/lib/queries/status'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { formatDateTime } from '@/lib/time'
@@ -28,26 +29,37 @@ function Since({ state }: { state: StateRow | undefined }) {
 export default async function StorePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const profile = await requireProfile()
+  if (!holdsAnyLocationGrant(profile.capabilities)) notFound()
   const supabase = await createClient()
   const store = await getVisibleStore(supabase, id)
   if (!store) notFound()
 
+  // P2-2 (AC-4). What is shown follows the person's capabilities; the rows themselves come through their own client (row security),
+  // so a display decision can never reveal data. The NVR status, the login hint and the checker's own words about cameras are IT
+  // information: only with the IT view of this store. Devices: only with an IT view (row security narrows them to the granted assets).
+  // Live / Playback links only where the person may use them; the screens behind them check each camera again in the database.
+  const caps = profile.capabilities
+  const itStore = coversLocation(caps, IT_VIEW, store.id)
+  const devices = holdsItView(caps) ? store.devices : []
+  const cam = (c: { id: string }) => ({ id: c.id, store_id: store.id })
+  const anyLive = store.cameras.some((c) => coversCamera(caps, 'cctv.live', cam(c)))
+
   // Status comes through the person's own client. The ids passed to the uptime function came from rows they may see.
   const admin = createAdminClient()
   const cameraIds = store.cameras.map((c) => c.id)
-  const deviceIds = store.devices.map((d) => d.id)
+  const deviceIds = devices.map((d) => d.id)
   const monitoring = await getMonitoringState(admin)
   const [cameraStates, deviceStates, nvrStates, camUp24, camUp7, devUp24] = await Promise.all([
     getStates(supabase, 'camera', cameraIds),
     getStates(supabase, 'device', deviceIds),
-    getStates(supabase, 'nvr', [id]),
+    itStore ? getStates(supabase, 'nvr', [id]) : Promise.resolve(new Map<string, StateRow>()),
     uptimeForPage(admin, profile.org_id, 'camera', cameraIds, '24h', monitoring),
     uptimeForPage(admin, profile.org_id, 'camera', cameraIds, '7d', monitoring),
     uptimeForPage(admin, profile.org_id, 'device', deviceIds, '24h', monitoring),
   ])
   const nvr = nvrStates.get(id)
   const now = new Date()
-  const loginProblem = monitoring.running && nvrLoginProblem({ nvr, cameraIds, cameraStates, now })
+  const loginProblem = itStore && monitoring.running && nvrLoginProblem({ nvr, cameraIds, cameraStates, now })
   const stale = (st: StateRow | undefined) => !!st && isStale(st.last_checked_at, now)
 
   return (
@@ -55,9 +67,10 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
       {/* Only while monitoring runs: with the checker stopped nothing new will appear. */}
       {monitoring.running && <AutoRefresh busy={false} />}
       <PageHeader title={`${store.code} · ${store.name}`} description={[store.city, store.zone].filter(Boolean).join(' · ')}
-        actions={store.cameras.length > 0 ? <Link href={`/live?store=${store.id}`} className={cn(buttonVariants())}>Watch live</Link> : undefined}
+        actions={anyLive ? <Link href={`/live?store=${store.id}`} className={cn(buttonVariants())}>Watch live</Link> : undefined}
       />
       <MonitoringBanner monitoring={monitoring} />
+      {itStore && (
       <section className="space-y-1 text-sm">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">NVR</span>
@@ -75,6 +88,7 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
           </div>
         )}
       </section>
+      )}
       <section>
         <h2 className="mb-2 font-medium">Cameras ({store.cameras.length})</h2>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
@@ -94,22 +108,30 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
                 <div className="text-muted-foreground">
                   {u24 == null && u7 == null ? 'Uptime: no data yet' : `Uptime 24h ${formatUptime(u24)} · 7d ${formatUptime(u7)}${uptimeSuffix(monitoring)}`}
                 </div>
-                {st?.status === 'down' && st.error && <div className="break-words text-muted-foreground">Reason: {st.error}</div>}
-                <div className="flex flex-wrap gap-x-3 gap-y-1 pt-1">
-                  <Link href={`/live?camera=${c.id}`} className="underline underline-offset-2" aria-label={`Watch ${c.name} live`}>Live</Link>
-                  <Link href={`/playback?camera=${c.id}`} className="underline underline-offset-2" aria-label={`Play back recordings of ${c.name}`}>Playback</Link>
-                </div>
+                {st?.status === 'down' && cameraReason(st.error, { itView: itStore }) && (
+                  <div className="break-words text-muted-foreground">Reason: {cameraReason(st.error, { itView: itStore })}</div>
+                )}
+                {(coversCamera(caps, 'cctv.live', cam(c)) || coversCamera(caps, 'cctv.playback', cam(c))) && (
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 pt-1">
+                    {coversCamera(caps, 'cctv.live', cam(c)) && (
+                      <Link href={`/live?camera=${c.id}`} className="underline underline-offset-2" aria-label={`Watch ${c.name} live`}>Live</Link>
+                    )}
+                    {coversCamera(caps, 'cctv.playback', cam(c)) && (
+                      <Link href={`/playback?camera=${c.id}`} className="underline underline-offset-2" aria-label={`Play back recordings of ${c.name}`}>Playback</Link>
+                    )}
+                  </div>
+                )}
               </div>
             )
           })}
           {store.cameras.length === 0 && <p className="text-sm text-muted-foreground">No cameras to show.</p>}
         </div>
       </section>
-      {store.devices.length > 0 && (
+      {devices.length > 0 && (
         <section>
           <h2 className="mb-2 font-medium">Devices</h2>
           <ul className="space-y-2 text-sm">
-            {store.devices.map((d) => {
+            {devices.map((d) => {
               const st = deviceStates.get(d.id)
               const u24 = devUp24.get(d.id)
               return (

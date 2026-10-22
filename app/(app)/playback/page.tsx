@@ -6,11 +6,13 @@ import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { buttonVariants } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { requireProfile } from '@/lib/auth/profile'
-import { listVisibleStores } from '@/lib/queries/inventory'
+import { holds } from '@/lib/auth/capabilities'
+import { requireCapability } from '@/lib/auth/profile'
+import { cameraFor } from '@/lib/auth/resource'
+import { storesForCapability } from '@/lib/queries/access'
 import { getLiveScope } from '@/lib/queries/live'
 import { parseDay, shownToday } from '@/lib/streams/timeline'
-import { canUseFastPlaybackInterim } from '@/lib/streams/speed'
+import { FAST_PLAYBACK_CAPABILITY } from '@/lib/streams/speed'
 import { fastPlaybackAvailable } from '@/lib/streams/vod'
 import { createClient } from '@/lib/supabase/server'
 import { cn } from '@/lib/utils'
@@ -25,18 +27,20 @@ export default async function PlaybackPage({ searchParams }: { searchParams: Pro
   const sp = await searchParams
   const storeId = one(sp.store)
   const cameraId = one(sp.camera)
-  const profile = await requireProfile()
+  // P2-2: recordings need cctv.playback; the lists hold only cameras the person may play back (the database decides, per camera).
+  const profile = await requireCapability('cctv.playback')
   const supabase = await createClient()
   const today = shownToday(new Date().getTime())
 
   if (cameraId) {
-    const scope = await getLiveScope(supabase, { camera: cameraId })
+    const scope = await getLiveScope(supabase, { camera: cameraId }, 'cctv.playback')
     const camera = scope?.cameras[0]
     if (!scope || !camera) notFound()
     const day = one(sp.day)
-    // Fast playback (2x, 4x, 8x) needs ffmpeg on the server; the answer is remembered for a minute.
-    // Interim: only administrators are offered it; everybody else sees 1x and nothing about ffmpeg.
-    const fastPlayback = !canUseFastPlaybackInterim(profile.role) ? 'hidden' : (await fastPlaybackAvailable()) ? 'available' : 'not-set-up'
+    // Fast playback (2x, 4x, 8x) is a savable file: offered only with cctv.export for this camera (D-6a), and it needs ffmpeg on the
+    // server (the answer is remembered for a minute). Everybody else sees 1x and nothing about ffmpeg.
+    const exportable = holds(profile.capabilities, FAST_PLAYBACK_CAPABILITY) ? await cameraFor(supabase, FAST_PLAYBACK_CAPABILITY, camera.id) : null
+    const fastPlayback = !(exportable?.ok && exportable.allowed) ? 'hidden' : (await fastPlaybackAvailable()) ? 'available' : 'not-set-up'
     return (
       <div className="space-y-4">
         <PageHeader
@@ -44,9 +48,11 @@ export default async function PlaybackPage({ searchParams }: { searchParams: Pro
           description={scope.description}
           breadcrumbs={[{ label: 'Playback', href: '/playback' }, { label: `${camera.storeCode} · ${camera.name}` }]}
           actions={
-            <Link href={`/live?camera=${encodeURIComponent(camera.id)}`} className={cn(buttonVariants({ variant: 'outline' }))}>
-              <Video aria-hidden="true" /> Watch live
-            </Link>
+            camera.canLive ? (
+              <Link href={`/live?camera=${encodeURIComponent(camera.id)}`} className={cn(buttonVariants({ variant: 'outline' }))}>
+                <Video aria-hidden="true" /> Watch live
+              </Link>
+            ) : undefined
           }
         />
         <PlaybackView camera={{ id: camera.id, name: camera.name, storeCode: camera.storeCode }} today={today} initialDay={parseDay(day) ? day! : today} fastPlayback={fastPlayback} />
@@ -55,14 +61,14 @@ export default async function PlaybackPage({ searchParams }: { searchParams: Pro
   }
 
   if (storeId) {
-    const scope = await getLiveScope(supabase, { store: storeId })
+    const scope = await getLiveScope(supabase, { store: storeId }, 'cctv.playback')
     if (!scope) notFound()
     return (
       <div className="space-y-4">
         <PageHeader title={`Playback · ${scope.title}`} description="Choose a camera." breadcrumbs={[{ label: 'Playback', href: '/playback' }, { label: scope.title }]} />
         {scope.cameras.length === 0 ? (
           <div className="rounded-xl border bg-card">
-            <EmptyState icon={Video} title="No cameras to show" description="There are no working cameras here that you can see." />
+            <EmptyState icon={Video} title="No cameras to show" description="There are no working cameras here whose recordings you can play back." />
           </div>
         ) : (
           <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -80,13 +86,13 @@ export default async function PlaybackPage({ searchParams }: { searchParams: Pro
     )
   }
 
-  const stores = (await listVisibleStores(supabase)).filter((s) => s.camera_count > 0)
+  const stores = await storesForCapability(supabase, profile.capabilities, 'cctv.playback')
   return (
     <div className="space-y-4">
       <PageHeader title="Playback" description="Choose a store, then a camera, to look at its recordings." />
       {stores.length === 0 ? (
         <div className="rounded-xl border bg-card">
-          <EmptyState icon={History} title="No stores with cameras" description="You will see a store here once it has a working camera that you can see." />
+          <EmptyState icon={History} title="No stores with cameras" description="You will see a store here once it has a working camera whose recordings you can play back." />
         </div>
       ) : (
         <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">

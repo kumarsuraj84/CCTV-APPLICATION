@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const requireProfile = vi.fn()
 const createClient = vi.fn(async () => ({ tag: 'rls' }))
-const createAdminClient = vi.fn(() => ({ tag: 'admin' }))
+const audit: Record<string, unknown>[] = []
+const adminFake = { tag: 'admin', from: () => ({ insert: async (row: Record<string, unknown>) => (audit.push(row), { error: null }) }) }
+const createAdminClient = vi.fn(() => adminFake)
 const listRecordedDays = vi.fn()
 const listDaySegments = vi.fn()
 const openPlayback = vi.fn()
@@ -18,7 +20,9 @@ vi.mock('@/lib/streams/playback', async (orig) => ({
   openPlayback: (...a: unknown[]) => openPlayback(...a),
 }))
 
-const person = (id: string) => ({ id, org_id: 'o1', role: 'user', email: 'a@b.c', full_name: 'A', is_active: true, must_reset_password: false, store_id: null })
+const SOME = { organization: false, locations: ['l1'], cameras: [], assets: [] }
+const withCaps = (caps: string[]) => ({ failed: false, grants: Object.fromEntries(caps.map((c) => [c, SOME])) })
+const person = (id: string, caps: string[] = ['cctv.live', 'cctv.playback']) => ({ id, org_id: 'o1', role: 'user', email: 'a@b.c', full_name: 'A', is_active: true, must_reset_password: false, store_id: null, capabilities: withCaps(caps) })
 const CAM = '0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a'
 
 describe('playback actions', () => {
@@ -27,6 +31,7 @@ describe('playback actions', () => {
     resetProcessSingletons()
     vi.clearAllMocks()
     vi.unstubAllEnvs()
+    audit.length = 0
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.spyOn(console, 'log').mockImplementation(() => {})
     requireProfile.mockResolvedValue(person('u1'))
@@ -56,7 +61,7 @@ describe('playback actions', () => {
     const [d1, who1, cam1, y, m, off1] = listRecordedDays.mock.calls[0]
     expect([who1, cam1, y, m, off1]).toEqual([{ id: 'u1', orgId: 'o1' }, CAM, 2026, 10, 330])
     expect(d1.rls).toEqual({ tag: 'rls' })
-    expect(d1.admin).toEqual({ tag: 'admin' })
+    expect(d1.admin).toBe(adminFake)
     expect(listDaySegments.mock.calls[0].slice(1)).toEqual([{ id: 'u1', orgId: 'o1' }, CAM, '2026-10-20', 330])
     const [d3, who3, cam3, start, minutes, off3] = openPlayback.mock.calls[0]
     expect([who3, cam3, minutes, off3]).toEqual([{ id: 'u1', orgId: 'o1' }, CAM, 30, 330])
@@ -107,22 +112,53 @@ describe('playback actions', () => {
     expect(await a.listDaySegmentsAction(CAM, '2026-10-20')).toEqual({ ok: false, error: 'The NVR did not answer.' })
   })
 
-  it('opening video shares the 30 a minute count of the live wall; looking at recordings has its own, higher count', async () => {
+  // P2-2 brief item 2 replaces the shared count of ruling R17: live, playback and export each have their own limiter.
+  it('opening a recording has its own count, separate from the live wall; looking at recordings has another', async () => {
     const live = await import('@/lib/actions/streams')
     const a = await import('@/lib/actions/playback')
-    // The live actions need an openStreams that answers; the limiter is what is under test, so a failing open is fine (it still counts).
+    const limits = await import('@/lib/streams/request-limit')
     for (let i = 0; i < 30; i++) await live.openStreamsAction(['c'], 'sub')
     await a.openPlaybackAction(CAM, '2026-10-20T10:00:00Z', 10)
     expect(openPlayback).toHaveBeenCalledTimes(1)
     const deps = openPlayback.mock.calls[0][0] as { limiter: { allow(k: string): boolean } }
-    // The limiter that openPlayback receives is the one the live actions just used up, so the next request of this person is refused.
-    expect(deps.limiter.allow('u1')).toBe(false)
-    expect(deps.limiter.allow('someone-else')).toBe(true)
-    // Browsing has a separate limiter.
+    expect(deps.limiter).toBe(limits.playbackRequestLimiter)
+    expect(deps.limiter.allow('u1')).toBe(true) // the used-up live count does not touch playback
     await a.listRecordedDaysAction(CAM, 2026, 10)
     const lookup = (listRecordedDays.mock.calls[0][0] as { limiter: { allow(k: string): boolean } }).limiter
+    expect(lookup).toBe(limits.lookupRequestLimiter)
     expect(lookup).not.toBe(deps.limiter)
-    expect(lookup.allow('u1')).toBe(true)
+  })
+
+  it('a person without cctv.playback gets "Camera not found." from every action and nothing is asked (P2-2)', async () => {
+    for (const caps of [[], ['cctv.live'], ['cctv.export'], ['it.monitoring.view', 'admin.inventory']]) {
+      requireProfile.mockResolvedValue(person('u1', caps))
+      const a = await import('@/lib/actions/playback')
+      expect(await a.listRecordedDaysAction(CAM, 2026, 10), caps.join()).toEqual({ ok: false, error: 'Camera not found.' })
+      expect(await a.listDaySegmentsAction(CAM, '2026-10-20')).toEqual({ ok: false, error: 'Camera not found.' })
+      expect(await a.openPlaybackAction(CAM, '2026-10-20T10:00:00Z', 10)).toEqual({ ok: false, error: 'Camera not found.' })
+    }
+    expect(createClient).not.toHaveBeenCalled()
+    expect(listRecordedDays).not.toHaveBeenCalled()
+    expect(listDaySegments).not.toHaveBeenCalled()
+    expect(openPlayback).not.toHaveBeenCalled()
+    expect(audit).toEqual([])
+  })
+
+  it('records a search and an opening in the audit log (actor, capability, camera; never the token)', async () => {
+    const a = await import('@/lib/actions/playback')
+    await a.listRecordedDaysAction(CAM, 2026, 10)
+    await a.listDaySegmentsAction(CAM, '2026-10-20')
+    await a.openPlaybackAction(CAM, '2026-10-20T10:00:00Z', 10)
+    expect(audit.map((r) => [r.action, r.actor_id, r.entity_id, (r.detail as { capability: string }).capability])).toEqual([
+      ['cctv_playback_searched', 'u1', CAM, 'cctv.playback'],
+      ['cctv_playback_searched', 'u1', CAM, 'cctv.playback'],
+      ['cctv_playback_opened', 'u1', CAM, 'cctv.playback'],
+    ])
+    expect(JSON.stringify(audit)).not.toContain('"t"')
+    // A refused answer is not an opening.
+    openPlayback.mockResolvedValue({ ok: false, error: 'Camera not found.' })
+    await a.openPlaybackAction(CAM, '2026-10-20T10:00:00Z', 10)
+    expect(audit).toHaveLength(3)
   })
 
   it('an unexpected failure becomes a plain message, without the cause, and the log holds only the kind of error', async () => {

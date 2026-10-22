@@ -4,6 +4,7 @@ import path from 'node:path'
 import { Readable } from 'node:stream'
 import type { ReadableStream as NodeWebStream } from 'node:stream/web'
 import type { AdminClient, Result } from '@/lib/admin/types'
+import { auditAccess } from '@/lib/auth/access-audit'
 import { describeNvrError, MAX_DOWNLOAD_BYTES, MAX_DOWNLOAD_MS, NvrClient, NvrError, type NvrEndpoint } from '@/lib/nvr/client'
 import { findSegments } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
@@ -603,7 +604,7 @@ export type VodDeps = {
   /** The person's own signed-in client: whatever it can read is what they may see. */
   rls: AdminClient
   admin: AdminClient
-  /** The shared count of video requests per person. */
+  /** The export count of video requests per person (lib/streams/request-limit.ts exportRequestLimiter). */
   limiter?: RequestLimiter
   conversions?: ConversionLimiter
   nvr?: (ep: NvrEndpoint) => NvrClient
@@ -654,7 +655,15 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
 
   // Fast playback hands over a savable MP4, so it needs cctv.export for the camera (decision D-6a; P2-1).
   const c = await findCamera(deps, query.camera, { password: 'always', capability: 'cctv.export', orgId: actor.orgId })
-  if (!c.ok) return cameraFailure(c.error)
+  if (!c.ok) {
+    // A camera the person may not export (or that does not exist) is recorded as a refusal (P2-2, brief item 7).
+    if (c.error === MSG_CAMERA_NOT_FOUND) await auditAccess(deps.admin, { orgId: actor.orgId, actorId: actor.id, action: 'cctv_export_denied', capability: 'cctv.export', cameraIds: [query.camera], detail: { reason: 'camera' } })
+    return cameraFailure(c.error)
+  }
+  const exported = { orgId: actor.orgId, actorId: actor.id, capability: 'cctv.export' as const, cameraIds: [c.camera.id] }
+  // "ended" is written only after "started", and only for a conversion that started (the process can end before this code goes on).
+  const audit = { started: null as Promise<void> | null, exited: false }
+  const auditEnded = () => void audit.started?.then(() => auditAccess(deps.admin, { ...exported, action: 'cctv_export_ended' }))
   const { camera, password } = c
   const store = camera.stores
   if (signal?.aborted) return new Response(null, { status: 499 })
@@ -739,6 +748,8 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
       onExit: () => {
         signal?.removeEventListener('abort', forward)
         slot?.release()
+        audit.exited = true
+        auditEnded()
       },
       maxMs: deps.timing?.maxMs,
       firstByteMs: deps.timing?.firstByteMs,
@@ -755,6 +766,9 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
       if (converted.reason === 'format') return fail(502, MSG_FORMAT_UNSUPPORTED)
       return fail(502, MSG_CONVERT_FAILED)
     }
+    audit.started = auditAccess(deps.admin, { ...exported, action: 'cctv_export_started', detail: { minutes: query.minutes } })
+    if (audit.exited) auditEnded()
+    await audit.started
     return new Response(converted.body, { status: 200, headers: { ...HEADERS, 'Content-Type': 'video/mp4' } })
   } finally {
     if (!handedOver) {

@@ -252,6 +252,33 @@ describe('fast playback (/api/vod)', () => {
       expect(nvr.requests).toHaveLength(0)
       expect(spawn.calls).toHaveLength(0)
     })
+
+    // P2-2 brief item 7: vod start / end / denied are audited (actor, capability, camera), never the address, the token or a password.
+    it('records the start, the end and a refusal in the audit log', async () => {
+      const person = await createUser(orgId, 'user')
+      await grant(orgId, person.id, WITH_EXPORT, atCamera(a1))
+      const rows = async () => (await admin().from('admin_audit_log').select('action, entity_id, detail').eq('actor_id', person.id).order('created_at')).data ?? []
+      expect((await get(person, a2)).status).toBe(404)
+      const ok = await get(person, a1)
+      expect(ok.status).toBe(200)
+      await readAll(ok)
+      await waitFor(() => limits.running === 0)
+      let seen = await rows()
+      for (let i = 0; i < 100 && !seen.some((r) => r.action === 'cctv_export_ended'); i++) {
+        await new Promise((r) => setTimeout(r, 50))
+        seen = await rows()
+      }
+      expect(seen.map((r) => [r.action, r.entity_id])).toEqual([
+        ['cctv_export_denied', a2],
+        ['cctv_export_started', a1],
+        ['cctv_export_ended', a1],
+      ])
+      for (const r of seen) expect((r.detail as { capability: string }).capability).toBe('cctv.export')
+      expect(JSON.stringify(seen)).not.toMatch(/127\.0\.0\.1|rtsp|password|token/i)
+      // The probe is no export: nothing is recorded for it.
+      await get(person, a1, { more: '&probe=1' })
+      expect((await rows()).length).toBe(3)
+    })
   })
 
   describe('plain errors', () => {

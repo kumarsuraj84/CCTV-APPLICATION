@@ -15,6 +15,8 @@ export type UserRowData = {
   must_reset_password: boolean
   manageable: boolean
   is_self: boolean
+  /** P2-2: the Access link only for an administrator who also holds admin.access (the access page needs it). */
+  access_editable?: boolean
 }
 
 const ROLE_NAMES: Record<string, string> = { user: 'Viewer', operator: 'Operator', manager: 'Manager', admin: 'Administrator', platform_owner: 'Platform owner' }
@@ -48,7 +50,7 @@ export function UserRow({ u }: { u: UserRowData }) {
         <td className="px-3 py-2">{!u.is_active ? 'Deactivated' : u.must_reset_password ? 'Waiting for first sign-in' : 'Active'}</td>
         <td className="space-x-2 px-3 py-2 text-right">
           {/* Every role gets its access from grants now, managers too (AC-8). */}
-          {u.manageable && (
+          {u.manageable && u.access_editable !== false && (
             <Link href={`/admin/users/${u.id}/access`} className="text-sm underline">Access</Link>
           )}
           {u.manageable && !u.is_self && (

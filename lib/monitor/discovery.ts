@@ -1,6 +1,7 @@
-import { addAudit } from '@/lib/admin/audit'
 import { isAdminRole } from '@/lib/admin/roles'
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
+import { auditAccess } from '@/lib/auth/access-audit'
+import { locationFor } from '@/lib/auth/resource'
 import { realProbes } from '@/lib/monitor/probes'
 import type { Probes } from '@/lib/monitor/types'
 import { describeNvrError } from '@/lib/nvr/client'
@@ -9,18 +10,32 @@ import { sanitizeError } from '@/lib/observability/sanitize-error'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_NAME = 200
 
+const DENIED = 'Only administrators can look for cameras.'
+
 /**
  * Reads the camera list from the store's NVR and saves names and addresses. Cameras are matched by (store, channel), so their ids stay the same.
  * Nothing is deleted. One attempt only: a refused login is reported, never retried (a wrong password must not lock the NVR account).
+ *
+ * Who (P2-2): an administrative role (admin / platform owner) AND admin.inventory covering this store, asked as the person
+ * (has_capability_for(admin.inventory, 'location', store): admin.inventory is organisation-wide, so this also proves the store is in
+ * the person's organisation). Only then are the NVR address and password read with the service role, scoped to the organisation.
  */
 export async function discoverStoreCameras(
-  admin: AdminClient,
+  clients: { admin: AdminClient; rls: AdminClient },
   actor: Actor,
   storeId: string,
   deps: { nvr: Probes['nvr'] } = { nvr: realProbes.nvr },
 ): Promise<Result<{ cameras: number; created: number; updated: number }>> {
-  if (!isAdminRole(actor.role)) return { ok: false, error: 'Only administrators can look for cameras.' }
-  if (!UUID.test(storeId)) return { ok: false, error: 'Store not found.' }
+  if (!isAdminRole(actor.role)) return { ok: false, error: DENIED }
+  if (typeof storeId !== 'string' || !UUID.test(storeId)) return { ok: false, error: 'Store not found.' }
+  const allowed = await locationFor(clients.rls, 'admin.inventory', storeId)
+  if (!allowed.ok) return { ok: false, error: allowed.error }
+  if (!allowed.allowed) {
+    // A store of another organisation (or none) and a person without admin.inventory: told apart only by what they could know anyway.
+    const exists = await clients.admin.from('stores').select('id').eq('id', storeId).eq('org_id', actor.orgId).maybeSingle()
+    return { ok: false, error: exists.data ? DENIED : 'Store not found.' }
+  }
+  const admin = clients.admin
   const { data: store, error: storeError } = await admin
     .from('stores')
     .select('id, nvr_ip, http_port, nvr_username')
@@ -70,6 +85,6 @@ export async function discoverStoreCameras(
 
   const created = rows.filter((r) => !known.has(r.channel)).length
   const updated = rows.length - created
-  await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'cameras_discovered', entityType: 'store', entityId: store.id, detail: { created, updated } })
+  await auditAccess(admin, { orgId: actor.orgId, actorId: actor.id, action: 'cameras_discovered', capability: 'admin.inventory', locationIds: [store.id], detail: { created, updated } })
   return { ok: true, cameras: rows.length, created, updated }
 }

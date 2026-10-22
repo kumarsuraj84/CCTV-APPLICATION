@@ -1,12 +1,12 @@
 import { ImportForm } from '@/components/admin/ImportForm'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { importDevicesAction, importStoresAction } from '@/lib/actions/admin/inventory'
-import { requireAdmin } from '@/lib/auth/profile'
+import { requireAdministration } from '@/lib/auth/profile'
 
 export const metadata = { title: 'Import' }
 
 export default async function ImportPage() {
-  await requireAdmin()
+  await requireAdministration('admin.inventory') // P2-2: an administrative role AND admin.inventory
   return (
     <div className="space-y-6">
       <PageHeader title="Import" description="Add or update many stores or devices from a CSV file." />

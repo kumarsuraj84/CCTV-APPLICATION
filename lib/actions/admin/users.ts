@@ -2,7 +2,8 @@
 
 import { revalidatePath } from 'next/cache'
 import { createUser, resetUserPassword, setUserAccess, updateUser } from '@/lib/admin/users'
-import { requireAdmin } from '@/lib/auth/profile'
+import type { AdminCapability } from '@/lib/auth/capabilities'
+import { requireAdministration } from '@/lib/auth/profile'
 import { submittedValues } from '@/lib/forms/submitted-values'
 import { createAdminClient } from '@/lib/supabase/admin'
 
@@ -10,8 +11,10 @@ export type CreateUserState = { error?: string; values?: Record<string, string>;
 export type PasswordState = { error?: string; oneTimePassword?: string }
 export type SimpleState = { error?: string; ok?: boolean }
 
-async function ctx() {
-  const p = await requireAdmin()
+// P2-2: people are managed with an administrative role AND admin.users; access with admin.access. canManageRole (in the service)
+// still decides which roles an actor may manage.
+async function ctx(cap: AdminCapability = 'admin.users') {
+  const p = await requireAdministration(cap)
   return { admin: createAdminClient(), actor: { id: p.id, orgId: p.org_id, role: p.role } }
 }
 
@@ -50,7 +53,7 @@ export async function resetPasswordAction(userId: string): Promise<PasswordState
 }
 
 export async function saveAccessAction(userId: string, input: { storeIds: string[]; zones: string[]; cameraIds: string[] }): Promise<SimpleState> {
-  const { admin, actor } = await ctx()
+  const { admin, actor } = await ctx('admin.access')
   const res = await setUserAccess(admin, actor, userId, input)
   revalidatePath(`/admin/users/${userId}/access`)
   return res.ok ? { ok: true } : { error: res.error }

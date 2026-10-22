@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import * as roles from '@/lib/admin/roles'
-import { canManageGroups, canManageRole, canRunChecks, isAdminRole, ROLES } from '@/lib/admin/roles'
+import { canManageRole, hasGroupEditingAuthority, isAdminRole, ROLES } from '@/lib/admin/roles'
 
 // AC-15 (D-16): the human role is "operator"; "agent" is kept free for the endpoint agents of a later phase.
 describe('roles', () => {
@@ -10,6 +10,10 @@ describe('roles', () => {
   })
   it('no role is marked as seeing everything any more (AC-8: access comes only from grants)', () => {
     expect('SEES_EVERYTHING' in roles).toBe(false)
+  })
+  it('P2-2: the interim role rules for actions are gone (check-now needs it.monitoring.operate; groups need cctv.live)', () => {
+    expect('canRunChecks' in roles).toBe(false)
+    expect('canManageGroups' in roles).toBe(false)
   })
 })
 
@@ -29,21 +33,17 @@ describe('canManageRole', () => {
   })
 })
 
-describe('isAdminRole and canRunChecks', () => {
-  it('isAdminRole is true only for admin and platform_owner', () => {
+describe('isAdminRole', () => {
+  it('is true only for admin and platform_owner', () => {
     expect(isAdminRole('admin')).toBe(true)
     expect(isAdminRole('platform_owner')).toBe(true)
     for (const r of ['user', 'operator', 'manager'] as const) expect(isAdminRole(r)).toBe(false)
   })
-  it('operators, admins and owners may request a check; viewers and managers may not', () => {
-    for (const r of ['operator', 'admin', 'platform_owner'] as const) expect(canRunChecks(r)).toBe(true)
-    for (const r of ['user', 'manager'] as const) expect(canRunChecks(r)).toBe(false)
-  })
 })
 
-describe('canManageGroups', () => {
-  it('operators, admins and owners may manage camera groups; viewers and managers may not', () => {
-    for (const r of ['operator', 'admin', 'platform_owner'] as const) expect(canManageGroups(r)).toBe(true)
-    for (const r of ['user', 'manager'] as const) expect(canManageGroups(r)).toBe(false)
+describe('hasGroupEditingAuthority (administrative authority only; the cameras need cctv.live, checked separately)', () => {
+  it('operators, admins and owners have it; viewers and managers do not', () => {
+    for (const r of ['operator', 'admin', 'platform_owner'] as const) expect(hasGroupEditingAuthority(r)).toBe(true)
+    for (const r of ['user', 'manager'] as const) expect(hasGroupEditingAuthority(r)).toBe(false)
   })
 })

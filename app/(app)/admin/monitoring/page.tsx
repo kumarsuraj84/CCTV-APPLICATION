@@ -2,7 +2,8 @@ import { AutoRefresh } from '@/components/monitor/AutoRefresh'
 import { CheckNowButton } from '@/components/monitor/CheckNowButton'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { requireAdmin } from '@/lib/auth/profile'
+import { holds } from '@/lib/auth/capabilities'
+import { requireAdministration } from '@/lib/auth/profile'
 import { getWorkerStatus } from '@/lib/monitor/health'
 import { describeRounds } from '@/lib/monitor/last-checked'
 import { isStale, nvrLoginProblem, type StateRow } from '@/lib/queries/status'
@@ -25,7 +26,9 @@ function plainDuration(sec: number): string {
 }
 
 export default async function MonitoringPage() {
-  const me = await requireAdmin()
+  // P2-2: the checker's page for the whole organisation: an administrative role AND admin.inventory. "Check now" needs it.monitoring.operate.
+  const me = await requireAdministration('admin.inventory')
+  const canCheck = holds(me.capabilities, 'it.monitoring.operate')
   const admin = createAdminClient()
   const now = new Date()
   const since = new Date(now.getTime() - GAP_DAYS * 86_400_000).toISOString()
@@ -84,7 +87,7 @@ export default async function MonitoringPage() {
             <StatusBadge status={worker.ok ? 'up' : 'down'} />
             <span className="text-sm text-muted-foreground">{worker.ok ? 'Running' : 'Not running'}</span>
           </div>
-          <CheckNowButton />
+          {canCheck && <CheckNowButton />}
         </div>
         <dl className="grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
           <dt className="text-muted-foreground">Last sign of life</dt>

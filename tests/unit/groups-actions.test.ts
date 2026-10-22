@@ -26,7 +26,9 @@ vi.mock('@/lib/groups/service', () => ({
 
 import { addByKeywordAction, addCamerasAction, createGroupAction, deleteGroupAction, removeCameraAction } from '@/lib/actions/groups'
 
-const person = (role: string) => ({ id: 'u1', org_id: 'o1', role, email: 'a@b.c', full_name: 'A', is_active: true, must_reset_password: false, store_id: null })
+const LIVE = { failed: false, grants: { 'cctv.live': { organization: false, locations: ['l1'], cameras: [], assets: [] } } }
+const person = (role: string, capabilities: unknown = LIVE) => ({ id: 'u1', org_id: 'o1', role, email: 'a@b.c', full_name: 'A', is_active: true, must_reset_password: false, store_id: null, capabilities })
+const DENIED = 'Changing camera groups needs live view of cameras and the operator or administrator role.'
 const form = (name: string) => {
   const f = new FormData()
   f.set('name', name)
@@ -39,8 +41,15 @@ beforeEach(() => {
 })
 
 describe('group actions check the caller first', () => {
-  it.each(['user', 'manager'])('a %s is refused before any database client is made or any service is called', async (role) => {
-    requireProfile.mockResolvedValue(person(role))
+  // P2-2: the role (operator, admin, platform owner) AND cctv.live somewhere; either alone is refused.
+  it.each([
+    ['user', LIVE],
+    ['manager', LIVE],
+    ['operator', { failed: false, grants: { 'cctv.playback': LIVE.grants['cctv.live'] } }],
+    ['admin', { failed: false, grants: {} }],
+    ['platform_owner', { failed: true, grants: {} }],
+  ])('a %s without both is refused before any database client is made or any service is called', async (role, caps) => {
+    requireProfile.mockResolvedValue(person(role, caps))
     const results = [
       await createGroupAction({}, form('X')),
       await deleteGroupAction('g'),
@@ -48,7 +57,7 @@ describe('group actions check the caller first', () => {
       await addByKeywordAction('g', 'door'),
       await removeCameraAction('g', 'c'),
     ]
-    for (const r of results) expect(r).toEqual({ error: 'Only operators and administrators can change camera groups.' })
+    for (const r of results) expect(r).toEqual({ error: DENIED })
     expect(createClient).not.toHaveBeenCalled()
     expect(createAdminClient).not.toHaveBeenCalled()
     for (const fn of Object.values(service)) expect(fn).not.toHaveBeenCalled()

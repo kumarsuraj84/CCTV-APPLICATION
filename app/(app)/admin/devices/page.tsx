@@ -3,7 +3,7 @@ import { DeleteButton } from '@/components/admin/DeleteButton'
 import { DeviceForm } from '@/components/admin/DeviceForm'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { deleteDeviceAction } from '@/lib/actions/admin/inventory'
-import { requireAdmin } from '@/lib/auth/profile'
+import { requireAdministration } from '@/lib/auth/profile'
 import { DEVICE_TYPE_LABELS, type DeviceType } from '@/lib/inventory/device-types'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { fetchAll } from '@/lib/supabase/fetch-all'
@@ -12,7 +12,7 @@ export const metadata = { title: 'Manage devices' }
 
 export default async function ManageDevicesPage({ searchParams }: { searchParams: Promise<{ edit?: string }> }) {
   const { edit } = await searchParams
-  const me = await requireAdmin()
+  const me = await requireAdministration('admin.inventory') // P2-2: an administrative role AND admin.inventory
   const admin = createAdminClient()
   const [devices, stores] = await Promise.all([
     fetchAll((from, to) => admin.from('devices').select('id, store_id, type, name, ip, tcp_port, notes, enabled').eq('org_id', me.org_id).order('name').order('id').range(from, to)),

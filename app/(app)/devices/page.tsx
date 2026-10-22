@@ -2,7 +2,8 @@ import Link from 'next/link'
 import { MonitoringBanner } from '@/components/monitor/MonitoringBanner'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { requireProfile } from '@/lib/auth/profile'
+import { IT_VIEW } from '@/lib/auth/capabilities'
+import { requireCapability } from '@/lib/auth/profile'
 import { DEVICE_TYPE_LABELS, DEVICE_TYPES, type DeviceType } from '@/lib/inventory/device-types'
 import { getMonitoringState, uptimeForPage, uptimeSuffix } from '@/lib/monitor/uptime'
 import { listVisibleDevices } from '@/lib/queries/inventory'
@@ -15,7 +16,8 @@ export const metadata = { title: 'Devices' }
 
 export default async function DevicesPage({ searchParams }: { searchParams: Promise<{ type?: string }> }) {
   const { type } = await searchParams
-  const profile = await requireProfile()
+  // P2-2 (AC-4): IT devices need it.inventory.view or it.monitoring.view; row security then shows only the granted locations and assets.
+  const profile = await requireCapability(IT_VIEW)
   const active = (DEVICE_TYPES as readonly string[]).includes(type ?? '') ? type : undefined
   const supabase = await createClient()
   const devices = await listVisibleDevices(supabase, active)

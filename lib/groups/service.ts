@@ -1,7 +1,13 @@
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { addAudit } from '@/lib/admin/audit'
-import { canManageGroups, isAdminRole } from '@/lib/admin/roles'
+import { hasGroupEditingAuthority, isAdminRole, MSG_GROUPS_DENIED } from '@/lib/admin/roles'
+import { holds, readCapabilities } from '@/lib/auth/capabilities'
+import { camerasFor } from '@/lib/auth/resource'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
+
+// Who may change camera groups (P2-2, brief item 2): the operator, admin or platform-owner role (administrative authority) AND cctv.live
+// somewhere; every camera added needs cctv.live for that camera (cameras_with_capability, asked as the person). Reading a group is row
+// security (cctv_visible_group_ids: a group shows only cameras the reader may see; its name is hidden when no member is visible).
 
 // Audit actions written here (entity_type 'camera_group', entity_id = the group), named group_<what>_<done>:
 //   group_created              detail { name }
@@ -16,11 +22,18 @@ import { sanitizeError } from '@/lib/observability/sanitize-error'
 // `admin` does the writes (the tables cannot be written through the data API).
 export type GroupDeps = { admin: AdminClient; rls: AdminClient }
 
-const DENIED = 'Only operators and administrators can change camera groups.'
+const DENIED = MSG_GROUPS_DENIED
+
+/** The role, then cctv.live somewhere (read through the person's own client, evaluated by the database). */
+async function mayEdit(deps: GroupDeps, actor: Actor): Promise<Result<object>> {
+  if (!hasGroupEditingAuthority(actor.role)) return { ok: false, error: DENIED }
+  const caps = await readCapabilities(deps.rls)
+  if (caps.failed) return { ok: false, error: 'Could not check your access. Please try again.' }
+  return holds(caps, 'cctv.live') ? { ok: true } : { ok: false, error: DENIED }
+}
 const NOT_FOUND = 'Group not found.'
 const NOT_AVAILABLE = 'Some of those cameras are not available to you.'
 const MAX_PER_REQUEST = 500 // at most this many cameras are added in one go
-const CHUNK = 100 // ids per lookup, so the request address stays short
 const MALFORMED_ID = '22P02' // Postgres: "invalid input syntax" (for example an id that is not a uuid)
 const DUPLICATE = '23505'
 /**
@@ -53,7 +66,8 @@ async function findGroup(deps: GroupDeps, actor: Actor, groupId: string): Promis
 }
 
 export async function createGroup(deps: GroupDeps, actor: Actor, name: string): Promise<Result<{ groupId: string }>> {
-  if (!canManageGroups(actor.role)) return { ok: false, error: DENIED }
+  const may = await mayEdit(deps, actor)
+  if (!may.ok) return may
   const n = cleanName(name)
   if (!n.ok) return n
   const { data, error } = await deps.admin.from('camera_groups').insert({ org_id: actor.orgId, name: n.name, created_by: actor.id }).select('id').single()
@@ -64,7 +78,8 @@ export async function createGroup(deps: GroupDeps, actor: Actor, name: string): 
 }
 
 export async function renameGroup(deps: GroupDeps, actor: Actor, groupId: string, name: string): Promise<Result<object>> {
-  if (!canManageGroups(actor.role)) return { ok: false, error: DENIED }
+  const may = await mayEdit(deps, actor)
+  if (!may.ok) return may
   const n = cleanName(name)
   if (!n.ok) return n
   const found = await findGroup(deps, actor, groupId)
@@ -78,7 +93,8 @@ export async function renameGroup(deps: GroupDeps, actor: Actor, groupId: string
 
 // Only the person who made a group, or an administrator, may delete it.
 export async function deleteGroup(deps: GroupDeps, actor: Actor, groupId: string): Promise<Result<object>> {
-  if (!canManageGroups(actor.role)) return { ok: false, error: DENIED }
+  const may = await mayEdit(deps, actor)
+  if (!may.ok) return may
   const found = await findGroup(deps, actor, groupId)
   if (!found.ok) return found
   const { group } = found
@@ -106,7 +122,8 @@ async function insertItems(deps: GroupDeps, actor: Actor, groupId: string, camer
 
 /** All-or-nothing: if any id is a camera the person may not see (or does not exist), nothing is added and the answer is the same either way. */
 export async function addCameras(deps: GroupDeps, actor: Actor, groupId: string, cameraIds: string[]): Promise<Result<{ added: number }>> {
-  if (!canManageGroups(actor.role)) return { ok: false, error: DENIED }
+  const may = await mayEdit(deps, actor)
+  if (!may.ok) return may
   if (!Array.isArray(cameraIds)) return { ok: false, error: 'Choose at least one camera.' }
   // Ids that differ only by capital letters are the same camera, so they are lower-cased before they are counted.
   const ids = [...new Set(cameraIds.map((id) => (typeof id === 'string' ? id.trim().toLowerCase() : '')))]
@@ -114,18 +131,11 @@ export async function addCameras(deps: GroupDeps, actor: Actor, groupId: string,
   if (ids.length > MAX_PER_REQUEST) return { ok: false, error: `Add at most ${MAX_PER_REQUEST} cameras at a time.` }
   const found = await findGroup(deps, actor, groupId)
   if (!found.ok) return found
-  let visible = 0
-  for (let i = 0; i < ids.length; i += CHUNK) {
-    const chunk = ids.slice(i, i + CHUNK)
-    const { data, error } = await deps.rls.from('cameras').select('id').in('id', chunk)
-    if (error) {
-      // A malformed id is the caller's mistake, shown as the same plain refusal; anything else is a real failure.
-      if (error.code === MALFORMED_ID) return { ok: false, error: NOT_AVAILABLE }
-      return { ok: false, error: sanitizeError(error, { route: 'addCameras.check', fallback: 'Could not check the cameras.' }) }
-    }
-    visible += data?.length ?? 0
-  }
-  if (visible !== ids.length) return { ok: false, error: NOT_AVAILABLE }
+  // Every camera must be one the person may watch live (cctv.live, asked as the person). A malformed id, a camera that does not exist and
+  // one they may only see or play back all get the same plain refusal.
+  const allowed = await camerasFor(deps.rls, 'cctv.live', ids)
+  if (!allowed.ok) return { ok: false, error: 'Could not check the cameras.' }
+  if (allowed.ids.length !== ids.length) return { ok: false, error: NOT_AVAILABLE }
   return insertItems(deps, actor, groupId, ids, 'group_cameras_added', { count: ids.length })
 }
 
@@ -135,7 +145,8 @@ const escapeRegex = (s: string): string => s.replace(/[\\^$.*+?()[\]{}|]/g, '\\$
 
 /** Adds the cameras the person can see whose name contains the keyword (any capitals), at most 500. `truncated` says more than 500 matched. */
 export async function addCamerasByKeyword(deps: GroupDeps, actor: Actor, groupId: string, keyword: string): Promise<Result<{ added: number; truncated: boolean }>> {
-  if (!canManageGroups(actor.role)) return { ok: false, error: DENIED }
+  const may = await mayEdit(deps, actor)
+  if (!may.ok) return may
   const word = typeof keyword === 'string' ? keyword.trim() : ''
   if (!word) return { ok: false, error: 'Enter a word to look for in the camera names.' }
   if (word.length > 100) return { ok: false, error: 'The word can be at most 100 characters.' }
@@ -150,14 +161,18 @@ export async function addCamerasByKeyword(deps: GroupDeps, actor: Actor, groupId
     .order('id')
     .limit(MAX_PER_REQUEST + 1)
   if (error) return { ok: false, error: sanitizeError(error, { route: 'addCamerasByKeyword', fallback: 'Could not look up the cameras.' }) }
+  // Of the matches (cameras the person may see), only those they may watch live are added. The 500 cap is applied to the matches first.
   const matched = (data ?? []).map((c) => c.id)
   const truncated = matched.length > MAX_PER_REQUEST
-  const res = await insertItems(deps, actor, groupId, matched.slice(0, MAX_PER_REQUEST), 'group_cameras_added_by_keyword', { keyword: word })
+  const live = await camerasFor(deps.rls, 'cctv.live', matched.slice(0, MAX_PER_REQUEST))
+  if (!live.ok) return { ok: false, error: 'Could not check the cameras.' }
+  const res = await insertItems(deps, actor, groupId, live.ids, 'group_cameras_added_by_keyword', { keyword: word })
   return res.ok ? { ok: true, added: res.added, truncated } : res
 }
 
 export async function removeCamera(deps: GroupDeps, actor: Actor, groupId: string, cameraId: string): Promise<Result<object>> {
-  if (!canManageGroups(actor.role)) return { ok: false, error: DENIED }
+  const may = await mayEdit(deps, actor)
+  if (!may.ok) return may
   const found = await findGroup(deps, actor, groupId)
   if (!found.ok) return found
   // The person's own view of the items only contains cameras they may see, so a hidden camera cannot be removed (or detected).

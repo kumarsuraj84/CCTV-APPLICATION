@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireAdmin } from '@/lib/auth/profile'
+import { requireAdministration } from '@/lib/auth/profile'
 import { importDevices, importStores, type ImportResult } from '@/lib/import/apply'
 import { parseDevicesCsv } from '@/lib/import/devices-csv'
 import { parseStoresCsv, type RowError } from '@/lib/import/stores-csv'
@@ -14,8 +14,9 @@ import { createAdminClient } from '@/lib/supabase/admin'
 export type FormResult = { error?: string; ok?: boolean; values?: Record<string, string> }
 export type ImportState = { result?: ImportResult; parseErrors?: RowError[]; error?: string }
 
+// P2-2: stores, devices and imports need an administrative role AND admin.inventory (the services still check the role as authority).
 async function ctx() {
-  const p = await requireAdmin()
+  const p = await requireAdministration('admin.inventory')
   return { admin: createAdminClient(), actor: { id: p.id, orgId: p.org_id, role: p.role } }
 }
 

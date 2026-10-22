@@ -5,9 +5,9 @@ import { LiveWall } from '@/components/live/LiveWall'
 import { buttonVariants } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { requireProfile } from '@/lib/auth/profile'
+import { requireCapability } from '@/lib/auth/profile'
+import { storesForCapability } from '@/lib/queries/access'
 import { listVisibleGroups } from '@/lib/queries/groups'
-import { listVisibleStores } from '@/lib/queries/inventory'
 import { getLiveScope } from '@/lib/queries/live'
 import { createClient } from '@/lib/supabase/server'
 import { cn } from '@/lib/utils'
@@ -19,18 +19,19 @@ const one = (v: string | string[] | undefined): string | undefined => (typeof v 
 export default async function LivePage({ searchParams }: { searchParams: Promise<{ store?: string | string[]; group?: string | string[]; camera?: string | string[] }> }) {
   const sp = await searchParams
   const query = { store: one(sp.store), group: one(sp.group), camera: one(sp.camera) }
-  await requireProfile()
+  // P2-2: live video needs cctv.live; the wall shows only cameras the person may watch live (the database decides, per camera).
+  const profile = await requireCapability('cctv.live')
   const supabase = await createClient()
 
   if (query.store || query.group || query.camera) {
-    const scope = await getLiveScope(supabase, query)
+    const scope = await getLiveScope(supabase, query, 'cctv.live')
     if (!scope) notFound()
     return (
       <div className="space-y-4">
         <PageHeader title={scope.title} description={scope.description} breadcrumbs={[{ label: 'Live', href: '/live' }, { label: scope.title }]} />
         {scope.cameras.length === 0 ? (
           <div className="rounded-xl border bg-card">
-            <EmptyState icon={Video} title="No cameras to show" description="There are no working cameras here that you can see." />
+            <EmptyState icon={Video} title="No cameras to show" description="There are no working cameras here that you can watch live." />
           </div>
         ) : (
           <LiveWall cameras={scope.cameras} />
@@ -39,8 +40,12 @@ export default async function LivePage({ searchParams }: { searchParams: Promise
     )
   }
 
-  const [stores, groups] = await Promise.all([listVisibleStores(supabase), listVisibleGroups(supabase)])
-  const withCameras = stores.filter((s) => s.camera_count > 0)
+  // Only stores and groups with a camera the person may watch live, counted that way.
+  const [stores, groups] = await Promise.all([
+    storesForCapability(supabase, profile.capabilities, 'cctv.live'),
+    listVisibleGroups(supabase, { capabilities: profile.capabilities, capability: 'cctv.live' }),
+  ])
+  const withCameras = stores
   const usableGroups = groups.filter((g) => g.camera_count > 0)
   return (
     <div className="space-y-6">
@@ -66,7 +71,7 @@ export default async function LivePage({ searchParams }: { searchParams: Promise
               <li key={g.id}>
                 <Link href={`/live?group=${encodeURIComponent(g.id)}`} className="flex flex-col rounded-lg border bg-card p-3 text-sm hover:bg-muted/50">
                   <span className="break-words font-medium">{g.name}</span>
-                  <span className="text-muted-foreground">{g.camera_count} {g.camera_count === 1 ? 'camera' : 'cameras'} you can see</span>
+                  <span className="text-muted-foreground">{g.camera_count} {g.camera_count === 1 ? 'camera' : 'cameras'} you can watch</span>
                 </Link>
               </li>
             ))}
@@ -78,7 +83,7 @@ export default async function LivePage({ searchParams }: { searchParams: Promise
         <h2 id="live-stores" className="text-sm font-semibold">Stores</h2>
         {withCameras.length === 0 ? (
           <div className="rounded-xl border bg-card">
-            <EmptyState icon={Video} title="No stores with cameras" description="You will see a store here once it has a working camera that you can see." />
+            <EmptyState icon={Video} title="No stores with cameras" description="You will see a store here once it has a working camera that you can watch live." />
           </div>
         ) : (
           <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">

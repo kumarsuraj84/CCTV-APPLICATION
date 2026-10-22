@@ -4,15 +4,17 @@ import { StoreForm } from '@/components/admin/StoreForm'
 import { FindCamerasButton } from '@/components/monitor/FindCamerasButton'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { deleteStoreAction } from '@/lib/actions/admin/inventory'
-import { requireAdmin } from '@/lib/auth/profile'
+import { requireAdministration } from '@/lib/auth/profile'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 
 export const metadata = { title: 'Manage stores' }
 
+// P2-2: an administrative role AND admin.inventory. Only then are the NVR addresses and logins of the organisation read (service role,
+// scoped to the organisation); the NVR password is never read here.
 export default async function ManageStoresPage({ searchParams }: { searchParams: Promise<{ edit?: string }> }) {
   const { edit } = await searchParams
-  const me = await requireAdmin()
+  const me = await requireAdministration('admin.inventory')
   const admin = createAdminClient()
   const stores = await fetchAll((from, to) =>
     admin.from('stores').select('id, code, name, city, zone, state, address, nvr_ip, rtsp_port, http_port, nvr_username, expected_channels, is_active').eq('org_id', me.org_id).order('code').range(from, to),

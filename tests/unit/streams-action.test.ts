@@ -44,7 +44,9 @@ describe('createWindowLimiter', () => {
 
 const requireProfile = vi.fn()
 const createClient = vi.fn(async () => ({ tag: 'rls' }))
-const createAdminClient = vi.fn(() => ({ tag: 'admin' }))
+const audit: Record<string, unknown>[] = []
+const adminFake = { tag: 'admin', from: () => ({ insert: async (row: Record<string, unknown>) => (audit.push(row), { error: null }) }) }
+const createAdminClient = vi.fn(() => adminFake)
 const openStreams = vi.fn()
 
 vi.mock('@/lib/auth/profile', () => ({ requireProfile: () => requireProfile() }))
@@ -52,13 +54,18 @@ vi.mock('@/lib/supabase/server', () => ({ createClient: () => createClient() }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => createAdminClient() }))
 vi.mock('@/lib/streams/open', async (orig) => ({ ...(await orig<typeof import('@/lib/streams/open')>()), openStreams: (...a: unknown[]) => openStreams(...a) }))
 
-const person = (id: string) => ({ id, org_id: 'o1', role: 'user', email: 'a@b.c', full_name: 'A', is_active: true, must_reset_password: false, store_id: null })
+const SOME = { organization: false, locations: ['l1'], cameras: [], assets: [] }
+const person = (id: string, caps: string[] = ['cctv.live']) => ({
+  id, org_id: 'o1', role: 'user', email: 'a@b.c', full_name: 'A', is_active: true, must_reset_password: false, store_id: null,
+  capabilities: { failed: false, grants: Object.fromEntries(caps.map((c) => [c, SOME])) },
+})
 
 describe('stream actions', () => {
   beforeEach(() => {
     vi.resetModules()
     resetProcessSingletons()
     vi.clearAllMocks()
+    audit.length = 0
     vi.spyOn(console, 'error').mockImplementation(() => {})
     openStreams.mockResolvedValue({ ok: true, streams: [] })
   })
@@ -82,10 +89,33 @@ describe('stream actions', () => {
     expect(ids).toEqual(['c1', 'c2'])
     expect(kind).toBe('main')
     expect(deps.rls).toEqual({ tag: 'rls' })
-    expect(deps.admin).toEqual({ tag: 'admin' })
+    expect(deps.admin).toBe(adminFake)
   })
 
-  it('allows 30 requests a minute per person (both actions share the count), then asks them to wait', async () => {
+  it('P2-2: a person without cctv.live gets the same empty answer as for cameras they may not watch, and nothing is opened or asked', async () => {
+    const { openStreamsAction, refreshStreamTokensAction } = await import('@/lib/actions/streams')
+    for (const caps of [[], ['cctv.playback'], ['cctv.export'], ['cctv.playback', 'cctv.export', 'it.monitoring.view', 'admin.inventory']]) {
+      requireProfile.mockResolvedValue(person('u1', caps))
+      expect(await openStreamsAction(['c1'], 'sub'), caps.join()).toEqual({ ok: true, streams: [] })
+      expect(await refreshStreamTokensAction(['c1'], 'main')).toEqual({ ok: true, streams: [] })
+    }
+    expect(createClient).not.toHaveBeenCalled()
+    expect(createAdminClient).not.toHaveBeenCalled()
+    expect(openStreams).not.toHaveBeenCalled()
+  })
+
+  it('records an opening (not the 8-minute token refresh) with the cameras opened and the kind, never a token', async () => {
+    requireProfile.mockResolvedValue(person('u1'))
+    openStreams.mockResolvedValue({ ok: true, streams: [{ cameraId: 'c1', name: 'N', storeCode: 'S', channel: 1, token: 'secret-token', kind: 'sub' }] })
+    const { openStreamsAction, refreshStreamTokensAction } = await import('@/lib/actions/streams')
+    await openStreamsAction(['c1', 'c2'], 'sub')
+    await refreshStreamTokensAction(['c1'], 'sub')
+    expect(audit).toHaveLength(1)
+    expect(audit[0]).toMatchObject({ action: 'cctv_live_opened', actor_id: 'u1', org_id: 'o1', entity_id: 'c1', detail: { capability: 'cctv.live', cameraIds: ['c1'], count: 1, kind: 'sub' } })
+    expect(JSON.stringify(audit)).not.toContain('secret-token')
+  })
+
+  it('allows 30 requests a minute per person (both live actions share the live count), then asks them to wait', async () => {
     requireProfile.mockResolvedValue(person('u1'))
     const { openStreamsAction, refreshStreamTokensAction } = await import('@/lib/actions/streams')
     for (let i = 0; i < 30; i++) expect((i % 2 ? await refreshStreamTokensAction(['c'], 'sub') : await openStreamsAction(['c'], 'sub')).ok).toBe(true)

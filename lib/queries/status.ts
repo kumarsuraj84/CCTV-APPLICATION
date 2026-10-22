@@ -65,6 +65,22 @@ export function formatUptime(pct: number | null | undefined): string {
   return `${Math.floor(pct * 10 + 1e-9) / 10}%`
 }
 
+// ── Why a camera is offline, for whom (P2-2 ruling on review note 4) ─────────
+// Camera status is camera availability, so everybody who may see the camera sees that it is offline and why in camera terms. The
+// checker's own words name recorder internals (refused logins, saved addresses and passwords, login methods), which are IT information:
+// they are shown only to people with the IT view of the camera's location. Everybody else sees "Recorder not reachable." when the
+// camera's NVR is down (the text lib/monitor/checks.ts writes with cause nvr_down), otherwise "The camera is not responding.".
+export const MSG_RECORDER_NOT_REACHABLE = 'Recorder not reachable.'
+export const MSG_CAMERA_NOT_RESPONDING = 'The camera is not responding.'
+/** The text lib/monitor/checks.ts stores for a camera whose NVR is known to be down. */
+export const NVR_DOWN_CAMERA_ERROR = 'The NVR is not reachable.'
+
+export function cameraReason(error: string | null | undefined, o: { itView: boolean }): string | null {
+  if (!error) return null
+  if (o.itView) return error
+  return error === NVR_DOWN_CAMERA_ERROR ? MSG_RECORDER_NOT_REACHABLE : MSG_CAMERA_NOT_RESPONDING
+}
+
 // Cameras are checked every 5 minutes and the NVR every minute; these allow a few missed rounds before anything is called stale.
 const CAMERA_STALE_MS = 15 * 60_000
 const NVR_STALE_MS = 5 * 60_000

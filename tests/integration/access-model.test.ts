@@ -489,6 +489,9 @@ describe('capability access model (P2-1)', () => {
 
     // Trying the hidden group's name gives the same plain answer as any other taken name, and never its name.
     const other = await createUser(orgA, 'operator')
+    // P2-2: making a group needs cctv.live somewhere; here for a camera outside the hidden group, which therefore stays hidden.
+    await grant(orgA, other.id, 'cctv.live', atCamera(c22))
+    expect(await rows(other, 'camera_groups')).not.toContain(grp!.id)
     const actor: Actor = { id: other.id, orgId: orgA, role: 'operator' }
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     const res = await createGroup({ admin: admin(), rls: other.client }, actor, name)
@@ -622,6 +625,8 @@ describe('capability access model (P2-1)', () => {
       it_view_store_ids: people,
       it_view_device_ids: people,
       cctv_visible_group_ids: people,
+      // P2-2: the caller's capability summary (one call per request). Signed-in people only: the service role is nobody.
+      my_access_summary: ['authenticated'],
       grant_access: server,
       revoke_grant: server,
       replace_user_grants: server,
@@ -679,7 +684,7 @@ describe('capability access model (P2-1)', () => {
     const forPeople = new Set([
       'current_org_id', 'current_user_role', 'monitor_stale_after_minutes', 'mfa_enforced', 'has_capability', 'has_capability_for',
       'capability_camera_ids', 'capability_store_ids', 'capability_device_ids', 'any_cctv_camera_ids', 'cameras_with_capability',
-      'any_grant_store_ids', 'it_view_store_ids', 'it_view_device_ids', 'cctv_visible_group_ids',
+      'any_grant_store_ids', 'it_view_store_ids', 'it_view_device_ids', 'cctv_visible_group_ids', 'my_access_summary',
     ])
     for (const f of data ?? []) {
       expect(f.grantees.filter((g) => g === 'anon' || g.startsWith('PUBLIC')), `${f.name}(${f.args})`).toEqual([])

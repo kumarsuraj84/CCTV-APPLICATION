@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/server'
 import { readVerifiedUserId } from '@/lib/auth/verified-user'
 import type { Role } from '@/lib/nav'
 import { isAdminRole } from '@/lib/admin/roles'
+import { holdsAny, holdsOrgWide, readCapabilities, type AdminCapability, type Capabilities, type Capability } from '@/lib/auth/capabilities'
 
 export type CurrentProfile = {
   id: string
@@ -15,11 +16,16 @@ export type CurrentProfile = {
   is_active: boolean
   must_reset_password: boolean
   store_id: string | null
+  /** What this person may do right now, read once per request from the database (P2-2; lib/auth/capabilities.ts). */
+  capabilities: Capabilities
 }
 
 const COLUMNS = 'id, org_id, email, full_name, role, is_active, must_reset_password, store_id'
 
-/** The signed-in person's profile, or null. Uses the id the proxy verified, and checks the session itself when there is none. */
+/**
+ * The signed-in person's profile with their capability summary, or null. Uses the id the proxy verified, and checks the session itself
+ * when there is none. Cached for the request, so the summary is read once however many gates ask.
+ */
 export const getCurrentProfile = cache(async (): Promise<CurrentProfile | null> => {
   const verified = readVerifiedUserId(await headers())
   const supabase = await createClient()
@@ -29,7 +35,9 @@ export const getCurrentProfile = cache(async (): Promise<CurrentProfile | null> 
   else userId = (await supabase.auth.getUser()).data.user?.id ?? null
   if (!userId) return null
   const { data } = await supabase.from('profiles').select(COLUMNS).eq('id', userId).maybeSingle()
-  return data && data.is_active ? (data as CurrentProfile) : null
+  if (!data || !data.is_active) return null
+  const capabilities = await readCapabilities(supabase)
+  return { ...(data as Omit<CurrentProfile, 'capabilities'>), capabilities }
 })
 
 /** For pages and actions that need a signed-in person who has already chosen their own password. */
@@ -40,8 +48,24 @@ export async function requireProfile(): Promise<CurrentProfile> {
   return profile
 }
 
-export async function requireAdmin(): Promise<CurrentProfile> {
+/**
+ * Page gate: the person holds at least one of the capabilities, at any scope; everybody else is sent home (where the home page says
+ * what they have). Not a per-resource decision: the page then reads through the person's own client, and each operation checks its
+ * camera / location / asset in the database (lib/auth/resource.ts).
+ */
+export async function requireCapability(caps: Capability | readonly Capability[]): Promise<CurrentProfile> {
   const profile = await requireProfile()
-  if (!isAdminRole(profile.role)) redirect('/home')
+  if (!holdsAny(profile.capabilities, typeof caps === 'string' ? [caps] : caps)) redirect('/home')
+  return profile
+}
+
+/** Administrative authority (role admin / platform_owner) AND the admin capability for the whole organisation (P2-2 rule). */
+export const mayAdminister = (profile: Pick<CurrentProfile, 'role' | 'capabilities'>, cap: AdminCapability): boolean =>
+  isAdminRole(profile.role) && holdsOrgWide(profile.capabilities, cap)
+
+/** Gate for the admin pages and admin actions. */
+export async function requireAdministration(cap: AdminCapability): Promise<CurrentProfile> {
+  const profile = await requireProfile()
+  if (!mayAdminister(profile, cap)) redirect('/home')
   return profile
 }

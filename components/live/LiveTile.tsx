@@ -7,7 +7,8 @@ import { gatewayBase, gatewaySocketUrl, QUICK_RETRY_MS, RETRY_EVERY_MS } from '@
 import { cn } from '@/lib/utils'
 import { loadPlayer, startPlayer } from './player'
 
-export type TileCamera = { id: string; name: string; storeCode: string; channel: number; status: Status | null; stale: boolean }
+/** `canPlayback`: the person may play back this camera's recordings (P2-2); the large picture offers Playback only then. */
+export type TileCamera = { id: string; name: string; storeCode: string; channel: number; status: Status | null; stale: boolean; canPlayback?: boolean }
 
 // Read here so the build inlines it for the browser (only NEXT_PUBLIC_ names reach client code).
 const GATEWAY = gatewayBase(process.env.NEXT_PUBLIC_STREAM_GATEWAY_URL)

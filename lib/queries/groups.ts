@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
+import { coversCamera, type Capabilities, type Capability } from '@/lib/auth/capabilities'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 
 type Client = SupabaseClient<Database>
@@ -12,21 +13,29 @@ const MALFORMED_ID = '22P02'
 
 export type GroupListItem = { id: string; name: string; created_by: string | null; camera_count: number }
 
-export async function listVisibleGroups(supabase: Client): Promise<GroupListItem[]> {
+/**
+ * The groups the person may see, each with the number of working cameras in it they may see. With `only`, the count is of the cameras
+ * open to the person for that capability (the live index counts cameras they may watch live; a display decision from the request's
+ * summary, P2-2: opening the wall checks each camera again in the database).
+ */
+export async function listVisibleGroups(supabase: Client, only?: { capabilities: Capabilities; capability: Capability }): Promise<GroupListItem[]> {
   const groups = await fetchAll((from, to) => supabase.from('camera_groups').select('id, name, created_by').order('name').order('id').range(from, to))
   if (groups.length === 0) return []
-  const items = await fetchAll((from, to) =>
+  const items = (await fetchAll((from, to) =>
     supabase
       .from('camera_group_items')
-      .select('group_id, camera_id, cameras!inner(is_active, stores!inner(is_active))')
+      .select('group_id, camera_id, cameras!inner(store_id, is_active, stores!inner(is_active))')
       .eq('cameras.is_active', true)
       .eq('cameras.stores.is_active', true)
       .order('group_id')
       .order('camera_id')
       .range(from, to),
-  )
+  )) as unknown as { group_id: string; camera_id: string; cameras: { store_id: string } }[]
   const counts = new Map<string, number>()
-  for (const i of items) counts.set(i.group_id, (counts.get(i.group_id) ?? 0) + 1)
+  for (const i of items) {
+    if (only && !coversCamera(only.capabilities, only.capability, { id: i.camera_id, store_id: i.cameras.store_id })) continue
+    counts.set(i.group_id, (counts.get(i.group_id) ?? 0) + 1)
+  }
   return groups.map((g) => ({ id: g.id, name: g.name, created_by: g.created_by, camera_count: counts.get(g.id) ?? 0 }))
 }
 

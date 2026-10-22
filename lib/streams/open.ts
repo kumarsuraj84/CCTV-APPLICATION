@@ -1,5 +1,6 @@
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { mapLimit } from '@/lib/async/pool'
+import { camerasFor } from '@/lib/auth/resource'
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 import type { Go2rtcClient } from '@/lib/streams/go2rtc'
@@ -54,12 +55,9 @@ export async function openStreams(
   // The person's own client decides which cameras they may watch live (cctv.live; P2-1, directive AC-2): a camera they may not watch
   // simply does not come back. Only for those, the NVR address and login are read with the service role (they are not readable by
   // signed-in people any more, AC-10), and only in the person's own organisation.
-  const allowed = await deps.rls.rpc('cameras_with_capability', { p_cap: 'cctv.live', p_ids: wanted })
-  if (allowed.error) {
-    logger.error({ event: 'open_streams_check_failed', errorCode: allowed.error.code })
-    return { ok: false, error: MSG_FAILED }
-  }
-  const mayWatch = (allowed.data as unknown as string[] | null) ?? []
+  const allowed = await camerasFor(deps.rls, 'cctv.live', wanted)
+  if (!allowed.ok) return { ok: false, error: MSG_FAILED }
+  const mayWatch = allowed.ids
   if (mayWatch.length === 0) return { ok: true, streams: [] }
   const found = await deps.admin
     .from('cameras')

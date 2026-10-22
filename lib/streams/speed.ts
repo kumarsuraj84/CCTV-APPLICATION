@@ -1,13 +1,11 @@
-import { isAdminRole, type Role } from '@/lib/admin/roles'
-
 // Fast playback in the browser: the speeds offered and the address of the video route. No server code here, so the Playback screen can use it.
 
 /**
- * INTERIM rule: until the capability model exists, only administrators and platform owners may use fast playback (the route /api/vod, its
- * probe, and the 2x/4x/8x choice on the Playback screen). This is the one place that decides it; the capability rewiring replaces it here.
+ * Fast playback (2x/4x/8x: the route /api/vod, its probe, and the speed choice on the Playback screen) hands over a savable MP4, so it
+ * needs cctv.export for the camera (decision D-6a; P2-2 replaced the interim administrators-only rule). 1x playback needs cctv.playback.
  */
-export const canUseFastPlaybackInterim = (role: Role): boolean => isAdminRole(role)
-export const MSG_FAST_NOT_FOR_YOU = 'Fast playback is not available for your account yet.'
+export const FAST_PLAYBACK_CAPABILITY = 'cctv.export' as const
+export const MSG_FAST_NOT_FOR_YOU = 'Fast playback is not available for your account.'
 
 /** 1x uses the video gateway (go2rtc); the others use /api/vod, which needs ffmpeg on the server. */
 export const SPEEDS = [1, 2, 4, 8] as const

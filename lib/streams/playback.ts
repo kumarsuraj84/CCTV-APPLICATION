@@ -1,4 +1,5 @@
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
+import { cameraFor } from '@/lib/auth/resource'
 import { describeNvrError, NvrClient, NvrError, type NvrEndpoint } from '@/lib/nvr/client'
 import { findSegments, recordedDays } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
@@ -104,12 +105,9 @@ export async function findCamera(
   if (typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
   const id = cameraId.toLowerCase()
   // The person's own client answers whether they may use this camera for recordings.
-  const allowed = await deps.rls.rpc('has_capability_for', { p_cap: o.capability, p_kind: 'camera', p_id: id })
-  if (allowed.error) {
-    logger.error({ event: 'playback_camera_check_failed', errorCode: allowed.error.code })
-    return { ok: false, error: MSG_READ_CAMERA }
-  }
-  if (allowed.data !== true) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
+  const allowed = await cameraFor(deps.rls, o.capability, id)
+  if (!allowed.ok) return { ok: false, error: MSG_READ_CAMERA }
+  if (!allowed.allowed) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
   // Only then the NVR address and login, with the service role: signed-in people cannot read them any more (AC-10).
   const found = await deps.admin
     .from('cameras')

@@ -77,6 +77,8 @@ describe('camera groups', () => {
     // administrator has the administrator set (organisation-wide CCTV, and admin.inventory for other people's empty groups).
     await grantTo(orgId, manager.id, READ_EVERYTHING)
     await grantTo(orgId, adminUser.id, ADMINISTRATOR_SET)
+    // P2-2: the other organisation's administrator may edit groups in their own organisation (live view there), never ours.
+    await grantTo(otherOrg, outsider.id, ADMINISTRATOR_SET)
     const made = await createGroup(deps(adminUser), actorOf(adminUser, orgId, 'admin'), 'Everything')
     if (!made.ok) throw new Error(made.error)
     wide = made.groupId
@@ -130,6 +132,60 @@ describe('camera groups', () => {
       const cam = await addCamera(otherOrg, foreign.data!.id, 1, 'Foreign')
       const res = await admin().from('camera_group_items').insert({ org_id: orgId, group_id: wide, camera_id: cam })
       expect(res.error?.code).toBe('23503')
+    })
+  })
+
+  // P2-2 (brief item 2): group management needs the operator, admin or platform-owner role AND cctv.live for every camera added.
+  describe('capabilities', () => {
+    let pbOperator: TestUser, mixedOperator: TestUser, itOperator: TestUser
+    beforeAll(async () => {
+      pbOperator = await createUser(orgId, 'operator')
+      mixedOperator = await createUser(orgId, 'operator')
+      itOperator = await createUser(orgId, 'operator')
+      await grantTo(orgId, pbOperator.id, 'cctv.playback', atLocation(sA))
+      await grantTo(orgId, mixedOperator.id, 'cctv.live', atLocation(sA))
+      await grantTo(orgId, mixedOperator.id, 'cctv.playback', atLocation(sB))
+      await grantTo(orgId, itOperator.id, ['it.inventory.view', 'it.monitoring.view', 'it.monitoring.operate'])
+    })
+
+    it('an operator without cctv.live anywhere cannot make a group, and nothing is written', async () => {
+      for (const u of [pbOperator, itOperator]) {
+        const res = await createGroup(deps(u), actorOf(u, orgId, 'operator'), 'No live view')
+        expect(res).toEqual({ ok: false, error: 'Changing camera groups needs live view of cameras and the operator or administrator role.' })
+      }
+      expect((await admin().from('camera_groups').select('id').eq('org_id', orgId).eq('name', 'No live view')).data).toEqual([])
+    })
+
+    it('cameras the person may see but not watch live cannot be added: the whole request is refused', async () => {
+      const actor = actorOf(mixedOperator, orgId, 'operator')
+      const made = await createGroup(deps(mixedOperator), actor, 'Live only')
+      if (!made.ok) throw new Error(made.error)
+      expect(await addCameras(deps(mixedOperator), actor, made.groupId, [a1, b1])).toEqual({ ok: false, error: 'Some of those cameras are not available to you.' })
+      expect(await addCameras(deps(mixedOperator), actor, made.groupId, [b1])).toEqual({ ok: false, error: 'Some of those cameras are not available to you.' })
+      expect(await addCameras(deps(mixedOperator), actor, made.groupId, [a1])).toEqual({ ok: true, added: 1 })
+    })
+
+    it('adding by keyword takes only cameras the person may watch live', async () => {
+      const actor = actorOf(mixedOperator, orgId, 'operator')
+      const made = await createGroup(deps(mixedOperator), actor, 'Doors live')
+      if (!made.ok) throw new Error(made.error)
+      // "door" matches Front Door, Back door (store A, live) and Entrance DOOR (store B, playback only).
+      const res = await addCamerasByKeyword(deps(mixedOperator), actor, made.groupId, 'door')
+      expect(res).toEqual({ ok: true, added: 2, truncated: false })
+      expect((await admin().from('camera_group_items').select('camera_id').eq('group_id', made.groupId)).data!.map((r) => r.camera_id).sort()).toEqual(sorted([a1, a2]))
+    })
+
+    it('a person who loses cctv.live can no longer change their group', async () => {
+      const p = await createUser(orgId, 'operator')
+      const [g] = await grantTo(orgId, p.id, 'cctv.live', atLocation(sA))
+      await grantTo(orgId, p.id, 'cctv.playback', atLocation(sA))
+      const actor = actorOf(p, orgId, 'operator')
+      const made = await createGroup(deps(p), actor, 'Revoked later')
+      if (!made.ok) throw new Error(made.error)
+      expect((await addCameras(deps(p), actor, made.groupId, [a1])).ok).toBe(true)
+      await admin().rpc('revoke_grant', { p_org: orgId, p_user: p.id, p_grant_ids: [g], p_reason: 'test' })
+      expect((await addCameras(deps(p), actor, made.groupId, [a2])).ok).toBe(false)
+      expect((await renameGroup(deps(p), actor, made.groupId, 'New name')).ok).toBe(false)
     })
   })
 
@@ -348,7 +404,8 @@ describe('camera groups', () => {
       const before = await itemIds(adminUser, wide)
       for (const [u, role] of [[viewerA, 'user'], [manager, 'manager']] as const) {
         const res = await removeCamera(deps(u), actorOf(u, orgId, role), wide, a1)
-        expect(res).toEqual({ ok: false, error: 'Only operators and administrators can change camera groups.' })
+        // P2-2: the message names both conditions (the role and live view of cameras).
+        expect(res).toEqual({ ok: false, error: 'Changing camera groups needs live view of cameras and the operator or administrator role.' })
       }
       expect(await itemIds(adminUser, wide)).toEqual(before)
       const { data } = await admin().from('admin_audit_log').select('id').eq('org_id', orgId).eq('entity_id', wide).eq('action', 'group_camera_removed')

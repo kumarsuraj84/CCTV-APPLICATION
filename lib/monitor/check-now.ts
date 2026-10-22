@@ -1,7 +1,11 @@
-import { addAudit } from '@/lib/admin/audit'
-import { canRunChecks } from '@/lib/admin/roles'
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
+import { auditAccess } from '@/lib/auth/access-audit'
+import { coversSomeLocation } from '@/lib/auth/resource'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
+
+/** `rls`: the person's own signed-in client (their capability is asked as them); `admin`: the worker state and the audit entry. */
+export type CheckNowDeps = { admin: AdminClient; rls: AdminClient }
+export const MSG_CHECK_NOT_ALLOWED = 'You are not allowed to start a check.'
 
 /** The worker beats every 5 seconds; no beat for 30 seconds means it is not running (the same rule as lib/monitor/health.ts). */
 const WORKER_ALIVE_SEC = 30
@@ -12,7 +16,9 @@ export const COOLDOWN_MS = 30_000
 /**
  * Asks the worker to check everything now. The worker picks the request up within a few seconds.
  *
- * Only operators, administrators and platform owners may ask; this is checked first. While a running worker already has a request WAITING
+ * Only people holding it.monitoring.operate for the organisation or for at least one whole location may ask (P2-2; asked as the person,
+ * capability_store_ids; the role does not matter); this is checked first. The checker runs for everything, so the request reveals
+ * nothing: each person still sees only the results their own grants show. While a running worker already has a request WAITING
  * (asked, and no run has begun since), a new request is not recorded (`alreadyOnTheWay`): it would only ask for the same thing twice.
  * A run that is merely RUNNING does not block a request: the worker repeats the check when it was asked after the run began, which is what
  * someone who has just fixed a password in the middle of a run needs. Within COOLDOWN_MS after a run finished a request is refused.
@@ -21,8 +27,11 @@ export const COOLDOWN_MS = 30_000
  * `clock` is the time used for these decisions (tests pass their own). The request itself is stamped by the database (monitor_request_check),
  * never by the clock of the web server.
  */
-export async function requestCheckNow(admin: AdminClient, actor: Actor, clock: () => number = Date.now): Promise<Result<{ alreadyOnTheWay?: true }>> {
-  if (!canRunChecks(actor.role)) return { ok: false, error: 'You are not allowed to start a check.' }
+export async function requestCheckNow(deps: CheckNowDeps, actor: Actor, clock: () => number = Date.now): Promise<Result<{ alreadyOnTheWay?: true }>> {
+  const allowed = await coversSomeLocation(deps.rls, 'it.monitoring.operate')
+  if (!allowed.ok) return { ok: false, error: allowed.error }
+  if (!allowed.allowed) return { ok: false, error: MSG_CHECK_NOT_ALLOWED }
+  const admin = deps.admin
   const fail = (error: unknown) => ({
     ok: false as const,
     error: sanitizeError(error, { route: 'requestCheckNow', fallback: 'Could not ask for a check. Please try again.' }),
@@ -50,6 +59,6 @@ export async function requestCheckNow(admin: AdminClient, actor: Actor, clock: (
   // same clock in practice (both machines keep time in sync), so comparing them is harmless, but they are not guaranteed to be.
   const { error } = await admin.rpc('monitor_request_check')
   if (error) return fail(error)
-  await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'check_requested' })
+  await auditAccess(admin, { orgId: actor.orgId, actorId: actor.id, action: 'check_requested', capability: 'it.monitoring.operate' })
   return { ok: true }
 }

@@ -3,13 +3,15 @@ import { UserRow } from '@/components/admin/UserRow'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { canManageRole, ROLES } from '@/lib/admin/roles'
 import { listStoresForAccess, listUsers } from '@/lib/admin/users'
-import { requireAdmin } from '@/lib/auth/profile'
+import { mayAdminister, requireAdministration } from '@/lib/auth/profile'
 import { createAdminClient } from '@/lib/supabase/admin'
 
 export const metadata = { title: 'Users' }
 
+// P2-2: an administrative role AND admin.users; the Access links also need admin.access.
 export default async function UsersPage() {
-  const me = await requireAdmin()
+  const me = await requireAdministration('admin.users')
+  const accessEditable = mayAdminister(me, 'admin.access')
   const admin = createAdminClient()
   const [users, stores] = await Promise.all([
     listUsers(admin, me.org_id),
@@ -29,7 +31,7 @@ export default async function UsersPage() {
             {users.map((u) => (
               <UserRow
                 key={u.id}
-                u={{ ...u, manageable: canManageRole(me.role, u.role), is_self: u.id === me.id }}
+                u={{ ...u, manageable: canManageRole(me.role, u.role), is_self: u.id === me.id, access_editable: accessEditable }}
               />
             ))}
           </tbody>

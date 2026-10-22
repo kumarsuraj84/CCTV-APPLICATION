@@ -46,12 +46,12 @@ describe('explainVodFailure', () => {
   })
 })
 
-describe('the interim rule for fast playback', () => {
-  it('allows administrators and platform owners only', async () => {
-    const { canUseFastPlaybackInterim } = await import('@/lib/streams/speed')
-    expect(canUseFastPlaybackInterim('admin')).toBe(true)
-    expect(canUseFastPlaybackInterim('platform_owner')).toBe(true)
-    for (const role of ['user', 'operator', 'manager'] as const) expect(canUseFastPlaybackInterim(role)).toBe(false)
+// D-6a / P2-2: the interim administrators-only rule is replaced by the cctv.export capability (checked per camera by the database).
+describe('fast playback is decided by cctv.export, not by a role', () => {
+  it('the interim role rule is gone', async () => {
+    const speed = await import('@/lib/streams/speed')
+    expect('canUseFastPlaybackInterim' in speed).toBe(false)
+    expect(speed.FAST_PLAYBACK_CAPABILITY).toBe('cctv.export')
   })
 })
 

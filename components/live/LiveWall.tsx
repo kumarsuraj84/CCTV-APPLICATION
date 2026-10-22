@@ -152,9 +152,11 @@ export function LiveWall({ cameras }: { cameras: TileCamera[] }) {
               <span className="font-mono font-semibold">{big.storeCode}</span> · {big.name}
             </p>
             <div className="flex shrink-0 items-center gap-2">
-              <Link href={`/playback?camera=${encodeURIComponent(big.id)}`} className={buttonVariants({ variant: 'outline' })}>
-                <History aria-hidden="true" /> Playback
-              </Link>
+              {big.canPlayback && (
+                <Link href={`/playback?camera=${encodeURIComponent(big.id)}`} className={buttonVariants({ variant: 'outline' })}>
+                  <History aria-hidden="true" /> Playback
+                </Link>
+              )}
               <Button type="button" variant="secondary" onClick={closeLarge}>
                 <X aria-hidden="true" /> Close
               </Button>

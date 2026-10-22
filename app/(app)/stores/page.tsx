@@ -3,6 +3,8 @@ import { AutoRefresh } from '@/components/monitor/AutoRefresh'
 import { MonitoringBanner } from '@/components/monitor/MonitoringBanner'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { redirect } from 'next/navigation'
+import { coversLocation, holdsAnyLocationGrant, holdsItView, IT_VIEW } from '@/lib/auth/capabilities'
 import { requireProfile } from '@/lib/auth/profile'
 import { getMonitoringState } from '@/lib/monitor/uptime'
 import { listVisibleStores } from '@/lib/queries/inventory'
@@ -14,7 +16,10 @@ export const metadata = { title: 'Stores' }
 
 export default async function StoresPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const { q } = await searchParams
-  await requireProfile()
+  // P2-2: any CCTV, IT or Wi-Fi grant shows locations. The NVR column is IT information (AC-4): only with the IT view of that store.
+  const profile = await requireProfile()
+  if (!holdsAnyLocationGrant(profile.capabilities)) redirect('/home')
+  const itAnywhere = holdsItView(profile.capabilities)
   const supabase = await createClient()
   const [stores, statuses, monitoring] = await Promise.all([listVisibleStores(supabase, q), listStoreStatus(supabase), getMonitoringState(createAdminClient())])
   return (
@@ -32,7 +37,7 @@ export default async function StoresPage({ searchParams }: { searchParams: Promi
           <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
             <tr>
               <th className="px-3 py-2">Code</th><th className="px-3 py-2">Store</th><th className="px-3 py-2">City</th><th className="px-3 py-2">Zone</th>
-              <th className="px-3 py-2">NVR</th><th className="px-3 py-2">Cameras live</th><th className="px-3 py-2 text-right">Cameras</th>
+              {itAnywhere && <th className="px-3 py-2">NVR</th>}<th className="px-3 py-2">Cameras live</th><th className="px-3 py-2 text-right">Cameras</th>
             </tr>
           </thead>
           <tbody>
@@ -47,7 +52,11 @@ export default async function StoresPage({ searchParams }: { searchParams: Promi
                   <td className="px-3 py-2">{s.name}</td>
                   <td className="px-3 py-2">{s.city ?? '—'}</td>
                   <td className="px-3 py-2">{s.zone ?? '—'}</td>
-                  <td className="px-3 py-2"><StatusBadge status={status?.nvr_status} stale={status?.nvr_stale} /></td>
+                  {itAnywhere && (
+                    <td className="px-3 py-2">
+                      {coversLocation(profile.capabilities, IT_VIEW, s.id) ? <StatusBadge status={status?.nvr_status} stale={status?.nvr_stale} /> : <span className="text-muted-foreground">—</span>}
+                    </td>
+                  )}
                   <td className="whitespace-nowrap px-3 py-2">
                     {!status || total === 0 ? '—' : notChecked ? (
                       <span className="text-muted-foreground">Not checked yet</span>
@@ -66,7 +75,7 @@ export default async function StoresPage({ searchParams }: { searchParams: Promi
               )
             })}
             {stores.length === 0 && (
-              <tr><td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">No stores to show.</td></tr>
+              <tr><td colSpan={itAnywhere ? 7 : 6} className="px-3 py-6 text-center text-muted-foreground">No stores to show.</td></tr>
             )}
           </tbody>
         </table>

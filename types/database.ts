@@ -738,6 +738,11 @@ isOneToOne: false
 "monitor_stop_targets":
 { Args: { "p_ids": (string)[],"p_org": string,"p_type": string }; Returns: undefined
                            },
+"my_access_summary":
+{ Args: Record<PropertyKey, never>; Returns: {
+              "asset_ids": (string)[],"camera_ids": (string)[],"capability": string,"location_ids": (string)[],"organization_wide": boolean
+            }[]
+                           },
 "nvr_delete_credential":
 { Args: { "p_store": string }; Returns: undefined
                            },

@@ -1,8 +1,9 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { canManageGroups } from '@/lib/admin/roles'
+import { hasGroupEditingAuthority, MSG_GROUPS_DENIED } from '@/lib/admin/roles'
 import type { Actor } from '@/lib/admin/types'
+import { holds } from '@/lib/auth/capabilities'
 import { requireProfile } from '@/lib/auth/profile'
 import { addCameras, addCamerasByKeyword, createGroup, deleteGroup, removeCamera, type GroupDeps } from '@/lib/groups/service'
 import { logger } from '@/lib/observability/logger'
@@ -12,13 +13,16 @@ import { createClient } from '@/lib/supabase/server'
 /** What every group action answers with. `message` is plain text for a toast; nothing here is ever thrown to the browser. */
 export type GroupActionState = { ok?: boolean; error?: string; message?: string; groupId?: string; values?: Record<string, string> }
 
-const DENIED = 'Only operators and administrators can change camera groups.'
+const DENIED = MSG_GROUPS_DENIED
 const FAILED = 'Something went wrong. Please try again.'
 
-/** Checks the caller first (signed in, allowed to change groups), then runs the service call. A failure of any kind becomes a plain message. */
+/**
+ * Checks the caller first (signed in; the operator, admin or platform-owner role AND cctv.live somewhere, P2-2), then runs the service
+ * call, which checks cctv.live again in the database for every camera added. A failure of any kind becomes a plain message.
+ */
 async function run(route: string, body: (deps: GroupDeps, actor: Actor) => Promise<GroupActionState>): Promise<GroupActionState> {
   const p = await requireProfile() // sends signed-out people to the sign-in page
-  if (!canManageGroups(p.role)) return { error: DENIED }
+  if (!hasGroupEditingAuthority(p.role) || !holds(p.capabilities, 'cctv.live')) return { error: DENIED }
   const actor: Actor = { id: p.id, orgId: p.org_id, role: p.role }
   try {
     const state = await body({ admin: createAdminClient(), rls: await createClient() }, actor)

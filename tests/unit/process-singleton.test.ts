@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { processSingleton } from '@/lib/process-singleton'
 
-const NAMES = ['cctv.streamRequestLimiter', 'cctv.lookupRequestLimiter', 'cctv.conversionLimiter', 'cctv.fastPlaybackAvailable', 'cctv.test-thing']
+const NAMES = ['cctv.liveRequestLimiter', 'cctv.playbackRequestLimiter', 'cctv.lookupRequestLimiter', 'cctv.exportRequestLimiter', 'cctv.conversionLimiter', 'cctv.fastPlaybackAvailable', 'cctv.test-thing']
 afterEach(() => {
   for (const n of NAMES) delete (globalThis as unknown as Record<symbol, unknown>)[Symbol.for(n)]
 })
@@ -32,14 +32,31 @@ describe('the limiters when their modules are loaded twice (a second bundle, or 
     const bLimiter = await import('@/lib/streams/limiter')
     expect(bLimiter.createWindowLimiter).not.toBe(aLimiter.createWindowLimiter) // the modules really were loaded twice
     expect(b).not.toBe(a)
-    expect(b.streamRequestLimiter).toBe(a.streamRequestLimiter)
+    expect(b.liveRequestLimiter).toBe(a.liveRequestLimiter)
+    expect(b.playbackRequestLimiter).toBe(a.playbackRequestLimiter)
     expect(b.lookupRequestLimiter).toBe(a.lookupRequestLimiter)
+    expect(b.exportRequestLimiter).toBe(a.exportRequestLimiter)
 
     const who = `person-${Math.random()}`
-    for (let i = 0; i < a.STREAM_REQUESTS_PER_MINUTE - 1; i++) expect(a.streamRequestLimiter.allow(who)).toBe(true)
-    expect(b.streamRequestLimiter.allow(who)).toBe(true) // the 30th, counted by the other copy
-    expect(a.streamRequestLimiter.allow(who)).toBe(false)
-    expect(b.streamRequestLimiter.allow(who)).toBe(false)
+    for (let i = 0; i < a.STREAM_REQUESTS_PER_MINUTE - 1; i++) expect(a.liveRequestLimiter.allow(who)).toBe(true)
+    expect(b.liveRequestLimiter.allow(who)).toBe(true) // the 30th, counted by the other copy
+    expect(a.liveRequestLimiter.allow(who)).toBe(false)
+    expect(b.liveRequestLimiter.allow(who)).toBe(false)
+  })
+
+  it('P2-2 (brief item 2): live, playback, recording search and export each have their own count', async () => {
+    vi.resetModules()
+    const l = await import('@/lib/streams/request-limit')
+    const all = [l.liveRequestLimiter, l.playbackRequestLimiter, l.lookupRequestLimiter, l.exportRequestLimiter]
+    expect(new Set(all).size).toBe(4)
+    const who = `person-${Math.random()}`
+    for (let i = 0; i < l.STREAM_REQUESTS_PER_MINUTE; i++) l.liveRequestLimiter.allow(who)
+    expect(l.liveRequestLimiter.allow(who)).toBe(false)
+    // Using up live video leaves playback, the recording search and export untouched.
+    expect(l.playbackRequestLimiter.allow(who)).toBe(true)
+    expect(l.lookupRequestLimiter.allow(who)).toBe(true)
+    expect(l.exportRequestLimiter.allow(who)).toBe(true)
+    expect('streamRequestLimiter' in l).toBe(false)
   })
 
   it('the conversion limiter is one count, and so is the ffmpeg check', async () => {
