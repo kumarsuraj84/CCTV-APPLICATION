@@ -74,6 +74,12 @@ video through; it is the only video address a browser can reach.
 Settings (`.env.example` lists them): `GO2RTC_URL` (default `http://127.0.0.1:1984`), `GATEWAY_PORT` (default 3213) and
 `GATEWAY_ALLOWED_ORIGINS` (the web app address(es), comma separated, default `NEXT_PUBLIC_APP_URL`).
 
+The web app reads `NEXT_PUBLIC_STREAM_GATEWAY_URL` (the gateway address a browser can reach, for example `http://localhost:3213`; it is built into the pages, so restart `npm run dev` or rebuild after changing it). The **Live** page loads the player script from `<that address>/g/video-stream.js` and opens its sockets there, so the web app address must also be in `GATEWAY_ALLOWED_ORIGINS`, exactly as a browser spells it (scheme, host and port, no path). If it is not, tiles say "Video is not available right now."
+
+**Live wall** (`/live`, `/live?store=<id>`, `/live?group=<id>`, `/live?camera=<id>`): the web app asks for the cameras the signed-in person may see (at most 36 per request, 10 requests per person per minute), registers each in go2rtc and hands the browser one signed token per camera; nothing else about the camera, and never its password or RTSP address, reaches the browser. Tokens last 10 minutes and are renewed every 8 minutes while the tab is open; pictures stop while the tab is hidden. Needs `STREAM_TOKEN_SECRET`; without it the page says live video is not set up.
+
+**Demo video** (no real cameras): set `DEMO_VIDEO=1` in `.env.local` (development only; it is ignored when `NODE_ENV=production`). A store whose NVR address is this computer (`127.0.0.1`, as the demo stores are) then shows go2rtc's generated test picture instead of a camera. It needs `npm run stack:up` and the `rtsp` listener in `deploy/go2rtc.yaml` (127.0.0.1:8554 inside the container, not published).
+
 - A video socket is accepted only with a valid, unexpired token and an `Origin` that is in `GATEWAY_ALLOWED_ORIGINS`; anything else is closed (code 1008).
 - The go2rtc stream name comes from the signed token only. Nothing the browser sends can choose a stream, and go2rtc's address and error texts never reach a browser.
 - At most 300 sockets at once (100 per address), 240 connection attempts per address per minute, 4 MB per message; a session lasts at most 30 minutes (the page reconnects with a new token). A token only has to be valid when the connection is made (10 minutes), so deactivating a person takes effect on their next connection, not on a video already running.
@@ -82,7 +88,7 @@ Settings (`.env.example` lists them): `GO2RTC_URL` (default `http://127.0.0.1:19
 - Behind a proxy or load balancer the per-address limit sees the proxy's address. Put the gateway where browsers reach it directly, or move the limit to the proxy.
 - go2rtc's API (127.0.0.1:1984) has no password and can run commands (`exec:` sources), so it must never be exposed beyond this machine: do not publish ports 1984 or 8555 on other interfaces and do not put a proxy in front of them.
 - The stream token travels in the query string of the WebSocket address, so any reverse proxy or load balancer in front of the gateway must not log query strings.
-- The go2rtc config file is mounted read-only on purpose: camera addresses and passwords are sent to go2rtc at run time and are never written into it. The image is pinned by digest in `deploy/docker-compose.dev.yml`; the container logs are rotated (3 x 10 MB).
+- The go2rtc config file is mounted read-only on purpose: camera addresses and passwords are sent to go2rtc at run time and are never written into it. With a read-only file go2rtc answers 400 to a stream change after applying it in memory, so the app reads the stream list back to confirm every change instead of trusting the status. The image is pinned by digest in `deploy/docker-compose.dev.yml`; the container logs are rotated (3 x 10 MB).
 
 ## Safety rules
 

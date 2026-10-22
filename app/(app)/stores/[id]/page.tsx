@@ -1,8 +1,10 @@
+import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { TriangleAlert } from 'lucide-react'
 import { AutoRefresh } from '@/components/monitor/AutoRefresh'
 import { MonitoringBanner } from '@/components/monitor/MonitoringBanner'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
+import { buttonVariants } from '@/components/ui/button'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { requireProfile } from '@/lib/auth/profile'
 import { DEVICE_TYPE_LABELS, type DeviceType } from '@/lib/inventory/device-types'
@@ -12,6 +14,7 @@ import { formatUptime, getStates, isStale, nvrLoginProblem, type StateRow } from
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { formatDateTime } from '@/lib/time'
+import { cn } from '@/lib/utils'
 
 export const metadata = { title: 'Store' }
 
@@ -51,7 +54,9 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
     <div className="space-y-6">
       {/* Only while monitoring runs: with the checker stopped nothing new will appear. */}
       {monitoring.running && <AutoRefresh busy={false} />}
-      <PageHeader title={`${store.code} · ${store.name}`} description={[store.city, store.zone].filter(Boolean).join(' · ')} />
+      <PageHeader title={`${store.code} · ${store.name}`} description={[store.city, store.zone].filter(Boolean).join(' · ')}
+        actions={store.cameras.length > 0 ? <Link href={`/live?store=${store.id}`} className={cn(buttonVariants())}>Watch live</Link> : undefined}
+      />
       <MonitoringBanner monitoring={monitoring} />
       <section className="space-y-1 text-sm">
         <div className="flex flex-wrap items-center gap-2">

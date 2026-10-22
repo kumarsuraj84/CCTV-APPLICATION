@@ -79,40 +79,140 @@ describe('Go2rtcClient address', () => {
   })
 })
 
+/**
+ * A fake go2rtc that keeps a stream list. `change` is the status it answers a PUT/DELETE with and `applies` says whether it really changes the
+ * list: the real go2rtc 1.9.9 with a read-only config answers 400 and still applies the change.
+ */
+async function startGo2rtc(change: number, applies: boolean, o: { listStatus?: number } = {}): Promise<Fake & { streams: Map<string, string> }> {
+  const streams = new Map<string, string>()
+  const f = await startFake((req, res, s) => {
+    if (req.method === 'GET') {
+      res.statusCode = o.listStatus ?? 200
+      res.setHeader('content-type', 'application/json')
+      return void res.end(JSON.stringify(Object.fromEntries([...streams].map(([k, v]) => [k, { producers: [{ url: v }], consumers: null }]))))
+    }
+    if (applies) {
+      if (req.method === 'PUT') streams.set(s.query.get('name') ?? '', s.query.get('src') ?? '')
+      else streams.delete(s.query.get('src') ?? '')
+    }
+    res.statusCode = change
+    res.end(`failed for ${SRC} at 127.0.0.1`)
+  })
+  return Object.assign(f, { streams })
+}
+
 describe('Go2rtcClient.register', () => {
-  it('sends PUT /api/streams with the name and source percent-encoded', async () => {
-    const f = await startFake((_q, res) => { res.statusCode = 200; res.end('{}') })
+  it('looks at the list, sends PUT /api/streams with the name and source percent-encoded, then reads the list back', async () => {
+    const f = await startGo2rtc(200, true)
     await new Go2rtcClient(f.base).register(NAME, SRC)
-    expect(f.seen).toHaveLength(1)
-    expect(f.seen[0].method).toBe('PUT')
-    expect(f.seen[0].url).toBe('/api/streams')
-    expect(f.seen[0].query.get('name')).toBe(NAME)
-    expect(f.seen[0].query.get('src')).toBe(SRC)
+    expect(f.seen.map((s) => s.method)).toEqual(['GET', 'PUT', 'GET'])
+    const put = f.seen[1]
+    expect(put.url).toBe('/api/streams')
+    expect(put.query.get('name')).toBe(NAME)
+    expect(put.query.get('src')).toBe(SRC)
     // Encoded on the wire: no raw :// or @ in the query string.
-    expect(f.seen[0].rawQuery).toBe(`?name=${encodeURIComponent(NAME)}&src=${encodeURIComponent(SRC)}`)
+    expect(put.rawQuery).toBe(`?name=${encodeURIComponent(NAME)}&src=${encodeURIComponent(SRC)}`)
+    expect(f.seen[2]).toMatchObject({ method: 'GET', url: '/api/streams' })
   })
 
-  it('carries an exec source with spaces, braces and an ampersand intact', async () => {
-    const f = await startFake((_q, res) => { res.end('{}') })
-    const exec = 'exec:ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=10 -f rtsp {output}&x=1#frag'
-    await new Go2rtcClient(f.base).register(NAME, exec)
-    expect(f.seen[0].query.get('src')).toBe(exec)
-    expect(f.seen[0].query.get('x')).toBeNull()
+  it('leaves a stream alone when go2rtc already has it from the same source (a second PUT would start a second camera connection)', async () => {
+    const f = await startGo2rtc(200, true)
+    const c = new Go2rtcClient(f.base)
+    await c.register(NAME, SRC)
+    await c.register(NAME, SRC)
+    await c.register(NAME, SRC)
+    expect(f.seen.filter((s) => s.method === 'PUT')).toHaveLength(1)
+  })
+
+  it('registers again when the source has changed (a new password), and when the stream is gone (go2rtc restarted)', async () => {
+    const f = await startGo2rtc(400, true)
+    const c = new Go2rtcClient(f.base)
+    await c.register(NAME, SRC)
+    await c.register(NAME, SRC + 'x')
+    expect(f.streams.get(NAME)).toBe(SRC + 'x')
+    f.streams.clear()
+    await c.register(NAME, SRC + 'x')
+    expect(f.seen.filter((s) => s.method === 'PUT')).toHaveLength(3)
+  })
+
+  it('with keepExisting leaves any stream of that name alone (go2rtc lists a running generated source without its address)', async () => {
+    const f = await startGo2rtc(200, true)
+    f.streams.set(NAME, 'something else')
+    const c = new Go2rtcClient(f.base)
+    await c.register(NAME, SRC, { keepExisting: true })
+    expect(f.seen.filter((s) => s.method === 'PUT')).toHaveLength(0)
+    await c.register('cam_other_sub', SRC, { keepExisting: true }) // not there yet: registered
+    expect(f.streams.get('cam_other_sub')).toBe(SRC)
+  })
+
+  it('reads a producer address only from the url field, and copes with producers that have none', async () => {
+    const f = await startFake((req, res) => {
+      if (req.method === 'GET') return void res.end(JSON.stringify({ [NAME]: { producers: [{ id: 1, source: SRC }, null, 5, {}], consumers: [] } }))
+      res.statusCode = 200
+      res.end()
+    })
+    await expect(new Go2rtcClient(f.base).register(NAME, SRC)).resolves.toBeUndefined()
+    expect(f.seen.filter((s) => s.method === 'PUT')).toHaveLength(1) // the source field is not trusted as the address
+  })
+
+  it('does not register when it cannot read the list, with the plain message', async () => {
+    const f = await startGo2rtc(200, true, { listStatus: 500 })
+    const m = await messageOf(new Go2rtcClient(f.base).register(NAME, SRC))
+    expect(m).toBe(PLAIN)
+    expect(f.seen.filter((s) => s.method === 'PUT')).toHaveLength(0)
+  })
+
+  it('carries a source with spaces, braces and an ampersand intact', async () => {
+    const f = await startGo2rtc(200, true)
+    const odd = 'ffmpeg:virtual?video=testsrc&size=640x360#video=h264 {x}'
+    await new Go2rtcClient(f.base).register(NAME, odd)
+    const put = f.seen.find((s) => s.method === 'PUT')!
+    expect(put.query.get('src')).toBe(odd)
+    expect(put.query.get('size')).toBeNull()
   })
 
   it('tolerates a trailing slash on the base address', async () => {
-    const f = await startFake((_q, res) => { res.end('{}') })
+    const f = await startGo2rtc(200, true)
     await new Go2rtcClient(`${f.base}/`).register(NAME, SRC)
-    expect(f.seen[0].url).toBe('/api/streams')
+    expect(f.seen.every((s) => s.url === '/api/streams')).toBe(true)
+    expect(f.seen.some((s) => s.method === 'PUT')).toBe(true)
   })
 
-  it('throws the plain message, without the address or the source, on a non-2xx answer', async () => {
-    for (const status of [400, 401, 404, 500, 503]) {
-      const f = await startFake((_q, res) => { res.statusCode = status; res.end(`failed for ${SRC} at ${'127.0.0.1'}`) })
+  it('accepts a 400 answer when the stream is there afterwards (read-only config: applied in memory, not saved)', async () => {
+    const f = await startGo2rtc(400, true)
+    await new Go2rtcClient(f.base).register(NAME, SRC)
+    expect(f.streams.get(NAME)).toBe(SRC)
+    expect(f.seen.map((s) => s.method)).toEqual(['GET', 'PUT', 'GET'])
+  })
+
+  it('throws the plain message, without the address or the source, when go2rtc answers 400 and the stream is not there', async () => {
+    const f = await startGo2rtc(400, false)
+    const m = await messageOf(new Go2rtcClient(f.base).register(NAME, SRC))
+    expect(m).toBe(PLAIN)
+    expectNoLeak(m, f.base)
+  })
+
+  it('throws the plain message when a 2xx answer is not borne out by the list', async () => {
+    const f = await startGo2rtc(200, false)
+    expect(await messageOf(new Go2rtcClient(f.base).register(NAME, SRC))).toBe(PLAIN)
+  })
+
+  it('throws the plain message on a 4xx/5xx other than 400, even if a stream of that name was already there (from another source), without reading the list again', async () => {
+    for (const status of [401, 404, 500, 503]) {
+      const f = await startGo2rtc(status, false)
+      f.streams.set(NAME, 'old')
       const m = await messageOf(new Go2rtcClient(f.base).register(NAME, SRC))
       expect(m, String(status)).toBe(PLAIN)
       expectNoLeak(m, f.base)
+      expect(f.seen.map((s) => s.method), String(status)).toEqual(['GET', 'PUT'])
     }
+  })
+
+  it('throws the plain message when the list cannot be read back after a 400', async () => {
+    const f = await startGo2rtc(400, true, { listStatus: 500 })
+    const m = await messageOf(new Go2rtcClient(f.base).register(NAME, SRC))
+    expect(m).toBe(PLAIN)
+    expectNoLeak(m, f.base)
   })
 
   it('does not follow a redirect (the source must not go to another address)', async () => {
@@ -154,7 +254,7 @@ describe('Go2rtcClient.register', () => {
 
   it('passes an abort signal to fetch, five seconds by default', async () => {
     let init: RequestInit | undefined
-    const fetchImpl = (async (_u: string, i?: RequestInit) => { init = i; return new Response('{}') }) as unknown as typeof fetch
+    const fetchImpl = (async (_u: string, i?: RequestInit) => { init ??= i; return new Response(JSON.stringify({ [NAME]: {} })) }) as unknown as typeof fetch
     await new Go2rtcClient('http://127.0.0.1:1984', fetchImpl).register(NAME, SRC)
     expect(init?.signal).toBeInstanceOf(AbortSignal)
     expect(init?.signal?.aborted).toBe(false)
@@ -230,19 +330,39 @@ describe('Go2rtcClient.has', () => {
 })
 
 describe('Go2rtcClient.remove', () => {
-  it('sends DELETE /api/streams?src=<name>', async () => {
-    const f = await startFake((_q, res) => { res.end('{}') })
+  it('sends DELETE /api/streams?src=<name> and reads the list back', async () => {
+    const f = await startGo2rtc(200, true)
+    f.streams.set(NAME, SRC)
     await new Go2rtcClient(f.base).remove(NAME)
     expect(f.seen[0].method).toBe('DELETE')
     expect(f.seen[0].url).toBe('/api/streams')
     expect(f.seen[0].rawQuery).toBe(`?src=${encodeURIComponent(NAME)}`)
+    expect(f.seen[1].method).toBe('GET')
   })
 
-  it('throws a plain message on a non-2xx answer or no server, never with the address', async () => {
-    const f = await startFake((_q, res) => { res.statusCode = 500; res.end('boom') })
+  it('accepts a 400 answer when the stream is gone afterwards (read-only config)', async () => {
+    const f = await startGo2rtc(400, true)
+    f.streams.set(NAME, SRC)
+    await new Go2rtcClient(f.base).remove(NAME)
+    expect(f.streams.has(NAME)).toBe(false)
+  })
+
+  it('throws a plain message when the stream is still listed afterwards (400 or 2xx that changed nothing)', async () => {
+    for (const status of [400, 200]) {
+      const f = await startGo2rtc(status, false)
+      f.streams.set(NAME, SRC)
+      const m = await messageOf(new Go2rtcClient(f.base).remove(NAME))
+      expect(m, String(status)).toBe('The video server did not remove the stream.')
+      expectNoLeak(m, f.base)
+    }
+  })
+
+  it('throws a plain message on a 4xx/5xx other than 400 or no server, never with the address', async () => {
+    const f = await startGo2rtc(500, false)
     const m = await messageOf(new Go2rtcClient(f.base).remove(NAME))
     expect(m).not.toBe('')
     expectNoLeak(m, f.base)
+    expect(f.seen.map((s) => s.method)).toEqual(['DELETE'])
     const base = `http://127.0.0.1:${await closedPort()}`
     const m2 = await messageOf(new Go2rtcClient(base).remove(NAME))
     expect(m2).not.toBe('')

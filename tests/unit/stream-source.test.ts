@@ -135,14 +135,22 @@ describe('buildPlaybackUrl', () => {
 
 describe('demoSource', () => {
   it('uses the test pattern chosen by channel modulo four', () => {
-    const pattern = (n: number) => /-i (\w+)=size/.exec(demoSource(n))![1]
+    const pattern = (n: number) => /video=(\w+)&size/.exec(demoSource(n))![1]
     expect([0, 1, 2, 3, 4, 5, 6, 7].map(pattern)).toEqual(['testsrc', 'testsrc2', 'smptebars', 'rgbtestsrc', 'testsrc', 'testsrc2', 'smptebars', 'rgbtestsrc'])
   })
 
-  it('is a go2rtc exec source that publishes to {output}', () => {
-    expect(demoSource(1)).toBe(
-      'exec:ffmpeg -re -f lavfi -i testsrc2=size=640x360:rate=10 -c:v libx264 -preset ultrafast -tune zerolatency -g 20 -rtsp_transport tcp -f rtsp {output}',
-    )
+  it("is go2rtc's own test-picture source, H.264, 640 by 360 (an exec: source is refused through the API)", () => {
+    expect(demoSource(1)).toBe('ffmpeg:virtual?video=testsrc2&size=640x360#video=h264')
+    for (const n of [0, 1, 2, 3, 4]) expect(demoSource(n)).not.toMatch(/^exec:|\{output\}|rtsp:\/\//)
+  })
+
+  it('gives every camera its own source, because go2rtc publishes each under a path made from the source text', () => {
+    const a = demoSource(1, '0f6ad1c4-85a3-4a55-9d0b-3f0a4b1a0001')
+    const b = demoSource(1, '0f6ad1c4-85a3-4a55-9d0b-3f0a4b1a0002')
+    expect(a).not.toBe(b)
+    expect(a).toBe(demoSource(1, '0f6ad1c4-85a3-4a55-9d0b-3f0a4b1a0001')) // stable for one camera
+    expect(a).toMatch(/^ffmpeg:virtual\?video=testsrc2&size=640x360&duration=86400\.\d{1,13}#video=h264$/)
+    expect(demoSource(1)).not.toContain('duration') // without an id it is the plain source
   })
 
   it('refuses a channel that is not a whole number', () => {

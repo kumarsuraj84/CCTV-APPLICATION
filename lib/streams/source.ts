@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { isIP } from 'node:net'
 import { isValidHost, isValidPort } from '@/lib/probes'
 
@@ -45,11 +46,19 @@ export function buildPlaybackUrl(o: { host: string; port: number; username: stri
 
 const PATTERNS = ['testsrc', 'testsrc2', 'smptebars', 'rgbtestsrc']
 
-/** A go2rtc exec source that makes a moving test picture, used instead of a real camera in demo mode. */
-export function demoSource(channel: number): string {
+/**
+ * go2rtc's own generated test picture, used instead of a real camera in demo mode. Verified against go2rtc 1.9.9: this source can be
+ * registered through the API (a user-written `exec:` source cannot) and yields real H.264 frames. go2rtc runs ffmpeg for it and
+ * publishes to its own RTSP listener, so deploy/go2rtc.yaml listens on 127.0.0.1:8554 (inside the container only, not published).
+ * go2rtc publishes each of these under a path made from the whole source text, so two cameras with the same pattern would fight over one
+ * path and one of them would never start. Pass the camera id and every camera gets its own source: an (invisible) very long duration whose
+ * decimals come from the id.
+ */
+export function demoSource(channel: number, cameraId?: string): string {
   if (!Number.isInteger(channel)) throw new Error('Invalid channel')
   const pattern = PATTERNS[((channel % 4) + 4) % 4]
-  return `exec:ffmpeg -re -f lavfi -i ${pattern}=size=640x360:rate=10 -c:v libx264 -preset ultrafast -tune zerolatency -g 20 -rtsp_transport tcp -f rtsp {output}`
+  const own = cameraId === undefined ? '' : `&duration=86400.${parseInt(createHash('sha256').update(cameraId).digest('hex').slice(0, 10), 16)}`
+  return `ffmpeg:virtual?video=${pattern}&size=640x360${own}#video=h264`
 }
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1'])

@@ -1,7 +1,9 @@
 api:
   listen: ":1984"
+# go2rtc's own RTSP listener, on the container's loopback only (the port is not published). The demo test picture
+# (ffmpeg:virtual) needs it: ffmpeg publishes the generated picture to it. Real cameras never use it.
 rtsp:
-  listen: ""
+  listen: "127.0.0.1:8554"
 webrtc:
   listen: ":8555"
 streams: {}
