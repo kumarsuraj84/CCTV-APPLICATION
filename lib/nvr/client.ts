@@ -4,8 +4,8 @@ import { parseChannels, parseChannelStatus, parseVideoInputChannels, type NvrCha
 
 export type NvrEndpoint = { host: string; port: number; username: string; password: string }
 export type NvrErrorKind = 'unreachable' | 'timeout' | 'auth' | 'forbidden' | 'bad_response'
-/** Extra detail for a bad_response: the NVR only offers login methods this app refuses to use (such as Basic). */
-export type NvrErrorReason = 'unsupported_login'
+/** Extra detail for a bad_response: the NVR only offers login methods this app refuses to use (such as Basic), or lists no cameras at all. */
+export type NvrErrorReason = 'unsupported_login' | 'no_channels'
 
 export class NvrError extends Error {
   constructor(public kind: NvrErrorKind, message: string, public reason?: NvrErrorReason) {
@@ -26,6 +26,7 @@ const MESSAGES: Record<NvrErrorKind, string> = {
 export function describeNvrError(e: unknown): string {
   if (!(e instanceof NvrError)) return 'The NVR check failed.'
   if (e.kind === 'bad_response' && e.reason === 'unsupported_login') return 'The NVR does not offer a supported login method.'
+  if (e.kind === 'bad_response' && e.reason === 'no_channels') return 'The NVR did not list any cameras.'
   return MESSAGES[e.kind]
 }
 
@@ -115,7 +116,7 @@ export class NvrClient {
       if (!(e instanceof NvrError) || e.kind !== 'bad_response' || e.reason) throw e
     }
     const older = parseVideoInputChannels(await this.get('/ISAPI/System/Video/inputs/channels', signal))
-    if (older.length === 0) throw new NvrError('bad_response', 'no channels in the answer')
+    if (older.length === 0) throw new NvrError('bad_response', 'no channels in the answer', 'no_channels')
     return older
   }
 }

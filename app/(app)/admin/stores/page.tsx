@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { DeleteButton } from '@/components/admin/DeleteButton'
 import { StoreForm } from '@/components/admin/StoreForm'
+import { FindCamerasButton } from '@/components/monitor/FindCamerasButton'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { deleteStoreAction } from '@/lib/actions/admin/inventory'
 import { requireAdmin } from '@/lib/auth/profile'
@@ -37,6 +38,7 @@ export default async function ManageStoresPage({ searchParams }: { searchParams:
                 <td className="px-3 py-2">{s.zone ?? '—'}</td>
                 <td className="px-3 py-2 font-mono">{s.nvr_ip}</td>
                 <td className="space-x-2 px-3 py-2 text-right">
+                  <FindCamerasButton storeId={s.id} />
                   <Link href={`/admin/stores?edit=${s.id}`} className="underline">Edit</Link>
                   <DeleteButton onDelete={deleteStoreAction.bind(null, s.id)} />
                 </td>

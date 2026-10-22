@@ -57,7 +57,7 @@ describe('NvrClient', () => {
   })
   it('reports two empty channel lists as a bad response', async () => {
     nvr = await startFakeNvr({ channels: [], inputProxy: 'empty', videoInputs: 'empty' })
-    await expect(client(nvr.port).channels()).rejects.toMatchObject({ kind: 'bad_response' })
+    await expect(client(nvr.port).channels()).rejects.toMatchObject({ kind: 'bad_response', reason: 'no_channels' })
     expect(nvr.requests).toContain('GET /ISAPI/System/Video/inputs/channels')
   })
   it('reports an empty status list as a bad response', async () => {
@@ -72,6 +72,7 @@ describe('NvrClient', () => {
     expect(describeNvrError(new NvrError('bad_response', 'x'))).toBe('The NVR gave an answer this app does not understand.')
     expect(describeNvrError(new Error('anything'))).toBe('The NVR check failed.')
     expect(describeNvrError(new NvrError('bad_response', 'x', 'unsupported_login'))).toBe('The NVR does not offer a supported login method.')
+    expect(describeNvrError(new NvrError('bad_response', 'x', 'no_channels'))).toBe('The NVR did not list any cameras.')
   })
 })
 
