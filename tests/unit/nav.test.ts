@@ -8,7 +8,7 @@ const hrefs = (role: Role) => navFor(role).map((i) => i.href)
 describe('navigation per role', () => {
   it('a viewer sees monitoring pages only', () => {
     const h = hrefs('user')
-    expect(h).toEqual(['/home', '/stores', '/devices', '/live', '/groups'])
+    expect(h).toEqual(['/home', '/stores', '/devices', '/live', '/playback', '/groups'])
   })
 
   it('an operator and a manager see the same pages as a viewer', () => {
@@ -16,12 +16,13 @@ describe('navigation per role', () => {
     expect(hrefs('manager')).toEqual(hrefs('user'))
   })
 
-  it('every role that can open the app sees Live and Groups, in the Monitoring group', () => {
+  it('every role that can open the app sees Live, Playback and Groups, in the Monitoring group', () => {
     for (const role of ROLES) {
       expect(hrefs(role)).toContain('/live')
+      expect(hrefs(role)).toContain('/playback')
       expect(hrefs(role)).toContain('/groups')
     }
-    for (const [href, label] of [['/live', 'Live'], ['/groups', 'Groups']]) {
+    for (const [href, label] of [['/live', 'Live'], ['/playback', 'Playback'], ['/groups', 'Groups']]) {
       const item = NAV.find((i) => i.href === href)
       expect(item).toMatchObject({ label, group: 'Monitoring' })
       expect(item?.roles).toBeUndefined()
@@ -47,6 +48,12 @@ describe('navigation per role', () => {
 
   it('every item has an icon that exists', () => {
     for (const item of NAV) expect(ICONS[item.icon]).toBeDefined()
+  })
+
+  it('Playback has its own icon and is not on the small mobile bar', () => {
+    expect(NAV.find((i) => i.href === '/playback')?.icon).toBe('history')
+    expect(ICONS.history).toBeDefined()
+    expect(NAV.find((i) => i.href === '/playback')?.mobile).toBeUndefined()
   })
 
   it('Live has its own icon', () => {

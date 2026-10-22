@@ -1,0 +1,118 @@
+'use client'
+
+import { useEffect, useRef, useState } from 'react'
+import { Button } from '@/components/ui/button'
+import { gatewayBase, gatewaySocketUrl } from '@/lib/streams/wall'
+import { loadPlayer, startPlayer } from './player'
+
+// Read here so the build inlines it for the browser (only NEXT_PUBLIC names reach client code).
+const GATEWAY = gatewayBase(process.env.NEXT_PUBLIC_STREAM_GATEWAY_URL)
+
+/** Give up on a connection that has shown no picture after this long. */
+const CONNECT_TIMEOUT_MS = 25_000
+/** Playback stops this long after the length that was asked for (the NVR ends the recording itself; this is only the safety net). */
+const END_GRACE_MS = 3_000
+/** An ending this close to the asked length counts as the normal end. */
+const NEAR_END_MS = 5_000
+
+type State = 'connecting' | 'playing' | 'finished' | 'stopped-early' | 'unavailable'
+
+const MESSAGES: Record<Exclude<State, 'playing'>, string> = {
+  connecting: 'Connecting…',
+  finished: 'End of the chosen time.',
+  'stopped-early': 'Playback stopped before the end.',
+  unavailable: 'Video is not available right now.',
+}
+
+/**
+ * One playback picture. It connects once with its token and plays for the length that was asked for; it never starts again by itself
+ * (a recording that has ended must not loop). When the connection ends early (the gateway ends a session after 30 minutes) it offers to
+ * continue from where it got to. The parent gives it a new `key` for every playback, so a new token always means a new player.
+ */
+export function PlaybackPlayer({
+  token,
+  minutes,
+  label,
+  onStop,
+  onContinue,
+}: {
+  token: string
+  /** The length that was asked for. */
+  minutes: number
+  /** What is being played, for example "PA, Front Door, 22 Oct 14:30". */
+  label: string
+  onStop: () => void
+  /** Called with the seconds that were played, to carry on from there. */
+  onContinue: (playedSeconds: number) => void
+}) {
+  const host = useRef<HTMLDivElement>(null)
+  const playedAt = useRef(0)
+  const [state, setState] = useState<State>(GATEWAY ? 'connecting' : 'unavailable')
+  const [played, setPlayed] = useState(0)
+
+  useEffect(() => {
+    if (!GATEWAY) return
+    let cancelled = false
+    let stop: (() => void) | undefined
+    let watchdog: ReturnType<typeof setTimeout> | undefined
+    let endTimer: ReturnType<typeof setTimeout> | undefined
+    const halt = () => {
+      clearTimeout(watchdog)
+      clearTimeout(endTimer)
+      stop?.()
+      stop = undefined
+    }
+    const done = (reason: 'ended' | 'timer') => {
+      if (cancelled) return
+      const seconds = playedAt.current > 0 ? Math.floor((Date.now() - playedAt.current) / 1000) : 0
+      halt()
+      setPlayed(seconds)
+      if (playedAt.current === 0) setState('unavailable')
+      else if (reason === 'timer' || Date.now() - playedAt.current >= minutes * 60_000 - NEAR_END_MS) setState('finished')
+      else setState('stopped-early')
+    }
+    loadPlayer(GATEWAY)
+      .then(() => {
+        if (cancelled || !host.current) return
+        stop = startPlayer(host.current, gatewaySocketUrl(GATEWAY, token), {
+          onPlaying: () => {
+            clearTimeout(watchdog)
+            if (playedAt.current === 0) {
+              playedAt.current = Date.now()
+              endTimer = setTimeout(() => done('timer'), minutes * 60_000 + END_GRACE_MS)
+            }
+            setState('playing')
+          },
+          onEnded: () => done('ended'),
+        })
+        watchdog = setTimeout(() => done('ended'), CONNECT_TIMEOUT_MS)
+      })
+      .catch(() => {
+        if (!cancelled) setState('unavailable')
+      })
+    return () => {
+      cancelled = true
+      halt()
+    }
+  }, [token, minutes])
+
+  return (
+    <div className="space-y-2">
+      <div role="group" aria-label={label} className="relative aspect-video w-full overflow-hidden rounded-lg border bg-black text-white">
+        <div ref={host} className="absolute inset-0 [&_video]:bg-black" />
+        {state !== 'playing' && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-3 text-center text-sm text-white/90">
+            <span role="status" className="rounded bg-black/60 px-2 py-1">{MESSAGES[state]}</span>
+          </div>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" variant="outline" onClick={onStop}>Stop</Button>
+        {state === 'stopped-early' && played > 0 && (
+          <Button type="button" onClick={() => onContinue(played)}>Continue from here</Button>
+        )}
+        <p className="text-xs text-muted-foreground">No sound. Plays for {minutes} {minutes === 1 ? 'minute' : 'minutes'} and stops.</p>
+      </div>
+    </div>
+  )
+}

@@ -5,7 +5,7 @@ export type { Role }
 export type NavItem = {
   href: string
   label: string
-  icon: 'home' | 'store' | 'server' | 'users' | 'upload' | 'building' | 'activity' | 'grid' | 'video'
+  icon: 'home' | 'store' | 'server' | 'users' | 'upload' | 'building' | 'activity' | 'grid' | 'video' | 'history'
   group: 'Monitoring' | 'Admin'
   roles?: Role[]
   mobile?: true
@@ -19,6 +19,7 @@ export const NAV: NavItem[] = [
   { href: '/stores', label: 'Stores', icon: 'store', group: 'Monitoring', mobile: true },
   { href: '/devices', label: 'Devices', icon: 'server', group: 'Monitoring', mobile: true },
   { href: '/live', label: 'Live', icon: 'video', group: 'Monitoring', mobile: true },
+  { href: '/playback', label: 'Playback', icon: 'history', group: 'Monitoring' },
   { href: '/groups', label: 'Groups', icon: 'grid', group: 'Monitoring' },
   { href: '/admin/users', label: 'Users', icon: 'users', group: 'Admin', roles: ADMIN },
   { href: '/admin/monitoring', label: 'Monitoring', icon: 'activity', group: 'Admin', roles: ADMIN },

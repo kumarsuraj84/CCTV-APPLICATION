@@ -1,8 +1,9 @@
 'use client'
 
-import { ChevronLeft, ChevronRight, X } from 'lucide-react'
+import Link from 'next/link'
+import { ChevronLeft, ChevronRight, History, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { autoLayout, LAYOUTS, layoutLabel, pageCount, pageItems, pageStart, perPage, type Layout } from '@/lib/streams/wall'
 import { cn } from '@/lib/utils'
 import { LiveTile, type TileCamera } from './LiveTile'
@@ -150,9 +151,14 @@ export function LiveWall({ cameras }: { cameras: TileCamera[] }) {
             <p className="min-w-0 truncate text-sm">
               <span className="font-mono font-semibold">{big.storeCode}</span> · {big.name}
             </p>
-            <Button type="button" variant="secondary" onClick={closeLarge}>
-              <X aria-hidden="true" /> Close
-            </Button>
+            <div className="flex shrink-0 items-center gap-2">
+              <Link href={`/playback?camera=${encodeURIComponent(big.id)}`} className={buttonVariants({ variant: 'outline' })}>
+                <History aria-hidden="true" /> Playback
+              </Link>
+              <Button type="button" variant="secondary" onClick={closeLarge}>
+                <X aria-hidden="true" /> Close
+              </Button>
+            </div>
           </div>
           <div className="flex min-h-0 flex-1 items-center justify-center">
             <div className="w-full">

@@ -94,6 +94,10 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
                   {u24 == null && u7 == null ? 'Uptime: no data yet' : `Uptime 24h ${formatUptime(u24)} · 7d ${formatUptime(u7)}${uptimeSuffix(monitoring)}`}
                 </div>
                 {st?.status === 'down' && st.error && <div className="break-words text-muted-foreground">Reason: {st.error}</div>}
+                <div className="flex flex-wrap gap-x-3 gap-y-1 pt-1">
+                  <Link href={`/live?camera=${c.id}`} className="underline underline-offset-2" aria-label={`Watch ${c.name} live`}>Live</Link>
+                  <Link href={`/playback?camera=${c.id}`} className="underline underline-offset-2" aria-label={`Play back recordings of ${c.name}`}>Playback</Link>
+                </div>
               </div>
             )
           })}
