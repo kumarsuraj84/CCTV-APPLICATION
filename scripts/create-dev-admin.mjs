@@ -42,4 +42,11 @@ if (gErr) {
   console.error('The dev admin was created, but its access could not be granted: ' + gErr.message)
   process.exit(1)
 }
+// Ruling P-1 (docs/drishti/DECISIONS.md): a platform owner ("Super administrator") holds every capability. The profile above was inserted
+// directly, so give the full set explicitly (the database function is monotonic and safe to repeat).
+const { error: oErr } = await admin.rpc('grant_platform_owner_all', { p_org: org.id, p_user: data.user.id })
+if (oErr) {
+  console.error('The dev admin was created, but the full set of rights could not be granted: ' + oErr.message)
+  process.exit(1)
+}
 console.log('Dev admin created. Its e-mail and password are in .env.local (DEV_ADMIN_EMAIL, DEV_ADMIN_PASSWORD).')
