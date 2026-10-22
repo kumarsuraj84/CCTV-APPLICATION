@@ -49,7 +49,7 @@ const PATTERNS = ['testsrc', 'testsrc2', 'smptebars', 'rgbtestsrc']
 /**
  * go2rtc's own generated test picture, used instead of a real camera in demo mode. Verified against go2rtc 1.9.9: this source can be
  * registered through the API (a user-written `exec:` source cannot) and yields real H.264 frames. go2rtc runs ffmpeg for it and
- * publishes to its own RTSP listener, so deploy/go2rtc.yaml listens on 127.0.0.1:8554 (inside the container only, not published).
+ * publishes to its own RTSP listener, so the demo config (deploy/go2rtc.demo.yaml, `npm run stack:up:demo`) listens on 127.0.0.1:8554 (inside the container only, not published).
  * go2rtc publishes each of these under a path made from the whole source text, so two cameras with the same pattern would fight over one
  * path and one of them would never start. Pass the camera id and every camera gets its own source: an (invisible) very long duration whose
  * decimals come from the id.

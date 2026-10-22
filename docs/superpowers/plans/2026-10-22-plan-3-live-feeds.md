@@ -21,7 +21,7 @@
 - Camera groups: any signed-in person sees a group only if they may see at least one camera in it (or created it, or sees everything); `agent`, `admin` and `platform_owner` may create, change and delete groups; they may only add cameras they can see themselves.
 - Playback time zone: the NVR's clock offset in minutes is `PLAYBACK_OFFSET_MIN` (default 0).
 - Gateway ports: HTTP and WebSocket on **3213**; go2rtc API on 1984 (loopback only) and 8555.
-- Demo video: only when `DEMO_VIDEO=1`, `NODE_ENV` is not `production`, and the store's NVR address is loopback, streams use a generated test pattern (go2rtc `ffmpeg:virtual?video=<pattern>&size=640x360#video=h264` source; verified against go2rtc 1.9.9, which refuses `exec:` sources through its API; needs the loopback `rtsp` listener in deploy/go2rtc.yaml) instead of the store's RTSP URL.
+- Demo video: only when `DEMO_VIDEO=1`, `NODE_ENV` is not `production`, and the store's NVR address is loopback, streams use a generated test pattern (go2rtc `ffmpeg:virtual?video=<pattern>&size=640x360#video=h264` source; verified against go2rtc 1.9.9, which refuses `exec:` sources through its API; needs the loopback `rtsp` listener of deploy/go2rtc.demo.yaml, started with `npm run stack:up:demo`) instead of the store's RTSP URL.
 - `npm run typecheck`, `npm run lint`, `npm run test:unit`, `npm run test:integration` clean at the end of every task.
 
 ## File Structure

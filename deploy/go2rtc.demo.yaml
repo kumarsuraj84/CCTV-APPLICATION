@@ -1,0 +1,9 @@
+# Development only (npm run stack:up:demo). The generated demo picture (ffmpeg:virtual) is published by ffmpeg to go2rtc's own RTSP
+# server, so this file turns one on, on the container's loopback only (the port is not published). Real cameras never use it.
+api:
+  listen: ":1984"
+rtsp:
+  listen: "127.0.0.1:8554"
+webrtc:
+  listen: ":8555"
+streams: {}

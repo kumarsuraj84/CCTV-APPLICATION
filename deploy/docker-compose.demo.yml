@@ -1,0 +1,7 @@
+# Added to docker-compose.dev.yml for demo video (npm run stack:up:demo): the same go2rtc, with the demo config that has an RTSP listener.
+name: cctv-hub-media
+services:
+  go2rtc:
+    volumes:
+      # Same target as in docker-compose.dev.yml, so this replaces that mount (still read-only).
+      - ./go2rtc.demo.yaml:/config/go2rtc.yaml:ro
