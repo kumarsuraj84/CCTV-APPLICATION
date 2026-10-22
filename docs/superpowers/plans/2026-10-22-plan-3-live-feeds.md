@@ -27,7 +27,7 @@
 ## File Structure
 
 ```
-supabase/migrations/20261021000006_camera_groups.sql   (+ rollback)         Task 1
+supabase/migrations/20261021000007_camera_groups.sql   (+ rollback)         Task 1
 lib/groups/service.ts  lib/actions/groups.ts  app/(app)/groups/**           Tasks 1-2
 lib/streams/{token,go2rtc,source}.ts                                          Task 3
 lib/streams/gateway.ts  services/gateway/index.ts  deploy/docker-compose.dev.yml  deploy/go2rtc.yaml   Task 4
@@ -42,7 +42,7 @@ app/api/vod/route.ts  lib/streams/vod.ts                                       T
 ### Task 1: Camera groups: schema, rules and service
 
 **Files:**
-- Create: `supabase/migrations/20261021000006_camera_groups.sql`, `supabase/rollback/20261021000006_camera_groups_rollback.sql`, `lib/groups/service.ts`
+- Create: `supabase/migrations/20261021000007_camera_groups.sql`, `supabase/rollback/20261021000007_camera_groups_rollback.sql`, `lib/groups/service.ts`
 - Modify: `lib/admin/roles.ts` (add `canManageGroups`), `tests/setup/fixtures.ts` (delete order), `types/database.ts` (regenerate)
 - Test: `tests/unit/roles.test.ts` (extend), `tests/integration/groups.test.ts`
 

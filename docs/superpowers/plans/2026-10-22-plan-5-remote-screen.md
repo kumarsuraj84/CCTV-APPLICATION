@@ -24,7 +24,7 @@
 ## File Structure
 
 ```
-supabase/migrations/20261021000011_remote_access.sql (+ rollback)             Task 1
+supabase/migrations/20261021000012_remote_access.sql (+ rollback)             Task 1
 lib/remote/{service,policy}.ts                                                  Task 1
 lib/vnc/{des,rfb,proxy}.ts  tests/helpers/fake-vnc.ts                           Task 2
 lib/streams/token.ts (remote claims)  lib/streams/gateway.ts (+/vnc)  services/gateway/index.ts   Task 3

@@ -22,7 +22,7 @@
 ## File Structure
 
 ```
-supabase/migrations/20261021000018_extras.sql (+ rollback)
+supabase/migrations/20261021000019_extras.sql (+ rollback)
 agent/windows/builtin-scripts/wake_on_lan_relay.ps1
 lib/fleet/{schedules,wol}.ts   lib/monitor/snmp.ts   lib/queries/{posture,regions}.ts   lib/alerts/tickets.ts
 app/(app)/admin/{schedules,posture}/**   components/{posture,regions}/*
