@@ -7,16 +7,22 @@ import { after } from 'next/server'
 import { requireAdministration } from '@/lib/auth/profile'
 import type { Result } from '@/lib/admin/types'
 import { discoverAllStatus, startDiscoverAll, stopDiscoverAll, type RunView } from '@/lib/inventory/discover-all'
+import type { InventoryClients } from '@/lib/inventory/admin-gate'
+import { adminRefusalFor } from '@/lib/rate-limit-shared'
 import { localGo2rtc } from '@/lib/streams/local-go2rtc'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
+import { createMediaClient } from '@/lib/supabase/service-clients'
 
 export async function startDiscoverAllAction(): Promise<Result<{ runId: string; total: number }>> {
   const p = await requireAdministration('admin.inventory')
-  return startDiscoverAll(
-    { admin: createAdminClient(), rls: await createClient(), go2rtc: localGo2rtc() }, { id: p.id, orgId: p.org_id, role: p.role },
-    { schedule: (work) => after(work) },
-  )
+  // P2-6 (D-11): three starts per administrator in ten minutes, shared by every app instance (plus the overall administration count).
+  const slow = await adminRefusalFor('discover_all', p.id)
+  if (slow) return { ok: false, error: slow }
+  const clients: InventoryClients = { admin: createAdminClient(), rls: await createClient(), go2rtc: localGo2rtc() }
+  // P2-6 (D-14): NVR logins are read through the media path's client (the web app's own role cannot), made when the run needs it.
+  Object.defineProperty(clients, 'credentials', { enumerable: false, get: () => createMediaClient() })
+  return startDiscoverAll(clients, { id: p.id, orgId: p.org_id, role: p.role }, { schedule: (work) => after(work) })
 }
 
 /** Review B-M10: "Stop" — no further NVR is asked. */

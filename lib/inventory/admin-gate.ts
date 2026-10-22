@@ -13,8 +13,12 @@ import type { Go2rtcClient } from '@/lib/streams/go2rtc'
 
 export const MSG_INVENTORY_DENIED = 'Only administrators can change locations, NVRs and assets.'
 
-/** Clients of the administration services. `go2rtc`: when given, the live streams of cameras that move or go away are removed (M-4). */
-export type InventoryClients = { admin: AdminClient; rls: AdminClient; go2rtc?: Go2rtcClient }
+/**
+ * Clients of the administration services. `go2rtc`: when given, the live streams of cameras that move or go away are removed (M-4).
+ * `credentials` (P2-6): the client that may read an NVR login (the media path's, `createMediaClient`) for the connection test and
+ * camera discovery; the web app's own client (`admin`, role app_web) cannot. Without it `admin` is asked (tests, tooling).
+ */
+export type InventoryClients = { admin: AdminClient; rls: AdminClient; go2rtc?: Go2rtcClient; credentials?: AdminClient }
 
 export async function inventoryAdmin(rls: AdminClient, actor: Actor): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!isAdminRole(actor.role)) return { ok: false, error: MSG_INVENTORY_DENIED }

@@ -8,6 +8,7 @@ import { FAST_PLAYBACK_CAPABILITY, MSG_FAST_NOT_FOR_YOU } from '@/lib/streams/sp
 import { MSG_VOD_BAD_REQUEST, parseVodQuery, serveVod } from '@/lib/streams/vod'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
+import { createMediaClient } from '@/lib/supabase/service-clients'
 
 // Fast playback: GET /api/vod?camera=<id>&start=<yyyy-mm-ddThh:mm:ssZ>&minutes=<1..30> answers with video/mp4 made from the NVR's recording
 // by ffmpeg (see lib/streams/vod.ts). It needs a signed-in person (the proxy sends everybody else to the sign-in page; this checks again)
@@ -31,7 +32,7 @@ export async function GET(request: Request) {
     // Fast playback is a recording: cctv.export AND cctv.playback (fix M-3). An unreadable summary is the plain access-check failure (M-4).
     const failedCheck = profile.capabilities.failed
     if (failedCheck || !holds(profile.capabilities, FAST_PLAYBACK_CAPABILITY) || !holds(profile.capabilities, 'cctv.playback')) {
-      if (!exportRequestLimiter.allow(profile.id)) return error(429, MSG_TOO_MANY_REQUESTS)
+      if (!(await exportRequestLimiter.allow(profile.id))) return error(429, MSG_TOO_MANY_REQUESTS)
       await auditAccess(createAdminClient(), { orgId: profile.org_id, actorId: profile.id, action: 'cctv_export_denied', capability: FAST_PLAYBACK_CAPABILITY, detail: { reason: failedCheck ? 'access_check_failed' : 'no_capability' } })
       return failedCheck ? error(503, MSG_ACCESS_CHECK_FAILED) : error(403, MSG_FAST_NOT_FOR_YOU)
     }
@@ -39,7 +40,8 @@ export async function GET(request: Request) {
     const parsed = parseVodQuery(new URL(request.url).searchParams)
     if (!parsed.ok) return error(parsed.error === 'Camera not found.' ? 404 : 400, parsed.error)
 
-    return await serveVod({ rls: await createClient(), admin: createAdminClient(), limiter: exportRequestLimiter }, { id: profile.id, orgId: profile.org_id }, parsed.query, request.signal)
+    // P2-6 (D-14): the video path's own database role (route, media session, NVR login for `vod`, its access audit rows).
+    return await serveVod({ rls: await createClient(), admin: createMediaClient(), limiter: exportRequestLimiter }, { id: profile.id, orgId: profile.org_id }, parsed.query, request.signal)
   } catch (e) {
     // The kind of error only: its text can carry an address or a password.
     logger.error({ event: 'vod_route_failed', errorName: e instanceof Error ? e.name : typeof e })

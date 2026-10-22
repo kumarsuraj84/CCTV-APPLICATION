@@ -1,8 +1,16 @@
 api:
   listen: ":1984"
+  # P2-6 (D-13): the API has its own credentials, from the container's environment (deploy/docker-compose.dev.yml passes
+  # GO2RTC_API_USERNAME and GO2RTC_API_PASSWORD from .env.local; `node scripts/gen-secrets.mjs` makes them). The stream list holds NVR
+  # sources with their passwords, so nobody without them may read it. Both empty (not set) = no credentials, as before P2-6
+  # (verified on 1.9.9). The web app and the gateway send the same two.
+  username: ${GO2RTC_API_USERNAME:}
+  password: ${GO2RTC_API_PASSWORD:}
+  local_auth: true
 # No RTSP server: live video goes through the API and the gateway. (Demo video needs one: see go2rtc.demo.yaml.)
 rtsp:
   listen: ""
+# WebRTC is not used (the gateway carries video over WebSocket): its listener is off (D-13).
 webrtc:
-  listen: ":8555"
+  listen: ""
 streams: {}

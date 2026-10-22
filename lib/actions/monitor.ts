@@ -5,7 +5,7 @@ import { coversSomeWholeLocation } from '@/lib/auth/capabilities'
 import { requireProfile } from '@/lib/auth/profile'
 import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { MSG_CHECK_NOT_ALLOWED, requestCheckNow } from '@/lib/monitor/check-now'
-import { rateLimit } from '@/lib/rate-limit'
+import { MSG_SLOW_DOWN, refusalFor } from '@/lib/rate-limit-shared'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 
@@ -19,8 +19,9 @@ export async function requestCheckNowAction(): Promise<CheckNowState> {
   const p = await requireProfile()
   if (p.capabilities.failed) return { error: MSG_ACCESS_CHECK_FAILED }
   if (!coversSomeWholeLocation(p.capabilities, 'it.monitoring.operate')) return { error: MSG_CHECK_NOT_ALLOWED }
-  const { limited } = await rateLimit(`checknow:${p.id}`, 3, 60_000)
-  if (limited) return { error: 'Please wait a minute before asking again.' }
+  // P2-6 (D-11): three a minute per person, shared by every app instance.
+  const slow = await refusalFor('check_now', p.id)
+  if (slow) return { error: slow === MSG_SLOW_DOWN ? 'Please wait a minute before asking again.' : slow }
   const res = await requestCheckNow({ admin: createAdminClient(), rls: await createClient() }, { id: p.id, orgId: p.org_id, role: p.role })
   revalidatePath('/home')
   revalidatePath('/admin/monitoring')

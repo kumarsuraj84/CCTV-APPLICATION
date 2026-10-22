@@ -4,10 +4,11 @@ import { logger } from '@/lib/observability/logger'
 // The media session registry (P2-4, decision D-3, directive AC-14): every video connection is a row of media_sessions in the database
 // (supabase/migrations/20261021000029_p24_media_sessions.sql). The web app makes the rows when it signs stream tokens; the video
 // gateway opens a session when its socket arrives and re-checks all of its open sessions in one call every 15 seconds; the fast-
-// playback route re-checks its own. All of it with the service role (D-14: one service key until the per-service roles of P2-6, which
-// must narrow the gateway to media_session_open / media_sessions_still_valid / media_session_close only).
+// playback route re-checks its own. P2-6 (D-14): each with its own database role — the gateway as video_gateway (EXECUTE on
+// media_session_open / media_sessions_still_valid / media_session_close only), the web app's video path as media_service, the
+// administration screens' revocations as app_web.
 //
-// The service key is only ever put into request headers: never into a URL, an error message, or a log line.
+// The key is only ever put into request headers: never into a URL, an error message, or a log line.
 
 /** The kind of a session as the registry knows it. Live and playback go through the gateway; vod through the fast-playback route. */
 export type SessionKind = 'live' | 'playback' | 'vod' | 'export_download'
@@ -52,8 +53,9 @@ async function inBatches(sids: readonly string[], ask: (part: string[]) => Promi
 }
 
 /**
- * The gateway's client: PostgREST RPC calls with the service key (SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY
- * from the environment, read by services/gateway/index.ts). Plain fetch: the gateway needs nothing else of supabase-js.
+ * The gateway's client: PostgREST RPC calls with the gateway's own key (SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL and
+ * SUPABASE_VIDEO_GATEWAY_KEY from the environment, read by services/gateway/index.ts; P2-6). Plain fetch: the gateway needs nothing
+ * else of supabase-js.
  */
 export function createRestRegistry(o: { url: string; serviceKey: string; timeoutMs?: number; fetchImpl?: typeof fetch }): RegistryClient {
   let base: URL

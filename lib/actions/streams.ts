@@ -10,6 +10,7 @@ import { MSG_UNAVAILABLE, openStreams, renewStreams, type OpenedStream, type Ren
 import { liveRequestLimiter, MSG_TOO_MANY_REQUESTS } from '@/lib/streams/request-limit'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
+import { createMediaClient } from '@/lib/supabase/service-clients'
 
 export type OpenStreamsState = { ok: true; streams: OpenedStream[] } | { ok: false; error: string }
 
@@ -23,16 +24,17 @@ async function run(cameraIds: string[], kind: 'sub' | 'main', route: 'openStream
   // cameras the person may not watch: nothing, without a word, and nothing asked.
   if (p.capabilities.failed) return { ok: false, error: MSG_ACCESS_CHECK_FAILED }
   if (!holds(p.capabilities, 'cctv.live')) return { ok: true, streams: [] }
-  if (!limiter.allow(p.id)) return { ok: false, error: TOO_MANY }
+  if (!(await limiter.allow(p.id))) return { ok: false, error: TOO_MANY }
   try {
     const go2rtc = new Go2rtcClient(process.env.GO2RTC_URL ?? 'http://127.0.0.1:1984')
-    const admin = createAdminClient()
+    // P2-6 (D-14): the video path's own database role (routes, media sessions, NVR logins for `live`); the audit row is the web app's.
+    const media = createMediaClient()
     // openStreams asks the database, as the person, which of these cameras they may watch live (cameras_with_capability('cctv.live')).
-    const res = await openStreams({ admin, rls: await createClient(), go2rtc }, { id: p.id, orgId: p.org_id }, Array.isArray(cameraIds) ? cameraIds : [], kind)
+    const res = await openStreams({ admin: media, rls: await createClient(), go2rtc }, { id: p.id, orgId: p.org_id }, Array.isArray(cameraIds) ? cameraIds : [], kind)
     if (!res.ok) return { ok: false, error: res.error }
     // An opening is recorded; the wall's renewals (P2-4: every minute, a full one every 8 minutes) are not (they open nothing new).
     if (route === 'openStreamsAction' && res.streams.length > 0) {
-      await auditAccess(admin, { orgId: p.org_id, actorId: p.id, action: 'cctv_live_opened', capability: 'cctv.live', cameraIds: res.streams.map((s) => s.cameraId), detail: { kind } })
+      await auditAccess(createAdminClient(), { orgId: p.org_id, actorId: p.id, action: 'cctv_live_opened', capability: 'cctv.live', cameraIds: res.streams.map((s) => s.cameraId), detail: { kind } })
     }
     return { ok: true, streams: res.streams }
   } catch (error) {
@@ -65,9 +67,9 @@ export async function renewStreamTokensAction(cameraIds: string[], kind: 'sub' |
   const p = await requireProfile()
   if (p.capabilities.failed) return { ok: false, error: MSG_ACCESS_CHECK_FAILED }
   if (!holds(p.capabilities, 'cctv.live')) return { ok: true, tokens: [] }
-  if (!limiter.allow(p.id)) return { ok: false, error: TOO_MANY }
+  if (!(await limiter.allow(p.id))) return { ok: false, error: TOO_MANY }
   try {
-    const res = await renewStreams({ admin: createAdminClient(), rls: await createClient() }, { id: p.id, orgId: p.org_id }, Array.isArray(cameraIds) ? cameraIds : [], kind)
+    const res = await renewStreams({ admin: createMediaClient(), rls: await createClient() }, { id: p.id, orgId: p.org_id }, Array.isArray(cameraIds) ? cameraIds : [], kind)
     return res.ok ? { ok: true, tokens: res.tokens } : { ok: false, error: res.error }
   } catch (error) {
     logger.error({ event: 'open_streams_action_failed', route: 'renewStreamTokensAction', errorName: error instanceof Error ? error.name : typeof error })

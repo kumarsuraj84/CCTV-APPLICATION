@@ -4,6 +4,7 @@ import { camerasFor } from '@/lib/auth/resource'
 import { MSG_MONITORING_OFF, MSG_NOT_MAPPED, readRecorderPassword, resolveCameraRoutes, type RouteAnswer } from '@/lib/inventory/recorders'
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
+import { checkRecorderTarget } from '@/lib/security/targets'
 import type { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { createMediaSessions } from '@/lib/streams/registry'
 import { buildRtspUrl, demoSource, isDemoRecorder } from '@/lib/streams/source'
@@ -26,6 +27,7 @@ const REGISTER_PARALLEL = 6
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export type OpenDeps = {
+  /** The media path's own database client (P2-6: media_service, `createMediaClient`): routes, media sessions, NVR logins for `live`. */
   admin: AdminClient
   /** The person's own signed-in client: it answers which cameras they may watch live. */
   rls: AdminClient
@@ -127,12 +129,22 @@ export async function openStreams(
   if (registered.length === 0) return { ok: true, streams: [] }
 
   const env = deps.env ?? process.env
-  // One password read per recorder, and only for recorders that need one (a demo NVR has no real camera behind it).
+  // One password read per recorder, and only for recorders that need one (a demo NVR has no real camera behind it). P2-6 (SO-4): first
+  // the NVR's address must pass the outbound target check (registered endpoint, no special address, a name pinned); the source given to
+  // go2rtc then carries the checked address, so go2rtc never resolves a name. A refused NVR's cameras are left out (nothing is read).
   const passwords = new Map<string, string | null>()
+  const addresses = new Map<string, string>()
   const recorders = [...new Map(registered.map((r) => [r.recorder.id, r.recorder])).values()]
   await mapLimit(recorders, 4, async (rec) => {
     if (isDemoRecorder(rec, env)) return
-    const read = await readRecorderPassword(deps.admin, rec.id)
+    const target = await checkRecorderTarget(rec, { env })
+    if (!target.ok) {
+      logger.warn({ event: 'open_streams_target_refused', location: rec.code, recorder: rec.id })
+      passwords.set(rec.id, null)
+      return
+    }
+    addresses.set(rec.id, target.address)
+    const read = await readRecorderPassword(deps.admin, rec.id, 'live', actor.id)
     if (!read.ok) logger.error({ event: 'open_streams_credential_failed', location: rec.code, recorder: rec.id, errorCode: read.code })
     passwords.set(rec.id, read.ok ? read.password : null)
   })
@@ -147,8 +159,9 @@ export async function openStreams(
       if (demo) src = demoSource(c.channel, c.id)
       else {
         const password = passwords.get(rec.id)
-        if (!password || !rec.host) return null // no saved NVR password: this camera cannot be opened (and the others still can)
-        src = buildRtspUrl({ host: rec.host, port: rec.rtsp_port, username: rec.username, password, channel: c.channel, kind })
+        const address = addresses.get(rec.id)
+        if (!password || !address) return null // no saved NVR password (or a refused address): this camera cannot be opened (the others still can)
+        src = buildRtspUrl({ host: address, port: rec.rtsp_port, username: rec.username, password, channel: c.channel, kind })
       }
       // The stream is named by the camera, never by the channel: a remapped camera keeps its stream name (and its viewers' tokens).
       const name = streamName({ c: c.id, k: kind })

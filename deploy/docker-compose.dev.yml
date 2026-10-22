@@ -14,10 +14,13 @@ services:
         max-size: "10m"
         max-file: "3"
     # Nothing here is reachable from another machine. The browser's only video endpoint is the gateway (npm run gateway, port 3412).
+    # P2-6 (D-13): only the API is published; the unused WebRTC listener (8555) is off in go2rtc.yaml and no longer published.
     ports:
       - "127.0.0.1:1984:1984"
-      - "127.0.0.1:8555:8555/tcp"
-      - "127.0.0.1:8555:8555/udp"
+    # P2-6 (D-13): go2rtc's API credentials, taken from .env.local (npm run stack:up passes --env-file .env.local); empty = none.
+    environment:
+      GO2RTC_API_USERNAME: ${GO2RTC_API_USERNAME:-}
+      GO2RTC_API_PASSWORD: ${GO2RTC_API_PASSWORD:-}
     volumes:
       # Read-only on purpose: camera addresses and passwords are sent to go2rtc at run time and are never written into this file.
       - ./go2rtc.yaml:/config/go2rtc.yaml:ro

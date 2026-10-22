@@ -12,6 +12,7 @@ import { lookupRequestLimiter, playbackRequestLimiter } from '@/lib/streams/requ
 import { parseDay, parseStartIso } from '@/lib/streams/timeline'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
+import { createMediaClient } from '@/lib/supabase/service-clients'
 
 // Playback actions (cctv.playback: calendar, day search and 1x playback; P2-2). Each one checks who is asking first, checks its input,
 // and answers with a plain message instead of throwing: the browser never sees an error text from the NVR, go2rtc or the database.
@@ -53,9 +54,9 @@ export async function listRecordedDaysAction(cameraId: string, year: number, mon
   if (typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: NOT_FOUND }
   if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12) return { ok: false, error: BAD_REQUEST }
   try {
-    const admin = createAdminClient()
-    const res = await listRecordedDays({ rls: await createClient(), admin, limiter: lookupRequestLimiter }, { id: p.id, orgId: p.org_id }, cameraId, year, month, offset())
-    if (res.ok) await auditAccess(admin, { orgId: p.org_id, actorId: p.id, action: 'cctv_playback_searched', capability: 'cctv.playback', cameraIds: [cameraId.toLowerCase()], detail: { what: 'calendar', month: `${year}-${String(month).padStart(2, '0')}` } })
+    // P2-6 (D-14): the video path's own database role reads the route and the NVR login; the audit row is the web app's.
+    const res = await listRecordedDays({ rls: await createClient(), admin: createMediaClient(), limiter: lookupRequestLimiter }, { id: p.id, orgId: p.org_id }, cameraId, year, month, offset())
+    if (res.ok) await auditAccess(createAdminClient(), { orgId: p.org_id, actorId: p.id, action: 'cctv_playback_searched', capability: 'cctv.playback', cameraIds: [cameraId.toLowerCase()], detail: { what: 'calendar', month: `${year}-${String(month).padStart(2, '0')}` } })
     return res
   } catch (error) {
     return failed('playback_days_action_failed', 'listRecordedDaysAction', error, FAILED)
@@ -70,9 +71,8 @@ export async function listDaySegmentsAction(cameraId: string, day: string): Prom
   if (typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: NOT_FOUND }
   if (parseDay(day) === null) return { ok: false, error: BAD_REQUEST }
   try {
-    const admin = createAdminClient()
-    const res = await listDaySegments({ rls: await createClient(), admin, limiter: lookupRequestLimiter }, { id: p.id, orgId: p.org_id }, cameraId, day, offset())
-    if (res.ok) await auditAccess(admin, { orgId: p.org_id, actorId: p.id, action: 'cctv_playback_searched', capability: 'cctv.playback', cameraIds: [cameraId.toLowerCase()], detail: { what: 'day', day } })
+    const res = await listDaySegments({ rls: await createClient(), admin: createMediaClient(), limiter: lookupRequestLimiter }, { id: p.id, orgId: p.org_id }, cameraId, day, offset())
+    if (res.ok) await auditAccess(createAdminClient(), { orgId: p.org_id, actorId: p.id, action: 'cctv_playback_searched', capability: 'cctv.playback', cameraIds: [cameraId.toLowerCase()], detail: { what: 'day', day } })
     return res
   } catch (error) {
     return failed('playback_segments_action_failed', 'listDaySegmentsAction', error, FAILED)
@@ -90,10 +90,9 @@ export async function openPlaybackAction(cameraId: string, startIso: string, min
   if (!Number.isInteger(minutes)) return { ok: false, error: 'Choose how long to play.' }
   try {
     const go2rtc = new Go2rtcClient(process.env.GO2RTC_URL ?? 'http://127.0.0.1:1984')
-    const admin = createAdminClient()
     // Opening a recording has its own count (playback), separate from the live wall and from fast playback.
-    const res = await openPlayback({ rls: await createClient(), admin, go2rtc, limiter: playbackRequestLimiter }, { id: p.id, orgId: p.org_id }, cameraId, start, minutes, offset())
-    if (res.ok) await auditAccess(admin, { orgId: p.org_id, actorId: p.id, action: 'cctv_playback_opened', capability: 'cctv.playback', cameraIds: [cameraId.toLowerCase()], detail: { minutes } })
+    const res = await openPlayback({ rls: await createClient(), admin: createMediaClient(), go2rtc, limiter: playbackRequestLimiter }, { id: p.id, orgId: p.org_id }, cameraId, start, minutes, offset())
+    if (res.ok) await auditAccess(createAdminClient(), { orgId: p.org_id, actorId: p.id, action: 'cctv_playback_opened', capability: 'cctv.playback', cameraIds: [cameraId.toLowerCase()], detail: { minutes } })
     return res
   } catch (error) {
     return failed('open_playback_action_failed', 'openPlaybackAction', error, MSG_UNAVAILABLE)

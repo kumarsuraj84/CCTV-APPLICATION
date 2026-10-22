@@ -1,11 +1,15 @@
 import { isIP } from 'node:net'
 import { DigestInputError, DigestUnsupportedError, digestFetch } from '@/lib/nvr/digest'
 import { parseChannels, parseChannelStatus, parseVideoInputChannels, type NvrChannel } from '@/lib/nvr/isapi'
+import { connectRefusal } from '@/lib/security/targets'
 
 export type NvrEndpoint = { host: string; port: number; username: string; password: string }
 export type NvrErrorKind = 'unreachable' | 'timeout' | 'auth' | 'forbidden' | 'bad_response'
-/** Extra detail for a bad_response: the NVR only offers login methods this app refuses to use (such as Basic), or lists no cameras at all. */
-export type NvrErrorReason = 'unsupported_login' | 'no_channels'
+/**
+ * Extra detail: for a bad_response, the NVR only offers login methods this app refuses to use (such as Basic), or lists no cameras at
+ * all; for unreachable, `refused_target` — the address may not be connected to at all (P2-6, lib/security/targets.ts), so nothing was sent.
+ */
+export type NvrErrorReason = 'unsupported_login' | 'no_channels' | 'refused_target'
 
 export class NvrError extends Error {
   constructor(public kind: NvrErrorKind, message: string, public reason?: NvrErrorReason) {
@@ -27,6 +31,7 @@ export function describeNvrError(e: unknown): string {
   if (!(e instanceof NvrError)) return 'The NVR check failed.'
   if (e.kind === 'bad_response' && e.reason === 'unsupported_login') return 'The NVR does not offer a supported login method.'
   if (e.kind === 'bad_response' && e.reason === 'no_channels') return 'The NVR did not list any cameras.'
+  if (e.reason === 'refused_target') return 'This NVR address cannot be used (a reserved or special address), so it was not contacted.'
   return MESSAGES[e.kind]
 }
 
@@ -213,6 +218,9 @@ export class NvrClient {
   private url(path: string): string {
     const ep = this.#ep
     if (!validHost(ep.host) || !validPort(ep.port)) throw new NvrError('unreachable', 'invalid NVR address')
+    // P2-6 (SO-4): the backstop in front of every NVR request — no link-local, metadata or other special address, and this computer only
+    // outside production. Nothing is sent (not even the first unauthenticated request of the Digest login).
+    if (connectRefusal(ep.host)) throw new NvrError('unreachable', 'address not allowed', 'refused_target')
     const host = isIP(ep.host) === 6 ? `[${ep.host}]` : ep.host
     return `http://${host}:${ep.port}${path}`
   }

@@ -2,6 +2,8 @@
 // the address, the source, the name or the underlying error: callers get a plain sentence and nothing that could be logged by mistake.
 
 import { logger } from '@/lib/observability/logger'
+import { sourceRefusal } from '@/lib/security/targets'
+import { basicAuthHeader, go2rtcApiAuth, type Go2rtcAuth } from '@/lib/streams/go2rtc-auth'
 
 const NAME = /^[A-Za-z0-9_-]{1,200}$/
 /** The only stream names the pruner may remove: live (cam_<id>_sub|main) and playback (pb_<id>_<start>) streams made by this app. */
@@ -44,13 +46,22 @@ type Read = { present: boolean; busy: boolean; urls: string[] }
 
 export class Go2rtcClient {
   private readonly base: string
+  // A true private field: logging or inspecting a client never shows the API password.
+  readonly #authorization: string | null
 
+  /**
+   * `auth` (P2-6, D-13): go2rtc's API credentials; left out, they come from GO2RTC_API_USERNAME / GO2RTC_API_PASSWORD (both or neither);
+   * null: none.
+   */
   constructor(
     baseUrl: string,
     private readonly fetchImpl: typeof fetch = (...a) => fetch(...a),
     private readonly timeoutMs: number = GO2RTC_TIMEOUT_MS,
+    auth?: Go2rtcAuth | null,
   ) {
     this.base = loopbackOrigin(baseUrl)
+    const a = auth === undefined ? go2rtcApiAuth() : auth
+    this.#authorization = a ? basicAuthHeader(a) : null
   }
 
   /** The body as text, refusing anything over `cap` bytes without reading the rest. */
@@ -82,7 +93,10 @@ export class Go2rtcClient {
   /** One call to go2rtc; the answer is returned whatever its status. A network failure, timeout or redirect becomes `message`. */
   private async send(method: string, pathAndQuery: string, message: string): Promise<Response> {
     try {
-      return await this.fetchImpl(`${this.base}${pathAndQuery}`, { method, signal: AbortSignal.timeout(this.timeoutMs), redirect: 'manual', cache: 'no-store' })
+      return await this.fetchImpl(`${this.base}${pathAndQuery}`, {
+        method, signal: AbortSignal.timeout(this.timeoutMs), redirect: 'manual', cache: 'no-store',
+        ...(this.#authorization ? { headers: { Authorization: this.#authorization } } : {}),
+      })
     } catch {
       throw new Error(message)
     }
@@ -139,6 +153,11 @@ export class Go2rtcClient {
    */
   register(name: string, src: string, opts: { keepExisting?: boolean } = {}): Promise<void> {
     if (typeof name !== 'string' || !NAME.test(name) || typeof src !== 'string' || src === '') return Promise.reject(new Error(MSG_REGISTER))
+    // P2-6 (D-13): only rtsp:// to a registered NVR endpoint, or the demo picture outside production; nothing is sent otherwise.
+    if (sourceRefusal(src)) {
+      logger.warn({ event: 'go2rtc_source_refused', stream: name }) // never the source: it holds a password
+      return Promise.reject(new Error(MSG_REGISTER))
+    }
     const key = `${this.key(name)}|${opts.keepExisting === true ? 'keep' : 'exact'}|${src}`
     const running = inFlight.get(key)
     if (running) return running

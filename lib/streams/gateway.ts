@@ -3,6 +3,7 @@ import http from 'node:http'
 import type { Duplex } from 'node:stream'
 import WebSocket, { WebSocketServer, type RawData } from 'ws'
 import { usableSecret } from '@/lib/secrets'
+import { basicAuthHeader, type Go2rtcAuth } from '@/lib/streams/go2rtc-auth'
 import { REGISTRY_TIMEOUT_MS, type RegistryClient } from '@/lib/streams/registry'
 import { streamName, verifyStreamToken, type StreamClaims } from '@/lib/streams/token'
 
@@ -45,6 +46,11 @@ export type GatewayHealth = {
 
 export type GatewayOptions = {
   go2rtcUrl: string
+  /**
+   * go2rtc's API credentials (P2-6, D-13), sent on the upstream video socket and the player-script requests (server → loopback only).
+   * Left out or null: none (go2rtc without API credentials).
+   */
+  go2rtcAuth?: Go2rtcAuth | null
   secret: string
   allowedOrigins: string[]
   /** The media session registry (required: without it nothing can be verified, so nothing would be allowed). */
@@ -217,6 +223,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
   }
 
   const secret = opts.secret
+  const upstreamAuth: Record<string, string> = opts.go2rtcAuth ? { Authorization: basicAuthHeader(opts.go2rtcAuth) } : {}
   const now = opts.now ?? Date.now
   const maxSessionMs = opts.maxSessionMs ?? DEFAULT_MAX_SESSION_MS
   const maxSockets = opts.maxSockets ?? DEFAULT_MAX_SOCKETS
@@ -353,7 +360,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     const cors = scriptCors(req)
     try {
       // Nothing from the browser's request goes along: not its headers, not its query, only a fixed path.
-      const r = await fetch(`${origin}${upstreamPath}`, { redirect: 'manual', signal: AbortSignal.timeout(SCRIPT_TIMEOUT_MS) })
+      const r = await fetch(`${origin}${upstreamPath}`, { redirect: 'manual', signal: AbortSignal.timeout(SCRIPT_TIMEOUT_MS), headers: upstreamAuth })
       const body = r.ok ? await readCapped(r) : (await r.body?.cancel().catch(() => {}), null)
       if (!body) return sendText(res, 502, 'The video server is not available.', cors)
       res.writeHead(200, {
@@ -592,6 +599,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
         maxPayload: MAX_UPSTREAM_PAYLOAD,
         perMessageDeflate: false,
         followRedirects: false,
+        headers: upstreamAuth,
       })
       upstream = up
       up.on('error', () => {})

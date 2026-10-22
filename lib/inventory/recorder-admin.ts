@@ -9,12 +9,13 @@ import { realProbes } from '@/lib/monitor/probes'
 import type { Probes } from '@/lib/monitor/types'
 import { describeNvrError, NvrError } from '@/lib/nvr/client'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
+import { registerEndpoints } from '@/lib/security/targets'
 
 // The NVRs (recorders) of a location (P2-5c-1 brief item 2). A location has 1..n NVRs (a head office may have none). Each NVR has its
 // own address, ports, login name, number of cameras and clock offset; its password is WRITE-ONLY: it goes to the vault through
 // recorder_store_credential and is never read back to a screen, a result, a log or an audit row (the screens show only "a password is
-// saved"). The connection test is read-only (one ISAPI GET of the channel status) through the same credential path the worker uses
-// (recorder_read_credential, which refuses a switched-off NVR), and after a refused login it waits — like the worker's back-off (R9) —
+// saved"). The connection test is read-only (one ISAPI GET of the channel status) through the logged credential read
+// (recorder_credential_read, purpose connection_test, which refuses a switched-off NVR; P2-6), and after a refused login it waits — like the worker's back-off (R9) —
 // so a wrong password can never lock the NVR's account from this screen either.
 
 export const MSG_NVR_NOT_FOUND = 'NVR not found.'
@@ -158,7 +159,9 @@ export async function testRecorderConnection(clients: InventoryClients, actor: A
   if (!isMonitored(row)) return { ok: false, error: MSG_MONITORING_OFF }
   if (!row.locations.is_active) return { ok: false, error: 'This location is switched off. Switch it on before testing its NVRs.' }
   if (!row.assets.ip) return { ok: false, error: 'This NVR has no address saved.' }
-  const read = await readRecorderPassword(admin, id)
+  // P2-6 (SO-4): the NVR as saved in the database is the registered endpoint the test may reach (lib/security/targets.ts).
+  registerEndpoints([{ host: row.assets.ip, port: row.http_port }])
+  const read = await readRecorderPassword(clients.credentials ?? admin, id, 'connection_test', actor.id)
   if (!read.ok) return { ok: false, error: sanitizeError({ code: read.code }, { route: 'testRecorderConnection', fallback: 'Could not read the NVR password.' }) }
   if (!read.password) return { ok: false, error: 'This NVR has no password saved yet.' }
   const host = row.assets.ip

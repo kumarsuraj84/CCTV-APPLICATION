@@ -7,9 +7,8 @@
 // between (access_version moved) gives MSG_CONFLICT. History is never edited: revoking sets revoked_at with a reason.
 // Every function here takes the service-role client and the acting administrator; the caller (lib/actions/admin/access.ts) has
 // already checked the session, the administrative role and admin.access (requireAdministration).
-import { createHmac, randomBytes } from 'node:crypto'
-import { processSingleton } from '@/lib/process-singleton'
-import { getSecret } from '@/lib/secrets'
+import { createHmac } from 'node:crypto'
+import { sharedSecret } from '@/lib/secrets'
 import { revalidateMediaSessions } from '@/lib/streams/registry'
 import { z } from 'zod'
 import { addAudit } from '@/lib/admin/audit'
@@ -239,19 +238,23 @@ async function checkChanges(admin: AdminClient, actor: Actor, userId: string, in
   return { ok: true, target, normal, cat, live, label }
 }
 
-// Review M-5: the key of the preview token. ACCESS_PREVIEW_SECRET when configured; otherwise a random key of this server process
-// (kept across hot reloads), so a token cannot be made outside the server; after a restart the administrator simply checks again.
-const ephemeralKey = processSingleton('admin.accessPreviewKey', () => randomBytes(32).toString('base64url'))
-const previewKey = () => getSecret('access_preview') ?? ephemeralKey
+// Review M-5: the key of the preview token. ACCESS_PREVIEW_SECRET when configured (P2-6: shared, so every app instance accepts the
+// token); otherwise, outside production, a random key of this server process (kept across hot reloads), so a token cannot be made
+// outside the server; after a restart the administrator simply checks again. In production the secret is required (lib/secrets.ts
+// sharedSecret); without it the preview is refused.
+const previewKey = () => sharedSecret('access_preview')
 
 /**
  * Binds a save to the preview the administrator saw: an HMAC (server secret) of the person, the access version and the exact changes.
  * The protection against lost updates is expected_version in apply_access_change; the token makes "save without the preview" impossible.
  */
-export function previewToken(userId: string, version: number, normal: readonly { op: string; [k: string]: unknown }[]): string {
+export function previewToken(userId: string, version: number, normal: readonly { op: string; [k: string]: unknown }[]): string | null {
+  const key = previewKey()
+  if (!key) return null // production without ACCESS_PREVIEW_SECRET: no token, so no save either
   const canon = normal.map((n) => (n.op === 'revoke' ? ['r', n.grant_id, n.reason] : ['g', n.capability, n.scope_kind, n.scope_id, n.valid_until, n.reason]))
-  return createHmac('sha256', previewKey()).update(JSON.stringify(['drishti-access-preview-v2', userId, version, canon])).digest('hex')
+  return createHmac('sha256', key).update(JSON.stringify(['drishti-access-preview-v2', userId, version, canon])).digest('hex')
 }
+const MSG_PREVIEW_NOT_SET_UP = 'Access changes are not set up on this server yet (the preview key is missing).'
 
 export type PreviewCapability = {
   capability: string; label: string; target: 'camera' | 'asset' | 'location' | 'organization'
@@ -293,7 +296,9 @@ export async function previewChange(admin: AdminClient, actor: Actor, userId: st
       lastDay: n.valid_until ? lastDayIst(n.valid_until) : null, reason: n.reason, alreadyGiven,
     }
   })
-  return { ok: true, version: input.expectedVersion, token: previewToken(target.id, input.expectedVersion, normal), personActive: out.person_active === true, capabilities, lines }
+  const token = previewToken(target.id, input.expectedVersion, normal)
+  if (!token) return { ok: false, error: MSG_PREVIEW_NOT_SET_UP }
+  return { ok: true, version: input.expectedVersion, token, personActive: out.person_active === true, capabilities, lines }
 }
 
 /** The database's refusal of an access change, in plain words (P2-5c-1: "the database enforces; show the DB message plainly"). */
@@ -356,7 +361,8 @@ async function applyNormal(admin: AdminClient, actor: Actor, target: Target, nor
 export async function applyChange(admin: AdminClient, actor: Actor, userId: string, input: { changes: unknown; expectedVersion: number; token: string }, now = new Date()): Promise<AccessResult<{ version: number; added: number; revoked: number }>> {
   const checked = await checkChanges(admin, actor, userId, input.changes, now)
   if (!checked.ok) return checked
-  if (typeof input.token !== 'string' || input.token !== previewToken(checked.target.id, input.expectedVersion, checked.normal)) return { ok: false, error: MSG_PREVIEW_FIRST }
+  const want = previewToken(checked.target.id, input.expectedVersion, checked.normal)
+  if (!want || typeof input.token !== 'string' || input.token !== want) return { ok: false, error: MSG_PREVIEW_FIRST }
   if (checked.target.access_version !== input.expectedVersion) return { ok: false, error: MSG_CONFLICT, conflict: true }
   return applyNormal(admin, actor, checked.target, checked.normal, input.expectedVersion, checked.live)
 }

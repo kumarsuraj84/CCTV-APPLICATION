@@ -664,7 +664,7 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
   const env = deps.env ?? process.env
   const now = deps.now ?? Date.now
   if (!startInBounds(query.start.getTime(), now())) return fail(400, MSG_BAD_START)
-  if (deps.limiter && !deps.limiter.allow(actor.id)) return fail(429, MSG_TOO_MANY_REQUESTS)
+  if (deps.limiter && !(await deps.limiter.allow(actor.id))) return fail(429, MSG_TOO_MANY_REQUESTS)
 
   // Fast playback hands over a savable MP4 of a recording, so it needs cctv.export AND cctv.playback for the camera (decision D-6a;
   // P2-2 fix M-3: export alone gets the same refusal as no right at all).
@@ -715,7 +715,7 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
     watch?.stop()
     if (sid) void registry.close(sid)
   }
-  const login = await readRecorderLogin(deps, { camera, recorder, demo: false })
+  const login = await readRecorderLogin(deps, { camera, recorder, demo: false }, { purpose: 'vod', actorId: actor.id })
   if (!login.ok) {
     endSession()
     return cameraFailure(login.error)

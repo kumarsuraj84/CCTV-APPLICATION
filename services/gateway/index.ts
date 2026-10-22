@@ -2,7 +2,9 @@ import { existsSync } from 'node:fs'
 import { createGateway, normalizeOrigin } from '@/lib/streams/gateway'
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
+import { go2rtcApiAuth } from '@/lib/streams/go2rtc-auth'
 import { createRestRegistry } from '@/lib/streams/registry'
+import { requireServiceKey, serviceKeyFor } from '@/lib/supabase/service-clients'
 
 // The video gateway: a small process next to the web app. Run it with `npm run gateway`. It is the only video endpoint a browser
 // reaches (port 3412); go2rtc itself listens on this machine only.
@@ -37,18 +39,24 @@ function main() {
   }
 
   // P2-4 (D-3): the media session registry. Every socket's session is opened there and every open socket is re-checked every 15 s;
-  // without it nothing can be verified, so the gateway does not start. The service key comes from the environment only and goes only
-  // into request headers (never logged). D-14 / P2-6: this must become a least-privilege role (EXECUTE on media_session_open,
-  // media_sessions_still_valid and media_session_close only) instead of the full service key.
+  // without it nothing can be verified, so the gateway does not start. P2-6 (D-14): the gateway's own database role video_gateway
+  // (key SUPABASE_VIDEO_GATEWAY_KEY), which may call media_session_open, media_sessions_still_valid and media_session_close and nothing
+  // else — no table, no other function. Development without the key falls back to the service key with a warning; production refuses.
+  // The key comes from the environment only and goes only into request headers (never logged).
   const registryUrl = process.env.SUPABASE_URL?.trim() || process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || ''
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || ''
-  if (!registryUrl || !serviceKey) {
-    logger.error({ event: 'gateway_config_missing', message: 'SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY are required: the gateway checks every video connection in the database. Live video stays off until they are set.' })
+  const key = serviceKeyFor('video_gateway')
+  if (!registryUrl || !key.ok) {
+    logger.error({
+      event: 'gateway_config_missing',
+      message: !registryUrl
+        ? 'SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) is required: the gateway checks every video connection in the database. Live video stays off until it is set.'
+        : `${key.ok ? '' : key.error} The gateway checks every video connection in the database; live video stays off until it is set.`,
+    })
     process.exit(1)
   }
   let registry: ReturnType<typeof createRestRegistry>
   try {
-    registry = createRestRegistry({ url: registryUrl, serviceKey })
+    registry = createRestRegistry({ url: registryUrl, serviceKey: requireServiceKey('video_gateway') })
   } catch (e) {
     logger.error({ event: 'gateway_config_invalid', message: e instanceof Error ? e.message : 'The database address is not valid.' })
     process.exit(1)
@@ -56,7 +64,8 @@ function main() {
 
   let gateway: ReturnType<typeof createGateway>
   try {
-    gateway = createGateway({ go2rtcUrl, secret, allowedOrigins: valid, registry, log: (e) => logger.info(e) })
+    // P2-6 (D-13): go2rtc's API credentials (GO2RTC_API_USERNAME / GO2RTC_API_PASSWORD), when configured on both sides.
+    gateway = createGateway({ go2rtcUrl, go2rtcAuth: go2rtcApiAuth(), secret, allowedOrigins: valid, registry, log: (e) => logger.info(e) })
   } catch (e) {
     logger.error({ event: 'gateway_config_invalid', message: e instanceof Error ? e.message : 'The gateway could not be set up.' })
     process.exit(1)

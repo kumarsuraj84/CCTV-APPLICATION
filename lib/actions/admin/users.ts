@@ -7,8 +7,8 @@ import { createUser, resetUserPassword, updateUser } from '@/lib/admin/users'
 import type { AdminCapability } from '@/lib/auth/capabilities'
 import { mayAdminister, requireAdministration } from '@/lib/auth/profile'
 import { submittedValues } from '@/lib/forms/submitted-values'
-import { rateLimit } from '@/lib/rate-limit'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { adminRefusalFor } from '@/lib/rate-limit-shared'
+import { createUserAdminClient } from '@/lib/supabase/admin'
 
 export type CreateUserState = { error?: string; values?: Record<string, string>; created?: { userId: string; email: string; oneTimePassword: string; warning?: string } }
 export type PasswordState = { error?: string; oneTimePassword?: string }
@@ -17,20 +17,22 @@ export type ReactivationState =
   | { ok: true; version: number; canRevoke: boolean; grants: { id: string; capabilityLabel: string; scopeLabel: string; lastDay: string | null; state: string; source: string }[] }
   | { ok: false; error: string }
 
-const MSG_SLOW_DOWN = 'Too many requests in a short time. Wait a minute and try again.'
-
 // P2-2: people are managed with an administrative role AND admin.users; access with admin.access. canManageRole (in the service)
 // still decides which roles an actor may manage (only a super administrator manages super administrators, ruling P-1).
 async function ctx(cap: AdminCapability = 'admin.users') {
   const p = await requireAdministration(cap)
-  return { profile: p, admin: createAdminClient(), actor: { id: p.id, orgId: p.org_id, role: p.role } }
+  // P2-6: the web app's own role for the database; GoTrue's admin API (auth.admin) only through the service key (ADR, risk 1).
+  return { profile: p, admin: createUserAdminClient(), actor: { id: p.id, orgId: p.org_id, role: p.role } }
 }
-const limited = async (actorId: string) => (await rateLimit(`users:${actorId}`, 30, 60_000)).limited
+// P2-6 (D-11): 30 changes a minute per administrator, shared by every app instance, on top of the overall administration count;
+// refused when the count cannot be read. Null when the action may go ahead, else the words to show.
+const limited = (actorId: string) => adminRefusalFor('users_change', actorId)
 
 export async function createUserAction(_prev: CreateUserState, formData: FormData): Promise<CreateUserState> {
   const { admin, actor } = await ctx()
   const values = submittedValues(formData, ['full_name', 'email', 'role', 'store_id'])
-  if (await limited(actor.id)) return { error: MSG_SLOW_DOWN, values }
+  const slow = await limited(actor.id)
+  if (slow) return { error: slow, values }
   const email = String(formData.get('email') ?? '')
   const res = await createUser(admin, actor, {
     email,
@@ -48,7 +50,8 @@ export async function createUserAction(_prev: CreateUserState, formData: FormDat
  */
 export async function setActiveAction(userId: string, isActive: boolean, opts?: { revokeAll?: { grantIds: string[]; reason: string; expectedVersion: number } }): Promise<SimpleState> {
   const { profile, admin, actor } = await ctx()
-  if (await limited(actor.id)) return { error: MSG_SLOW_DOWN }
+  const slow = await limited(actor.id)
+  if (slow) return { error: slow }
   if (opts?.revokeAll) {
     if (!isActive) return { error: 'Removing access is offered only when reactivating.' }
     if (!mayAdminister(profile, 'admin.access')) return { error: 'Removing access needs the right to change access (admin.access).' }
@@ -70,7 +73,8 @@ const listed = (grants: GrantView[]): ListedGrant[] => grants.map((g) => ({ id: 
 export async function reactivationReviewAction(userId: string): Promise<ReactivationState> {
   const { profile, admin, actor } = await ctx()
   if (!z.uuid().safeParse(userId).success) return { ok: false, error: 'User not found.' }
-  if (await limited(actor.id)) return { ok: false, error: MSG_SLOW_DOWN }
+  const slow = await limited(actor.id)
+  if (slow) return { ok: false, error: slow }
   const mayReadAccess = mayAdminister(profile, 'admin.access')
   const r = await reviewBeforeReactivation(admin, actor, userId, { mayReadAccess })
   if (!r.ok) return r
@@ -85,7 +89,8 @@ export type RoleState = { error?: string; ok?: boolean; revoked?: number; remain
  */
 export async function setRoleAction(userId: string, role: string, expectedVersion?: number | null): Promise<RoleState> {
   const { profile, admin, actor } = await ctx()
-  if (await limited(actor.id)) return { error: MSG_SLOW_DOWN }
+  const slow = await limited(actor.id)
+  if (slow) return { error: slow }
   const version = typeof expectedVersion === 'number' && Number.isInteger(expectedVersion) && expectedVersion >= 0 ? expectedVersion : null
   const res = await updateUser(admin, actor, userId, { role }, { expectedVersion: version })
   revalidatePath('/admin/users')
@@ -96,7 +101,8 @@ export async function setRoleAction(userId: string, role: string, expectedVersio
 
 export async function resetPasswordAction(userId: string): Promise<PasswordState> {
   const { admin, actor } = await ctx()
-  if (await limited(actor.id)) return { error: MSG_SLOW_DOWN }
+  const slow = await limited(actor.id)
+  if (slow) return { error: slow }
   const res = await resetUserPassword(admin, actor, userId)
   revalidatePath('/admin/users')
   return res.ok ? { oneTimePassword: res.oneTimePassword } : { error: res.error }

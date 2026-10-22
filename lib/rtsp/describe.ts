@@ -1,6 +1,7 @@
 import net, { isIP } from 'node:net'
 import { buildDigestHeader, DigestInputError, parseDigestChallenge } from '@/lib/nvr/digest'
 import { clampMs, isValidHost, isValidPort } from '@/lib/probes'
+import { connectRefusal } from '@/lib/security/targets'
 
 export type RtspTarget = { host: string; port: number; username: string; password: string; channel: number; timeoutMs?: number }
 
@@ -31,6 +32,9 @@ export async function rtspDescribe(t: RtspTarget): Promise<{ code: number; trace
   if (!isValidHost(t.host) || !isValidPort(t.port) || !Number.isInteger(t.channel) || t.channel < 1 || t.channel > 4096) {
     return { code: 0, trace: ['The camera address is not valid.'] }
   }
+  // P2-6 (SO-4): the backstop in front of every socket (lib/security/targets.ts).
+  const refused = connectRefusal(t.host)
+  if (refused) return { code: 0, trace: [refused] }
   const hostInUri = isIP(t.host) === 6 ? `[${t.host}]` : t.host
   const uri = `rtsp://${hostInUri}:${t.port}/Streaming/Channels/${t.channel}02`
   const timeout = t.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : clampMs(t.timeoutMs, DEFAULT_TIMEOUT_MS)

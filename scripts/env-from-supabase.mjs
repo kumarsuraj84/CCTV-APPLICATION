@@ -3,6 +3,7 @@ import { execSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync, writeFileSync } from 'node:fs'
 import { parseEnvOutput } from './lib/env-output.mjs'
+import { PLAIN_DEFAULTS, RANDOM_SECRETS, SERVICE_KEYS, valueFor } from './lib/gen-secrets-core.mjs'
 
 if (existsSync('.env.local') && !process.argv.includes('--force')) {
   console.log('.env.local already exists. Run with --force to replace it.')
@@ -17,7 +18,6 @@ if (missing.length) {
   process.exit(1)
 }
 
-const secret = () => randomBytes(32).toString('base64url')
 const lines = {
   NEXT_PUBLIC_SUPABASE_URL: status.API_URL,
   NEXT_PUBLIC_SUPABASE_ANON_KEY: status.ANON_KEY,
@@ -26,11 +26,9 @@ const lines = {
   NEXT_PUBLIC_APP_URL: 'http://localhost:3212',
   NEXT_PUBLIC_STREAM_GATEWAY_URL: 'http://localhost:3412',
   TZ: 'Asia/Kolkata',
-  CRON_SECRET: secret(),
-  WORKER_SECRET: secret(),
-  STREAM_TOKEN_SECRET: secret(),
-  SYSTEM_LOG_INGEST_SECRET: secret(),
-  ACCESS_PREVIEW_SECRET: secret(),
+  // P2-6: every secret purpose, go2rtc's API login and the per-service database keys (scripts/gen-secrets.mjs adds them to an existing file).
+  ...Object.fromEntries([...RANDOM_SECRETS, ...Object.keys(PLAIN_DEFAULTS)].map((k) => [k, valueFor(k)])),
+  ...(status.JWT_SECRET ? Object.fromEntries(SERVICE_KEYS.map((k) => [k, valueFor(k, { jwtSecret: status.JWT_SECRET })])) : {}),
   // Local development sign-in for create-dev-admin.mjs (synthetic address, random password, never printed).
   DEV_ADMIN_EMAIL: 'dev-admin@example.test',
   DEV_ADMIN_PASSWORD: randomBytes(15).toString('base64url') + 'aA1',

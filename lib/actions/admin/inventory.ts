@@ -8,6 +8,7 @@ import type { RowError } from '@/lib/import/stores-csv'
 import { createDevice, deleteDevice, updateDevice } from '@/lib/inventory/devices'
 import { submittedValues } from '@/lib/forms/submitted-values'
 import { archiveInventory, restoreInventory, type ArchiveKind } from '@/lib/inventory/archive'
+import { refusalFor } from '@/lib/rate-limit-shared'
 import { localGo2rtc } from '@/lib/streams/local-go2rtc'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
@@ -22,7 +23,9 @@ export type ImportState = { result?: ImportResult; parseErrors?: RowError[]; err
 // P2-2: devices, archiving and imports need an administrative role AND admin.inventory (the services still check the role as authority).
 async function ctx() {
   const p = await requireAdministration('admin.inventory')
-  return { admin: createAdminClient(), actor: { id: p.id, orgId: p.org_id, role: p.role } }
+  // P2-6 (D-11): every administration action counts against the shared administration limit.
+  const slow = await refusalFor('admin_action', p.id)
+  return { admin: createAdminClient(), actor: { id: p.id, orgId: p.org_id, role: p.role }, slow }
 }
 
 const text = (f: FormData, k: string) => String(f.get(k) ?? '')
@@ -38,7 +41,8 @@ function deviceInput(f: FormData) {
 }
 
 export async function saveDeviceAction(_prev: FormResult, formData: FormData): Promise<FormResult> {
-  const { admin, actor } = await ctx()
+  const { admin, actor, slow } = await ctx()
+  if (slow) return { error: slow }
   const id = text(formData, 'id')
   const res = id ? await updateDevice(admin, actor, id, deviceInput(formData)) : await createDevice(admin, actor, deviceInput(formData))
   revalidatePath('/admin/devices')
@@ -46,7 +50,8 @@ export async function saveDeviceAction(_prev: FormResult, formData: FormData): P
 }
 
 export async function deleteDeviceAction(deviceId: string): Promise<FormResult> {
-  const { admin, actor } = await ctx()
+  const { admin, actor, slow } = await ctx()
+  if (slow) return { error: slow }
   const res = await deleteDevice(admin, actor, deviceId)
   revalidatePath('/admin/devices')
   return res.ok ? { ok: true } : { error: res.error }
@@ -55,6 +60,8 @@ export async function deleteDeviceAction(deviceId: string): Promise<FormResult> 
 /** P2-5b: archive / restore a location, NVR, camera, asset, cluster or region (the screens arrive with P2-5c). */
 export async function archiveInventoryAction(kind: ArchiveKind, id: string): Promise<FormResult> {
   const p = await requireAdministration('admin.inventory')
+  const slow = await refusalFor('admin_action', p.id)
+  if (slow) return { error: slow }
   const res = await archiveInventory({ admin: createAdminClient(), rls: await createClient(), go2rtc: localGo2rtc() }, { id: p.id, orgId: p.org_id, role: p.role }, kind, String(id))
   revalidatePath('/admin/locations')
   return res.ok ? { ok: true } : { error: res.error }
@@ -62,6 +69,8 @@ export async function archiveInventoryAction(kind: ArchiveKind, id: string): Pro
 
 export async function restoreInventoryAction(kind: ArchiveKind, id: string): Promise<FormResult> {
   const p = await requireAdministration('admin.inventory')
+  const slow = await refusalFor('admin_action', p.id)
+  if (slow) return { error: slow }
   const res = await restoreInventory({ admin: createAdminClient(), rls: await createClient() }, { id: p.id, orgId: p.org_id, role: p.role }, kind, String(id))
   revalidatePath('/admin/locations')
   return res.ok ? { ok: true } : { error: res.error }
@@ -76,7 +85,8 @@ async function readFile(formData: FormData): Promise<string | null> {
 }
 
 export async function importDevicesAction(_prev: ImportState, formData: FormData): Promise<ImportState> {
-  const { admin, actor } = await ctx()
+  const { admin, actor, slow } = await ctx()
+  if (slow) return { error: slow }
   const body = await readFile(formData)
   if (body === null) return { error: 'Choose a CSV file smaller than 5 MB.' }
   const parsed = parseDevicesCsv(body)

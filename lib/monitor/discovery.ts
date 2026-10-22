@@ -84,7 +84,12 @@ export type RecorderDiscovery = {
   reconciliation: Reconciliation[]
 }
 
-type Clients = { admin: AdminClient; rls: AdminClient }
+/**
+ * `admin`: the web app's own database client (app_web; it cannot read NVR logins). `credentials`: the client that may read the NVR
+ * login for discovery (P2-6: the media path's client, `createMediaClient`); without it `admin` is asked (tests and tooling that use
+ * the service key).
+ */
+type Clients = { admin: AdminClient; rls: AdminClient; credentials?: AdminClient }
 /** `go2rtc`: when given, the live streams of a camera that discovery moved to another channel are removed (review M-4). */
 type Deps = { nvr: Probes['nvr']; go2rtc?: Go2rtcClient }
 const defaults: Deps = { nvr: realProbes.nvr }
@@ -112,7 +117,7 @@ async function discoverOne(clients: Clients, actor: Actor, rec: Recorder, deps: 
   if (!rec.location_active) return { ok: false, error: MSG_LOCATION_OFF }
   if (!rec.host) return { ok: false, error: 'This NVR has no address saved.' }
   // The password is read here, used for this one call and not kept anywhere.
-  const read = await readRecorderPassword(admin, rec.id)
+  const read = await readRecorderPassword(clients.credentials ?? admin, rec.id, 'discovery', actor.id)
   if (!read.ok) return { ok: false, error: sanitizeError({ code: read.code }, { route: 'discoverRecorderCameras', fallback: 'Could not read the NVR password.' }) }
   if (!read.password) {
     const { data: primary } = await admin.rpc('recorder_primary_of', { p_location: rec.location_id })

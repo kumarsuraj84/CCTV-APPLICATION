@@ -8,6 +8,7 @@ import { revalidatePath } from 'next/cache'
 import { requireAdministration } from '@/lib/auth/profile'
 import { applyLocationImport, checkLocationImport, type ImportOutcome } from '@/lib/import/locations-import'
 import type { ImportPreview } from '@/lib/import/locations-plan'
+import { adminRefusalFor } from '@/lib/rate-limit-shared'
 import { localGo2rtc } from '@/lib/streams/local-go2rtc'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
@@ -27,6 +28,9 @@ const on = (f: FormData, k: string) => f.get(k) === 'on' || f.get(k) === 'true'
 
 export async function checkLocationImportAction(f: FormData): Promise<ImportCheckState> {
   const p = await requireAdministration('admin.inventory')
+  // P2-6 (D-11): 20 checks per administrator in ten minutes, shared by every app instance (plus the overall administration count).
+  const slow = await adminRefusalFor('import_check', p.id)
+  if (slow) return { ok: false, error: slow }
   const text = await fileText(f)
   if (text === null) return { ok: false, error: MSG_FILE }
   return checkLocationImport({ admin: createAdminClient(), rls: await createClient() }, { id: p.id, orgId: p.org_id, role: p.role }, text, {
@@ -36,6 +40,9 @@ export async function checkLocationImportAction(f: FormData): Promise<ImportChec
 
 export async function applyLocationImportAction(f: FormData): Promise<ImportApplyState> {
   const p = await requireAdministration('admin.inventory')
+  // P2-6 (D-11): five imports per administrator in ten minutes, shared by every app instance (plus the overall administration count).
+  const slow = await adminRefusalFor('import_apply', p.id)
+  if (slow) return { ok: false, error: slow }
   const text = await fileText(f)
   if (text === null) return { ok: false, error: MSG_FILE }
   const res = await applyLocationImport(

@@ -2,8 +2,13 @@
 # server, so this file turns one on, on the container's loopback only (the port is not published). Real cameras never use it.
 api:
   listen: ":1984"
+  # P2-6 (D-13): the same API credentials as go2rtc.yaml (empty = none).
+  username: ${GO2RTC_API_USERNAME:}
+  password: ${GO2RTC_API_PASSWORD:}
+  local_auth: true
 rtsp:
   listen: "127.0.0.1:8554"
+# WebRTC is not used: its listener is off (D-13).
 webrtc:
-  listen: ":8555"
+  listen: ""
 streams: {}

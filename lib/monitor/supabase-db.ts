@@ -4,6 +4,7 @@ import type { Database, Json } from '@/types/database'
 import { logger } from '@/lib/observability/logger'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import { isNvrKnownDown } from '@/lib/monitor/nvr-state'
+import { registerEndpoints } from '@/lib/security/targets'
 import type { CheckResult, DeviceJob, MonitorDb, NvrJob, RecorderJob, WorkerRequest } from '@/lib/monitor/types'
 
 type Admin = SupabaseClient<Database>
@@ -40,8 +41,8 @@ export function cleanResults(results: CheckResult[]): Json[] {
       r !== null && typeof r === 'object' && TARGET_TYPES.has(r.type) && typeof r.id === 'string' && UUID.test(r.id) &&
       typeof r.ok === 'boolean' && typeof r.at === 'string' && !Number.isNaN(Date.parse(r.at))
     if (!valid) continue
-    // A camera result that names its recorder must name it with a UUID (review M-3); the database then checks the camera's mapping.
-    if (r.type === 'camera' && r.recorder !== undefined && (typeof r.recorder !== 'string' || !UUID.test(r.recorder))) continue
+    // A camera result must name its recorder with a UUID (review M-3; required since P2-6); the database then checks the camera's mapping.
+    if (r.type === 'camera' && (typeof r.recorder !== 'string' || !UUID.test(r.recorder))) continue
     const element: { [key: string]: Json } = { type: r.type, id: r.id, ok: r.ok, at: r.at }
     if (r.type === 'camera' && typeof r.recorder === 'string') element.recorder = r.recorder.toLowerCase()
     if (typeof r.method === 'string') element.method = r.method
@@ -58,7 +59,10 @@ export type SupabaseMonitorDbOptions = {
   orgId?: string
 }
 
-/** MonitorDb on the service-role client. NVR passwords are read from the vault one recorder at a time and only held in memory. */
+/**
+ * MonitorDb on the worker's database client (P2-6: the monitor_worker role, lib/supabase/service-clients.ts). NVR passwords are read
+ * from the vault one recorder at a time (logged, never the value) and only held in memory.
+ */
 export class SupabaseMonitorDb implements MonitorDb {
   private orgId: string | undefined
 
@@ -73,7 +77,11 @@ export class SupabaseMonitorDb implements MonitorDb {
         .not('ip', 'is', null).order('id')
       if (this.orgId) q = q.eq('org_id', this.orgId)
       return q.range(from, to)
-    }).then((rows) => rows.map((r) => ({ id: r.id, org_id: r.org_id, ip: r.ip as string, tcp_port: r.tcp_port })))
+    }).then((rows) => {
+      // P2-6 (SO-4): a device read from the database is a registered endpoint (its port, or a ping when it has none).
+      registerEndpoints(rows.map((r) => ({ host: r.ip, port: r.tcp_port })))
+      return rows.map((r) => ({ id: r.id, org_id: r.org_id, ip: r.ip as string, tcp_port: r.tcp_port }))
+    })
   }
 
   /** The monitored recorders (see RECORDER_COLUMNS), optionally only these ids. Never one that is switched off, disabled or archived. */
@@ -92,6 +100,8 @@ export class SupabaseMonitorDb implements MonitorDb {
       })
       out.push(...(rows as unknown as RecorderRead[]))
     }
+    // P2-6 (SO-4): a monitored NVR read from the database is a registered endpoint (its web and video ports).
+    registerEndpoints(out.flatMap((r) => [{ host: r.assets.ip, port: r.http_port }, { host: r.assets.ip, port: r.rtsp_port }]))
     return out
   }
 
@@ -141,8 +151,9 @@ export class SupabaseMonitorDb implements MonitorDb {
       })
       // Nothing needs the password when there are no cameras, or when the NVR is known to be down (its cameras are then marked down without logging in).
       if (own.length === 0 || knownDown) return job('')
-      // The login of THIS recorder, through the one server function keyed by recorder (it refuses a switched-off NVR).
-      const { data, error } = await this.admin.rpc('recorder_read_credential', { p_recorder: r.id })
+      // The login of THIS recorder, through the one logged credential read keyed by recorder (P2-6: purpose `monitoring`, the worker's
+      // own database role; it refuses a switched-off NVR).
+      const { data, error } = await this.admin.rpc('recorder_credential_read', { p_recorder: r.id, p_purpose: 'monitoring' })
       if (error) {
         // Not being able to read the password says nothing about the cameras: leave this recorder out of this round instead of reporting a false outage.
         logger.error({ event: 'nvr_credential_read_failed', location: r.locations.code, recorder: r.id, errorCode: error.code })

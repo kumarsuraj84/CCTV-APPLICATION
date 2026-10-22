@@ -1,6 +1,7 @@
 import childProcess from 'node:child_process'
 import net, { isIP } from 'node:net'
 import path from 'node:path'
+import { connectRefusal } from '@/lib/security/targets'
 
 export type ProbeResult = { ok: boolean; error?: string }
 
@@ -46,6 +47,9 @@ export function describeTcpError(e: { code?: string; message?: string }): string
 /** Is something listening on this address and port? Never throws. */
 export function tcpCheck(host: string, port: number, timeoutMs = 3000): Promise<ProbeResult> {
   if (!isValidHost(host) || !isValidPort(port)) return Promise.resolve({ ok: false, error: 'That address or port is not valid.' })
+  // P2-6 (SO-4): the backstop in front of every socket (lib/security/targets.ts): no special address, this computer only in development.
+  const refused = connectRefusal(host)
+  if (refused) return Promise.resolve({ ok: false, error: refused })
   return new Promise((resolve) => {
     let done = false
     let socket: net.Socket | undefined
@@ -101,6 +105,8 @@ const defaultSpawn = (cmd: string, args: string[]): PingChild => childProcess.sp
  */
 export function icmpCheck(host: string, timeoutMs = 2000, deps: IcmpDeps = {}): Promise<ProbeResult> {
   if (typeof host !== 'string' || host.startsWith('-') || host.includes('%') || isIP(host) === 0) return Promise.resolve({ ok: false, error: 'That is not an IP address.' })
+  const refused = connectRefusal(host) // P2-6 (SO-4): nothing is started for a special address
+  if (refused) return Promise.resolve({ ok: false, error: refused })
   const wait = clampMs(timeoutMs, 2000)
   const platform = deps.platform ?? process.platform
   const spawn = deps.spawn ?? defaultSpawn

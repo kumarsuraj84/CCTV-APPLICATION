@@ -1,4 +1,5 @@
 import type { AdminClient } from '@/lib/admin/types'
+import { registerEndpoints } from '@/lib/security/targets'
 
 // Recorders (NVRs) as explicit records (decision D-4; P2-5b: every code path runs on them). A location may have several NVRs, each with
 // its own address, ports, login, clock offset and monitoring switch. A camera is reached ONLY through the recorder of its ACTIVE channel
@@ -70,11 +71,15 @@ type RecorderRead = {
   monitoring_enabled: boolean; assets: { name: string; ip: string | null; enabled: boolean; archived_at: string | null }; locations: { code: string; is_active: boolean }
 }
 
-const toRecorder = (r: RecorderRead): Recorder => ({
-  id: r.id, org_id: r.org_id, location_id: r.location_id, code: r.locations.code, name: r.assets.name, host: r.assets.ip,
-  http_port: r.http_port, rtsp_port: r.rtsp_port, username: r.username ?? '', clock_offset_sec: r.clock_offset_sec, monitored: isMonitored(r),
-  location_active: r.locations.is_active !== false,
-})
+const toRecorder = (r: RecorderRead): Recorder => {
+  // P2-6 (SO-4): an NVR read from the database is a registered endpoint: its web and video ports may be reached (lib/security/targets.ts).
+  registerEndpoints([{ host: r.assets.ip, port: r.http_port }, { host: r.assets.ip, port: r.rtsp_port }])
+  return {
+    id: r.id, org_id: r.org_id, location_id: r.location_id, code: r.locations.code, name: r.assets.name, host: r.assets.ip,
+    http_port: r.http_port, rtsp_port: r.rtsp_port, username: r.username ?? '', clock_offset_sec: r.clock_offset_sec, monitored: isMonitored(r),
+    location_active: r.locations.is_active !== false,
+  }
+}
 
 /** The non-archived recorders with these ids in the organisation (service role, after the person's own access check). */
 export async function loadRecorders(admin: AdminClient, orgId: string, ids: readonly string[]): Promise<Map<string, Recorder>> {
@@ -133,11 +138,23 @@ export async function resolveCameraRoutes(admin: AdminClient, orgId: string, cam
 }
 
 /**
- * The saved login of ONE recorder, through the one server function keyed by recorder (recorder_read_credential; it refuses a
- * switched-off NVR). `password` is null when none is saved. Never logged, never returned to a browser.
+ * Why an NVR login is read (P2-6, D-14). The database lets each service role read only for its own purposes (the worker: monitoring;
+ * the media path: live, playback, vod, export, discovery, connection_test) and logs every read in vault_reads (never the value).
  */
-export async function readRecorderPassword(admin: AdminClient, recorderId: string): Promise<{ ok: true; password: string | null } | { ok: false; code: string | undefined }> {
-  const { data, error } = await admin.rpc('recorder_read_credential', { p_recorder: recorderId })
+export type CredentialPurpose = 'monitoring' | 'discovery' | 'connection_test' | 'live' | 'playback' | 'vod' | 'export'
+
+/**
+ * The saved login of ONE recorder for ONE purpose, through the one logged server function keyed by recorder
+ * (recorder_credential_read; it refuses a switched-off NVR, a role that may not read for that purpose, and — when the organisation
+ * locked it — the service key). `client` must be the credential client of this process (lib/supabase/service-clients.ts
+ * `createMediaClient` in the web app, the worker's own client in the worker): the web app's own role cannot read logins at all.
+ * `actorId`: the person the read is for, when there is one (logged). `password` is null when none is saved. Never logged, never
+ * returned to a browser.
+ */
+export async function readRecorderPassword(
+  client: AdminClient, recorderId: string, purpose: CredentialPurpose, actorId?: string,
+): Promise<{ ok: true; password: string | null } | { ok: false; code: string | undefined }> {
+  const { data, error } = await client.rpc('recorder_credential_read', { p_recorder: recorderId, p_purpose: purpose, ...(actorId ? { p_actor: actorId } : {}) })
   if (error) return { ok: false, code: error.code }
   return { ok: true, password: typeof data === 'string' && data !== '' ? data : null }
 }

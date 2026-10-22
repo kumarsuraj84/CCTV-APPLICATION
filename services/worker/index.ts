@@ -5,8 +5,9 @@ import { loadMonitorConfig } from '@/lib/monitor/config'
 import { realProbes } from '@/lib/monitor/probes'
 import { MonitorRunner } from '@/lib/monitor/runner'
 import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
+import { HOUSEKEEPING_EVERY_MS, runHousekeeping } from '@/lib/monitor/housekeeping'
 import { logger } from '@/lib/observability/logger'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { createServiceClient, serviceKeyFor } from '@/lib/supabase/service-clients'
 
 /** How long a stop request waits for the checks in progress before the process exits anyway. */
 const SHUTDOWN_WAIT_MS = 15_000
@@ -36,12 +37,15 @@ async function main() {
   }
 
   if (existsSync('.env.local')) process.loadEnvFile('.env.local') // development; in production the service sets the environment
-  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    logger.error({ event: 'worker_config_missing', message: 'NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required' })
+  // P2-6 (D-14): the worker's own database role (monitor_worker, key SUPABASE_MONITOR_WORKER_KEY). Development without the key falls
+  // back to the service key with a warning; production does not start without it.
+  const key = serviceKeyFor('monitor_worker')
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !key.ok) {
+    logger.error({ event: 'worker_config_missing', message: key.ok ? 'NEXT_PUBLIC_SUPABASE_URL is required' : key.error })
     process.exit(1)
   }
   const cfg = loadMonitorConfig()
-  const admin = createAdminClient()
+  const admin = createServiceClient('monitor_worker')
 
   // Only one worker may run against a database. Refuse to start next to a live one; wait patiently if the database cannot be read.
   const guard = await waitForSoleWorker(
@@ -73,6 +77,10 @@ async function main() {
   await runner.start({
     onReady: () => logger.info({ event: 'worker_started', deviceCheckSec: cfg.deviceCheckSec, cameraCheckSec: cfg.cameraCheckSec, failThreshold: cfg.failThreshold }),
   })
+  // P2-6: housekeeping under the worker's role (ended rate-limit windows, old media sessions, old credential-read log rows).
+  const tidy = () => void runHousekeeping({ rpc: (name, args) => admin.rpc(name as never, args as never) }, (e) => (e.event === 'housekeeping_failed' ? logger.warn(e) : logger.info(e)))
+  tidy()
+  setInterval(tidy, HOUSEKEEPING_EVERY_MS).unref()
 }
 
 main().catch((e) => {

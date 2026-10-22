@@ -6,6 +6,7 @@ import { describeNvrError, NvrClient, NvrError, type NvrEndpoint } from '@/lib/n
 import { findSegments, recordedDays, type ClockOffset } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
+import { checkRecorderTarget } from '@/lib/security/targets'
 import type { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { MSG_NOT_SET_UP, MSG_UNAVAILABLE } from '@/lib/streams/open'
 import { createMediaSessions } from '@/lib/streams/registry'
@@ -58,6 +59,7 @@ const MAX_UNREADABLE_IN_A_ROW = 3
 export type PlaybackDeps = {
   /** The person's own signed-in client: whatever it can read is what they may see. */
   rls: AdminClient
+  /** The media path's own database client (P2-6: media_service, `createMediaClient`): routes, media sessions, NVR logins. */
   admin: AdminClient
   /** Counts requests per person; a refused request does nothing else. */
   limiter?: RequestLimiter
@@ -116,7 +118,11 @@ export async function findCamera(
   deps: PlaybackDeps,
   cameraId: string,
   /** `later`: no login is read here (the caller reads it with readRecorderLogin, e.g. after its media session exists; P2-4 review m-6). */
-  o: { password: 'always' | 'unless-demo' | 'later'; env?: Record<string, string | undefined>; capability: RecordingCapability | readonly RecordingCapability[]; orgId: string },
+  o: {
+    password: 'always' | 'unless-demo' | 'later'; env?: Record<string, string | undefined>; capability: RecordingCapability | readonly RecordingCapability[]; orgId: string
+    /** P2-6: the person the NVR login is read for (logged in vault_reads). */
+    actorId?: string
+  },
 ): Promise<Result<Found>> {
   if (typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
   const id = cameraId.toLowerCase()
@@ -141,18 +147,34 @@ export async function findCamera(
   // mapping is reached through no NVR at all (never a guessed one).
   if (answer.kind === 'off') return { ok: false, error: MSG_MONITORING_OFF }
   if (answer.kind === 'unmapped') return { ok: false, error: MSG_NOT_MAPPED }
-  const { camera, recorder } = answer.route
-  if (!recorder.host) return { ok: false, error: MSG_NOT_MAPPED }
+  const { camera, recorder: found } = answer.route
+  if (!found.host) return { ok: false, error: MSG_NOT_MAPPED }
 
-  const demo = o.password === 'unless-demo' && isDemoRecorder(recorder, o.env ?? process.env)
+  const demo = o.password === 'unless-demo' && isDemoRecorder(found, o.env ?? process.env)
+  // P2-6 (SO-4): the NVR's address must pass the outbound target check (registered endpoint, no special address, a name pinned); from
+  // here on the checked address is used for the NVR requests and the go2rtc source, so a name is never resolved again on the way.
+  let recorder = found
+  if (!demo) {
+    const target = await checkRecorderTarget(found, { env: o.env ?? process.env })
+    if (!target.ok) {
+      logger.warn({ event: 'playback_target_refused', location: camera.code, recorder: found.id })
+      return { ok: false, error: await recorderMessage(deps.rls, found.id, target.error, 'target_refused') }
+    }
+    recorder = { ...found, host: target.address }
+  }
   if (demo || o.password === 'later') return { ok: true, camera, recorder, password: null, demo }
-  return readRecorderLogin(deps, { camera, recorder, demo })
+  return readRecorderLogin(deps, { camera, recorder, demo }, { purpose: 'playback', actorId: o.actorId })
 }
 
-/** The NVR password of a found camera's recorder (service role), in the same plain words as findCamera. */
-export async function readRecorderLogin(deps: PlaybackDeps, f: Omit<Found, 'password'>): Promise<Result<Found>> {
+/**
+ * The NVR password of a found camera's recorder (the media path's own client; P2-6: logged with its purpose — `playback` for the
+ * calendar, the day's recordings and 1x playback, `vod` for fast playback), in the same plain words as findCamera.
+ */
+export async function readRecorderLogin(
+  deps: PlaybackDeps, f: Omit<Found, 'password'>, o: { purpose: 'playback' | 'vod'; actorId?: string },
+): Promise<Result<Found>> {
   const { camera, recorder, demo } = f
-  const read = await readRecorderPassword(deps.admin, recorder.id)
+  const read = await readRecorderPassword(deps.admin, recorder.id, o.purpose, o.actorId)
   if (!read.ok) {
     logger.error({ event: 'playback_credential_failed', location: camera.code, recorder: recorder.id, errorCode: read.code })
     return { ok: false, error: await recorderMessage(deps.rls, recorder.id, MSG_READ_LOGIN, 'credential_read_failed') }
@@ -198,8 +220,8 @@ const defaultNvr = (ep: NvrEndpoint) => new NvrClient(ep)
  */
 export async function listRecordedDays(deps: LookupDeps, actor: Who, cameraId: string, year: number, month: number, offsetMin: number): Promise<Result<{ days: number[] }>> {
   if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12 || !validOffset(offsetMin)) return { ok: false, error: MSG_BAD_REQUEST }
-  if (deps.limiter && !deps.limiter.allow(actor.id)) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
-  const c = await findCamera(deps, cameraId, { password: 'always', capability: 'cctv.playback', orgId: actor.orgId })
+  if (deps.limiter && !(await deps.limiter.allow(actor.id))) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
+  const c = await findCamera(deps, cameraId, { password: 'always', capability: 'cctv.playback', orgId: actor.orgId, actorId: actor.id })
   if (!c.ok) return c
   const { camera, recorder, password } = c
   try {
@@ -223,8 +245,8 @@ export async function listDaySegments(
   offsetMin: number,
 ): Promise<Result<{ segments: { start: string; end: string }[]; truncated: boolean; skipped: number }>> {
   if (!parseDay(day) || !validOffset(offsetMin)) return { ok: false, error: MSG_BAD_REQUEST }
-  if (deps.limiter && !deps.limiter.allow(actor.id)) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
-  const c = await findCamera(deps, cameraId, { password: 'always', capability: 'cctv.playback', orgId: actor.orgId })
+  if (deps.limiter && !(await deps.limiter.allow(actor.id))) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
+  const c = await findCamera(deps, cameraId, { password: 'always', capability: 'cctv.playback', orgId: actor.orgId, actorId: actor.id })
   if (!c.ok) return c
   const { camera, recorder, password } = c
   try {
@@ -261,12 +283,12 @@ export async function openPlayback(deps: OpenPlaybackDeps, actor: Who, cameraId:
   if (!(start instanceof Date) || !Number.isFinite(start.getTime())) return { ok: false, error: MSG_BAD_START }
   const now = deps.now ?? Date.now
   if (!startInBounds(start.getTime(), now())) return { ok: false, error: MSG_BAD_START }
-  if (deps.limiter && !deps.limiter.allow(actor.id)) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
+  if (deps.limiter && !(await deps.limiter.allow(actor.id))) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
 
   const length = Math.min(MAX_PLAY_MINUTES, Math.max(MIN_PLAY_MINUTES, Math.round(minutes)))
   const wanted = Math.floor(start.getTime() / 1000)
 
-  const c = await findCamera(deps, cameraId, { password: 'unless-demo', env: deps.env, capability: 'cctv.playback', orgId: actor.orgId })
+  const c = await findCamera(deps, cameraId, { password: 'unless-demo', env: deps.env, capability: 'cctv.playback', orgId: actor.orgId, actorId: actor.id })
   if (!c.ok) return c
   const { camera, recorder, password, demo } = c
   try {
