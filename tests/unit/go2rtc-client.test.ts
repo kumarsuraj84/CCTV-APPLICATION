@@ -46,6 +46,39 @@ function expectNoLeak(text: string, base: string) {
   for (const needle of [base, '127.0.0.1', 'rtsp://', 'viewer', 'p%40ss', 'p@ss', '/api/streams', 'src=', 'name=', NAME]) expect(text).not.toContain(needle)
 }
 
+describe('Go2rtcClient address', () => {
+  it('accepts only an http(s) address on this machine', () => {
+    for (const ok of ['http://127.0.0.1:1984', 'http://localhost:1984', 'http://[::1]:1984', 'https://127.0.0.1:1984/', 'http://127.0.0.1']) {
+      expect(() => new Go2rtcClient(ok), ok).not.toThrow()
+    }
+  })
+
+  it('refuses any other address with a plain message that does not echo it', () => {
+    const bad = [
+      'http://192.168.1.5:1984', 'http://example.com:1984', 'http://127.0.0.1.evil.com:1984', 'http://localhost.evil.com', 'http://0.0.0.0:1984',
+      'http://127.0.0.2:1984', 'ftp://127.0.0.1:1984', 'ws://127.0.0.1:1984', 'file:///etc/passwd', 'rtsp://127.0.0.1', 'javascript:alert(1)', 'not a url', '',
+      '127.0.0.1:1984', 'http://user:pw@127.0.0.1:1984', 'http://127.0.0.1@evil.com:1984', 'http://evil.com#@127.0.0.1', 'http://[::2]:1984',
+    ]
+    for (const url of bad) {
+      let message = ''
+      try {
+        new Go2rtcClient(url)
+      } catch (e) {
+        message = (e as Error).message
+      }
+      expect(message, url).toBe('The video server address is not valid.')
+      for (const needle of ['evil', '192.168', 'example', 'user', 'pw', '1984']) expect(message).not.toContain(needle)
+    }
+  })
+
+  it('never calls out for a refused address', () => {
+    let called = false
+    const fetchImpl = (async () => { called = true; return new Response('{}') }) as unknown as typeof fetch
+    expect(() => new Go2rtcClient('http://203.0.113.9:1984', fetchImpl)).toThrow()
+    expect(called).toBe(false)
+  })
+})
+
 describe('Go2rtcClient.register', () => {
   it('sends PUT /api/streams with the name and source percent-encoded', async () => {
     const f = await startFake((_q, res) => { res.statusCode = 200; res.end('{}') })
@@ -164,6 +197,24 @@ describe('Go2rtcClient.has', () => {
       expect(m, body).not.toBe('')
       expectNoLeak(m, f.base)
     }
+  })
+
+  it('refuses an answer bigger than 1 MB, whether or not it says how long it is', async () => {
+    const big = JSON.stringify({ [NAME]: 'x'.repeat(1024 * 1024 + 10) })
+    const declared = await startFake((_q, res) => { res.setHeader('content-length', String(big.length)); res.end(big) })
+    const m1 = await messageOf(new Go2rtcClient(declared.base).has(NAME))
+    expect(m1).toBe('The video server did not answer.')
+    const chunked = await startFake((_q, res) => { res.write(big.slice(0, 600_000)); res.write(big.slice(600_000)); res.end() })
+    expect(await messageOf(new Go2rtcClient(chunked.base).has(NAME))).toBe('The video server did not answer.')
+    // A body that lies about being small is still capped while it is read.
+    const lying = (async () => new Response(big, { headers: { 'content-length': '10' } })) as unknown as typeof fetch
+    expect(await messageOf(new Go2rtcClient('http://127.0.0.1:1984', lying).has(NAME))).toBe('The video server did not answer.')
+  })
+
+  it('reads an answer just under the cap', async () => {
+    const body = JSON.stringify({ [NAME]: 'x'.repeat(900 * 1024) })
+    const f = await startFake((_q, res) => { res.end(body) })
+    expect(await new Go2rtcClient(f.base).has(NAME)).toBe(true)
   })
 
   it('throws a plain message on a non-2xx answer or no server', async () => {

@@ -15,6 +15,16 @@ describe('secrets', () => {
     expect(getSecret('cron')).toBe('cron-secret-value-123')
   })
 
+  it('treats a secret shorter than the minimum as not set, for every purpose', () => {
+    for (const [env, purpose] of [['CRON_SECRET', 'cron'], ['WORKER_SECRET', 'worker'], ['STREAM_TOKEN_SECRET', 'stream_token'], ['SYSTEM_LOG_INGEST_SECRET', 'system_log_ingest']] as const) {
+      process.env[env] = 'a'.repeat(MIN_SECRET_LENGTH - 1)
+      expect(getSecret(purpose), purpose).toBeNull()
+      process.env[env] = 'a'.repeat(MIN_SECRET_LENGTH)
+      expect(getSecret(purpose), purpose).toBe('a'.repeat(MIN_SECRET_LENGTH))
+      delete process.env[env]
+    }
+  })
+
   it('reports missing, short and duplicated secrets without printing values', () => {
     const same = 'abcdefghijklmnopqrst'
     const env = { CRON_SECRET: same, WORKER_SECRET: same, STREAM_TOKEN_SECRET: 'short' }

@@ -11,9 +11,15 @@ const ENV_NAME: Record<SecretPurpose, string> = {
 export const MIN_SECRET_LENGTH = 16
 const clean = (v: string | undefined) => (typeof v === 'string' && v.trim() !== '' ? v : null)
 
-/** The secret for this purpose, or null when it is not configured. The caller must then refuse or switch the feature off. */
+/** A secret value that may be used: not blank and at least MIN_SECRET_LENGTH characters. Anything else counts as "not set". */
+export const usableSecret = (v: string | null | undefined): string | null => {
+  const c = clean(v ?? undefined)
+  return c !== null && c.length >= MIN_SECRET_LENGTH ? c : null
+}
+
+/** The secret for this purpose, or null when it is not configured (or too short to be safe). The caller must then refuse or switch the feature off. */
 export function getSecret(purpose: SecretPurpose): string | null {
-  return clean(process.env[ENV_NAME[purpose]])
+  return usableSecret(process.env[ENV_NAME[purpose]])
 }
 
 export const secretEnvName = (purpose: SecretPurpose) => ENV_NAME[purpose]

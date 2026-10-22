@@ -25,8 +25,10 @@ export function buildRtspUrl(o: { host: string; port: number; username: string; 
 }
 
 const two = (n: number) => String(n).padStart(2, '0')
+const MAX_OFFSET_MIN = 1440
 function nvrInstant(d: Date, offsetMin: number): string {
   const t = new Date(d.getTime() - offsetMin * 60_000)
+  if (!Number.isFinite(t.getTime())) throw new Error(BAD_ADDRESS)
   return `${t.getUTCFullYear()}${two(t.getUTCMonth() + 1)}${two(t.getUTCDate())}T${two(t.getUTCHours())}${two(t.getUTCMinutes())}${two(t.getUTCSeconds())}Z`
 }
 
@@ -34,9 +36,11 @@ function nvrInstant(d: Date, offsetMin: number): string {
 export function buildPlaybackUrl(o: { host: string; port: number; username: string; password: string; channel: number; start: Date; end: Date; offsetMin: number }): string {
   const ok = (d: unknown): d is Date => d instanceof Date && Number.isFinite(d.getTime())
   if (!ok(o.start) || !ok(o.end) || o.end.getTime() <= o.start.getTime()) throw new Error(BAD_ADDRESS)
-  if (typeof o.offsetMin !== 'number' || !Number.isFinite(o.offsetMin)) throw new Error(BAD_ADDRESS)
+  if (typeof o.offsetMin !== 'number' || !Number.isFinite(o.offsetMin) || Math.abs(o.offsetMin) > MAX_OFFSET_MIN) throw new Error(BAD_ADDRESS)
   const base = authority(o)
-  return `${base}/Streaming/tracks/${o.channel}01?starttime=${nvrInstant(o.start, o.offsetMin)}&endtime=${nvrInstant(o.end, o.offsetMin)}`
+  const starttime = nvrInstant(o.start, o.offsetMin)
+  const endtime = nvrInstant(o.end, o.offsetMin)
+  return `${base}/Streaming/tracks/${o.channel}01?starttime=${starttime}&endtime=${endtime}`
 }
 
 const PATTERNS = ['testsrc', 'testsrc2', 'smptebars', 'rgbtestsrc']

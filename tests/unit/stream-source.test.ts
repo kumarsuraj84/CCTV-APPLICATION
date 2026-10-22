@@ -98,6 +98,22 @@ describe('buildPlaybackUrl', () => {
     expect(url.startsWith("rtsp://viewer:p%40ss%3Aw%2Frd%23%21%27%28%29%2A@[2001:db8::5]:554/Streaming/tracks/301?")).toBe(true)
   })
 
+  it('accepts an offset up to a day either way and refuses more', () => {
+    expect(buildPlaybackUrl({ ...pb, offsetMin: 1440 })).toContain('starttime=20260309T100000Z')
+    expect(buildPlaybackUrl({ ...pb, offsetMin: -1440 })).toContain('starttime=20260311T100000Z')
+    expect(() => buildPlaybackUrl({ ...pb, offsetMin: 1441 })).toThrow('The camera address is not valid.')
+    expect(() => buildPlaybackUrl({ ...pb, offsetMin: -1441 })).toThrow('The camera address is not valid.')
+    expect(() => buildPlaybackUrl({ ...pb, offsetMin: 1e12 })).toThrow()
+  })
+
+  it('refuses a time that cannot be shifted into a valid date', () => {
+    const edge = 8.64e15 // the last instant a Date can hold
+    expect(() => buildPlaybackUrl({ ...pb, start: new Date(edge - 1000), end: new Date(edge), offsetMin: -1, password: 'topsecretpass' })).toThrow(
+      'The camera address is not valid.',
+    )
+    expect(() => buildPlaybackUrl({ ...pb, start: new Date(-edge), end: new Date(-edge + 1000), offsetMin: 1 })).toThrow('The camera address is not valid.')
+  })
+
   it('refuses an invalid host, port, channel, date, range or offset', () => {
     const bad = [
       { host: 'a b' }, { port: 0 }, { channel: 0 }, { channel: 4097 }, { start: new Date('nope') }, { end: new Date('nope') },

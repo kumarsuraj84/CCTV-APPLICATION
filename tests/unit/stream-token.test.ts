@@ -14,6 +14,11 @@ const b64 = (s: string) => Buffer.from(s).toString('base64url')
 /** Builds a correctly signed token around any payload text, so tests can reach the shape checks. */
 const forge = (payload: unknown, secret = SECRET) => {
   const p = b64(typeof payload === 'string' ? payload : JSON.stringify(payload))
+  return `${p}.${createHmac('sha256', secret).update(`stream.v1.${p}`).digest('base64url')}`
+}
+/** A token made the plain way (no purpose prefix), as another feature using the same secret would make it. */
+const rawForge = (payload: unknown, secret = SECRET) => {
+  const p = b64(JSON.stringify(payload))
   return `${p}.${createHmac('sha256', secret).update(p).digest('base64url')}`
 }
 
@@ -119,7 +124,7 @@ describe('stream tokens', () => {
   })
 
   it('rejects non-UUID person or camera ids', () => {
-    for (const bad of ['', 'not-a-uuid', '1', CAM.toUpperCase().replace(/-/g, ''), `${CAM}x`, `${CAM}\n`, '../../etc/passwd', `${CAM}_sub`]) {
+    for (const bad of ['', 'not-a-uuid', '1', CAM.toUpperCase(), CAM.toUpperCase().replace(/-/g, ''), `${CAM.slice(0, 8).toUpperCase()}${CAM.slice(8)}`, `${CAM}x`, `${CAM}\n`, '../../etc/passwd', `${CAM}_sub`]) {
       expect(verifyStreamToken(signStreamToken(live({ c: bad }), SECRET), NOW, SECRET), `c=${bad}`).toBeNull()
       expect(verifyStreamToken(signStreamToken(live({ u: bad }), SECRET), NOW, SECRET), `u=${bad}`).toBeNull()
     }
@@ -191,11 +196,58 @@ describe('stream tokens', () => {
   })
 
   it('does not leak the secret or the claims in a thrown error', () => {
+    const weak = 'short-secret-15' // 15 characters
+    expect(() => signStreamToken(live(), weak)).toThrow('stream_token secret is not set')
+    let message = ''
     try {
-      signStreamToken(live())
+      signStreamToken(live(), weak)
     } catch (e) {
-      expect(String(e)).not.toContain(USER)
+      message = (e as Error).message
     }
+    expect(message).not.toContain(weak)
+    expect(message).not.toContain(USER)
+    expect(message).not.toContain(CAM)
+  })
+
+  it('treats a secret shorter than 16 characters as not set, on sign and on verify', () => {
+    const fifteen = 'a'.repeat(15)
+    const sixteen = 'a'.repeat(16)
+    expect(() => signStreamToken(live(), fifteen)).toThrow('stream_token secret is not set')
+    expect(verifyStreamToken(signStreamToken(live(), sixteen), NOW, fifteen)).toBeNull()
+    expect(verifyStreamToken(signStreamToken(live(), sixteen), NOW, sixteen)).toEqual(live())
+    // A token somebody signed with a weak secret is not accepted either.
+    expect(verifyStreamToken(forge(live(), fifteen), NOW, fifteen)).toBeNull()
+  })
+
+  it('treats a short secret from the environment as not set', () => {
+    process.env.STREAM_TOKEN_SECRET = 'a'.repeat(15)
+    expect(() => signStreamToken(live())).toThrow('stream_token secret is not set')
+    expect(verifyStreamToken(forge(live(), 'a'.repeat(15)), NOW)).toBeNull()
+  })
+
+  it('enforces the token lifetime: a token valid for longer than 10 minutes (plus a minute of clock difference) is rejected', () => {
+    const at = (exp: number) => verifyStreamToken(signStreamToken(live({ exp }), SECRET), NOW, SECRET)
+    expect(at(nowSec + 600)).not.toBeNull()
+    expect(at(nowSec + 660)).not.toBeNull()
+    expect(at(nowSec + 661)).toBeNull()
+    expect(at(nowSec + 601 + 60)).toBeNull()
+    expect(at(nowSec + 86_400)).toBeNull()
+    expect(at(nowSec * 1000)).toBeNull() // milliseconds by mistake
+  })
+
+  it('does not accept a token signed the plain way (domain separation), even with the right secret', () => {
+    expect(verifyStreamToken(rawForge(live()), NOW, SECRET)).toBeNull()
+    expect(verifyStreamToken(forge(live()), NOW, SECRET)).toEqual(live())
+  })
+
+  it('rejects an over-long token before doing any work', () => {
+    const t = signStreamToken(live(), SECRET)
+    expect(t.length).toBeLessThanOrEqual(1024)
+    expect(verifyStreamToken(t, NOW, SECRET)).not.toBeNull()
+    expect(verifyStreamToken(t + 'A'.repeat(1024), NOW, SECRET)).toBeNull()
+    const long = forge({ ...live(), pad: 'x'.repeat(1100) })
+    expect(long.length).toBeGreaterThan(1024)
+    expect(verifyStreamToken(long, NOW, SECRET)).toBeNull()
   })
 })
 
@@ -206,6 +258,9 @@ describe('streamName', () => {
   })
   it('names playback streams after the camera and the start', () => {
     expect(streamName({ c: CAM, k: 'pb', s: 1773136800 })).toBe(`pb_${CAM}_1773136800`)
+  })
+  it('refuses an upper-case camera id', () => {
+    expect(() => streamName({ c: CAM.toUpperCase(), k: 'sub' })).toThrow()
   })
   it('ignores s for live kinds', () => {
     expect(streamName({ c: CAM, k: 'sub', s: 5 })).toBe(`cam_${CAM}_sub`)
