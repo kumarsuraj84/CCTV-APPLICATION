@@ -4,11 +4,13 @@ import { discoverStoreCameras } from '@/lib/monitor/discovery'
 import { NvrClient } from '@/lib/nvr/client'
 import { getVisibleGroup, listVisibleGroups } from '@/lib/queries/groups'
 import { getVisibleStore, listVisibleDevices } from '@/lib/queries/inventory'
+import { openFastPlayback } from '@/lib/streams/fast'
 import type { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { openStreams } from '@/lib/streams/open'
 import { listDaySegments, listRecordedDays, openPlayback } from '@/lib/streams/playback'
 import { createConversionLimiter, parseVodQuery, serveVod } from '@/lib/streams/vod'
 import { adminClient, atCamera, atLocation, cleanupOrg, createOrg, createSite, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
+import { fakeRemux } from '../helpers/fake-remux'
 import { startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
 
 // P2-2 brief item 8: direct-call negative tests per operation. For each operation, a person holding only a DIFFERENT capability, the
@@ -22,8 +24,9 @@ const SECRET = 'capability-enforcement-test-secret-0123456789'
 const NVR_USER = 'viewer'
 const NVR_PASSWORD = 'nvr-pass-1'
 
-type Op = 'live' | 'refresh' | 'calendar' | 'segments' | 'playback' | 'vod' | 'probe' | 'groupRead' | 'devices' | 'storeDevices' | 'checkNow' | 'discovery'
-const OPS: Op[] = ['live', 'refresh', 'calendar', 'segments', 'playback', 'vod', 'probe', 'groupRead', 'devices', 'storeDevices', 'checkNow', 'discovery']
+// P4-L2 (decision D-L1): `fast` is fast playback 2x-16x through the stream path (openFastPlayback): cctv.playback, export not needed.
+type Op = 'live' | 'refresh' | 'calendar' | 'segments' | 'playback' | 'fast' | 'vod' | 'probe' | 'groupRead' | 'devices' | 'storeDevices' | 'checkNow' | 'discovery'
+const OPS: Op[] = ['live', 'refresh', 'calendar', 'segments', 'playback', 'fast', 'vod', 'probe', 'groupRead', 'devices', 'storeDevices', 'checkNow', 'discovery']
 
 describe('capability enforcement per operation (P2-2)', () => {
   let orgId: string, otherOrg: string
@@ -65,10 +68,11 @@ describe('capability enforcement per operation (P2-2)', () => {
     }
     const EVERYTHING = ['cctv.live', 'cctv.playback', 'cctv.export', 'it.inventory.view', 'it.monitoring.view', 'it.monitoring.operate']
     await add('liveOnly', 'user', ['live', 'refresh', 'groupRead'], [['cctv.live', atLocation(s1)]])
-    await add('playbackOnly', 'user', ['calendar', 'segments', 'playback', 'groupRead'], [['cctv.playback', atLocation(s1)]])
-    // Fix M-3: fast playback needs cctv.export AND cctv.playback for the camera; export alone opens nothing.
+    // D-L1 (P4-L2): fast playback is part of cctv.playback; the saveable file (/api/vod) still needs cctv.export AND cctv.playback (fix M-3).
+    await add('playbackOnly', 'user', ['calendar', 'segments', 'playback', 'fast', 'groupRead'], [['cctv.playback', atLocation(s1)]])
+    // Fix M-3: export alone opens nothing (no file, and no fast playback either).
     await add('exportOnly', 'user', ['groupRead'], [['cctv.export', atLocation(s1)]])
-    await add('exportPlayback', 'user', ['calendar', 'segments', 'playback', 'vod', 'probe', 'groupRead'], [[['cctv.export', 'cctv.playback'], atLocation(s1)]])
+    await add('exportPlayback', 'user', ['calendar', 'segments', 'playback', 'fast', 'vod', 'probe', 'groupRead'], [[['cctv.export', 'cctv.playback'], atLocation(s1)]])
     await add('mustReset', 'operator', [], [[EVERYTHING, atLocation(s1)]], { mustReset: true })
     await add('itOnly', 'operator', ['devices', 'storeDevices', 'checkNow'], [[['it.inventory.view', 'it.monitoring.view', 'it.monitoring.operate'], atLocation(s1)]])
     await add('otherStore', 'operator', ['checkNow'], [[EVERYTHING, atLocation(s2)]]) // check-now runs for everything; any whole location counts
@@ -129,6 +133,11 @@ describe('capability enforcement per operation (P2-2)', () => {
         if (!r.ok) expect(r.error).toBe('Camera not found.')
         return r.ok
       }
+      case 'fast': {
+        const r = await openFastPlayback({ ...d, remux: fakeRemux('copy'), offsetMin: 0 }, actor, c11, start(), 5, 8)
+        if (!r.ok) expect(r.error).toBe('Camera not found.')
+        return r.ok
+      }
       case 'vod':
       case 'probe': {
         const res = await serveVod({ ...d, nvr: nvrClient, conversions: createConversionLimiter(), ffmpegAvailable: async () => false, env: { FFMPEG: 'C:\\no\\ffmpeg.exe' } }, actor, vodQuery(op === 'probe'))
@@ -164,7 +173,7 @@ describe('capability enforcement per operation (P2-2)', () => {
     }
   }
 
-  const touchesBackend = (op: Op) => ['live', 'refresh', 'calendar', 'segments', 'playback', 'vod', 'probe', 'discovery'].includes(op)
+  const touchesBackend = (op: Op) => ['live', 'refresh', 'calendar', 'segments', 'playback', 'fast', 'vod', 'probe', 'discovery'].includes(op)
 
   it('every person × operation: refused unless the matching capability covers the target, and a refusal reaches neither the NVR nor go2rtc', async () => {
     // Revoked mid-test: allowed at first, then every grant is revoked.

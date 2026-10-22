@@ -74,6 +74,8 @@ describe('GET /api/vod', () => {
   })
 
   // D-6a / P2-2: cctv.export replaces the interim administrators-only rule. The role does not matter either way.
+  // Decision D-L1 (P4-L2): /api/vod is the saveable-file (export) path only, so its refusal now says "downloading", not "fast playback"
+  // (fast playback is cctv.playback on /api/playback/stream, tests/unit/fast-route.test.ts). The rule itself is unchanged.
   it('needs cctv.export: without it every role gets 403, the refusal is audited, and no camera is looked up', async () => {
     for (const role of ['user', 'operator', 'manager', 'admin', 'platform_owner']) {
       for (const c of [caps(), caps('cctv.playback', 'cctv.live'), caps('admin.inventory', 'it.monitoring.view')]) {
@@ -81,7 +83,7 @@ describe('GET /api/vod', () => {
           mocks.profile = { id: 'user-1', org_id: 'org-1', role, must_reset_password: false, capabilities: c }
           const res = await GET(request(qs))
           expect(res.status, `${role} ${qs}`).toBe(403)
-          expect(await res.json()).toEqual({ error: 'Fast playback is not available for your account.' })
+          expect(await res.json()).toEqual({ error: 'Downloading recordings is not available for your account.' })
           expect(res.headers.get('cache-control')).toBe('no-store')
         }
       }
@@ -97,7 +99,7 @@ describe('GET /api/vod', () => {
     mocks.profile = { id: 'user-m3', org_id: 'org-1', role: 'admin', must_reset_password: false, capabilities: caps('cctv.export', 'cctv.live') }
     const res = await GET(request(VALID))
     expect(res.status).toBe(403)
-    expect(await res.json()).toEqual({ error: 'Fast playback is not available for your account.' })
+    expect(await res.json()).toEqual({ error: 'Downloading recordings is not available for your account.' })
     expect(mocks.clients).toBe(0)
     expect(mocks.serve).not.toHaveBeenCalled()
   })

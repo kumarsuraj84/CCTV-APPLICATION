@@ -274,8 +274,11 @@ describe('playback streams', () => {
       expect(nvr.posts.map((p) => p.path)).toContain('/ISAPI/ContentMgmt/record/tracks/201/dailyDistribution')
     })
 
-    it('the calendar marks are NVR days: the offset does not move them (they are only a hint)', async () => {
-      expect(await days(viewer, a1, 2026, 10, 330)).toEqual({ ok: true, days: [20, 21, 22] })
+    // P4-L2 brief item 2 replaces the pre-directive behaviour "the calendar marks are NVR days: the offset does not move them": the
+    // recorder's clock offset is applied to the calendar too. With +330 minutes each NVR day (20, 21, 22) reaches into the next shown day.
+    it('P4-L2: the calendar marks shown days: with the offset each NVR day also reaches into the next shown day (still only a hint)', async () => {
+      expect(await days(viewer, a1, 2026, 10, 330)).toEqual({ ok: true, days: [20, 21, 22, 23] })
+      expect(await days(viewer, a1, 2026, 10, 0)).toEqual({ ok: true, days: [20, 21, 22] })
     })
 
     it('lists the recordings of a day as shown times, whole and not cut at midnight', async () => {

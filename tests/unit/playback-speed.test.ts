@@ -1,12 +1,34 @@
-import { describe, expect, it, vi } from 'vitest'
-import { explainVodFailure, fastMinutes, isSpeed, MAX_FAST_MINUTES, SPEEDS, speedLabel, vodUrl } from '@/lib/streams/speed'
+import { describe, expect, it } from 'vitest'
+import {
+  bufferTargetSec,
+  createStallWatch,
+  downshift,
+  EXPORT_CAPABILITY,
+  FAST_PLAYBACK_CAPABILITY,
+  FAST_SPEEDS,
+  FAST_STREAM_PATH,
+  FAST_TOKEN_HEADER,
+  fastMinutes,
+  isSpeed,
+  MAX_FAST_MINUTES,
+  MSG_DOWNSHIFTED,
+  MSG_H265,
+  readyToStart,
+  SPEEDS,
+  speedLabel,
+} from '@/lib/streams/speed'
 
-describe('speeds', () => {
-  it('are 1x, 2x, 4x and 8x', () => {
-    expect([...SPEEDS]).toEqual([1, 2, 4, 8])
-    expect(SPEEDS.map(speedLabel)).toEqual(['1x', '2x', '4x', '8x'])
-    expect([1, 2, 4, 8].every(isSpeed)).toBe(true)
-    expect([0, 3, 16, '2', null, undefined, Number.NaN].some(isSpeed)).toBe(false)
+// Decision D-L1 (owner, 2026-10-22) supersedes D-6a and P2-2 fix M-3 for fast playback: 2x-16x is a cctv.playback right, delivered only as
+// a browser stream; cctv.export is for saveable files (/api/vod) only. The tests that asserted "fast playback needs cctv.export" and the
+// 1/2/4/8 list encoded the pre-D-L1 rule and are replaced here (LG-14: 16x added).
+
+describe('speeds (LG-14)', () => {
+  it('are 1x, 2x, 4x, 8x and 16x; the fast ones are 2x to 16x', () => {
+    expect([...SPEEDS]).toEqual([1, 2, 4, 8, 16])
+    expect([...FAST_SPEEDS]).toEqual([2, 4, 8, 16])
+    expect(SPEEDS.map(speedLabel)).toEqual(['1x', '2x', '4x', '8x', '16x'])
+    expect([1, 2, 4, 8, 16].every(isSpeed)).toBe(true)
+    expect([0, 3, 32, '2', null, undefined, Number.NaN].some(isSpeed)).toBe(false)
   })
   it('a fast clip is at most 30 minutes and at least 1', () => {
     expect(MAX_FAST_MINUTES).toBe(30)
@@ -14,58 +36,55 @@ describe('speeds', () => {
   })
 })
 
-describe('vodUrl', () => {
-  it('carries the camera, the start and the clipped length as an encoded query, and nothing else', () => {
-    const url = vodUrl({ camera: '0b7f0a52-1f0c-4a52-9c63-2f2f0c7bd111', start: '2026-10-22T14:30:00Z', minutes: 60 })
-    expect(url).toBe('/api/vod?camera=0b7f0a52-1f0c-4a52-9c63-2f2f0c7bd111&start=2026-10-22T14%3A30%3A00Z&minutes=30')
+describe('who may use which (D-L1, E-1)', () => {
+  it('fast playback needs cctv.playback; only saveable files (export) need cctv.export', () => {
+    expect(FAST_PLAYBACK_CAPABILITY).toBe('cctv.playback')
+    expect(EXPORT_CAPABILITY).toBe('cctv.export')
   })
-  it('cannot be bent into another address by what is passed in', () => {
-    const url = vodUrl({ camera: 'x&minutes=1#', start: 'a b', minutes: 5 })
-    const parsed = new URL(url, 'http://localhost')
-    expect(parsed.pathname).toBe('/api/vod')
-    expect(parsed.searchParams.getAll('minutes')).toEqual(['5'])
-    expect(parsed.searchParams.get('camera')).toBe('x&minutes=1#')
-    expect(parsed.hash).toBe('')
+  it('the stream path is not the old savable address, and the token travels in a header, never in the address', () => {
+    expect(FAST_STREAM_PATH).toBe('/api/playback/stream')
+    expect(FAST_STREAM_PATH).not.toContain('vod')
+    expect(FAST_TOKEN_HEADER).toBe('x-playback-token')
   })
-})
-
-describe('explainVodFailure', () => {
-  const json = (status: number, body: unknown) => (async () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })) as unknown as typeof fetch
-  it('asks the same address again with probe=1 and gives back the plain message', async () => {
-    const f = vi.fn(json(404, { error: 'There is no recording at that time.' }))
-    expect(await explainVodFailure('/api/vod?camera=a&start=b&minutes=5', f)).toBe('There is no recording at that time.')
-    expect(f.mock.calls[0][0]).toBe('/api/vod?camera=a&start=b&minutes=5&probe=1')
-    expect(f.mock.calls[0][1]).toMatchObject({ credentials: 'same-origin', cache: 'no-store' })
-  })
-  it('is null when the check passes, and when the answer cannot be understood or the server cannot be reached', async () => {
-    expect(await explainVodFailure('/api/vod?x=1', json(200, { ok: true }))).toBeNull()
-    expect(await explainVodFailure('/api/vod?x=1', json(500, { nope: 1 }))).toBeNull()
-    expect(await explainVodFailure('/api/vod?x=1', json(500, { error: 'x'.repeat(400) }))).toBeNull()
-    expect(await explainVodFailure('/api/vod?x=1', (async () => new Response('<html>', { status: 502 })) as unknown as typeof fetch)).toBeNull()
-    expect(await explainVodFailure('/api/vod?x=1', (async () => { throw new TypeError('network') }) as unknown as typeof fetch)).toBeNull()
-  })
-})
-
-// D-6a / P2-2: the interim administrators-only rule is replaced by the cctv.export capability (checked per camera by the database).
-describe('fast playback is decided by cctv.export, not by a role', () => {
-  it('the interim role rule is gone', async () => {
+  it('the old helpers that built /api/vod addresses for a plain <video> are gone', async () => {
     const speed = await import('@/lib/streams/speed')
-    expect('canUseFastPlaybackInterim' in speed).toBe(false)
-    expect(speed.FAST_PLAYBACK_CAPABILITY).toBe('cctv.export')
+    expect('vodUrl' in speed).toBe(false)
+    expect('probeVod' in speed).toBe(false)
   })
 })
 
-describe('probeVod', () => {
-  const answer = (status: number, body: unknown) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch
-  it('reports the video format the server read, only when it is one of the two known names', async () => {
-    const { probeVod } = await import('@/lib/streams/speed')
-    expect(await probeVod('/api/vod?x=1', answer(200, { ok: true, codec: 'h265' }))).toEqual({ error: null, codec: 'h265' })
-    expect(await probeVod('/api/vod?x=1', answer(200, { ok: true, codec: 'h264' }))).toEqual({ error: null, codec: 'h264' })
-    expect(await probeVod('/api/vod?x=1', answer(200, { ok: true, codec: '<script>' }))).toEqual({ error: null, codec: null })
-    expect(await probeVod('/api/vod?x=1', answer(500, { error: 'ffmpeg is not installed on the server' }))).toEqual({ error: 'ffmpeg is not installed on the server', codec: null })
+describe('stall auto-downshift (LG-15: 3 stalls in 40 seconds)', () => {
+  it('steps down one speed at a time and never below 1x', () => {
+    expect([16, 8, 4, 2, 1].map((s) => downshift(s as never))).toEqual([8, 4, 2, 1, 1])
   })
-  it('has the words for a browser that cannot play the format', async () => {
-    const { MSG_BROWSER_CANNOT_PLAY } = await import('@/lib/streams/speed')
-    expect(MSG_BROWSER_CANNOT_PLAY).toBe("This browser cannot play this camera's recording format.")
+  it('the third stall within 40 s says "slow down", then the count starts again', () => {
+    const w = createStallWatch()
+    expect(w.stall(0)).toBe(false)
+    expect(w.stall(10_000)).toBe(false)
+    expect(w.stall(39_000)).toBe(true)
+    expect(w.stall(40_000)).toBe(false)
+  })
+  it('stalls further apart than 40 s never add up', () => {
+    const w = createStallWatch()
+    expect([0, 30_000, 61_000, 90_000, 121_000].map((t) => w.stall(t))).toEqual([false, false, false, false, false])
+  })
+  it('the words for a downshift and for H.265 are plain and name a later release for the conversion', () => {
+    expect(MSG_DOWNSHIFTED(8, 4)).toBe('The recording is arriving too slowly for 8x, so it now plays at 4x.')
+    expect(MSG_H265).toMatch(/H\.265/)
+    expect(MSG_H265).toMatch(/later release/)
+  })
+})
+
+describe('buffer gating (LG-15)', () => {
+  it('waits for about two seconds of watching at the chosen speed (at least 2 s, at most 30 s of recording)', () => {
+    expect(bufferTargetSec(1)).toBe(2)
+    expect(bufferTargetSec(2)).toBe(4)
+    expect(bufferTargetSec(8)).toBe(16)
+    expect(bufferTargetSec(16)).toBe(30)
+  })
+  it('starts when that much is buffered, or when the whole clip has arrived', () => {
+    expect(readyToStart(3.9, 2, false)).toBe(false)
+    expect(readyToStart(4, 2, false)).toBe(true)
+    expect(readyToStart(1, 16, true)).toBe(true)
   })
 })

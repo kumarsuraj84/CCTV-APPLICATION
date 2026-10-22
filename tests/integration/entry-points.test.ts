@@ -156,7 +156,8 @@ describe('entry points with a real JWT (P2-2 fix round 1)', () => {
       as(u)
       const res = await GET(url(cGood))
       expect(res.status).toBe(403)
-      expect(await res.json()).toEqual({ error: 'Fast playback is not available for your account.' })
+      // D-L1 (P4-L2): /api/vod is the saveable-file (export) path only; same rule, the refusal now says so.
+      expect(await res.json()).toEqual({ error: 'Downloading recordings is not available for your account.' })
     }
     expect(nvr.requests).toEqual([])
     as(exportPlayback)
@@ -169,6 +170,42 @@ describe('entry points with a real JWT (P2-2 fix round 1)', () => {
     as(itPerson)
     const itNoLogin = await GET(url(cNoLogin))
     expect([itNoLogin.status, await itNoLogin.json()]).toEqual([409, { error: 'This NVR has no saved login.' }])
+  })
+
+  // P4-L2 (decision D-L1): the real action and the real stream route with the person's own JWT. The development pass-through stands in for
+  // ffmpeg (not installed here); the fake NVR is on loopback.
+  it('openFastPlaybackAction + GET /api/playback/stream: playback without export streams 16x with no file headers; live only and export only get nothing; the token is the person\'s', async () => {
+    const before = process.env.FAST_PLAYBACK_REMUX
+    process.env.FAST_PLAYBACK_REMUX = 'passthrough'
+    try {
+      const { openFastPlaybackAction } = await import('@/lib/actions/playback')
+      const { GET } = await import('@/app/api/playback/stream/route')
+      const start = '2026-10-20T09:10:00Z'
+      for (const u of [live, exportOnly]) {
+        as(u)
+        expect(await openFastPlaybackAction(cGood, start, 5, 4)).toEqual({ ok: false, error: 'Camera not found.' })
+      }
+      expect(nvr.requests).toEqual([])
+      as(playback)
+      const t = await openFastPlaybackAction(cGood, start, 5, 16)
+      expect(t.ok).toBe(true)
+      if (!t.ok) return
+      const req = (token: string) => new Request('http://localhost:3212/api/playback/stream', { headers: { 'x-playback-token': token, 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'empty' } })
+      as(live) // no playback anywhere: refused by the route before any camera is looked up
+      expect((await GET(req(t.token))).status).toBe(403)
+      as(exportPlayback) // has playback for the camera, but the token is not theirs
+      expect((await GET(req(t.token))).status).toBe(404)
+      expect(nvr.requests).toEqual([])
+      as(playback)
+      const res = await GET(req(t.token))
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-disposition')).toBeNull()
+      expect(res.headers.get('content-type')).toBe('application/vnd.ckdrishti.stream')
+      expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(0)
+    } finally {
+      if (before === undefined) delete process.env.FAST_PLAYBACK_REMUX
+      else process.env.FAST_PLAYBACK_REMUX = before
+    }
   })
 
   it('the live, playback and export counts are separate: using up live leaves playback and fast playback working', async () => {

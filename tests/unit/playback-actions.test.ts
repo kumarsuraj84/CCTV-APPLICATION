@@ -18,11 +18,18 @@ vi.mock('@/lib/auth/profile', () => ({ requireProfile: () => requireProfile() })
 vi.mock('@/lib/supabase/server', () => ({ createClient: () => createClient() }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => createAdminClient() }))
 vi.mock('@/lib/supabase/service-clients', () => ({ createMediaClient: () => createMediaClient() }))
+const listOldestRecording = vi.fn()
+const openFastPlayback = vi.fn()
 vi.mock('@/lib/streams/playback', async (orig) => ({
   ...(await orig<typeof import('@/lib/streams/playback')>()),
   listRecordedDays: (...a: unknown[]) => listRecordedDays(...a),
   listDaySegments: (...a: unknown[]) => listDaySegments(...a),
+  listOldestRecording: (...a: unknown[]) => listOldestRecording(...a),
   openPlayback: (...a: unknown[]) => openPlayback(...a),
+}))
+vi.mock('@/lib/streams/fast', async (orig) => ({
+  ...(await orig<typeof import('@/lib/streams/fast')>()),
+  openFastPlayback: (...a: unknown[]) => openFastPlayback(...a),
 }))
 
 const SOME = { organization: false, locations: ['l1'], cameras: [], assets: [] }
@@ -44,6 +51,61 @@ describe('playback actions', () => {
     listRecordedDays.mockResolvedValue({ ok: true, days: [1] })
     listDaySegments.mockResolvedValue({ ok: true, segments: [], truncated: false, skipped: 0 })
     openPlayback.mockResolvedValue({ ok: true, token: 't', name: 'n' })
+    listOldestRecording.mockResolvedValue({ ok: true, oldest: '2026-09-03T08:14:00.000Z' })
+    openFastPlayback.mockResolvedValue({ ok: true, token: 'fast-token', minutes: 10 })
+  })
+
+  // P4-L2 (decision D-L1): fast playback is a cctv.playback right; the action hands back a short-lived token for the stream path.
+  describe('fast playback and the oldest recording (P4-L2)', () => {
+    it('a playback viewer without export gets a fast playback token; the person, camera, start, length and speed go to the service', async () => {
+      const a = await import('@/lib/actions/playback')
+      expect(await a.openFastPlaybackAction(CAM, '2026-10-20T10:00:00Z', 10, 16)).toEqual({ ok: true, token: 'fast-token', minutes: 10 })
+      const [deps, who, cam, start, minutes, speed] = openFastPlayback.mock.calls[0]
+      expect([who, cam, minutes, speed]).toEqual([{ id: 'u1', orgId: 'o1' }, CAM, 10, 16])
+      expect((start as Date).toISOString()).toBe('2026-10-20T10:00:00.000Z')
+      expect(deps.rls).toEqual({ tag: 'rls' })
+      expect(deps.admin).toBe(mediaFake)
+      const limits = await import('@/lib/streams/request-limit')
+      expect(deps.limiter).toBe(limits.playbackRequestLimiter)
+    })
+    it('without cctv.playback (live only, export only, IT only) it is "Camera not found." and nothing is asked', async () => {
+      for (const caps of [[], ['cctv.live'], ['cctv.export'], ['cctv.export', 'cctv.live'], ['it.monitoring.view']]) {
+        requireProfile.mockResolvedValue(person('u1', caps))
+        const a = await import('@/lib/actions/playback')
+        expect(await a.openFastPlaybackAction(CAM, '2026-10-20T10:00:00Z', 10, 4), caps.join()).toEqual({ ok: false, error: 'Camera not found.' })
+        expect(await a.oldestRecordingAction(CAM), caps.join()).toEqual({ ok: false, error: 'Camera not found.' })
+      }
+      expect(openFastPlayback).not.toHaveBeenCalled()
+      expect(listOldestRecording).not.toHaveBeenCalled()
+    })
+    it('checks its input first: camera, start, a whole length and a speed of 2x to 16x', async () => {
+      const a = await import('@/lib/actions/playback')
+      expect(await a.openFastPlaybackAction('nope', '2026-10-20T10:00:00Z', 10, 4)).toEqual({ ok: false, error: 'Camera not found.' })
+      expect(await a.openFastPlaybackAction(CAM, 'later', 10, 4)).toEqual({ ok: false, error: 'Choose a start time.' })
+      expect(await a.openFastPlaybackAction(CAM, '2026-10-20T10:00:00Z', 2.5, 4)).toEqual({ ok: false, error: 'Choose how long to play.' })
+      for (const s of [1, 3, 32, '4' as never]) expect(await a.openFastPlaybackAction(CAM, '2026-10-20T10:00:00Z', 10, s), String(s)).toEqual({ ok: false, error: 'Choose a speed of 2x, 4x, 8x or 16x.' })
+      expect(openFastPlayback).not.toHaveBeenCalled()
+    })
+    it('records the opening with the speed (never the token); a refused one is not recorded', async () => {
+      const a = await import('@/lib/actions/playback')
+      await a.openFastPlaybackAction(CAM, '2026-10-20T10:00:00Z', 10, 8)
+      expect(audit).toHaveLength(1)
+      expect(audit[0]).toMatchObject({ action: 'cctv_playback_opened', actor_id: 'u1', entity_id: CAM, detail: { capability: 'cctv.playback', minutes: 10, speed: 8 } })
+      expect(JSON.stringify(audit)).not.toContain('fast-token')
+      openFastPlayback.mockResolvedValue({ ok: false, error: 'Camera not found.' })
+      await a.openFastPlaybackAction(CAM, '2026-10-20T10:00:00Z', 10, 8)
+      expect(audit).toHaveLength(1)
+    })
+    it('the oldest recording: the person, the camera and the offset; counted as a lookup and recorded as a search', async () => {
+      vi.stubEnv('PLAYBACK_OFFSET_MIN', '30')
+      const a = await import('@/lib/actions/playback')
+      expect(await a.oldestRecordingAction(CAM)).toEqual({ ok: true, oldest: '2026-09-03T08:14:00.000Z' })
+      const [deps, who, cam, off] = listOldestRecording.mock.calls[0]
+      expect([who, cam, off]).toEqual([{ id: 'u1', orgId: 'o1' }, CAM, 30])
+      const limits = await import('@/lib/streams/request-limit')
+      expect(deps.limiter).toBe(limits.lookupRequestLimiter)
+      expect(audit[0]).toMatchObject({ action: 'cctv_playback_searched', detail: { what: 'oldest' } })
+    })
   })
 
   it('a signed-out caller is sent to sign in and nothing else happens', async () => {

@@ -60,11 +60,16 @@ const ALLOWED: Record<string, string> = {
   'lib/actions/playback.ts#listRecordedDaysAction': 'viewing: recordings calendar, checked per camera (cctv.playback, no MFA capability)',
   'lib/actions/playback.ts#listDaySegmentsAction': 'viewing: day search, checked per camera',
   'lib/actions/playback.ts#openPlaybackAction': 'viewing: 1x playback stream, checked per camera, audited, revoked within 60 s',
+  // P4-L2 (D-L1): fast playback is viewing under cctv.playback (no MFA capability), never a file; saveable files (/api/vod) stay guarded.
+  'lib/actions/playback.ts#openFastPlaybackAction': 'viewing: fast playback 2x-16x token (cctv.playback, D-L1), checked per camera, audited, revoked within 60 s; never a file',
+  'lib/actions/playback.ts#oldestRecordingAction': 'viewing: the oldest recording of a camera, checked per camera (cctv.playback)',
   'lib/actions/streams.ts#openStreamsAction': 'viewing: live streams, checked per camera, audited, revoked within 60 s',
   'lib/actions/streams.ts#refreshStreamTokensAction': 'viewing: renews tokens of streams already allowed',
   'lib/actions/streams.ts#renewStreamTokensAction': 'viewing: renews tokens of streams already allowed',
   // route handlers
   'app/api/vod/route.ts#HEAD': 'always answers 405; never starts anything',
+  'app/api/playback/stream/route.ts#GET': 'viewing: the fast playback stream (cctv.playback, D-L1): a 90 s token bound to person, camera and media session, script fetch only, no file headers',
+  'app/api/playback/stream/route.ts#HEAD': 'always answers 405; never starts anything',
   'app/api/csp-report/route.ts#POST': 'public report sink: logs the directive and blocked origin only, size- and rate-limited',
   'app/api/health/route.ts#GET': 'reads only (public health)',
   'app/api/version/route.ts#GET': 'reads only (public build stamp)',

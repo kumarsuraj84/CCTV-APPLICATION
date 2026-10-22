@@ -14,7 +14,10 @@ export const ALLOWED: Allowed[] = [
   { file: 'lib/streams/gateway.ts', text: 'no-store', partial: true, reason: HTTP },
   { file: 'lib/streams/gateway-health.ts', text: 'no-store', partial: true, reason: HTTP },
   { file: 'lib/streams/go2rtc.ts', text: 'no-store', partial: true, reason: HTTP },
-  { file: 'lib/streams/speed.ts', text: 'no-store', partial: true, reason: HTTP },
+  // P4-L2: speed.ts lost its /api/vod probe (the Playback screen no longer uses /api/vod); the fast playback stream path uses no-store.
+  { file: 'lib/streams/fast.ts', text: 'no-store', partial: true, reason: HTTP },
+  { file: 'lib/streams/fast-client.ts', text: 'no-store', partial: true, reason: HTTP },
+  { file: 'app/api/playback/stream/route.ts', text: 'no-store', partial: true, reason: HTTP },
   { file: 'lib/streams/vod.ts', text: 'no-store', partial: true, reason: HTTP },
   { file: 'app/api/health/route.ts', text: 'no-store', partial: true, reason: HTTP },
   { file: 'app/api/vod/route.ts', text: 'no-store', partial: true, reason: HTTP },
