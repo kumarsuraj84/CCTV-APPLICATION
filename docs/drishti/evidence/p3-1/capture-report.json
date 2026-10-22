@@ -1,15 +1,110 @@
 {
   "base": "http://localhost:3340",
+  "homeHeaders": {
+    "content-security-policy": "default-src 'self'; script-src 'self' 'nonce-…' 'strict-dynamic'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; media-src 'self' blob:; connect-src 'self' http://localhost:3412 ws://localhost:3412; worker-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; report-uri /api/csp-report",
+    "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
+    "referrer-policy": "strict-origin-when-cross-origin",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY"
+  },
+  "cspConsole": [
+    "Connecting to 'ws://localhost:9999/x' violates the following Content Security Policy directive: \"connect-src 'self' http://localhost:3412 ws://localhost:3412\". The action has been blocked."
+  ],
+  "ownViolations": [],
   "shots": [
     {
       "file": "SO-1-login-1366.png",
-      "url": "/",
+      "url": "/login",
       "width": 1366,
       "scrollWidth": 1366
     },
     {
       "file": "SO-1-login-375.png",
-      "url": "/",
+      "url": "/login",
+      "width": 375,
+      "scrollWidth": 375
+    },
+    {
+      "file": "SO-1-mfa-enrol-1366.png",
+      "url": "/mfa/enrol?next=%2Fhome",
+      "width": 1366,
+      "scrollWidth": 1366
+    },
+    {
+      "file": "SO-1-mfa-enrol-375.png",
+      "url": "/mfa/enrol?next=%2Fhome",
+      "width": 375,
+      "scrollWidth": 375
+    },
+    {
+      "file": "SO-1-mfa-enrol-qr-1366.png",
+      "url": "/mfa/enrol?next=%2Fhome",
+      "width": 1366,
+      "scrollWidth": 1351
+    },
+    {
+      "file": "SO-1-mfa-enrol-qr-375.png",
+      "url": "/mfa/enrol?next=%2Fhome",
+      "width": 375,
+      "scrollWidth": 375
+    },
+    {
+      "file": "BR-1-shell-home-1366.png",
+      "url": "/home",
+      "width": 1366,
+      "scrollWidth": 1366
+    },
+    {
+      "file": "BR-1-shell-home-375.png",
+      "url": "/home",
+      "width": 375,
+      "scrollWidth": 375
+    },
+    {
+      "file": "SO-1-users-sessions-1366.png",
+      "url": "/admin/users",
+      "width": 1366,
+      "scrollWidth": 1351
+    },
+    {
+      "file": "SO-1-users-sessions-375.png",
+      "url": "/admin/users",
+      "width": 375,
+      "scrollWidth": 375
+    },
+    {
+      "file": "SO-1-security-1366.png",
+      "url": "/account/security",
+      "width": 1366,
+      "scrollWidth": 1366
+    },
+    {
+      "file": "SO-1-security-375.png",
+      "url": "/account/security",
+      "width": 375,
+      "scrollWidth": 375
+    },
+    {
+      "file": "SO-1-mfa-challenge-1366.png",
+      "url": "/mfa?next=%2Fhome",
+      "width": 1366,
+      "scrollWidth": 1366
+    },
+    {
+      "file": "SO-1-mfa-challenge-375.png",
+      "url": "/mfa?next=%2Fhome",
+      "width": 375,
+      "scrollWidth": 375
+    },
+    {
+      "file": "SO-1-confirm-1366.png",
+      "url": "/confirm",
+      "width": 1366,
+      "scrollWidth": 1366
+    },
+    {
+      "file": "SO-1-confirm-375.png",
+      "url": "/confirm",
       "width": 375,
       "scrollWidth": 375
     }

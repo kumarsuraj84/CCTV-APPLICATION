@@ -37,6 +37,10 @@ describe('sidebar', () => {
     const { Sidebar } = await import('@/components/layout/Sidebar')
     const html = renderToStaticMarkup(<Sidebar items={[]} />)
     expect(html).toMatch(/<aside[^>]*class="[^"]*\bsticky\b[^"]*\btop-0\b[^"]*\bh-dvh\b/)
+    // Its container must grow with the page: fixed to one screen (h-full) it held the sidebar to the first screen.
+    const { AppShell } = await import('@/components/layout/AppShell')
+    const shell = renderToStaticMarkup(<AppShell profile={{ full_name: 'A', role: 'user', capabilities: { failed: false, grants: {} } }}>x</AppShell>)
+    expect(shell).toContain('<div class="flex min-h-screen">')
   })
 })
 

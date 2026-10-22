@@ -18,7 +18,8 @@ import { Sidebar } from './Sidebar'
 export function AppShell({ profile, children }: { profile: { full_name: string; role: Role; capabilities: Capabilities }; children: React.ReactNode }) {
   const viewer = { role: profile.role, capabilities: profile.capabilities }
   return (
-    <div className="flex h-full min-h-screen">
+    // P3-1: grows with the page (not fixed to one screen), so the sticky sidebar stays in view down the whole page.
+    <div className="flex min-h-screen">
       <a href="#main" className="sr-only z-50 rounded-md bg-background px-3 py-2 text-sm font-medium focus:not-sr-only focus:fixed focus:top-2 focus:left-2">Skip to the page</a>
       <Sidebar items={navFor(viewer)} />
       <div className="flex min-w-0 flex-1 flex-col">
