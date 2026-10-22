@@ -106,22 +106,28 @@ function LocationRow({ l, branch, openId, query }: { l: TreeLocation; branch: La
 
 function ClusterBlock({ c, branch, openId, query, open }: { c: TreeCluster; branch: LandingBranch | null; openId: string | null; query: string; open: boolean }) {
   return (
-    <details open={open || c.locations.some((l) => l.id === openId)} className="group/cl rounded-lg border bg-card">
-      <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]">
-        <span className="flex min-w-0 items-center gap-2 text-sm font-semibold">
-          <StateDot state={nodeState(c.counts)} />
-          <span className="break-words"><span translate="no" className="font-mono">{c.code}</span> · {c.name}</span>
-          <span className="text-xs font-normal text-muted-foreground">Cluster · {c.locations.length} {c.locations.length === 1 ? 'location' : 'locations'}</span>
-        </span>
-        <span className="flex flex-wrap items-center gap-2">
+    <div className="relative">
+      <details open={open || c.locations.some((l) => l.id === openId)} className="group/cl rounded-lg border bg-card">
+        <summary className={cn(summaryClass, 'py-2')}>
+          <span className="flex min-w-0 items-center gap-2 text-sm font-semibold">
+            <StateDot state={nodeState(c.counts)} />
+            <span className="break-words"><span translate="no" className="font-mono">{c.code}</span> · {c.name}</span>
+            <span className="text-xs font-normal text-muted-foreground">Cluster · {c.locations.length} {c.locations.length === 1 ? 'location' : 'locations'}</span>
+          </span>
           <Counts counts={c.counts} recorders={c.recorders} />
-          <Link href={`/live?cluster=${encodeURIComponent(c.id)}`} className={wallLink}><LayoutGrid aria-hidden="true" className="size-3.5" /> Open wall</Link>
-        </span>
-      </summary>
-      <ul className="divide-y border-t">{c.locations.map((l) => <LocationRow key={l.id} l={l} branch={branch} openId={openId} query={query} />)}</ul>
-    </details>
+        </summary>
+        <ul className="divide-y border-t">{c.locations.map((l) => <LocationRow key={l.id} l={l} branch={branch} openId={openId} query={query} />)}</ul>
+      </details>
+      <Link href={`/live?cluster=${encodeURIComponent(c.id)}`} className={cn(wallLink, wallLinkPlace)} aria-label={`Open the wall of ${c.code} · ${c.name}`}>
+        <LayoutGrid aria-hidden="true" className="size-3.5" /> Open wall
+      </Link>
+    </div>
   )
 }
+
+// The toggle leaves room on the right for the wall link, which is placed over that corner (outside the <summary>; review M-10).
+const summaryClass = 'flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 py-2 pl-3 pr-32 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]'
+const wallLinkPlace = 'absolute right-3 top-2'
 
 export function LiveTreeView({ tree, branch, openId, query }: { tree: LiveTree; branch: LandingBranch | null; openId: string | null; query: string }) {
   const empty = tree.regions.length === 0 && tree.clusters.length === 0 && tree.locations.length === 0
@@ -137,22 +143,25 @@ export function LiveTreeView({ tree, branch, openId, query }: { tree: LiveTree; 
   return (
     <div className="space-y-3">
       {tree.regions.map((r) => (
-        <details key={r.id} open={openAll || r.clusters.some((c) => c.locations.some((l) => l.id === openId))} className="rounded-xl border bg-card">
-          <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 px-3 py-2.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]">
-            <span className="flex min-w-0 items-center gap-2 font-semibold">
-              <StateDot state={nodeState(r.counts)} />
-              <span className="break-words"><span translate="no" className="font-mono">{r.code}</span> · {r.name}</span>
-              <span className="text-xs font-normal text-muted-foreground">Region · {r.clusters.length} {r.clusters.length === 1 ? 'cluster' : 'clusters'}</span>
-            </span>
-            <span className="flex flex-wrap items-center gap-2">
+        <div key={r.id} className="relative">
+          <details open={openAll || r.clusters.some((c) => c.locations.some((l) => l.id === openId))} className="rounded-xl border bg-card">
+            {/* Review M-10: only text inside the toggle; the wall link sits next to it (outside <summary>). */}
+            <summary className={cn(summaryClass, 'py-2.5')}>
+              <span className="flex min-w-0 items-center gap-2 font-semibold">
+                <StateDot state={nodeState(r.counts)} />
+                <span className="break-words"><span translate="no" className="font-mono">{r.code}</span> · {r.name}</span>
+                <span className="text-xs font-normal text-muted-foreground">Region · {r.clusters.length} {r.clusters.length === 1 ? 'cluster' : 'clusters'}</span>
+              </span>
               <Counts counts={r.counts} recorders={r.recorders} />
-              <Link href={`/live?region=${encodeURIComponent(r.id)}`} className={wallLink}><LayoutGrid aria-hidden="true" className="size-3.5" /> Open wall</Link>
-            </span>
-          </summary>
-          <div className="space-y-2 border-t p-2">
-            {r.clusters.map((c) => <ClusterBlock key={c.id} c={c} branch={branch} openId={openId} query={query} open={openAll} />)}
-          </div>
-        </details>
+            </summary>
+            <div className="space-y-2 border-t p-2">
+              {r.clusters.map((c) => <ClusterBlock key={c.id} c={c} branch={branch} openId={openId} query={query} open={openAll} />)}
+            </div>
+          </details>
+          <Link href={`/live?region=${encodeURIComponent(r.id)}`} className={cn(wallLink, wallLinkPlace)} aria-label={`Open the wall of ${r.code} · ${r.name}`}>
+            <LayoutGrid aria-hidden="true" className="size-3.5" /> Open wall
+          </Link>
+        </div>
       ))}
       {tree.clusters.map((c) => <ClusterBlock key={c.id} c={c} branch={branch} openId={openId} query={query} open={openAll} />)}
       {tree.locations.length > 0 && (

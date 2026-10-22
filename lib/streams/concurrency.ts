@@ -1,10 +1,13 @@
 // P4-L1 brief item 2: bounded live concurrency. Pure helpers (no browser, no server code) so the rules can be tested alone.
 //
-// Two places use them:
-//   - the server (openStreams): a new opening may bring the person's DIFFERENT open live streams up to LIVE_MAX_STREAMS_PER_USER;
-//     what is open is counted by the session registry (media_sessions_live_open: sockets the gateway opened and still checks);
-//   - the wall (LiveWall): at most that many pictures play at once; the tiles on screen come first, the rest say "Paused to save
-//     bandwidth" (a still is not available yet: thumbnails are not built), and tiles scrolled out of view or in a hidden tab play nothing.
+// The count itself belongs to the database (review round 1, I-1; migration 20261021000040): media_session_create_live counts, under
+// one lock per person, every live stream the person holds — open sockets and tokens that can still connect — and hands out tokens only
+// up to LIVE_MAX_STREAMS_PER_USER; media_session_open refuses a socket above it. Here:
+//   - the setting (maxStreamsPerUser), which the server passes to the database;
+//   - the wall's own choice (allocateTiles): at most that many pictures play at once; tiles on screen come first, cameras whose recorder
+//     cannot be reached last; the rest say "Paused to save bandwidth" (no still yet: thumbnails are not built); tiles out of view play
+//     nothing;
+//   - what the wall lets go of (releaseFor) when its list changes, so its unused tokens stop counting at once.
 
 /** Simultaneous live streams per person when LIVE_MAX_STREAMS_PER_USER is not set (or not a whole number from 1 to 100). */
 export const DEFAULT_MAX_STREAMS_PER_USER = 25
@@ -22,49 +25,25 @@ export function maxStreamsPerUser(env: Record<string, string | undefined> = proc
   return Math.min(n, MAX_STREAMS_PER_USER_CEILING)
 }
 
-/**
- * Which of the requested streams (stream names, in the wall's order) may be opened, given the person's open live streams. Streams the
- * person already has open are renewals: they are kept first and never counted twice. The others fill what is left of `max` in order;
- * the rest are `paused`. Repeats in `requested` count once.
- */
-export function capStreams(requested: readonly string[], openNow: ReadonlySet<string>, max: number): { allowed: Set<string>; paused: string[] } {
-  const wanted = [...new Set(requested)]
-  const others = [...openNow].filter((s) => !wanted.includes(s)).length
-  let room = Math.max(0, max - others)
-  const allowed = new Set<string>()
-  for (const s of wanted) {
-    if (openNow.has(s) && room > 0) {
-      allowed.add(s)
-      room--
-    }
-  }
-  const paused: string[] = []
-  for (const s of wanted) {
-    if (allowed.has(s)) continue
-    if (room > 0) {
-      allowed.add(s)
-      room--
-    } else paused.push(s)
-  }
-  return { allowed, paused }
-}
-
 /** `idle`: not on screen, or behind the large picture: no socket, no word needed (the tile is out of sight). */
 export type TileAllocation = { play: string[]; bandwidth: string[]; idle: string[] }
 
 /**
- * The wall's own rule for its page of tiles: tiles on screen play, in page order, up to `max` (the rest are paused for bandwidth);
- * tiles not on screen do not play. While the large picture is open the grid behind it plays nothing (the large picture is its own).
+ * The wall's own rule for its page of tiles: tiles on screen play up to `max` — in page order, but cameras whose recorder cannot be
+ * reached (`unreachable`) only after the others (review M-7: they would only fail and wait); the rest are paused for bandwidth. Tiles
+ * not on screen do not play. While the large picture is open the grid behind it plays nothing (the large picture is its own).
  */
-export function allocateTiles(page: readonly string[], onScreen: ReadonlySet<string>, max: number, largeOpen = false): TileAllocation {
+export function allocateTiles(page: readonly string[], onScreen: ReadonlySet<string>, max: number, largeOpen = false, unreachable: ReadonlySet<string> = new Set()): TileAllocation {
   if (largeOpen) return { play: [], bandwidth: [], idle: [...page] }
-  const play: string[] = []
-  const bandwidth: string[] = []
-  const idle: string[] = []
-  for (const id of page) {
-    if (!onScreen.has(id)) idle.push(id)
-    else if (play.length < max) play.push(id)
-    else bandwidth.push(id)
-  }
-  return { play, bandwidth, idle }
+  const idle = page.filter((id) => !onScreen.has(id))
+  const shown = page.filter((id) => onScreen.has(id))
+  const order = [...shown.filter((id) => !unreachable.has(id)), ...shown.filter((id) => unreachable.has(id))]
+  const chosen = new Set(order.slice(0, Math.max(0, max)))
+  return { play: shown.filter((id) => chosen.has(id)), bandwidth: shown.filter((id) => !chosen.has(id)), idle }
+}
+
+/** The cameras of the old list that are not on the new one (the wall releases them; review I-1). */
+export function releaseFor(previous: readonly string[], next: readonly string[]): string[] {
+  const keep = new Set(next)
+  return previous.filter((id) => !keep.has(id))
 }

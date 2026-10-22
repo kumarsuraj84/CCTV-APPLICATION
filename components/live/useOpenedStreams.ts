@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { openStreamsAction, refreshStreamTokensAction, renewStreamTokensAction } from '@/lib/actions/streams'
-import type { OpenedStream } from '@/lib/streams/open'
-import { REFRESH_AFTER_MS, renewalKind, RETRY_EVERY_MS } from '@/lib/streams/wall'
+import { releaseFor } from '@/lib/streams/concurrency'
+import type { StreamRelease } from '@/lib/streams/open'
+import { planRequest, REOPEN_AFTER_MS } from '@/lib/streams/wall'
 
 const subscribeVisibility = (cb: () => void) => {
   document.addEventListener('visibilitychange', cb)
@@ -24,11 +25,14 @@ export function useTabVisible(): boolean {
   return now && settled
 }
 
+/** What a tile needs: its token (only used to connect). */
+export type HeldStream = { cameraId: string; token: string }
+
 type Phase = 'loading' | 'ready' | 'error'
 type State = {
   key: string
   phase: Phase
-  streams: Record<string, OpenedStream>
+  streams: Record<string, HeldStream>
   error: string | null
   /** When the tokens were last renewed for the whole list (ms). */
   issuedAt: number
@@ -38,61 +42,79 @@ type State = {
   triedAt: number
   /** A request after the first one failed (the tokens in hand are still good for a while). */
   refreshFailed: boolean
-  /** P4-L1: cameras the server left out because the person's live streams are at their limit (asked for again with the missing ones). */
+  /** P4-L1: cameras the server left out because the person's live streams are at their limit (asked for again every 30 s). */
   paused: string[]
 }
 
 const fresh = (key: string): State => ({ key, phase: 'loading', streams: {}, error: null, issuedAt: 0, fullAt: 0, triedAt: 0, refreshFailed: false, paused: [] })
 
-type Mode = 'open' | 'full' | 'tokens'
+// P4-L1 review M-5: when each camera's stream was last opened in full (registered in go2rtc) in this page, per kind. A list made only of
+// cameras opened in full within 8 minutes (a tour going round, a tab coming back) starts with new tokens alone: no NVR login, no go2rtc
+// request, no second audit row; the 8-minute full opening still comes on time.
+const openedAt = new Map<string, number>()
+const recently = (kind: 'sub' | 'main', now: number) => (id: string) => now - (openedAt.get(`${kind}:${id}`) ?? 0) < REOPEN_AFTER_MS
+const oldestOpen = (kind: 'sub' | 'main', ids: string[]) => Math.min(...ids.map((id) => openedAt.get(`${kind}:${id}`) ?? 0))
 
 /**
  * Opens the streams for `ids` while `active`, and keeps their tokens fresh (P2-4: a token connects within 90 s): every minute the
- * tokens alone are renewed (renewStreamTokensAction: cctv.live checked again, new media sessions, no NVR or go2rtc work), every 8
- * minutes everything is opened again in full, and the cameras that could not be opened (or the whole list, when nothing opened) are
- * asked for again in full every 30 seconds. When `active` turns false (the tab is hidden) everything is dropped, so tiles close their
- * sockets; becoming active again asks for new tokens. Only cameras on `ids` are ever asked for, so nothing is renewed for a page nobody
- * is looking at.
+ * tokens alone are renewed (renewStreamTokensAction: cctv.live and the person's stream cap checked again, new media sessions, no NVR or
+ * go2rtc work), every 8 minutes everything is opened again in full, and the cameras that could not be opened (or the whole list, when
+ * nothing opened) are asked for again in full every 30 seconds (lib/streams/wall.ts planRequest). When `active` turns false (the tab is
+ * hidden, the large picture is open, nobody is at the screen) everything is dropped, so tiles close their sockets; becoming active again
+ * asks for new tokens. Only cameras on `ids` are ever asked for. P4-L1 review I-1: when the list changes, the cameras that left it are
+ * released with the next request (their unused tokens stop counting against the cap at once), and `release` adds what another part of
+ * the wall let go of (the grid behind the large picture).
  */
-export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: boolean) {
+export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: boolean, opts: { release?: StreamRelease[] } = {}) {
   const key = `${active ? 'on' : 'off'}|${kind}|${ids.join(',')}`
   const [state, setState] = useState<State>(() => fresh(key))
   // A different list, kind or activity starts again from nothing (nothing from the old list is kept).
   if (state.key !== key) setState(fresh(key))
   const current = state.key === key ? state : fresh(key)
+  // What this hook last asked for, so the cameras that left the list can be released (review I-1).
+  const lastAsked = useRef<string[]>([])
 
   const failed = (error: string) =>
     setState((prev) => (prev.key !== key ? prev : { ...prev, phase: Object.keys(prev.streams).length > 0 ? 'ready' : 'error', error, triedAt: Date.now(), refreshFailed: true }))
 
-  const run = (which: string[], mode: Mode) => {
+  const run = (which: string[], mode: 'open' | 'full' | 'tokens', first: boolean) => {
+    const own = first ? releaseFor(lastAsked.current, ids) : []
+    const release = [...(own.length > 0 ? [{ cameraIds: own, kind }] : []), ...(first ? (opts.release ?? []) : [])].filter((r) => r.cameraIds.length > 0)
+    const options = release.length > 0 ? { release } : undefined
+    lastAsked.current = ids
     if (mode === 'tokens') {
-      renewStreamTokensAction(which, kind)
+      renewStreamTokensAction(which, kind, options)
         .then((res) => {
           if (!res.ok) return failed(res.error)
           setState((prev) => {
             if (prev.key !== key) return prev
-            // Only the tokens change; a camera that did not come back (no longer allowed, its NVR switched off) is dropped.
-            const streams: Record<string, OpenedStream> = {}
-            for (const t of res.tokens) if (prev.streams[t.cameraId]) streams[t.cameraId] = { ...prev.streams[t.cameraId], token: t.token }
+            // Only the tokens change; a camera that did not come back (no longer allowed, its NVR switched off, over the cap) is dropped
+            // from the held list (and, when paused, waits for the 30 s retry). The first request of a list is a whole one.
+            const streams: Record<string, HeldStream> = {}
+            for (const t of res.tokens) if (first || prev.streams[t.cameraId]) streams[t.cameraId] = { cameraId: t.cameraId, token: t.token }
             const now = Date.now()
-            return { ...prev, phase: 'ready', streams, error: null, triedAt: now, refreshFailed: false, issuedAt: now }
+            return {
+              ...prev, phase: 'ready', streams, error: null, triedAt: now, refreshFailed: false, issuedAt: now,
+              fullAt: first ? oldestOpen(kind, which) : prev.fullAt, paused: res.paused ?? [],
+            }
           })
         })
         .catch(() => failed('Could not reach the server.'))
       return
     }
     const call = mode === 'open' ? openStreamsAction : refreshStreamTokensAction
-    call(which, kind)
+    call(which, kind, options)
       .then((res) => {
         setState((prev) => {
           if (prev.key !== key) return prev // the list changed while asking
           const now = Date.now()
           if (!res.ok) return { ...prev, phase: Object.keys(prev.streams).length > 0 ? 'ready' : 'error', error: res.error, triedAt: now, refreshFailed: true }
+          for (const s of res.streams) openedAt.set(`${kind}:${s.cameraId}`, now)
           // A renewal of the whole list replaces what was held: a camera that did not come back (it failed, or the person may no longer
           // see it) loses its old token and is asked for again. Asking only for the missing ones adds to what is held.
           const everyone = which.length === ids.length
-          const streams: Record<string, OpenedStream> = everyone ? {} : { ...prev.streams }
-          for (const s of res.streams) streams[s.cameraId] = s
+          const streams: Record<string, HeldStream> = everyone ? {} : { ...prev.streams }
+          for (const s of res.streams) streams[s.cameraId] = { cameraId: s.cameraId, token: s.token }
           const paused = everyone ? (res.paused ?? []) : [...prev.paused.filter((id) => !which.includes(id)), ...(res.paused ?? [])]
           return { ...prev, phase: 'ready', streams, error: null, triedAt: now, refreshFailed: false, issuedAt: everyone ? now : prev.issuedAt, fullAt: everyone ? now : prev.fullAt, paused }
         })
@@ -104,30 +126,18 @@ export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: bo
 
   const idsText = ids.join(',')
   const loaded = Object.keys(current.streams).join(',')
+  const pausedText = current.paused.join(',')
   useEffect(() => {
     if (!active || ids.length === 0) return
-    let timer: ReturnType<typeof setTimeout> | undefined
-    if (current.phase === 'loading') {
-      timer = setTimeout(() => run(ids, 'open'), 0)
-    } else {
-      const missing = ids.filter((id) => !current.streams[id])
-      const retryAt = current.phase === 'error' || current.refreshFailed || missing.length > 0 ? current.triedAt + RETRY_EVERY_MS : Infinity
-      const renewAt = current.issuedAt > 0 ? current.issuedAt + REFRESH_AFTER_MS : Infinity
-      const at = Math.min(retryAt, renewAt)
-      if (!Number.isFinite(at)) return
-      timer = setTimeout(() => {
-        const renewing = Date.now() >= renewAt - 50
-        const everythingFailed = current.phase === 'error'
-        // Retries (missing cameras, a failed renewal, nothing open) are full openings; a plain renewal renews the tokens only, except
-        // every 8 minutes (P2-4 review m-11).
-        if (renewing && !everythingFailed && missing.length === 0 && !current.refreshFailed && renewalKind(Date.now(), current.fullAt) === 'tokens') run(ids, 'tokens')
-        else run(renewing || everythingFailed ? ids : missing.length > 0 ? missing : ids, 'full')
-      }, Math.max(0, at - Date.now()))
-    }
+    const now = Date.now()
+    const plan = planRequest(ids, { ...current, held: Object.keys(current.streams) }, now, recently(kind, now))
+    if (!plan) return
+    const first = current.phase === 'loading'
+    const timer = setTimeout(() => run(plan.which, plan.mode, first), Math.max(0, plan.at - Date.now()))
     return () => clearTimeout(timer)
     // `run` and `current` are rebuilt every render; what matters is which request is due, which these values say.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, key, idsText, current.phase, current.issuedAt, current.triedAt, current.refreshFailed, loaded])
+  }, [active, key, idsText, current.phase, current.issuedAt, current.triedAt, current.refreshFailed, loaded, pausedText])
 
-  return { phase: current.phase, streams: active ? current.streams : ({} as Record<string, OpenedStream>), error: current.error, paused: active ? current.paused : [] }
+  return { phase: current.phase, streams: active ? current.streams : ({} as Record<string, HeldStream>), error: current.error, paused: active ? current.paused : [] }
 }

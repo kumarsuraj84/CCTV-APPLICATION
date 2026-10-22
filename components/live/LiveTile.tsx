@@ -113,16 +113,15 @@ export function LiveTile({
       {/* The player puts its picture here (it hides its own overlay: the tile has its own). */}
       <div ref={host} className="absolute inset-0 [&_video]:bg-black" />
       {onOpen && (
+        // The whole picture is the double-click area for the mouse (review M-8: not a second "Enlarge" control for the keyboard or a
+        // screen reader — the tile's own Enlarge button is that, and the large view opens with it).
         <button
           type="button"
+          tabIndex={-1}
+          aria-hidden="true"
           onDoubleClick={onOpen}
-          // Enter or Space on the focused picture (a click without a pointer) opens it too; a single mouse click only focuses it.
-          onClick={(e) => {
-            if (e.detail === 0) onOpen()
-          }}
-          aria-label={`Enlarge ${label}`}
           title="Double-click to enlarge"
-          className="absolute inset-0 z-10 cursor-zoom-in focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
+          className="absolute inset-0 z-10 cursor-zoom-in"
         />
       )}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 bg-gradient-to-b from-black/70 to-transparent p-2 text-xs leading-tight">

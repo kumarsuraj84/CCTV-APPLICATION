@@ -21,6 +21,51 @@ export const RETRY_EVERY_MS = 30_000 // when video is not available, try again t
 export const QUICK_RETRY_MS = 2_000 // a picture that played and then ended (the gateway ends sessions after 30 minutes) comes back quickly
 
 export const perPage = (layout: Layout): number => layout * layout
+
+/** Review M-11: on a phone (below 640 px) one picture or 2 by 2 only; everything on a computer. */
+export const layoutsFor = (narrow: boolean): readonly Layout[] => (narrow ? [1, 2] : LAYOUTS)
+
+/** What the wall holds for one list of cameras (components/live/useOpenedStreams.ts). */
+export type WallStreamsState = {
+  phase: 'loading' | 'ready' | 'error'
+  /** Cameras with a token in hand. */
+  held: readonly string[]
+  /** Cameras the server left out because the person's live streams are at their limit. */
+  paused: readonly string[]
+  issuedAt: number
+  fullAt: number
+  triedAt: number
+  refreshFailed: boolean
+}
+export type WallRequest = { at: number; mode: 'open' | 'full' | 'tokens'; which: string[] }
+
+/**
+ * The wall's next request (pure; P2-4 timings, review round 1):
+ *   - a new list: opened in full (registered in go2rtc, audited), unless every camera of it was opened in full within the last 8 minutes
+ *     (`recentlyOpened`): then only new tokens (M-5: a tour step or a tab coming back costs no NVR login, go2rtc call or audit row);
+ *   - every minute the tokens only, every 8 minutes everything in full (P2-4 review m-11); a failed renewal or a camera that did not
+ *     come back (missing) is opened in full after 30 s;
+ *   - cameras paused for bandwidth are asked for again (in full) every 30 s, and never turn the one-minute renewal into a full one (M-6).
+ */
+export function planRequest(ids: readonly string[], s: WallStreamsState, now: number, recentlyOpened: (id: string) => boolean): WallRequest | null {
+  if (ids.length === 0) return null
+  if (s.phase === 'loading') return { at: now, mode: ids.every(recentlyOpened) ? 'tokens' : 'open', which: [...ids] }
+  const held = new Set(s.held)
+  const paused = new Set(s.paused)
+  const missing = ids.filter((id) => !held.has(id) && !paused.has(id))
+  const waiting = ids.filter((id) => paused.has(id) && !held.has(id))
+  const retryAt = s.phase === 'error' || s.refreshFailed || missing.length > 0 || waiting.length > 0 ? s.triedAt + RETRY_EVERY_MS : Infinity
+  const renewAt = s.issuedAt > 0 ? s.issuedAt + REFRESH_AFTER_MS : Infinity
+  const at = Math.min(retryAt, renewAt)
+  if (!Number.isFinite(at)) return null
+  const when = Math.max(at, now)
+  const renewing = when >= renewAt - 50
+  if (renewing && s.phase !== 'error' && missing.length === 0 && !s.refreshFailed && renewalKind(when, s.fullAt) === 'tokens') {
+    return { at, mode: 'tokens', which: ids.filter((id) => held.has(id)) }
+  }
+  if (renewing || s.phase === 'error') return { at, mode: 'full', which: [...ids] }
+  return { at, mode: 'full', which: missing.length > 0 ? [...missing, ...waiting] : waiting }
+}
 export const layoutLabel = (layout: Layout): string => (layout === 1 ? '1' : `${layout}×${layout}`)
 
 /** The layout that shows everything on one page when it can, otherwise 4 by 4. */

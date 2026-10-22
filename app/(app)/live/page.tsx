@@ -4,7 +4,9 @@ import { ExternalLink, LayoutGrid, Search, Video } from 'lucide-react'
 import { LiveTreeView } from '@/components/live/LiveTreeView'
 import { LiveWall, type GroupTools } from '@/components/live/LiveWall'
 import { StateDot } from '@/components/live/StateDot'
-import { AutoRefresh } from '@/components/monitor/AutoRefresh'
+import { LivePresence } from '@/components/live/LivePresence'
+import { sessionPolicy } from '@/lib/auth/session-policy'
+import { presenceIdleMs } from '@/lib/live/presence'
 import { buttonVariants } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { PageHeader, type Breadcrumb } from '@/components/ui/PageHeader'
@@ -37,6 +39,8 @@ export default async function LivePage({ searchParams }: {
   // P2-2: live video needs cctv.live; the wall shows only cameras the person may watch live (the database decides, per camera).
   const profile = await requireCapability('cctv.live')
   const supabase = await createClient()
+  // Review I-2: the Live screens pause after the person's own idle limit without input (P3-1's limits: 60 min administrators, 8 h others).
+  const idleMs = presenceIdleMs(profile.role, sessionPolicy())
 
   if (Object.values(query).some(Boolean)) {
     const scope = await getLiveScope(supabase, query, 'cctv.live')
@@ -55,17 +59,18 @@ export default async function LivePage({ searchParams }: {
     }
     const crumbs: Breadcrumb[] = [{ label: 'Live', href: '/live' }, { label: `${KIND_LABEL[scope.kind]}: ${scope.title}` }]
     return (
-      <div className="space-y-4">
-        <AutoRefresh busy={false} everyMs={LIVE_STATUS_REFRESH_MS} />
-        <PageHeader title={scope.title} description={scope.description} breadcrumbs={crumbs} />
-        {scope.cameras.length === 0 ? (
-          <div className="rounded-xl border bg-card">
-            <EmptyState icon={Video} title="No cameras to show" description="There are no working cameras here that you can watch live." />
-          </div>
-        ) : (
-          <LiveWall cameras={scope.cameras} maxStreams={maxStreamsPerUser()} multiLocation={scope.multiLocation} groupTools={groupTools} />
-        )}
-      </div>
+      <LivePresence idleMs={idleMs} refreshMs={LIVE_STATUS_REFRESH_MS}>
+        <div className="space-y-4">
+          <PageHeader title={scope.title} description={scope.description} breadcrumbs={crumbs} />
+          {scope.cameras.length === 0 ? (
+            <div className="rounded-xl border bg-card">
+              <EmptyState icon={Video} title="No cameras to show" description="There are no working cameras here that you can watch live." />
+            </div>
+          ) : (
+            <LiveWall cameras={scope.cameras} maxStreams={maxStreamsPerUser()} multiLocation={scope.multiLocation} groupTools={groupTools} />
+          )}
+        </div>
+      </LivePresence>
     )
   }
 
@@ -74,8 +79,8 @@ export default async function LivePage({ searchParams }: {
   const landing = await loadLiveLanding(supabase, profile.capabilities, { q, open: one(sp.open) })
   const hasAnything = landing.totals.total > 0 || landing.groups.length > 0
   return (
+    <LivePresence idleMs={idleMs} refreshMs={LIVE_STATUS_REFRESH_MS}>
     <div className="space-y-6">
-      <AutoRefresh busy={false} everyMs={LIVE_STATUS_REFRESH_MS} />
       <PageHeader
         title="Live"
         // NVRs are IT information (AC-4): named only to people with the IT view.
@@ -162,5 +167,6 @@ export default async function LivePage({ searchParams }: {
         )}
       </section>
     </div>
+    </LivePresence>
   )
 }

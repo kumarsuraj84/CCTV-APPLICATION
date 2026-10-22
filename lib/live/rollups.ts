@@ -116,6 +116,7 @@ export const CAMERA_STATE_LABEL: Record<CameraState, string> = {
 }
 export function cameraState(s: { status: Status | null | undefined; stale: boolean; reason: string | null | undefined }): CameraState {
   if (s.status === 'off') return 'off'
+  if (s.status === 'unreachable') return 'unreachable'
   if (s.status === 'up') return s.stale ? 'stale' : 'live'
   if (s.status === 'down') return s.reason === MSG_RECORDER_NOT_REACHABLE || s.reason === NVR_DOWN_CAMERA_ERROR ? 'unreachable' : 'offline'
   return 'not_checked'

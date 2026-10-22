@@ -15,7 +15,7 @@ import { lastCheckedAt } from '@/lib/monitor/last-checked'
 import { getMonitoringState } from '@/lib/monitor/uptime'
 import { homeSections } from '@/lib/nav'
 import { loadHomeRollups } from '@/lib/queries/home-rollups'
-import { getDashboard, type Dashboard } from '@/lib/queries/status'
+import { getDashboard, outageLabel, type Dashboard } from '@/lib/queries/status'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { formatDateTime } from '@/lib/time'
@@ -42,7 +42,8 @@ function OutageList({ items, empty }: { items: Outage[]; empty: string }) {
                 <span>back live {formatDateTime(o.endedAt)}</span>
               </>
             ) : (
-              <StatusBadge status="down" />
+              // P4-L1 review I-3: a camera outage caused by its NVR is "Recorder not reachable", not offline.
+              <StatusBadge status={outageLabel(o) === 'Recorder not reachable' ? 'unreachable' : 'down'} />
             )}
           </span>
         </li>
@@ -95,7 +96,7 @@ export default async function HomePage() {
     // Only the time of the last full check is shown; if it cannot be read, the line is simply left out.
     getWorkerStatus(admin).catch(() => null),
     // P4-L1: roll-ups per region and cluster (status_rollups as the person: camera words for everybody, NVR figures for the IT view).
-    loadHomeRollups(supabase),
+    loadHomeRollups(supabase, profile.capabilities),
   ])
   const liveLinks = holds(profile.capabilities, 'cctv.live')
   // The most recent of the last devices round, the last cameras round and the last full check.
@@ -155,8 +156,8 @@ export default async function HomePage() {
               &ldquo;Recorder not reachable&rdquo; means the recorder the cameras are on cannot be reached, so whether the cameras themselves work is not known.
             </p>
           </div>
-          <RollupCards title="Regions" level="region" rows={rollups.regions} liveLinks={liveLinks} />
-          <RollupCards title="Clusters" level="cluster" rows={rollups.clusters} liveLinks={liveLinks} />
+          <RollupCards title="Regions" level="region" rows={rollups.regions} liveIds={rollups.liveIds} />
+          <RollupCards title="Clusters" level="cluster" rows={rollups.clusters} liveIds={rollups.liveIds} />
         </section>
       )}
 

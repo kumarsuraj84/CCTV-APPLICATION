@@ -65,5 +65,22 @@ export function tourReducer(s: TourState, e: TourEvent): TourState {
   }
 }
 
+/**
+ * Review M-9: whether a key press stops the tour — any key, except a modifier key alone and keys typed into a form control (for example
+ * the arrow keys that change the tour interval in its own select).
+ */
+export function keyStopsTour(e: { key: string; target: { tagName?: string } | null }): boolean {
+  if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return false
+  const tag = (e.target?.tagName ?? '').toUpperCase()
+  return !(tag === 'SELECT' || tag === 'INPUT' || tag === 'TEXTAREA')
+}
+
+/** Review M-9: what the polite live region says — only when the tour starts or stops, never at every stop. */
+export function tourAnnouncement(before: TourState, after: TourState): string | null {
+  if (!before.running && after.running) return 'Tour started. Press any key to stop.'
+  if (before.running && !after.running) return 'Tour stopped.'
+  return null
+}
+
 /** The tour moves on only while it runs, the pointer is not on the wall and the tab is visible. */
 export const tourRunning = (s: TourState, visible: boolean): boolean => s.running && !s.hovering && visible

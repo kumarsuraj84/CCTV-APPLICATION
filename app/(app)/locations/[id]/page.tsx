@@ -23,6 +23,8 @@ export const metadata = { title: 'Location' }
 function Since({ state }: { state: StateRow | undefined }) {
   if (!state || state.status === 'unknown' || state.status === 'off') return null
   if (state.status === 'down') return <div className="text-muted-foreground">Offline since {formatDateTime(state.down_since)}</div>
+  // P4-L1 review I-3: a camera whose recorder cannot be reached is not offline; when that began is still useful.
+  if (state.status === 'unreachable') return <div className="text-muted-foreground">Recorder not reachable since {formatDateTime(state.down_since)}</div>
   return <div className="text-muted-foreground">Last seen live {formatDateTime(state.last_up_at ?? state.last_checked_at)}</div>
 }
 

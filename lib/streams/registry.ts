@@ -161,6 +161,31 @@ export async function createMediaSessions(
   return out
 }
 
+/**
+ * P4-L1 review I-1: live sessions under the person's stream cap, decided by the database under one lock per person
+ * (media_session_create_live, migration 20261021000040): streams the person already holds first, new ones while their distinct held
+ * streams (open sockets and tokens that can still connect) stay within `max`; the rest come back as `paused`. `release`: stream names the
+ * wall let go of (their unused tokens are revoked and stop counting). Throws when it cannot ask (the caller then opens nothing).
+ */
+export async function createLiveSessions(
+  admin: AdminClient,
+  o: { orgId: string; userId: string; cameras: { id: string; stream: string }[]; max: number; release?: string[] },
+): Promise<{ sids: Map<string, string>; paused: string[] }> {
+  const sids = new Map<string, string>()
+  const paused: string[] = []
+  if (o.cameras.length === 0) return { sids, paused }
+  const { data, error } = await admin.rpc('media_session_create_live', {
+    p_org: o.orgId, p_user: o.userId, p_cameras: o.cameras.map((c) => c.id), p_streams: o.cameras.map((c) => c.stream), p_max: o.max,
+    ...(o.release && o.release.length > 0 ? { p_release: o.release } : {}),
+  })
+  if (error || !Array.isArray(data)) throw new Error(`Could not register the video sessions (${error?.code ?? 'error'}).`)
+  for (const r of data as { camera_id: string; sid: string | null; paused: boolean }[]) {
+    if (r.paused) paused.push(r.camera_id)
+    else if (r.sid) sids.set(r.camera_id, r.sid)
+  }
+  return { sids, paused }
+}
+
 /** Ends every open video session of a person at once (deactivation, password reset, role change; D-3). Best effort: false on failure. */
 export async function revokeMediaSessions(admin: AdminClient, orgId: string, userId: string, reason: string): Promise<boolean> {
   const { error } = await admin.rpc('media_sessions_revoke_user', { p_org: orgId, p_user: userId, p_reason: reason })

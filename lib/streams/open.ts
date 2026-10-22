@@ -6,8 +6,8 @@ import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 import { checkRecorderTarget } from '@/lib/security/targets'
 import type { Go2rtcClient } from '@/lib/streams/go2rtc'
-import { capStreams, maxStreamsPerUser } from '@/lib/streams/concurrency'
-import { createMediaSessions } from '@/lib/streams/registry'
+import { maxStreamsPerUser } from '@/lib/streams/concurrency'
+import { createLiveSessions } from '@/lib/streams/registry'
 import { buildRtspUrl, demoSource, isDemoRecorder } from '@/lib/streams/source'
 import { signStreamToken, streamName, TOKEN_LIFETIME_SEC } from '@/lib/streams/token'
 
@@ -25,7 +25,8 @@ export const MSG_NOT_SET_UP = 'Live video is not set up yet.'
 export const MSG_UNAVAILABLE = 'The video server is not available.'
 const MSG_NONE = 'Choose at least one camera.'
 const MSG_TOO_MANY = `You can open at most ${MAX_STREAMS_PER_REQUEST} cameras at once.`
-const MSG_FAILED = 'Could not open the video. Please try again.'
+export const MSG_FAILED_OPEN = 'Could not open the video. Please try again.'
+const MSG_FAILED = MSG_FAILED_OPEN
 const REGISTER_PARALLEL = 6
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -41,43 +42,61 @@ export type OpenDeps = {
 }
 
 export type RenewedToken = { cameraId: string; token: string }
+/** What the wall let go of (P4-L1 review I-1): those cameras' unused tokens are revoked and no longer count against the cap. */
+export type StreamRelease = { cameraIds: string[]; kind: 'sub' | 'main' }
+export type StreamOptions = { release?: StreamRelease[] }
+
+const cleanIds = (ids: unknown): string[] =>
+  Array.isArray(ids) ? [...new Set(ids.filter((id): id is string => typeof id === 'string' && UUID.test(id)).map((id) => id.toLowerCase()))] : []
+
+/** The stream names to release, from what the browser sent (ids only; at most two requests' worth). */
+function releasedStreams(o: StreamOptions | undefined): string[] {
+  if (!o || !Array.isArray(o.release)) return []
+  return o.release.slice(0, 4).flatMap((r) => (r && (r.kind === 'sub' || r.kind === 'main') ? cleanIds(r.cameraIds).slice(0, MAX_STREAMS_PER_REQUEST).map((c) => streamName({ c, k: r.kind })) : []))
+}
 
 /**
  * P2-4 review m-11: the live wall's one-minute renewal. Only what a token needs: cctv.live for each camera (the person's own client),
- * one media_session_create (the database checks the person, the capability and that the camera can still be streamed — an NVR that
- * was switched off is left out) and the signed tokens. No route, no NVR login, no go2rtc request: the streams were registered by the
- * wall's last full opening (openStreams, every 8 minutes and for every camera that failed).
+ * the live sessions (the database checks the person, the capability and that the camera can still be streamed — an NVR that was
+ * switched off is left out — and, P4-L1 review I-1, the person's stream cap: a renewal of a stream they hold always works, a token for
+ * a stream beyond the cap is not given, the camera comes back as `paused`) and the signed tokens. No route, no NVR login, no go2rtc
+ * request: the streams were registered by the wall's last full opening (openStreams, every 8 minutes and for every camera that failed).
  */
 export async function renewStreams(
   deps: Pick<OpenDeps, 'admin' | 'rls' | 'env' | 'now'>,
   actor: Pick<Actor, 'id' | 'orgId'>,
   cameraIds: string[],
   kind: 'sub' | 'main',
-): Promise<Result<{ tokens: RenewedToken[] }>> {
+  opts?: StreamOptions,
+): Promise<Result<{ tokens: RenewedToken[]; paused?: string[] }>> {
   const secret = getSecret('stream_token')
   if (!secret) return { ok: false, error: MSG_NOT_SET_UP }
   if (kind !== 'sub' && kind !== 'main') return { ok: false, error: MSG_FAILED }
   if (!Array.isArray(cameraIds) || cameraIds.length === 0) return { ok: false, error: MSG_NONE }
   if (cameraIds.length > MAX_STREAMS_PER_REQUEST) return { ok: false, error: MSG_TOO_MANY }
-  const wanted = [...new Set(cameraIds.filter((id): id is string => typeof id === 'string' && UUID.test(id)).map((id) => id.toLowerCase()))]
+  const wanted = cleanIds(cameraIds)
   if (wanted.length === 0) return { ok: false, error: MSG_NONE }
   const allowed = await camerasFor(deps.rls, 'cctv.live', wanted)
   if (!allowed.ok) return { ok: false, error: MSG_FAILED }
   const mayWatch = wanted.filter((id) => allowed.ids.includes(id))
   if (mayWatch.length === 0) return { ok: true, tokens: [] }
-  let sids: Map<string, string>
+  let made: Awaited<ReturnType<typeof createLiveSessions>>
   try {
-    sids = await createMediaSessions(deps.admin, { orgId: actor.orgId, userId: actor.id, kind: 'live', cameras: mayWatch.map((id) => ({ id, stream: streamName({ c: id, k: kind }) })) })
+    made = await createLiveSessions(deps.admin, {
+      orgId: actor.orgId, userId: actor.id, cameras: mayWatch.map((id) => ({ id, stream: streamName({ c: id, k: kind }) })),
+      max: maxStreamsPerUser(deps.env ?? process.env), release: releasedStreams(opts),
+    })
   } catch {
+    // Fail closed (review I-1): the cap could not be checked, so nothing new is handed out.
     logger.error({ event: 'renew_streams_sessions_failed' })
     return { ok: false, error: MSG_FAILED }
   }
   const exp = Math.floor((deps.now ?? Date.now)() / 1000) + TOKEN_LIFETIME_SEC
   const tokens = mayWatch.flatMap((id) => {
-    const sid = sids.get(id)
+    const sid = made.sids.get(id)
     return sid ? [{ cameraId: id, token: signStreamToken({ sid, u: actor.id, c: id, k: kind, exp }, secret) }] : []
   })
-  return { ok: true, tokens }
+  return made.paused.length > 0 ? { ok: true, tokens, paused: made.paused } : { ok: true, tokens }
 }
 
 export async function openStreams(
@@ -85,6 +104,7 @@ export async function openStreams(
   actor: Pick<Actor, 'id' | 'orgId'>,
   cameraIds: string[],
   kind: 'sub' | 'main',
+  opts?: StreamOptions,
 ): Promise<Result<OpenedStreams>> {
   const secret = getSecret('stream_token')
   if (!secret) return { ok: false, error: MSG_NOT_SET_UP }
@@ -93,7 +113,7 @@ export async function openStreams(
   if (cameraIds.length > MAX_STREAMS_PER_REQUEST) return { ok: false, error: MSG_TOO_MANY }
 
   // Anything that is not an id is dropped; so are repeats. One spelling (lower case) is used from here on.
-  const wanted = [...new Set(cameraIds.filter((id): id is string => typeof id === 'string' && UUID.test(id)).map((id) => id.toLowerCase()))]
+  const wanted = cleanIds(cameraIds)
   if (wanted.length === 0) return { ok: false, error: MSG_NONE }
 
   // The person's own client decides which cameras they may watch live (cctv.live; P2-1, directive AC-2): a camera they may not watch
@@ -119,27 +139,25 @@ export async function openStreams(
   if (routable.length === 0) return { ok: false, error: listed.some((a) => a.kind === 'off') ? MSG_MONITORING_OFF : MSG_NOT_MAPPED }
 
   const env = deps.env ?? process.env
-  // P4-L1 (bounded concurrency): the person's DIFFERENT open live streams may not go above LIVE_MAX_STREAMS_PER_USER (default 25). The
-  // registry counts the sockets the gateway opened and still checks; streams the person already has open are renewals and count once.
-  // The cameras beyond the limit are answered as `paused` (the wall says "Paused to save bandwidth"): no session, no NVR password read,
-  // no go2rtc call for them. A limit that cannot be read is not a reason to show nothing: the opening goes on and it is logged.
-  const cap = capStreams(routable.map((r) => streamName({ c: r.camera.id, k: kind })), await liveStreamsOpen(deps.admin, actor), maxStreamsPerUser(env))
-  const routes = routable.filter((r) => cap.allowed.has(streamName({ c: r.camera.id, k: kind })))
-  const pausedIds = routable.filter((r) => cap.paused.includes(streamName({ c: r.camera.id, k: kind }))).map((r) => r.camera.id)
-  const withPaused = (streams: OpenedStream[]): OpenedStreams => (pausedIds.length > 0 ? { streams, paused: pausedIds } : { streams })
-  if (routes.length === 0) return { ok: true, ...withPaused([]) }
-
   // P2-4 (D-3, AC-14): one media session per stream, made by the database after checking cctv.live for this person once more (the
   // registry the gateway asks when the socket arrives and every 15 s afterwards). A camera it refuses is left out like any other
-  // camera one may not watch; when it cannot be asked at all nothing is opened and no password is read (fail closed).
-  let sids: Map<string, string>
+  // camera one may not watch. P4-L1 review I-1: in the same call and under one lock per person, the database applies the person's
+  // stream cap (LIVE_MAX_STREAMS_PER_USER, default 25): it counts the distinct streams the person holds — open sockets AND tokens that
+  // can still connect — and answers the cameras beyond it as `paused` (the wall says "Paused to save bandwidth"): no session, no NVR
+  // password read, no go2rtc call for them. When it cannot be asked at all nothing is opened and no password is read (fail closed).
+  let made: Awaited<ReturnType<typeof createLiveSessions>>
   try {
-    sids = await createMediaSessions(deps.admin, { orgId: actor.orgId, userId: actor.id, kind: 'live', cameras: routes.map((r) => ({ id: r.camera.id, stream: streamName({ c: r.camera.id, k: kind }) })) })
+    made = await createLiveSessions(deps.admin, {
+      orgId: actor.orgId, userId: actor.id, cameras: routable.map((r) => ({ id: r.camera.id, stream: streamName({ c: r.camera.id, k: kind }) })),
+      max: maxStreamsPerUser(env), release: releasedStreams(opts),
+    })
   } catch {
     logger.error({ event: 'open_streams_sessions_failed' })
     return { ok: false, error: MSG_FAILED }
   }
-  const registered = routes.filter((r) => sids.has(r.camera.id))
+  const sids = made.sids
+  const withPaused = (streams: OpenedStream[]): OpenedStreams => (made.paused.length > 0 ? { streams, paused: made.paused } : { streams })
+  const registered = routable.filter((r) => sids.has(r.camera.id))
   if (registered.length === 0) return { ok: true, ...withPaused([]) }
 
   // One password read per recorder, and only for recorders that need one (a demo NVR has no real camera behind it). P2-6 (SO-4): first
@@ -192,14 +210,4 @@ export async function openStreams(
   const streams = opened.filter((s): s is OpenedStream => s !== null)
   if (streams.length === 0 && failed > 0) return { ok: false, error: MSG_UNAVAILABLE }
   return { ok: true, ...withPaused(streams) }
-}
-
-/** The person's open live streams (stream names) as the session registry counts them; empty (and logged) when it cannot be asked. */
-async function liveStreamsOpen(admin: AdminClient, actor: Pick<Actor, 'id' | 'orgId'>): Promise<Set<string>> {
-  const { data, error } = await admin.rpc('media_sessions_live_open', { p_org: actor.orgId, p_user: actor.id })
-  if (error) {
-    logger.warn({ event: 'open_streams_count_failed' })
-    return new Set()
-  }
-  return new Set(((data ?? []) as { stream: string }[]).map((r) => r.stream))
 }

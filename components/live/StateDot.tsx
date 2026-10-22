@@ -28,13 +28,14 @@ const BADGE: Record<CameraState, string> = {
   unreachable: 'bg-[var(--warning-soft)] text-[var(--on-warning-soft)]',
   not_checked: 'bg-muted text-muted-foreground',
   stale: 'bg-[var(--warning-soft)] text-[var(--on-warning-soft)]',
-  off: 'bg-slate-100 text-slate-700',
+  off: 'bg-muted text-[var(--neutral-strong)]',
 }
 const ICON = { live: CircleCheck, offline: CircleX, unreachable: Unplug, not_checked: CircleHelp, stale: Clock, off: PowerOff } as const
+// Review M-2: "recorder", never "NVR" — these hints are shown to CCTV-only viewers too.
 const HINT: Partial<Record<CameraState, string>> = {
-  unreachable: 'The NVR this camera is on cannot be reached, so whether the camera itself works is not known.',
+  unreachable: 'The recorder this camera is on cannot be reached, so whether the camera itself works is not known.',
   stale: `It was live, but has not been checked for more than ${STALE_AFTER_MINUTES} minutes.`,
-  off: 'Monitoring of this camera\'s NVR is switched off (for example during maintenance): it is not contacted.',
+  off: 'Monitoring of this camera\'s recorder is switched off (for example during maintenance): it is not contacted.',
 }
 
 /** The camera's state as a word and an icon (on the wall tiles and camera lists). */

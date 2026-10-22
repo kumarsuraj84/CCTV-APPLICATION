@@ -5,8 +5,13 @@ import { fetchAll } from '@/lib/supabase/fetch-all'
 
 type Client = SupabaseClient<Database>
 
-/** 'off' (owner addition, P2-5a): monitoring of the camera's NVR is switched off — never contacted, shown as "Switched off", not offline. */
-export type Status = 'up' | 'down' | 'unknown' | 'off'
+/**
+ * 'off' (owner addition, P2-5a): monitoring of the camera's NVR is switched off — never contacted, shown as "Switched off", not offline.
+ * 'unreachable' (P4-L1 review I-3, MC-4): a CAMERA that is down only because its NVR cannot be reached (the checker's method nvr_down,
+ * its reason "Recorder not reachable.") — "Recorder not reachable" on every screen, never offline. Only getStates gives it, for cameras;
+ * the worker still writes such a camera 'down'.
+ */
+export type Status = 'up' | 'down' | 'unknown' | 'off' | 'unreachable'
 export type StoreStatusRow = {
   store_id: string
   /** The location's recorders the person has the IT view of (0 for everyone else), how many are down, and how many are switched off. */
@@ -18,7 +23,10 @@ export type StoreStatusRow = {
   cameras_total: number
   /** Live and checked recently. */
   cameras_live: number
+  /** Down for a reason of their own (P4-L1 review I-3: no longer the cameras of an NVR that cannot be reached). */
   cameras_down: number
+  /** Down only because their NVR cannot be reached: "Recorder not reachable" (migration 20261021000040). */
+  cameras_recorder_unreachable?: number
   cameras_unknown: number
   /** Were live, but have not been checked for longer than STALE_AFTER_MINUTES. */
   cameras_stale: number
@@ -32,14 +40,15 @@ export type StateRow = { target_id: string; status: Status; down_since: string |
 type KindCounts = { total: number; up: number; down: number; unknown: number; stale: number }
 export type Dashboard = {
   /** live excludes stale; the five numbers add up to total. */
-  cameras: { total: number; live: number; down: number; unknown: number; stale: number }
+  cameras: { total: number; live: number; down: number; unknown: number; stale: number; unreachable: number }
   /**
    * P2-5b: `nvrDown` lists every NVR (recorder) that is down — one entry per recorder, with its location — and `nvrStale` counts the
    * recorders that were live but have not been checked lately. Recorders are IT information: both are empty without the IT view.
    */
   stores: { total: number; nvrDown: { id: string; locationId: string; code: string; name: string; recorder: string; since: string | null }[]; nvrStale: number }
   devices: Record<string, KindCounts>
-  recentOutages: { id: string; kind: 'camera' | 'device' | 'recorder'; label: string; store: string | null; startedAt: string; endedAt: string | null }[]
+  /** `cause`: 'nvr_down' for a camera outage caused by its NVR (shown as "Recorder not reachable", P4-L1 review I-3). */
+  recentOutages: { id: string; kind: 'camera' | 'device' | 'recorder'; label: string; store: string | null; startedAt: string; endedAt: string | null; cause: string | null }[]
   /** True when the list may be missing problems because reading stopped at its cap (many outages hidden under NVR outages). */
   recentOutagesLimited: boolean
 }
@@ -58,7 +67,7 @@ export function isStale(lastCheckedAt: string | null | undefined, now: Date = ne
   return now.getTime() - t > STALE_AFTER_MINUTES * 60_000
 }
 
-export type StatusWord = 'Live' | 'Offline' | 'Not checked yet' | 'Not checked lately' | 'Switched off'
+export type StatusWord = 'Live' | 'Offline' | 'Not checked yet' | 'Not checked lately' | 'Switched off' | 'Recorder not reachable'
 
 /**
  * The words the screens use. `stale` only matters for a live result: it is then "Not checked lately".
@@ -67,8 +76,18 @@ export type StatusWord = 'Live' | 'Offline' | 'Not checked yet' | 'Not checked l
  */
 export function statusLabel(s: Status | null | undefined, stale = false): StatusWord {
   if (s === 'off') return 'Switched off'
+  if (s === 'unreachable') return 'Recorder not reachable'
   if (s === 'up') return stale ? 'Not checked lately' : 'Live'
   return s === 'down' ? 'Offline' : 'Not checked yet'
+}
+
+/**
+ * P4-L1 review I-3: what an outage row says. A camera outage caused by its NVR (cause nvr_down) is "Recorder not reachable", any other
+ * open outage "Offline"; an outage that ended is "Live" again.
+ */
+export function outageLabel(o: { kind: 'camera' | 'device' | 'recorder'; cause: string | null; endedAt: string | null }): StatusWord {
+  if (o.endedAt) return 'Live'
+  return o.kind === 'camera' && o.cause === 'nvr_down' ? 'Recorder not reachable' : 'Offline'
 }
 
 /** An uptime percentage as the screens show it: one decimal rounded down, so 100% means exactly 100; "No data" when there is none. */
@@ -117,7 +136,7 @@ export function nvrLoginProblem(a: { nvr: StateRow | undefined; cameraIds: strin
 
 // Everything below reads with the signed-in person's own client, so row-level security decides what is counted and listed.
 
-const STATUS_COLUMNS = 'store_id:location_id, cameras_total, cameras_live, cameras_down, cameras_unknown, cameras_stale, nvr_status, nvr_down_since, nvr_checked_at, nvr_stale, recorders_total, recorders_down, recorders_monitoring_off, cameras_monitoring_off'
+const STATUS_COLUMNS = 'store_id:location_id, cameras_total, cameras_live, cameras_down, cameras_recorder_unreachable, cameras_unknown, cameras_stale, nvr_status, nvr_down_since, nvr_checked_at, nvr_stale, recorders_total, recorders_down, recorders_monitoring_off, cameras_monitoring_off'
 
 export async function listStoreStatus(supabase: Client): Promise<Map<string, StoreStatusRow>> {
   // P2-5a: location_status (was store_status); the nvr_* figures are the worst of the location's recorders (seam D5-9).
@@ -148,7 +167,11 @@ export async function getStates(supabase: Client, type: 'camera' | 'device' | 'r
       const reasons = await supabase.rpc('status_reasons', { p_type: type, p_ids: down })
       if (reasons.error) throw new Error('Could not read the status.')
       const by = new Map((reasons.data ?? []).map((x) => [x.target_id, x.reason]))
-      for (const r of rows) r.error = by.get(r.target_id) ?? null
+      for (const r of rows) {
+        r.error = by.get(r.target_id) ?? null
+        // P4-L1 review I-3: one rule on every screen — a camera down only because its NVR cannot be reached is not offline.
+        if (type === 'camera' && r.status === 'down' && (r.error === MSG_RECORDER_NOT_REACHABLE || r.error === NVR_DOWN_CAMERA_ERROR)) r.status = 'unreachable'
+      }
     }
     return rows
   })
@@ -270,7 +293,7 @@ async function recentOutages(
   }
 
   const list = collected.map(({ o, camera, device, recorder }): Recent => {
-    const base = { id: o.id, startedAt: o.started_at, endedAt: o.ended_at }
+    const base = { id: o.id, startedAt: o.started_at, endedAt: o.ended_at, cause: o.cause }
     if (camera) return { ...base, kind: 'camera', label: camera.name, store: storeById.get(camera.store_id)?.code ?? null }
     if (device) return { ...base, kind: 'device', label: device.name, store: device.store_id ? (storeById.get(device.store_id)?.code ?? null) : null }
     return { ...base, kind: 'recorder', label: recorder?.name ?? 'NVR', store: recorder ? (storeById.get(recorder.location_id)?.code ?? null) : null }
@@ -290,11 +313,12 @@ export async function getDashboard(supabase: Client, opts: DashboardOptions = {}
     fetchAll((from, to) => supabase.from('recorder_status').select('recorder_id, location_id, name, status, down_since, stale, monitoring_enabled').order('recorder_id').range(from, to)),
   ])
 
-  const cameras = { total: 0, live: 0, down: 0, unknown: 0, stale: 0 }
+  const cameras = { total: 0, live: 0, down: 0, unknown: 0, stale: 0, unreachable: 0 }
   for (const s of statuses.values()) {
     cameras.total += s.cameras_total
     cameras.live += s.cameras_live
     cameras.down += s.cameras_down
+    cameras.unreachable += s.cameras_recorder_unreachable ?? 0
     cameras.unknown += s.cameras_unknown
     cameras.stale += s.cameras_stale
   }

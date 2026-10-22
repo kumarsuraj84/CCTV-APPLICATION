@@ -37,7 +37,7 @@ export default async function MonitoringPage() {
   const [worker, states, stores, cameras, recorders, gapsRead, gateway, orgOpen] = await Promise.all([
     getWorkerStatus(admin),
     fetchAll((from, to) =>
-      admin.from('check_state').select('target_type, target_id, status, down_since, last_checked_at, last_up_at').eq('org_id', me.org_id).order('id').range(from, to),
+      admin.from('check_state').select('target_type, target_id, status, method, down_since, last_checked_at, last_up_at').eq('org_id', me.org_id).order('id').range(from, to),
     ),
     fetchAll((from, to) => admin.from('locations').select('id, code, name').eq('org_id', me.org_id).eq('is_active', true).is('archived_at', null).order('code').range(from, to)),
     fetchAll((from, to) => admin.from('cameras').select('id, recorder_id').eq('org_id', me.org_id).eq('is_active', true).is('archived_at', null).order('id').range(from, to)),
@@ -53,12 +53,14 @@ export default async function MonitoringPage() {
   const rounds = describeRounds(worker)
 
   // "Live" here means live and checked lately: a live result older than the limit is counted as not checked lately.
-  const counts: Record<string, { up: number; down: number; unknown: number; stale: number }> = {}
+  // P4-L1 review I-3: a camera down only because its NVR cannot be reached (method nvr_down) is "recorder not reachable", not offline.
+  const counts: Record<string, { up: number; down: number; unknown: number; stale: number; unreachable: number }> = {}
   const nvrStates = new Map<string, StateRow>()
   const cameraStates = new Map<string, StateRow>()
   for (const s of states) {
-    const c = (counts[s.target_type] ??= { up: 0, down: 0, unknown: 0, stale: 0 })
+    const c = (counts[s.target_type] ??= { up: 0, down: 0, unknown: 0, stale: 0, unreachable: 0 })
     if (s.status === 'up' && isStale(s.last_checked_at, now)) c.stale++
+    else if (s.target_type === 'camera' && s.status === 'down' && s.method === 'nvr_down') c.unreachable++
     else c[s.status as 'up' | 'down' | 'unknown']++
     const row: StateRow = { ...s, status: s.status as StateRow['status'], error: null }
     if (s.target_type === 'recorder') nvrStates.set(s.target_id, row)
@@ -142,13 +144,14 @@ export default async function MonitoringPage() {
         <h2 className="font-medium">What it found</h2>
         <div className="grid gap-3 sm:grid-cols-3">
           {(['camera', 'recorder', 'device'] as const).map((t) => {
-            const c = counts[t] ?? { up: 0, down: 0, unknown: 0, stale: 0 }
+            const c = counts[t] ?? { up: 0, down: 0, unknown: 0, stale: 0, unreachable: 0 }
             return (
               <div key={t} className="rounded-xl border bg-card p-4">
                 <div className="text-sm font-medium">{NAMES[t]}</div>
                 <div className="mt-1 text-sm text-muted-foreground">
                   <span className="text-emerald-600 dark:text-emerald-400">{c.up} live</span> ·{' '}
                   <span className={c.down ? 'text-red-600 dark:text-red-400' : ''}>{c.down} offline</span>
+                  {c.unreachable > 0 && <> · {c.unreachable} recorder not reachable</>}
                   {c.stale > 0 && <> · {c.stale} not checked lately</>}
                   {c.unknown > 0 && <> · {c.unknown} not checked yet</>}
                 </div>

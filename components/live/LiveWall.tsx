@@ -10,9 +10,10 @@ import { Select } from '@/components/ui/select'
 import { removeCameraAction } from '@/lib/actions/groups'
 import type { CameraState } from '@/lib/live/rollups'
 import { allocateTiles, DEFAULT_MAX_STREAMS_PER_USER } from '@/lib/streams/concurrency'
-import { INITIAL_TOUR, TOUR_SECONDS, tourReducer, tourRunning, tourStops } from '@/lib/streams/tour'
-import { autoLayout, LAYOUTS, layoutLabel, pageCount, pageItems, pageStart, perPage, type Layout } from '@/lib/streams/wall'
+import { INITIAL_TOUR, keyStopsTour, TOUR_SECONDS, tourAnnouncement, tourReducer, tourRunning, tourStops } from '@/lib/streams/tour'
+import { autoLayout, layoutLabel, layoutsFor, pageCount, pageItems, pageStart, perPage, type Layout } from '@/lib/streams/wall'
 import { cn } from '@/lib/utils'
+import { useLivePresent } from './LivePresence'
 import { LiveTile, type PauseReason, type TileCamera } from './LiveTile'
 import { TileGroupDialog, type EditableGroup } from './TileGroupDialog'
 import { useOpenedStreams, useTabVisible } from './useOpenedStreams'
@@ -108,8 +109,12 @@ export function LiveWall({ cameras, maxStreams = DEFAULT_MAX_STREAMS_PER_USER, m
 }) {
   const router = useRouter()
   const narrow = useNarrow()
-  const visible = useTabVisible()
+  // Review I-2: nobody at the screen for the idle limit counts as not visible: no renewals, no sockets, "Are you still there?".
+  const present = useLivePresent()
+  const visible = useTabVisible() && present
   const [chosen, setChosen] = useState<Layout | null>(null)
+  const [lastBig, setLastBig] = useState<string | null>(null)
+  const [announce, setAnnounce] = useState('')
   const [start, setStart] = useState(0)
   const [enlarged, setEnlarged] = useState<string | null>(null)
   const [grouping, setGrouping] = useState<string | null>(null)
@@ -119,7 +124,9 @@ export function LiveWall({ cameras, maxStreams = DEFAULT_MAX_STREAMS_PER_USER, m
   const { observe, offScreen } = useOnScreen()
 
   // A phone starts with one big picture; a computer with the smallest wall that shows everything (at most 4 by 4; 5 by 5 when chosen).
-  const layout: Layout = chosen ?? (narrow ? 1 : autoLayout(cameras.length))
+  // Review M-11: a phone offers 1 and 2×2 only (a layout chosen on a wider window falls back).
+  const offered = layoutsFor(narrow)
+  const layout: Layout = chosen && offered.includes(chosen) ? chosen : narrow ? 1 : autoLayout(cameras.length)
   const byId = useMemo(() => new Map(cameras.map((c) => [c.id, c])), [cameras])
   const stops = useMemo(
     () => tourStops(cameras.map((c) => ({ id: c.id, locationId: c.locationId, unreachable: c.state === 'unreachable' })), perPage(layout), multiLocation),
@@ -132,10 +139,14 @@ export function LiveWall({ cameras, maxStreams = DEFAULT_MAX_STREAMS_PER_USER, m
   const pages = pageCount(cameras.length, layout)
   const pageNo = Math.floor(first / perPage(layout)) + 1
 
-  const grid = useOpenedStreams(page.map((c) => c.id), 'sub', visible)
   const big = enlarged ? byId.get(enlarged) : undefined
-  const large = useOpenedStreams(big ? [big.id] : [], 'main', visible && !!big)
-  const alloc = allocateTiles(page.map((c) => c.id), new Set(page.map((c) => c.id).filter((id) => !offScreen.has(id))), maxStreams, !!big)
+  const pageIds = page.map((c) => c.id)
+  // Review M-1 / I-1: while the large picture is open the grid holds no tokens (they would count against the cap), and the large
+  // picture's first request releases the grid's; closing it releases the main stream again for the grid.
+  const grid = useOpenedStreams(pageIds, 'sub', visible && !big, { release: lastBig ? [{ cameraIds: [lastBig], kind: 'main' }] : [] })
+  const large = useOpenedStreams(big ? [big.id] : [], 'main', visible && !!big, { release: [{ cameraIds: pageIds, kind: 'sub' }] })
+  const unreachable = new Set(page.filter((c) => c.state === 'unreachable').map((c) => c.id))
+  const alloc = allocateTiles(pageIds, new Set(pageIds.filter((id) => !offScreen.has(id))), maxStreams, !!big, unreachable)
   const overLimit = new Set([...alloc.bandwidth, ...grid.paused])
   const idle = new Set(alloc.idle)
 
@@ -146,6 +157,7 @@ export function LiveWall({ cameras, maxStreams = DEFAULT_MAX_STREAMS_PER_USER, m
   const open = useCallback((id: string) => {
     trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     setEnlarged(id)
+    setLastBig(id)
   }, [])
   const closeLarge = useCallback(() => setEnlarged(null), [])
   const closeGrouping = useCallback(() => setGrouping(null), [])
@@ -157,16 +169,22 @@ export function LiveWall({ cameras, maxStreams = DEFAULT_MAX_STREAMS_PER_USER, m
     const t = setTimeout(() => dispatch({ type: 'tick', stops: stops.length }), tour.seconds * 1000)
     return () => clearTimeout(t)
   }, [running, tour.index, tour.seconds, stops.length])
-  // Any key stops the tour (modifier keys alone do not).
+  // Any key stops the tour (modifier keys alone, and keys typed into a form control such as the interval, do not; review M-9).
   useEffect(() => {
     if (!tour.running) return
     const onKey = (e: KeyboardEvent) => {
-      if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return
-      dispatch({ type: 'key' })
+      if (keyStopsTour({ key: e.key, target: e.target instanceof Element ? e.target : null })) dispatch({ type: 'key' })
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [tour.running])
+  // Review M-9: the live region speaks when the tour starts or stops only.
+  const wasRunning = useRef(tour)
+  useEffect(() => {
+    const said = tourAnnouncement(wasRunning.current, tour)
+    wasRunning.current = tour
+    if (said) setAnnounce(said)
+  }, [tour])
 
   // While the large view is open: the dialog takes the focus, Escape closes it, the page behind does not scroll (and is inert, below).
   // When it closes the focus goes back to the picture that opened it (after the wall is no longer inert).
@@ -211,16 +229,19 @@ export function LiveWall({ cameras, maxStreams = DEFAULT_MAX_STREAMS_PER_USER, m
       {/* inert while a dialog is open: nothing behind it can be reached with the keyboard or a screen reader */}
       <div inert={isOpen || !!groupingCamera} className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-sm text-muted-foreground" aria-live="polite">
+          {/* Review M-9: the status line is not a live region (it changes at every tour stop); the live region below speaks only
+              when the tour starts or stops. */}
+          <p className="text-sm text-muted-foreground">
             {cameras.length === 0
               ? 'No cameras'
               : stop
                 ? `Tour: ${tour.index % stops.length + 1} of ${stops.length} · ${page[0]?.storeCode ?? ''} · every ${tour.seconds} s${tour.hovering ? ' · waiting while the pointer is on the wall' : ''} · press any key to stop`
                 : `Showing ${first + 1}–${to} of ${cameras.length} ${cameras.length === 1 ? 'camera' : 'cameras'}`}
           </p>
+          <p className="sr-only" aria-live="polite">{announce}</p>
           <div className="flex flex-wrap items-center gap-2">
             <div role="group" aria-label="Pictures per page" className="flex items-center gap-1">
-              {LAYOUTS.map((l) => (
+              {offered.map((l) => (
                 <Button
                   key={l}
                   type="button"

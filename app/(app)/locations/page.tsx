@@ -66,6 +66,10 @@ export default async function LocationsPage({ searchParams }: { searchParams: Pr
                       <span className={status.cameras_down > 0 ? 'font-medium text-red-600 dark:text-red-400' : ''}>
                         {status.cameras_live} / {total}
                         {status.cameras_down > 0 ? ` (${status.cameras_down} offline)` : ''}
+                        {/* P4-L1 review I-3: cameras of an NVR that cannot be reached are not offline (one rule on every screen). */}
+                        {(status.cameras_recorder_unreachable ?? 0) > 0 ? (
+                          <span className="font-normal text-[var(--on-warning-soft)]"> ({status.cameras_recorder_unreachable} recorder not reachable)</span>
+                        ) : ''}
                         {status.cameras_stale > 0 ? ` (${status.cameras_stale} not checked lately)` : ''}
                       </span>
                     )}

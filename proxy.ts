@@ -2,6 +2,7 @@ import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import { recordAuthEvent } from '@/lib/auth/auth-events'
 import { ACTIVITY_COOKIE, activityKey, decodeActivity, encodeActivity } from '@/lib/auth/session-activity'
+import { activitySeen, INPUT_COOKIE, readInputAt } from '@/lib/auth/input-activity'
 import { claimsOf, idleMinutesFor, sessionExpiry, sessionPolicy } from '@/lib/auth/session-policy'
 import { VERIFIED_USER_HEADER, VERIFIED_USER_SIG_HEADER, signVerifiedUser } from '@/lib/auth/verified-user'
 import { buildCsp, cspHeaderName, cspReportOnly, makeNonce, REDIRECT_CSP } from '@/lib/web/csp'
@@ -123,9 +124,13 @@ export async function proxy(request: NextRequest) {
     const sid = claims.sessionId ?? 'none'
     const record = decodeActivity(request.cookies.get(ACTIVITY_COOKIE)?.value, key)
     const known = record && record.sid === sid ? record : null
+    // P4-L1 review I-2 (P3-1 review M-6): the activity is the person's last REAL input as the browser reports it (cookie drishti-input,
+    // lib/auth/input-activity.ts), so the wall's token renewals and the pages' 60 s refresh never keep an unattended sign-in alive; a
+    // report can only end a session sooner (never later than this request, never before the recorded activity).
+    const seen = activitySeen({ now, inputAt: readInputAt(request.cookies.get(INPUT_COOKIE)?.value, now), known })
     // The person's role sets the idle limit. Read when there is no record yet and again at every renewal of the record (review M-6: a
     // person made administrator gets the shorter limit within a minute); the limit of the record is used in between.
-    const renewDue = !known || now - known.seen >= RENEW_ACTIVITY_AFTER_SEC
+    const renewDue = !known || seen - known.seen >= RENEW_ACTIVITY_AFTER_SEC
     let idle = known?.idle
     let orgId: string | null = null
     const readPerson = async () => {
@@ -146,7 +151,7 @@ export async function proxy(request: NextRequest) {
       user = null
       activity = { value: '', maxAge: 0 }
     } else if (renewDue) {
-      activity = { value: encodeActivity({ sid, seen: now, idle }, key), maxAge: policy.maxHours * 3600 }
+      activity = { value: encodeActivity({ sid, seen, idle }, key), maxAge: policy.maxHours * 3600 }
     }
   }
 
