@@ -38,11 +38,11 @@ function unnamed(html: string): string[] {
   return out
 }
 const text = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
-const empty = { locations: [], recorders: [], activeCameras: [], channelsEverMapped: {}, regions: [], clusters: [], sameSecret: new Set<string>() }
+const empty = { locations: [], recorders: [], activeCameras: [], channelsEverMapped: {}, regions: [], clusters: [], archivedCodes: [], looseCameras: [] }
 const CSV = 'code,city,ip,user,password,channels,nvr_name\nPTN,Patna,192.0.2.20,viewer,Pw-screen-1,3,Ground floor\nPTN,,192.0.2.21,viewer,Pw-screen-2,2,First floor\nGAYA,Gaya,not-an-ip,viewer,Pw-screen-3,2,\n'
 
 const run: RunView = {
-  id: 'r1', startedAt: '2026-10-22T09:00:00Z', finishedAt: '2026-10-22T09:01:30Z', total: 3, done: 3, concurrency: 4, error: null,
+  id: 'r1', startedAt: '2026-10-22T09:00:00Z', finishedAt: '2026-10-22T09:01:30Z', total: 3, done: 3, concurrency: 4, error: null, stopped: false,
   items: [
     { recorderId: 'a', locationId: 'l1', code: 'PTN', nvrName: 'Ground floor', outcome: 'done', message: null, cameras: 4, created: 1, updated: 3, mapped: 0, moved: 0, toReconcile: 1 },
     { recorderId: 'b', locationId: 'l1', code: 'PTN', nvrName: 'First floor', outcome: 'failed', message: 'The NVR took too long to answer.', cameras: 0, created: 0, updated: 0, mapped: 0, moved: 0, toReconcile: 0 },
@@ -68,7 +68,7 @@ describe('P2-5c-2 screens', () => {
     ['import form', renderToStaticMarkup(<LocationImport />)],
     ['preview with problems', renderToStaticMarkup(<PreviewPanel preview={strict} archive={false} onArchive={() => {}} showUnchanged={false} onShowUnchanged={() => {}} />)],
     ['preview skipping', renderToStaticMarkup(<PreviewPanel preview={skip} archive={false} onArchive={() => {}} showUnchanged onShowUnchanged={() => {}} />)],
-    ['import result', renderToStaticMarkup(<ImportResultPanel result={{ locationsCreated: 1, locationsUpdated: 0, recordersCreated: 2, recordersUpdated: 0, passwordsSet: 2, camerasCreated: 5, camerasRelinked: 0, regionsCreated: 0, clustersCreated: 0, archived: { locations: 0, recorders: 0, cameras: 0 }, warnings: [] }} />)],
+    ['import result', renderToStaticMarkup(<ImportResultPanel result={{ locationsCreated: 1, locationsUpdated: 0, recordersCreated: 2, recordersUpdated: 0, passwordsGiven: 2, camerasCreated: 5, camerasRelinked: 0, regionsCreated: 0, clustersCreated: 0, archived: { locations: 0, recorders: 0, cameras: 0 }, warnings: [] }} />)],
     ['find cameras for all', renderToStaticMarkup(<DiscoverAll initial={null} counts={{ recorders: 3, switchedOff: 1, locationOff: 0, concurrency: 4 }} />)],
     ['run results', renderToStaticMarkup(<RunResults run={run} />)],
     ['wifi inventory', renderToStaticMarkup(<WifiInventoryTable items={wifi} />)],
@@ -87,7 +87,8 @@ describe('P2-5c-2 screens', () => {
     const t = text(screens[1][1])
     expect(t).toContain('Line')
     expect(t).toContain('Column')
-    expect(t).toContain('“not-an-ip” is not a valid IP address.')
+    expect(t).toContain('Not a valid IP address.')
+    expect(t).not.toContain('not-an-ip')
     expect(screens[1][1]).not.toMatch(/<button[^>]*>(?:<[^>]+>)*[^<]*Import/)
     expect(t).toContain('Skip the rows with problems')
   })
@@ -97,8 +98,22 @@ describe('P2-5c-2 screens', () => {
     // (the button starts with its icon: the tags before the word are skipped)
     expect(screens[2][1]).toMatch(/<button[^>]*type="submit"[^>]*>(?:<[^>]+>)*[^<]*Import/)
     expect(t).toMatch(/GAYA.*Skipped/)
-    expect(t).toContain('Password: set')
+    expect(t).toContain('Password: will be set')
     expect(t).toContain('Ground floor')
+    // Review B-M5: a new NVR says it will be checked.
+    expect(t).toContain('Monitoring: switched on')
+  })
+
+  it('review B-M1 / B-M6 / B-M4: the old display name is shown, every item to archive is listed, the form offers to keep names and says what skipping covers', () => {
+    const snap = { ...empty, locations: Array.from({ length: 150 }, (_, i) => ({ id: `aaaaaaaa-0000-4000-8000-${String(i).padStart(12, '0')}`, code: `X${i}`, name: `X${i}`, kind: 'store', city: 'Agra', zone: null, state: null, address: null, cluster_id: null })) }
+    const p = planImport(parseLocationsCsv('name,city\nX0,Agra\n'), snap, { skipBadRows: false }).preview
+    const html = renderToStaticMarkup(<PreviewPanel preview={p} archive={false} onArchive={() => {}} showUnchanged onShowUnchanged={() => {}} />)
+    expect(text(html)).toContain('X0 → X0 - Agra')
+    expect(p.archive).toHaveLength(149)
+    expect(text(html)).toContain('X149')
+    const form = text(screens[0][1])
+    expect(form).toContain('Keep the current display names')
+    expect(form).toContain('a refusal by the database still stops the whole file')
   })
 
   it('"find cameras for all" says what it will do before it starts (read-only, how many at once, what is skipped)', () => {

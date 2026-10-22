@@ -27,7 +27,7 @@ describe('Wi-Fi inventory: capabilities from the documented matrix', () => {
     expect(rows.find((r) => r.operation === 'telnet')).toMatchObject({ support: 'unsupported', source: 'S19' })
     expect(rows.find((r) => r.operation === 'radio')).toMatchObject({ support: 'unverified', source: null, notes: 'No documentation found for this model and mode.' })
     expect(rows.find((r) => r.operation === 'ssh')).toMatchObject({ support: 'unverified', source: null })
-    expect(capabilitySummary({ vendor: 'NETGEAR', model: 'WAX615', managementMode: 'standalone' }, rows)).toBe(`1 documented (none tested here), 1 not supported, ${OPERATIONS.length - 2} unverified.`)
+    expect(capabilitySummary({ vendor: 'NETGEAR', model: 'WAX615', managementMode: 'standalone' }, rows)).toBe(`0 tested in the lab, 1 documented (not tested here), 1 not supported, ${OPERATIONS.length - 2} unverified.`)
   })
 
   it('a firmware range applies only to the firmware inside it; the most specific matching row wins', () => {
@@ -47,6 +47,8 @@ describe('Wi-Fi inventory: capabilities from the documented matrix', () => {
   it('a row marked lab-validated says so (none is today)', () => {
     const rows = capabilitiesFor({ vendor: 'NETGEAR', model: 'WAX615', firmware: '1', managementMode: 'standalone' }, [row({ adapter_state: 'lab_validated' })])
     expect(rows.find((r) => r.operation === 'mac_acl')?.labValidated).toBe(true)
+    // Review note: the summary does not claim "none tested here" when one is.
+    expect(capabilitySummary({ vendor: 'NETGEAR', model: 'WAX615', managementMode: 'standalone' }, rows)).toBe(`1 tested in the lab, 0 documented (not tested here), 0 not supported, ${OPERATIONS.length - 1} unverified.`)
   })
 })
 

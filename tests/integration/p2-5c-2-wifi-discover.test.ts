@@ -3,7 +3,7 @@
 // is given in-process (no socket), every address is TEST-NET or loopback, every organisation is a `test-…` one.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Actor } from '@/lib/admin/types'
-import { discoverAllConcurrency, discoverAllStatus, MSG_RUN_ACTIVE, MSG_RUN_NOT_FOUND, startDiscoverAll } from '@/lib/inventory/discover-all'
+import { discoverAllConcurrency, discoverAllStatus, MSG_RUN_ACTIVE, MSG_RUN_NOT_FOUND, MSG_STOPPED, startDiscoverAll, stopDiscoverAll } from '@/lib/inventory/discover-all'
 import { MSG_LOGIN_BACKOFF } from '@/lib/monitor/login-backoff'
 import { NvrError } from '@/lib/nvr/client'
 import { MSG_WIFI_DENIED, wifiInventory } from '@/lib/wifi/inventory'
@@ -186,6 +186,62 @@ describe('P2-5c-2 find cameras for all locations', () => {
     expect(after.ok && after.run.done).toBe(after.ok ? after.run.total : -1)
   })
 
+  it('review B-M9: two starts at the same moment make one run (the second is refused before anything is read)', async () => {
+    const o = await createOrg()
+    try {
+      const u = await createUser(o, 'admin')
+      await grant(o, u.id, 'admin.inventory')
+      const a: Actor = { id: u.id, orgId: o, role: 'admin' }
+      const l = await createLocation(o, { code: 'RACE1' })
+      await createRecorder(o, l, { host: '192.0.2.160', secret: 'pass' })
+      const { nvr, seen } = fakeNvrs({ '192.0.2.160': [{ channel: 1, name: 'Door', ip: null }] })
+      const j = collect()
+      const cl = { admin: admin(), rls: u.client }
+      const [x, y] = await Promise.all([startDiscoverAll(cl, a, { nvr, schedule: j.schedule }), startDiscoverAll(cl, a, { nvr, schedule: j.schedule })])
+      await j.settled()
+      expect([x.ok, y.ok].sort()).toEqual([false, true])
+      expect([x, y].find((r) => !r.ok)).toEqual({ ok: false, error: MSG_RUN_ACTIVE })
+      expect(seen.contacts).toBe(1)
+    } finally {
+      await cleanupOrg(o)
+    }
+  })
+
+  it('review B-M10: "Stop" ends a run between NVRs; the NVRs not asked yet are listed as skipped, never contacted', async () => {
+    const o = await createOrg()
+    try {
+      const u = await createUser(o, 'admin')
+      await grant(o, u.id, 'admin.inventory')
+      const a: Actor = { id: u.id, orgId: o, role: 'admin' }
+      const answers: Record<string, Channel[]> = {}
+      for (let i = 0; i < 4; i++) {
+        const l = await createLocation(o, { code: `STP${i}` })
+        await createRecorder(o, l, { host: `192.0.2.${170 + i}`, secret: 'pass' })
+        answers[`192.0.2.${170 + i}`] = [{ channel: 1, name: 'Door', ip: null }]
+      }
+      let release!: () => void
+      const gate = new Promise<void>((r) => (release = r))
+      let asked = 0
+      const nvr = (ep: { host: string }) => ({ channelStatus: async () => new Map<number, boolean>(), channels: async () => { asked++; await gate; return answers[ep.host] } })
+      const j = collect()
+      const cl = { admin: admin(), rls: u.client }
+      const started = await startDiscoverAll(cl, a, { nvr, schedule: j.schedule, concurrency: 1 })
+      if (!started.ok) throw new Error(started.error)
+      await new Promise((r) => setTimeout(r, 300))
+      expect(await stopDiscoverAll(cl, a, started.runId)).toEqual({ ok: true })
+      release()
+      await j.settled()
+      const s = await discoverAllStatus(cl, a, started.runId)
+      if (!s.ok) throw new Error(s.error)
+      expect(asked).toBe(1)
+      expect(s.run.stopped).toBe(true)
+      expect(s.run.items.filter((i) => i.outcome === 'skipped').map((i) => i.message)).toEqual(Array(3).fill(MSG_STOPPED))
+      expect(await stopDiscoverAll(cl, { id: u.id, orgId: orgId, role: 'admin' }, started.runId)).toEqual({ ok: false, error: MSG_RUN_NOT_FOUND })
+    } finally {
+      await cleanupOrg(o)
+    }
+  })
+
   it('inherits the shared login back-off (review I-3): an NVR that refused the login is not asked again by the next run', async () => {
     const o = await createOrg()
     try {
@@ -274,7 +330,10 @@ describe('P2-5c-2 Wi-Fi inventory (wifi.inventory.view)', () => {
     expect((await itPerson.client.from('device_capabilities').select('id')).data).toEqual([])
     expect(((await wifiAtA.client.from('device_capabilities').select('id')).data ?? []).length).toBe(65)
     expect((await viewer.client.rpc('wifi_inventory')).data).toEqual([])
-    expect(((await itPerson.client.rpc('wifi_inventory')).data ?? []).length).toBe(0)
+    // Review B-M14: no row AND no error (an error would also give "no rows").
+    const it_ = await itPerson.client.rpc('wifi_inventory')
+    expect(it_.error).toBeNull()
+    expect(it_.data).toEqual([])
     const anon = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { auth: { persistSession: false } })
     expect((await anon.from('device_capabilities').select('id').limit(1)).error?.code).toBe('42501')
     expect((await anon.rpc('wifi_inventory')).error?.code).toBe('42501')

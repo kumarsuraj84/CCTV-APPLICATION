@@ -14,7 +14,9 @@ const C1 = 'cccccccc-0000-4000-8000-000000000001'
 const K1 = 'dddddddd-0000-4000-8000-000000000001'
 const G1 = 'eeeeeeee-0000-4000-8000-000000000001'
 
-const empty = (): ImportSnapshot => ({ locations: [], recorders: [], activeCameras: [], channelsEverMapped: {}, regions: [], clusters: [], sameSecret: new Set() })
+// Review B-I3: the snapshot holds nothing about saved passwords (only whether one is saved), so the preview cannot tell whether a
+// password in the file equals the saved one: it is not an oracle.
+const empty = (): ImportSnapshot => ({ locations: [], recorders: [], activeCameras: [], channelsEverMapped: {}, regions: [], clusters: [], archivedCodes: [], looseCameras: [] })
 const loc = (o: Partial<SnapLocation> = {}): SnapLocation => ({ id: L1, code: 'JCL', name: 'JCL', kind: 'store', city: 'Jhansi', zone: 'UP', state: null, address: null, cluster_id: null, ...o })
 const rec = (o: Partial<SnapRecorder> = {}): SnapRecorder => ({
   id: R1, location_id: L1, name: 'NVR', host: '192.0.2.10', http_port: 80, rtsp_port: 554, username: 'viewer', expected_channels: 4, monitoring_enabled: true,
@@ -28,7 +30,7 @@ const ROW = 'JCL,Jhansi,UP,192.0.2.10,554,80,viewer,Pw-JCL-1,4'
 
 /** The same snapshot as the database would give right after the file was imported once. */
 function afterFirstImport(): ImportSnapshot {
-  return { ...empty(), locations: [loc({ name: 'JCL - Jhansi' })], recorders: [rec()], activeCameras: cams(R1, 4), channelsEverMapped: { [R1]: ever(4) }, sameSecret: new Set([R1]) }
+  return { ...empty(), locations: [loc({ name: 'JCL - Jhansi' })], recorders: [rec()], activeCameras: cams(R1, 4), channelsEverMapped: { [R1]: ever(4) } }
 }
 
 describe('planImport: what the import would do, row by row (never a password)', () => {
@@ -37,8 +39,8 @@ describe('planImport: what the import would do, row by row (never a password)', 
     expect(p.preview.errors).toEqual([])
     expect(p.preview.canApply).toBe(true)
     expect(p.preview.locations).toEqual([{
-      line: 2, code: 'JCL', status: 'create', id: null, name: 'JCL - Jhansi', kind: 'store', changes: [], cluster: null,
-      recorders: [{ line: 2, action: 'create', id: null, name: 'NVR', host: '192.0.2.10', http_port: 80, rtsp_port: 554, matchedBy: null, changes: [], password: 'set', monitoring: 'on', camerasToAdd: 4 }],
+      line: 2, code: 'JCL', status: 'create', id: null, name: 'JCL - Jhansi', previousName: null, kind: 'store', changes: [], cluster: null,
+      recorders: [{ line: 2, action: 'create', id: null, name: 'NVR', host: '192.0.2.10', http_port: 80, rtsp_port: 554, matchedBy: null, changes: [], password: 'set', monitoring: 'on', camerasToAdd: 4, camerasToRelink: 0 }],
     }])
     expect(p.preview.counts).toMatchObject({ locationsNew: 1, locationsChanged: 0, locationsUnchanged: 0, recordersNew: 1, passwordsSet: 1, camerasNew: 4 })
     // The preview goes to the browser: no password in it. The apply plan (server only) carries it for the vault.
@@ -46,13 +48,15 @@ describe('planImport: what the import would do, row by row (never a password)', 
     expect(p.apply.locations[0].recorders[0]).toMatchObject({ action: 'create', password: 'Pw-JCL-1', monitoring: true, placeholders: 4 })
   })
 
-  it('importing the same file again changes nothing (idempotent): unchanged everywhere, the password unchanged, no camera', () => {
+  // Review B-I3 replaces "the password unchanged" (that answer came from comparing with the saved password: an oracle). A password in
+  // the file is "set"; the database writes it only when it differs (tests/integration/p2-5c-2-import.test.ts: no vault write, no audit).
+  it('importing the same file again changes nothing (idempotent): unchanged everywhere, no camera; a password in the file shows "set"', () => {
     const csv = `${LEGACY}\n${ROW}\n`
     const p = planImport(parseLocationsCsv(csv), afterFirstImport(), { skipBadRows: false })
     expect(p.preview.locations[0]).toMatchObject({ status: 'unchanged', id: L1, changes: [] })
-    expect(p.preview.locations[0].recorders[0]).toMatchObject({ action: 'unchanged', id: R1, matchedBy: 'address', password: 'unchanged', camerasToAdd: 0 })
-    expect(p.preview.counts).toMatchObject({ locationsNew: 0, locationsChanged: 0, locationsUnchanged: 1, recordersNew: 0, recordersChanged: 0, passwordsSet: 0, camerasNew: 0 })
-    expect(p.apply.locations[0].recorders[0].password).toBeUndefined()
+    expect(p.preview.locations[0].recorders[0]).toMatchObject({ action: 'unchanged', id: R1, matchedBy: 'address', password: 'set', camerasToAdd: 0 })
+    expect(p.preview.counts).toMatchObject({ locationsNew: 0, locationsChanged: 0, locationsUnchanged: 1, recordersNew: 0, recordersChanged: 0, passwordsSet: 1, camerasNew: 0 })
+    expect(p.apply.locations[0].recorders[0].password).toBe('Pw-JCL-1')
     // The fingerprint binds the apply to exactly this preview.
     expect(planImport(parseLocationsCsv(csv), afterFirstImport(), { skipBadRows: false }).preview.fingerprint).toBe(p.preview.fingerprint)
     expect(p.preview.fingerprint).toMatch(/^[0-9a-f]{64}$/)
@@ -60,19 +64,25 @@ describe('planImport: what the import would do, row by row (never a password)', 
 
   it('a display name still at its starting value follows the ruling ("CODE - City"); one a person edited is kept', () => {
     const asCode = planImport(parseLocationsCsv(`${LEGACY}\n${ROW}\n`), { ...afterFirstImport(), locations: [loc({ name: 'JCL' })] }, { skipBadRows: false })
-    expect(asCode.preview.locations[0]).toMatchObject({ status: 'update', name: 'JCL - Jhansi', changes: ['display name'] })
+    // Review B-M1: the preview shows the old name next to the new one.
+    expect(asCode.preview.locations[0]).toMatchObject({ status: 'update', name: 'JCL - Jhansi', previousName: 'JCL', changes: ['display name'] })
+    // …and "Keep the current display names" opts out of the ruling's rename (a display_name column still applies).
+    const keep = planImport(parseLocationsCsv(`${LEGACY}\n${ROW}\n`), { ...afterFirstImport(), locations: [loc({ name: 'JCL' })] }, { skipBadRows: false, keepNames: true })
+    expect(keep.preview.locations[0]).toMatchObject({ status: 'unchanged', name: 'JCL', previousName: null, changes: [] })
+    expect(keep.preview.fingerprint).not.toBe(asCode.preview.fingerprint)
     const edited = planImport(parseLocationsCsv(`${LEGACY}\n${ROW}\n`), { ...afterFirstImport(), locations: [loc({ name: 'Jhansi main road' })] }, { skipBadRows: false })
     expect(edited.preview.locations[0]).toMatchObject({ status: 'unchanged', name: 'Jhansi main road' })
     const given = planImport(parseLocationsCsv(`code,display_name,city\nJCL,Jhansi Sadar,Jhansi\n`), { ...afterFirstImport(), locations: [loc({ name: 'Jhansi main road' })] }, { skipBadRows: false })
     expect(given.preview.locations[0]).toMatchObject({ status: 'update', name: 'Jhansi Sadar', changes: ['display name'] })
   })
 
-  it('a new password is "set"; an empty one keeps the saved one; a new NVR without one is refused on its row and column', () => {
-    const changed = planImport(parseLocationsCsv(`${LEGACY}\n${ROW}\n`), { ...afterFirstImport(), sameSecret: new Set() }, { skipBadRows: false })
-    expect(changed.preview.locations[0].recorders[0]).toMatchObject({ action: 'update', password: 'set', changes: ['password'] })
-    expect(changed.apply.locations[0].recorders[0].password).toBe('Pw-JCL-1')
+  it('a password in the file is "set" (whatever is saved); an empty one is "kept"; a new NVR without one is refused on its row and column', () => {
+    const given = planImport(parseLocationsCsv(`${LEGACY}\n${ROW}\n`), afterFirstImport(), { skipBadRows: false })
+    expect(given.preview.locations[0].recorders[0]).toMatchObject({ action: 'unchanged', password: 'set', changes: [] })
+    expect(given.apply.locations[0].recorders[0].password).toBe('Pw-JCL-1')
     const kept = planImport(parseLocationsCsv(`${LEGACY}\nJCL,Jhansi,UP,192.0.2.10,554,80,viewer,,4\n`), afterFirstImport(), { skipBadRows: false })
-    expect(kept.preview.locations[0].recorders[0]).toMatchObject({ action: 'unchanged', password: 'unchanged' })
+    expect(kept.preview.locations[0].recorders[0]).toMatchObject({ action: 'unchanged', password: 'kept' })
+    expect(kept.apply.locations[0].recorders[0].password).toBeUndefined()
     const none = planImport(parseLocationsCsv(`${LEGACY}\nNEW1,Gaya,BR,192.0.2.40,,,viewer,,4\n`), empty(), { skipBadRows: false })
     expect(none.preview.errors).toEqual([{ line: 2, column: 'password', message: 'A new NVR needs its password.' }])
     expect(none.preview.canApply).toBe(false)
@@ -85,8 +95,36 @@ describe('planImport: what the import would do, row by row (never a password)', 
 
   it('legacy rule: the one row of a location whose address changed updates its primary NVR (no second NVR)', () => {
     const p = planImport(parseLocationsCsv(`${LEGACY}\nJCL,Jhansi,UP,192.0.2.99,554,80,viewer,Pw-JCL-1,4\n`), afterFirstImport(), { skipBadRows: false })
-    expect(p.preview.locations[0].recorders[0]).toMatchObject({ action: 'update', id: R1, matchedBy: 'primary', host: '192.0.2.99', changes: ['address'], password: 'unchanged' })
+    expect(p.preview.locations[0].recorders[0]).toMatchObject({ action: 'update', id: R1, matchedBy: 'primary', host: '192.0.2.99', changes: ['address'], password: 'set' })
     expect(p.preview.counts.recordersNew).toBe(0)
+  })
+
+  it('review B-M2: empty port cells keep the saved ports; an NVR is then matched by its address alone (no second identity)', () => {
+    const snap: ImportSnapshot = { ...afterFirstImport(), recorders: [rec({ http_port: 8080, rtsp_port: 8554 })] }
+    const one = planImport(parseLocationsCsv(`${LEGACY}\nJCL,Jhansi,UP,192.0.2.10,,,viewer,,4\n`), snap, { skipBadRows: false })
+    expect(one.preview.errors).toEqual([])
+    expect(one.preview.locations[0].recorders[0]).toMatchObject({ action: 'unchanged', id: R1, matchedBy: 'address', http_port: 8080, rtsp_port: 8554 })
+    // Two rows: the first (empty ports) is the NVR at that address; nothing new is made for it.
+    const two = planImport(parseLocationsCsv(`${LEGACY}\nJCL,Jhansi,UP,192.0.2.10,,,viewer,,4\nJCL,,,192.0.2.11,,,viewer,Pw-new,2\n`), snap, { skipBadRows: false })
+    expect(two.preview.locations[0].recorders.map((r) => [r.action, r.id, r.http_port, r.rtsp_port])).toEqual([['unchanged', R1, 8080, 8554], ['create', null, 80, 554]])
+    expect(two.preview.archive).toEqual([])
+    expect(two.apply.locations[0].recorders[0]).toMatchObject({ http_port: 8080, rtsp_port: 8554 })
+  })
+
+  it('review B-M3: a code of an ARCHIVED location is refused (restore it instead of making a second location)', () => {
+    const p = planImport(parseLocationsCsv(`${LEGACY}\nOLD1,Gaya,BR,192.0.2.70,554,80,viewer,pw,2\n`), { ...empty(), archivedCodes: ['OLD1'] }, { skipBadRows: false })
+    expect(p.preview.errors).toEqual([{ line: 2, column: 'code', message: 'A location with this code is archived. Restore it (Locations and NVRs → show archived ones) and check the file again.' }])
+    expect(p.preview.canApply).toBe(false)
+  })
+
+  it('review B-M12: a channel that an unmapped camera of a one-NVR location goes back to is "linked again", not a new camera', () => {
+    const snap: ImportSnapshot = {
+      ...afterFirstImport(), activeCameras: cams(R1, 3), channelsEverMapped: { [R1]: ever(3) },
+      looseCameras: [{ id: K1, location_id: L1, channel: 4, last_recorder_id: null, last_channel: null }],
+    }
+    const p = planImport(parseLocationsCsv(`${LEGACY}\n${ROW}\n`), snap, { skipBadRows: false })
+    expect(p.preview.locations[0].recorders[0]).toMatchObject({ action: 'update', camerasToAdd: 0, camerasToRelink: 1, changes: ['1 camera to link again'] })
+    expect(p.preview.counts).toMatchObject({ camerasNew: 0, camerasRelinked: 1 })
   })
 
   it('P2-5c-1 review I-4: a changed address or web port needs the password again (the saved one belongs to the old address)', () => {
@@ -158,30 +196,41 @@ describe('planImport: what the import would do, row by row (never a password)', 
     expect(p.preview.locations.map((l) => [l.code, l.status, l.changes, l.cluster])).toEqual([
       ['JCL', 'update', ['joins cluster UP-1'], 'UP-1'], ['NEW2', 'create', [], 'UP-1'], ['MOVED', 'unchanged', [], 'OLD'],
     ])
-    expect(p.preview.warnings).toEqual([{ line: 4, column: 'cluster', message: 'This location is in cluster OLD; the import does not move it. Move it on its page, which shows the effect on access first.' }])
+    expect(p.preview.warnings).toEqual([{ line: 4, column: 'cluster', message: 'This location is already in cluster OLD; the import does not move it. Move it on its page, which shows the effect on access first.' }])
     expect(p.apply.locations[0]).toMatchObject({ action: 'update', join_cluster: 'UP-1' })
   })
 
   it('one cluster code with two regions in the file is refused; an existing cluster keeps its region (warning)', () => {
     const two = planImport(parseLocationsCsv('code,region,cluster\nA1,NORTH,UP-1\nA2,SOUTH,UP-1\n'), empty(), { skipBadRows: false })
-    expect(two.preview.errors).toEqual([{ line: 3, column: 'region', message: 'Line 2 puts cluster UP-1 in region NORTH; one cluster belongs to one region.' }])
+    expect(two.preview.errors).toEqual([{ line: 3, column: 'region', message: 'Line 2 puts this cluster in another region; one cluster belongs to one region.' }])
     const snap: ImportSnapshot = { ...empty(), regions: [{ id: G1, code: 'EAST' }], clusters: [{ id: C1, code: 'UP-1', region_id: G1 }] }
     const kept = planImport(parseLocationsCsv('code,region,cluster\nA1,NORTH,UP-1\n'), snap, { skipBadRows: false })
     expect(kept.preview.errors).toEqual([])
     expect(kept.preview.regionsToCreate).toEqual([])
-    expect(kept.preview.warnings).toEqual([{ line: 2, column: 'region', message: 'Cluster UP-1 is in region EAST; the import does not move it. Move it on the Regions and clusters page.' }])
+    expect(kept.preview.warnings).toEqual([{ line: 2, column: 'region', message: 'This cluster is already in region EAST; the import does not move it. Move it on the Regions and clusters page.' }])
   })
 
   it('all or nothing: a file with a bad row cannot be applied unless "skip bad rows" is chosen; then the bad location is skipped whole', () => {
     const csv = `${LEGACY}\n${ROW}\nBAD,Gaya,BR,192.0.2.50,,,viewer,pw,4\nBAD,,,999.1.1.1,,,viewer,pw,4\n`
     const strict = planImport(parseLocationsCsv(csv), empty(), { skipBadRows: false })
     expect(strict.preview.canApply).toBe(false)
-    expect(strict.preview.errors).toEqual([{ line: 4, column: 'ip', message: '“999.1.1.1” is not a valid IP address.' }])
+    expect(strict.preview.errors).toEqual([{ line: 4, column: 'ip', message: 'Not a valid IP address.' }])
     const skip = planImport(parseLocationsCsv(csv), empty(), { skipBadRows: true })
     expect(skip.preview.canApply).toBe(true)
     expect(skip.preview.skipped).toBe(1)
     expect(skip.preview.locations.map((l) => [l.code, l.status])).toEqual([['JCL', 'create'], ['BAD', 'skipped']])
     expect(skip.apply.locations.map((l) => l.code)).toEqual(['JCL'])
+  })
+
+  it('review B-I1: a row with a wrong number of cells skips its location whole; an unclosed quote blocks the file even with "skip bad rows"', () => {
+    const csv = `${LEGACY}\n${ROW}\nPTN,Patna,BR,192.0.2.20,554,80,viewer,pw1,4\nPTN,,,192.0.2.21,554,80,viewer,pw2,4,oops\n`
+    const skip = planImport(parseLocationsCsv(csv), empty(), { skipBadRows: true })
+    expect(skip.preview.canApply).toBe(true)
+    expect(skip.apply.locations.map((l) => l.code)).toEqual(['JCL'])
+    expect(skip.preview.locations.map((l) => [l.code, l.status])).toEqual([['JCL', 'create'], ['PTN', 'skipped']])
+    const open = planImport(parseLocationsCsv(`${LEGACY}\n${ROW}\nPTN,"Patna,BR,192.0.2.20,554,80,viewer,pw1,4\n`), empty(), { skipBadRows: true })
+    expect(open.preview.canApply).toBe(false)
+    expect(open.apply.locations).toEqual([])
   })
 
   it('the monitoring column switches an existing NVR off (with the import as the reason) or leaves it as it is', () => {

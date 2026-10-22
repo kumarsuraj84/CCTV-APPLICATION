@@ -20,13 +20,14 @@ vi.mock('@/lib/supabase/server', () => ({ createClient: async () => (m.clients++
 vi.mock('@/lib/streams/local-go2rtc', () => ({ localGo2rtc: () => ({ tag: 'go2rtc' }) }))
 vi.mock('@/lib/rate-limit', () => ({ rateLimit: async () => ({ limited: false }) }))
 vi.mock('@/lib/import/locations-import', () => ({
-  checkLocationImport: async (_c: unknown, _a: unknown, text: string, o: { skipBadRows: boolean }) => (m.calls.push(`check:${text}:${o.skipBadRows}`), { ok: false, error: 'x' }),
-  applyLocationImport: async (_c: unknown, _a: unknown, text: string, o: { skipBadRows: boolean; archive: boolean; fingerprint: string }) =>
-    (m.calls.push(`apply:${text}:${o.skipBadRows}:${o.archive}:${o.fingerprint}`), { ok: false, error: 'x' }),
+  checkLocationImport: async (_c: unknown, _a: unknown, text: string, o: { skipBadRows: boolean; keepNames: boolean }) => (m.calls.push(`check:${text}:${o.skipBadRows}:${o.keepNames}`), { ok: false, error: 'x' }),
+  applyLocationImport: async (_c: unknown, _a: unknown, text: string, o: { skipBadRows: boolean; keepNames: boolean; archive: boolean; fingerprint: string }) =>
+    (m.calls.push(`apply:${text}:${o.skipBadRows}:${o.keepNames}:${o.archive}:${o.fingerprint}`), { ok: false, error: 'x' }),
 }))
 vi.mock('@/lib/inventory/discover-all', () => ({
   startDiscoverAll: async (_c: unknown, _a: unknown, d: { schedule: (w: () => Promise<unknown>) => void }) => (d.schedule(async () => {}), m.calls.push('start'), { ok: true, runId: 'r1', total: 3 }),
   discoverAllStatus: async (_c: unknown, _a: unknown, id: string) => (m.calls.push(`status:${id}`), { ok: false, error: 'x' }),
+  stopDiscoverAll: async (_c: unknown, _a: unknown, id: string) => (m.calls.push(`stop:${id}`), { ok: true }),
 }))
 
 beforeEach(() => {
@@ -52,6 +53,7 @@ describe('P2-5c-2 actions: the caller is checked first', () => {
       () => imp.applyLocationImportAction(file('code\nA1\n')),
       () => all.startDiscoverAllAction(),
       () => all.discoverAllStatusAction('r1'),
+      () => all.stopDiscoverAllAction('r1'), // review B-M10
     ]
     for (const run of actions) {
       m.refuse = true
@@ -68,11 +70,12 @@ describe('P2-5c-2 actions: the caller is checked first', () => {
     const imp = await import('@/lib/actions/admin/import-locations')
     const fd = file('code\nA1\n')
     fd.set('skip_bad_rows', 'on')
+    fd.set('keep_names', 'on') // review B-M1
     expect(await imp.checkLocationImportAction(fd)).toEqual({ ok: false, error: 'x' })
     fd.set('archive', 'on')
     fd.set('fingerprint', 'f'.repeat(64))
     expect(await imp.applyLocationImportAction(fd)).toEqual({ ok: false, error: 'x' })
-    expect(m.calls).toEqual(['check:code\nA1\n:true', `apply:code\nA1\n:true:true:${'f'.repeat(64)}`])
+    expect(m.calls).toEqual(['check:code\nA1\n:true:true', `apply:code\nA1\n:true:true:true:${'f'.repeat(64)}`])
   })
 
   it('without a file, or with a file over 5 MB, the import answers plainly and calls nothing', async () => {

@@ -782,11 +782,10 @@ describe('capability access model (P2-1)', () => {
       inventory_apply_proposals: server,
       // P2-5c-1 fix round 2 (20261021000030): the effect of ticked zone proposals on access, all rows in one call (server only).
       preview_hierarchy_proposals: server,
-      // P2-5c-2 (20261021000028): the location import in one transaction, its placeholder twin and the saved-password comparison
-      // (server only); the Wi-Fi inventory for the signed-in reader (it applies the reader's own wifi.inventory.view grants).
+      // P2-5c-2 (20261021000028, 31): the location import in one transaction and its placeholder twin (server only); the Wi-Fi
+      // inventory for the signed-in reader (it applies the reader's own wifi.inventory.view grants).
       inventory_import_apply: server,
       inventory_ensure_placeholders: server,
-      recorder_credentials_match: server,
       wifi_inventory: ['authenticated'],
     }
     for (const [name, grantees] of Object.entries(expected)) {
@@ -803,7 +802,9 @@ describe('capability access model (P2-1)', () => {
       'access_store_set', 'access_device_set', 'access_stores_for', 'access_devices_for', 'monitor_forget_target', 'monitor_stop_store',
       // Removed by the P2-5b contract migration (the transitional seam and the one-time migration machinery).
       'nvr_store_credential', 'nvr_read_credential', 'nvr_delete_credential', 'recorder_seam_of', 'recorder_ensure_primary', 'locations_legacy_seam',
-      'inventory_migrate_org', 'inventory_unmigrate_org', 'inventory_migrate_org_test', 'inventory_unmigrate_org_test', 'inventory_secret_fingerprint_test']) {
+      'inventory_migrate_org', 'inventory_unmigrate_org', 'inventory_migrate_org_test', 'inventory_unmigrate_org_test', 'inventory_secret_fingerprint_test',
+      // P2-5c-2 review B-I3: the saved-password comparison (an oracle for the import preview) was dropped by 20261021000031.
+      'recorder_credentials_match']) {
       expect(byName.has(old), old).toBe(false)
     }
     // One signature each (no stale overloads left behind by a changed parameter list).

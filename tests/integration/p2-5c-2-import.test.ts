@@ -2,7 +2,9 @@
 // (ruling R-1): TEST-NET addresses, made-up passwords, `test-…` organisations. Nothing here contacts any NVR (an import never does).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Actor } from '@/lib/admin/types'
+import { importStores } from '@/lib/import/apply'
 import { applyLocationImport, checkLocationImport, MSG_PLAN_CHANGED } from '@/lib/import/locations-import'
+import { parseStoresCsv } from '@/lib/import/stores-csv'
 import { ensurePlaceholderCameras } from '@/lib/inventory/cameras'
 import {
   adminClient, atCluster, cleanupOrg, createCamera, createCluster, createLocation, createOrg, createRecorder, createRegion, createUser, grant, mapCamera,
@@ -89,7 +91,7 @@ describe('P2-5c-2 location import', () => {
     expect(check.preview.errors).toEqual([])
     const r = await applyLocationImport(c(), actor, csv, { skipBadRows: false, archive: false, fingerprint: check.preview.fingerprint })
     if (!r.ok) throw new Error(r.error)
-    expect(r.result).toMatchObject({ locationsCreated: 3, locationsUpdated: 0, recordersCreated: 3, recordersUpdated: 0, passwordsSet: 3, camerasCreated: 9, regionsCreated: 1, clustersCreated: 1 })
+    expect(r.result).toMatchObject({ locationsCreated: 3, locationsUpdated: 0, recordersCreated: 3, recordersUpdated: 0, passwordsGiven: 3, camerasCreated: 9, regionsCreated: 1, clustersCreated: 1 })
     expect(JSON.stringify(r)).not.toMatch(/Pw-/)
 
     const jcl = (await locationByCode(orgId, 'JCL'))!
@@ -136,17 +138,83 @@ describe('P2-5c-2 location import', () => {
     ].join('\n')
     const before = await counts(orgId)
     const secretsBefore = (await recordersByAddress((await locationByCode(orgId, 'PTN'))!.id)).map((r) => r.secret_id)
-    const auditBefore = (await admin().from('admin_audit_log').select('id', { count: 'exact', head: true }).eq('org_id', orgId).in('action', ['recorder_created', 'recorder_updated'])).count
+    const audited = async () => (await admin().from('admin_audit_log').select('id', { count: 'exact', head: true }).eq('org_id', orgId).in('action', ['recorder_created', 'recorder_updated', 'recorder_password_set'])).count
+    const auditBefore = await audited()
     const check = await checkLocationImport(c(), actor, csv, { skipBadRows: false })
     if (!check.ok) throw new Error(check.error)
-    expect(check.preview.counts).toMatchObject({ locationsNew: 0, locationsChanged: 0, locationsUnchanged: 3, recordersNew: 0, recordersChanged: 0, recordersUnchanged: 3, passwordsSet: 0, camerasNew: 0 })
-    expect(check.preview.locations.flatMap((l) => l.recorders.map((r) => r.password))).toEqual(['unchanged', 'unchanged', 'unchanged'])
+    // Review B-I3: the preview does not compare passwords: a password in the file shows "set"; the database writes it only if it differs.
+    expect(check.preview.counts).toMatchObject({ locationsNew: 0, locationsChanged: 0, locationsUnchanged: 3, recordersNew: 0, recordersChanged: 0, recordersUnchanged: 3, passwordsSet: 3, camerasNew: 0 })
+    expect(check.preview.locations.flatMap((l) => l.recorders.map((r) => r.password))).toEqual(['set', 'set', 'set'])
     const r = await applyLocationImport(c(), actor, csv, { skipBadRows: false, archive: false, fingerprint: check.preview.fingerprint })
     if (!r.ok) throw new Error(r.error)
-    expect(r.result).toMatchObject({ locationsCreated: 0, locationsUpdated: 0, recordersCreated: 0, recordersUpdated: 0, passwordsSet: 0, camerasCreated: 0 })
+    expect(r.result).toMatchObject({ locationsCreated: 0, locationsUpdated: 0, recordersCreated: 0, recordersUpdated: 0, passwordsGiven: 3, camerasCreated: 0 })
     expect(await counts(orgId)).toEqual(before)
     expect((await recordersByAddress((await locationByCode(orgId, 'PTN'))!.id)).map((x) => x.secret_id)).toEqual(secretsBefore)
-    expect((await admin().from('admin_audit_log').select('id', { count: 'exact', head: true }).eq('org_id', orgId).in('action', ['recorder_created', 'recorder_updated'])).count).toBe(auditBefore)
+    // No vault write, no NVR save and no audit row for anything that is already as the file says.
+    expect(await audited()).toBe(auditBefore)
+  })
+
+  it('review B-I3: the preview is not a password oracle — it is the same whether the file\'s password equals the saved one or not', async () => {
+    const l = await createLocation(orgId, { code: 'ORA1', name: 'ORA1 - Agra' })
+    await admin().from('locations').update({ city: 'Agra' }).eq('id', l)
+    const rec = await createRecorder(orgId, l, { host: '192.0.2.90', secret: 'right-guess', expectedChannels: 0 })
+    const row = (pw: string) => `${HEADER}\nORA1,,,,Agra,,,,192.0.2.90,554,80,viewer,${pw},,,\n`
+    const right = await checkLocationImport(c(), actor, row('right-guess'), { skipBadRows: false })
+    const wrong = await checkLocationImport(c(), actor, row('wrong-guess'), { skipBadRows: false })
+    if (!right.ok || !wrong.ok) throw new Error('check failed')
+    expect(JSON.stringify(right.preview)).toBe(JSON.stringify(wrong.preview))
+    // The comparison function is gone; nothing else compares a saved password with a given one before the apply.
+    const call = admin().rpc as unknown as (fn: string, args: object) => Promise<{ error: { code?: string } | null }>
+    expect((await call.call(admin(), 'recorder_credentials_match', { p_org: orgId, p_items: [] })).error?.code).toBe('PGRST202')
+    // Applying a different password writes it (audited, without the value); applying the same one writes nothing.
+    const audits = async () => (await admin().from('admin_audit_log').select('id').eq('org_id', orgId).eq('action', 'recorder_password_set').eq('entity_id', rec)).data!.length
+    const a1 = await applyLocationImport(c(), actor, row('right-guess'), { skipBadRows: false, archive: false, fingerprint: right.preview.fingerprint })
+    if (!a1.ok) throw new Error(a1.error)
+    expect(await audits()).toBe(0)
+    expect(await secret(rec)).toBe('right-guess')
+    const again = await checkLocationImport(c(), actor, row('new-pass-1'), { skipBadRows: false })
+    if (!again.ok) throw new Error(again.error)
+    const a2 = await applyLocationImport(c(), actor, row('new-pass-1'), { skipBadRows: false, archive: false, fingerprint: again.preview.fingerprint })
+    if (!a2.ok) throw new Error(a2.error)
+    expect(await audits()).toBe(1)
+    expect(await secret(rec)).toBe('new-pass-1')
+  })
+
+  it('review B-M3: a code of an archived location is refused in the preview (no second location with the same code)', async () => {
+    const l = await createLocation(orgId, { code: 'ARC1' })
+    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'location', p_id: l })).error).toBeNull()
+    const check = await checkLocationImport(c(), actor, `${HEADER}\nARC1,,,,Gaya,,,,192.0.2.91,,,viewer,pw,1,,\n`, { skipBadRows: false })
+    if (!check.ok) throw new Error(check.error)
+    expect(check.preview.errors.map((e) => [e.line, e.column])).toEqual([[2, 'code']])
+    expect(check.preview.canApply).toBe(false)
+  })
+
+  it('review B-M14: archiving an NVR that is not in the file archives its cameras first (never deleted)', async () => {
+    const o = await createOrg()
+    try {
+      const u = await createUser(o, 'admin')
+      await grant(o, u.id, 'admin.inventory')
+      const a: Actor = { id: u.id, orgId: o, role: 'admin' }
+      const cl = { admin: admin(), rls: u.client }
+      const two = `${HEADER}\nNV1,,,,Patna,,,,192.0.2.95,554,80,viewer,p1,2,Ground,\nNV1,,,,,,,,192.0.2.96,554,80,viewer,p2,3,First,\n`
+      const c1 = await checkLocationImport(cl, a, two, { skipBadRows: false })
+      if (!c1.ok) throw new Error(c1.error)
+      const r1 = await applyLocationImport(cl, a, two, { skipBadRows: false, archive: false, fingerprint: c1.preview.fingerprint })
+      if (!r1.ok) throw new Error(r1.error)
+      const one = `${HEADER}\nNV1,,,,Patna,,,,192.0.2.95,554,80,viewer,,2,Ground,\n`
+      const c2 = await checkLocationImport(cl, a, one, { skipBadRows: false })
+      if (!c2.ok) throw new Error(c2.error)
+      expect(c2.preview.archive.map((x) => [x.kind, x.cameras])).toEqual([['recorder', 3]])
+      const r2 = await applyLocationImport(cl, a, one, { skipBadRows: false, archive: true, fingerprint: c2.preview.fingerprint })
+      if (!r2.ok) throw new Error(r2.error)
+      expect(r2.result.archived).toEqual({ locations: 0, recorders: 1, cameras: 0 })
+      const loc = (await locationByCode(o, 'NV1'))!
+      const nvrs = await recordersByAddress(loc.id)
+      expect(nvrs.map((n) => [n.assets.ip, n.assets.archived_at !== null])).toEqual([['192.0.2.95', false], ['192.0.2.96', true]])
+      expect((await admin().from('cameras').select('id, archived_at').eq('location_id', loc.id)).data!.filter((x) => x.archived_at !== null)).toHaveLength(3)
+    } finally {
+      await cleanupOrg(o)
+    }
   })
 
   it('the apply is bound to the preview: when the data changed in between, nothing is written and the person is asked to check again', async () => {
@@ -163,7 +231,7 @@ describe('P2-5c-2 location import', () => {
     const csv = `${HEADER}\nAON1,,,,Gaya,,,,192.0.2.40,,,viewer,Pw-AON1,1,,\nAON2,,,,Gaya,,,,not-an-ip,,,viewer,Pw-AON2,1,,\n`
     const strict = await checkLocationImport(c(), actor, csv, { skipBadRows: false })
     if (!strict.ok) throw new Error(strict.error)
-    expect(strict.preview.errors).toEqual([{ line: 3, column: 'ip', message: '“not-an-ip” is not a valid IP address.' }])
+    expect(strict.preview.errors).toEqual([{ line: 3, column: 'ip', message: 'Not a valid IP address.' }])
     expect(strict.preview.canApply).toBe(false)
     const refused = await applyLocationImport(c(), actor, csv, { skipBadRows: false, archive: false, fingerprint: strict.preview.fingerprint })
     expect(refused).toEqual({ ok: false, error: 'The file has problems. Fix them, or choose “Skip the rows with problems”, and check the file again.' })
@@ -219,7 +287,7 @@ describe('P2-5c-2 location import', () => {
     const moved = legacy.replace('192.0.2.60', '192.0.2.61')
     const b = await checkLocationImport(c(), actor, moved, { skipBadRows: false })
     if (!b.ok) throw new Error(b.error)
-    expect(b.preview.locations[0].recorders[0]).toMatchObject({ action: 'update', id: nvr.id, matchedBy: 'primary', changes: ['address'], password: 'unchanged' })
+    expect(b.preview.locations[0].recorders[0]).toMatchObject({ action: 'update', id: nvr.id, matchedBy: 'primary', changes: ['address'], password: 'set' })
     const rb = await applyLocationImport(c(), actor, moved, { skipBadRows: false, archive: false, fingerprint: b.preview.fingerprint })
     if (!rb.ok) throw new Error(rb.error)
     const after = await recordersOf(loc.id)
@@ -333,22 +401,9 @@ describe('P2-5c-2 location import', () => {
   it('the new server functions are for the server only; nothing new is open to signed-in people; privilege_violations stays empty', async () => {
     const plan = { regions: [], clusters: [], archive: [], locations: [] }
     expect((await me.client.rpc('inventory_import_apply', { p_org: orgId, p_actor: me.id, p_plan: plan })).error?.code).toBe('42501')
-    expect((await me.client.rpc('recorder_credentials_match', { p_org: orgId, p_items: [] })).error?.code).toBe('42501')
     expect((await me.client.rpc('inventory_ensure_placeholders', { p_org: orgId, p_location: orgId, p_recorder: orgId, p_count: 1 })).error?.code).toBe('42501')
     expect((await admin().rpc('privilege_violations')).data).toEqual([])
     expect((await admin().rpc('inventory_stale_name_scan')).data).toEqual([])
-  })
-
-  it('compares a saved password in the database only: true for the same one, never the value', async () => {
-    const loc = await createLocation(orgId, { code: 'CMP1' })
-    const rec = await createRecorder(orgId, loc, { secret: 'compare-me' })
-    const none = await createRecorder(orgId, loc)
-    const { data } = await admin().rpc('recorder_credentials_match', {
-      p_org: orgId, p_items: [{ recorder: rec, secret: 'compare-me' }, { recorder: none, secret: 'compare-me' }, { recorder: rec, secret: 'other' }],
-    })
-    expect(data).toEqual([rec])
-    const { data: foreign } = await admin().rpc('recorder_credentials_match', { p_org: otherOrg, p_items: [{ recorder: rec, secret: 'compare-me' }] })
-    expect(foreign).toEqual([])
   })
 
   it('a 216-location file (the size of the estate, synthetic) imports in one go, and again with no change; timing recorded', async () => {
@@ -371,19 +426,65 @@ describe('P2-5c-2 location import', () => {
       const r = await applyLocationImport(cl, a, csv, { skipBadRows: false, archive: false, fingerprint: check.preview.fingerprint })
       if (!r.ok) throw new Error(r.error)
       const t2 = Date.now()
-      expect(r.result).toMatchObject({ locationsCreated: 216, recordersCreated: 216, passwordsSet: 216, camerasCreated: expectedCameras })
+      expect(r.result).toMatchObject({ locationsCreated: 216, recordersCreated: 216, passwordsGiven: 216, camerasCreated: expectedCameras })
       expect(await counts(o)).toMatchObject({ locations: 216, recorders: 216, cameras: expectedCameras, mappings: expectedCameras })
       const again = await checkLocationImport(cl, a, csv, { skipBadRows: false })
       if (!again.ok) throw new Error(again.error)
       const t3 = Date.now()
-      expect(again.preview.counts).toMatchObject({ locationsNew: 0, locationsChanged: 0, locationsUnchanged: 216, recordersUnchanged: 216, passwordsSet: 0, camerasNew: 0 })
+      expect(again.preview.counts).toMatchObject({ locationsNew: 0, locationsChanged: 0, locationsUnchanged: 216, recordersUnchanged: 216, passwordsSet: 216, camerasNew: 0 })
       const r2 = await applyLocationImport(cl, a, csv, { skipBadRows: false, archive: false, fingerprint: again.preview.fingerprint })
       if (!r2.ok) throw new Error(r2.error)
       const t4 = Date.now()
       expect(await counts(o)).toMatchObject({ locations: 216, recorders: 216, cameras: expectedCameras, mappings: expectedCameras })
+      // Generous bounds (local stack, shared with other suites): the check in seconds, the apply well under a minute.
+      expect(t1 - t0).toBeLessThan(10_000)
+      expect(t2 - t1).toBeLessThan(60_000)
       console.log(JSON.stringify({ import_perf: { rows: 216, cameras: expectedCameras, check_ms: t1 - t0, apply_ms: t2 - t1, recheck_ms: t3 - t2, reapply_ms: t4 - t3 } }))
     } finally {
       await cleanupOrg(o)
     }
   }, 180_000)
+
+  // Review B-M13: the real data was made by the LEGACY import (display name = code; the primary NVR; channels above the file's count
+  // after discovery). Seed a synthetic organisation the same way, then check and apply the same file through the new path.
+  it('the estate path: 216 locations made by the legacy import, then the same file through the validated import', async () => {
+    const o = await createOrg()
+    try {
+      const u = await createUser(o, 'admin')
+      await grant(o, u.id, 'admin.inventory')
+      const a: Actor = { id: u.id, orgId: o, role: 'admin' }
+      const rows = Array.from({ length: 216 }, (_, i) => `S${String(i + 1).padStart(3, '0')},City ${i % 40},Z${i % 9},198.51.${100 + Math.floor(i / 250)}.${(i % 250) + 1},554,80,viewer,Pw-legacy-${i % 15},${12 + (i % 17)}`)
+      const csv = ['name,city,zone,ip,port,http_port,user,password,channels', ...rows].join('\n')
+      const legacy = await importStores(admin(), a, parseStoresCsv(csv).rows)
+      expect(legacy).toMatchObject({ created: 216, errors: [] })
+      // Like the real data after a discovery: one NVR has 3 cameras above the file's count and a camera renamed by the NVR.
+      const s001 = (await locationByCode(o, 'S001'))!
+      const [nvr] = await recordersOf(s001.id)
+      for (const ch of [13, 14, 15]) await createCamera(o, { locationId: s001.id, recorderId: nvr.id, channel: ch })
+      await admin().from('cameras').update({ name: 'Entrance' }).eq('recorder_id', nvr.id).eq('channel', 1)
+      const cl = { admin: admin(), rls: u.client }
+      const t0 = Date.now()
+      const check = await checkLocationImport(cl, a, csv, { skipBadRows: false })
+      if (!check.ok) throw new Error(check.error)
+      const t1 = Date.now()
+      expect(check.preview.errors).toEqual([])
+      expect(check.preview.counts).toMatchObject({ locationsNew: 0, locationsChanged: 216, recordersNew: 0, recordersChanged: 0, recordersUnchanged: 216, camerasNew: 0, archiveCameras: 3 })
+      expect(check.preview.locations[0]).toMatchObject({ code: 'S001', name: 'S001 - City 0', previousName: 'S001', changes: ['display name'] })
+      expect(check.preview.locations.flatMap((l) => l.recorders.map((r) => r.matchedBy))).toEqual(Array(216).fill('address'))
+      const r = await applyLocationImport(cl, a, csv, { skipBadRows: false, archive: false, fingerprint: check.preview.fingerprint })
+      if (!r.ok) throw new Error(r.error)
+      const t2 = Date.now()
+      expect(r.result).toMatchObject({ locationsCreated: 0, locationsUpdated: 216, recordersCreated: 0, recordersUpdated: 0, camerasCreated: 0 })
+      expect((await admin().from('cameras').select('name').eq('recorder_id', nvr.id).eq('channel', 1).single()).data!.name).toBe('Entrance')
+      expect((await admin().from('admin_audit_log').select('id').eq('org_id', o).eq('action', 'recorder_password_set').gt('created_at', new Date(t1 - 1000).toISOString())).data).toEqual([])
+      const again = await checkLocationImport(cl, a, csv, { skipBadRows: false })
+      if (!again.ok) throw new Error(again.error)
+      expect(again.preview.counts).toMatchObject({ locationsChanged: 0, locationsUnchanged: 216, recordersUnchanged: 216, camerasNew: 0 })
+      expect(t1 - t0).toBeLessThan(10_000)
+      expect(t2 - t1).toBeLessThan(60_000)
+      console.log(JSON.stringify({ import_perf_legacy_seeded: { rows: 216, check_ms: t1 - t0, apply_ms: t2 - t1 } }))
+    } finally {
+      await cleanupOrg(o)
+    }
+  }, 240_000)
 })
