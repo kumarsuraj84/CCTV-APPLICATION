@@ -1364,6 +1364,12 @@ isOneToOne: false
               "assets": (string)[],"cameras": (string)[],"capability": string,"locations": (string)[],"user_id": string
             }[]
                            },
+"inventory_ensure_placeholders":
+{ Args: { "p_count": number,"p_location": string,"p_org": string,"p_recorder": string }; Returns: Json
+                           },
+"inventory_import_apply":
+{ Args: { "p_actor": string,"p_org": string,"p_plan": Json }; Returns: Json
+                           },
 "inventory_move_cluster":
 { Args: { "p_actor"?: string,"p_cluster": string,"p_org": string,"p_region": string }; Returns: Json
                            },
@@ -1445,6 +1451,9 @@ isOneToOne: false
 "recorder_credential_status":
 { Args: { "p_org": string,"p_recorder": string }; Returns: Json
                            },
+"recorder_credentials_match":
+{ Args: { "p_items": Json,"p_org": string }; Returns: string[]
+                           },
 "recorder_delete_credential":
 { Args: { "p_recorder": string }; Returns: undefined
                            },
@@ -1489,6 +1498,11 @@ isOneToOne: false
 "targets_uptime":
 { Args: { "p_ids": (string)[],"p_now"?: string,"p_org": string,"p_type": string,"p_window": string }; Returns: {
               "target_id": string,"uptime_pct": number
+            }[]
+                           },
+"wifi_inventory":
+{ Args: Record<PropertyKey, never>; Returns: {
+              "asset_id": string,"asset_type": string,"assigned_profile_id": string,"capability_discovered_at": string,"down_since": string,"enabled": boolean,"firmware": string,"last_checked_at": string,"last_inventory_at": string,"lifecycle_state": string,"location_code": string,"location_id": string,"location_name": string,"mac": string,"management_ip": string,"management_mode": string,"model": string,"name": string,"role": string,"serial": string,"status": string,"vendor": string
             }[]
                            }
           }
