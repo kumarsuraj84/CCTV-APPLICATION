@@ -18,6 +18,9 @@ export const ALLOWED: Allowed[] = [
   { file: 'lib/streams/vod.ts', text: 'no-store', partial: true, reason: HTTP },
   { file: 'app/api/health/route.ts', text: 'no-store', partial: true, reason: HTTP },
   { file: 'app/api/vod/route.ts', text: 'no-store', partial: true, reason: HTTP },
+  // P3-1: the old addresses of ruling T-1, now redirected by proxy.ts (they were in next.config.ts, which this guard does not scan).
+  { file: 'lib/web/legacy-redirects.ts', text: '/stores', reason: 'the old address that redirects to /locations (ruling T-1)' },
+  { file: 'lib/web/legacy-redirects.ts', text: '/admin/stores', reason: 'the old address that redirects to /admin/locations (ruling T-1)' },
   { file: 'components/layout/NewVersionBanner.tsx', text: 'no-store', partial: true, reason: HTTP },
   { file: 'lib/jobs/engine.ts', text: 'store', reason: 'option name of the job engine\'s persistence ("JobStore"), nothing to do with shops' },
   { file: 'lib/jobs/testing.ts', text: 'store', partial: true, reason: 'option name and test ids of the job engine\'s persistence ("JobStore"), nothing to do with shops' },
