@@ -1079,6 +1079,20 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"worker_leases": {
+                  Row: {
+                    "acquired_at": string,"fencing_token": number,"holder": string,"holder_info": NonNullable<Json>,"lease_until": string,"name": string,"released_at": string | null,"renewed_at": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "acquired_at": string,"fencing_token": number,"holder": string,"holder_info"?: NonNullable<Json>,"lease_until": string,"name": string,"released_at"?: string | null,"renewed_at": string
+                  }
+                  Update: {
+                    "acquired_at"?: string,"fencing_token"?: number,"holder"?: string,"holder_info"?: NonNullable<Json>,"lease_until"?: string,"name"?: string,"released_at"?: string | null,"renewed_at"?: string
+                  }
+                  Relationships: [
+                    
+                  ]
                 },"worker_state": {
                   Row: {
                     "check_requested_at": string | null,"id": number,"last_cameras_round_at": string | null,"last_devices_round_at": string | null,"last_heartbeat": string | null,"progress_done": number,"progress_total": number,"run_finished_at": string | null,"run_started_at": string | null
@@ -1597,10 +1611,31 @@ isOneToOne: false
             }[]
                            },
 "monitor_apply_results":
-{ Args: { "p_org": string,"p_results": Json,"p_threshold"?: number }; Returns: undefined
+{ Args: { "p_fencing_token": number,"p_lease": string,"p_org": string,"p_results": Json,"p_threshold": number }; Returns: undefined
+                           },
+"monitor_heartbeat":
+{ Args: { "p_at": string,"p_fencing_token": number,"p_lease": string }; Returns: undefined
+                           },
+"monitor_mark_round":
+{ Args: { "p_at": string,"p_fencing_token": number,"p_kind": string,"p_lease": string }; Returns: undefined
+                           },
+"monitor_record_gap":
+{ Args: { "p_fencing_token": number,"p_from": string,"p_lease": string,"p_to": string }; Returns: undefined
                            },
 "monitor_request_check":
 { Args: Record<PropertyKey, never>; Returns: string
+                           },
+"monitor_run_finished":
+{ Args: { "p_at": string,"p_fencing_token": number,"p_lease": string }; Returns: undefined
+                           },
+"monitor_run_progress":
+{ Args: { "p_done": number,"p_fencing_token": number,"p_lease": string,"p_total": number }; Returns: undefined
+                           },
+"monitor_run_started":
+{ Args: { "p_at": string,"p_fencing_token": number,"p_lease": string,"p_total": number }; Returns: undefined
+                           },
+"monitor_save_camera_ips":
+{ Args: { "p_fencing_token": number,"p_lease": string,"p_org": string,"p_rows": Json }; Returns: number
                            },
 "monitor_stale_after_minutes":
 { Args: Record<PropertyKey, never>; Returns: number
@@ -1752,6 +1787,28 @@ isOneToOne: false
 "wifi_inventory":
 { Args: Record<PropertyKey, never>; Returns: {
               "asset_id": string,"asset_type": string,"assigned_profile_id": string,"capability_discovered_at": string,"down_since": string,"enabled": boolean,"firmware": string,"last_checked_at": string,"last_inventory_at": string,"lifecycle_state": string,"location_code": string,"location_id": string,"location_name": string,"mac": string,"management_ip": string,"management_mode": string,"model": string,"name": string,"role": string,"serial": string,"status": string,"vendor": string
+            }[]
+                           },
+"worker_acquire_lease":
+{ Args: { "p_holder": string,"p_holder_info"?: Json,"p_name": string,"p_ttl_sec"?: number }; Returns: {
+              "acquired": boolean,"fencing_token": number,"lease_until": string,"retry_after_ms": number
+            }[]
+                           },
+"worker_fence":
+{ Args: { "p_lease": string,"p_token": number }; Returns: undefined
+                           },
+"worker_lease_forget_test":
+{ Args: Record<PropertyKey, never>; Returns: number
+                           },
+"worker_lease_set_until_test":
+{ Args: { "p_name": string,"p_offset_ms": number }; Returns: undefined
+                           },
+"worker_release_lease":
+{ Args: { "p_fencing_token": number,"p_holder": string,"p_name": string }; Returns: boolean
+                           },
+"worker_renew_lease":
+{ Args: { "p_fencing_token": number,"p_holder": string,"p_name": string,"p_ttl_sec"?: number }; Returns: {
+              "lease_until": string,"renewed": boolean
             }[]
                            }
           }
