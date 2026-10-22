@@ -1,3 +1,5 @@
+> **SUPERSEDED — see [docs/drishti/ARCHITECTURE.md](drishti/ARCHITECTURE.md).** This file describes the pre-directive design (Plans 1–3) and is kept for history only.
+
 # CityKart Network Monitoring Hub — Architecture, Design and Flow
 
 Document purpose: a self-contained description of the application so that another engineer or AI tool can evaluate the architecture, security model, data model and plans. It contains no secrets and no real network addresses. Written 2026-10-22 against branch `feat/plan-3-live-feeds` (stacked on `feat/plan-2-monitoring`, which is stacked on `feat/plan-1-foundation`). Nothing has been pushed or merged; everything is local.
