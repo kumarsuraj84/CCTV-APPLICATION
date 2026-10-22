@@ -1,0 +1,338 @@
+[
+  {
+    "shot": "D:\\ANKUR AI PROJECTS\\CCTV MONITORING TOOL\\docs\\drishti\\evidence\\p3-0\\BR-3-login-1366.png",
+    "url": "/login",
+    "title": "Sign in — CityKart Drishti",
+    "vw": 1366,
+    "scrollW": 1366,
+    "logo": [
+      {
+        "src": "/brand/citykart-drishti-logo-462.png",
+        "w": 340,
+        "h": 156,
+        "ratio": 2.179,
+        "left": 513,
+        "right": 853,
+        "bg": "rgba(0, 0, 0, 0)"
+      }
+    ],
+    "fields": [
+      {
+        "id": "email",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      },
+      {
+        "id": "password",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      }
+    ]
+  },
+  {
+    "shot": "D:\\ANKUR AI PROJECTS\\CCTV MONITORING TOOL\\docs\\drishti\\evidence\\p3-0\\BR-3-login-1920.png",
+    "url": "/login",
+    "title": "Sign in — CityKart Drishti",
+    "vw": 1920,
+    "scrollW": 1920,
+    "logo": [
+      {
+        "src": "/brand/citykart-drishti-logo-462.png",
+        "w": 340,
+        "h": 156,
+        "ratio": 2.179,
+        "left": 790,
+        "right": 1130,
+        "bg": "rgba(0, 0, 0, 0)"
+      }
+    ],
+    "fields": [
+      {
+        "id": "email",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      },
+      {
+        "id": "password",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      }
+    ]
+  },
+  {
+    "shot": "D:\\ANKUR AI PROJECTS\\CCTV MONITORING TOOL\\docs\\drishti\\evidence\\p3-0\\BR-3-login-390.png",
+    "url": "/login",
+    "title": "Sign in — CityKart Drishti",
+    "vw": 390,
+    "scrollW": 390,
+    "logo": [
+      {
+        "src": "/brand/citykart-drishti-logo-462.png",
+        "w": 240,
+        "h": 110,
+        "ratio": 2.179,
+        "left": 75,
+        "right": 315,
+        "bg": "rgba(0, 0, 0, 0)"
+      }
+    ],
+    "fields": [
+      {
+        "id": "email",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      },
+      {
+        "id": "password",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      }
+    ]
+  },
+  {
+    "shot": "D:\\ANKUR AI PROJECTS\\CCTV MONITORING TOOL\\docs\\drishti\\evidence\\p3-0\\BR-3-forgot-password-1366.png",
+    "url": "/forgot-password",
+    "title": "Forgot your password — CityKart Drishti",
+    "vw": 1366,
+    "scrollW": 1366,
+    "logo": [
+      {
+        "src": "/brand/citykart-drishti-logo-462.png",
+        "w": 340,
+        "h": 156,
+        "ratio": 2.179,
+        "left": 513,
+        "right": 853,
+        "bg": "rgba(0, 0, 0, 0)"
+      }
+    ],
+    "fields": [
+      {
+        "id": "email",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      }
+    ]
+  },
+  {
+    "shot": "D:\\ANKUR AI PROJECTS\\CCTV MONITORING TOOL\\docs\\drishti\\evidence\\p3-0\\BR-3-forgot-password-1920.png",
+    "url": "/forgot-password",
+    "title": "Forgot your password — CityKart Drishti",
+    "vw": 1920,
+    "scrollW": 1920,
+    "logo": [
+      {
+        "src": "/brand/citykart-drishti-logo-462.png",
+        "w": 340,
+        "h": 156,
+        "ratio": 2.179,
+        "left": 790,
+        "right": 1130,
+        "bg": "rgba(0, 0, 0, 0)"
+      }
+    ],
+    "fields": [
+      {
+        "id": "email",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      }
+    ]
+  },
+  {
+    "shot": "D:\\ANKUR AI PROJECTS\\CCTV MONITORING TOOL\\docs\\drishti\\evidence\\p3-0\\BR-3-forgot-password-390.png",
+    "url": "/forgot-password",
+    "title": "Forgot your password — CityKart Drishti",
+    "vw": 390,
+    "scrollW": 390,
+    "logo": [
+      {
+        "src": "/brand/citykart-drishti-logo-462.png",
+        "w": 240,
+        "h": 110,
+        "ratio": 2.179,
+        "left": 75,
+        "right": 315,
+        "bg": "rgba(0, 0, 0, 0)"
+      }
+    ],
+    "fields": [
+      {
+        "id": "email",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      }
+    ]
+  },
+  {
+    "shot": "D:\\ANKUR AI PROJECTS\\CCTV MONITORING TOOL\\docs\\drishti\\evidence\\p3-0\\BR-3-reset-password-redirect-1366.png",
+    "url": "/login",
+    "title": "Sign in — CityKart Drishti",
+    "vw": 1366,
+    "scrollW": 1366,
+    "logo": [
+      {
+        "src": "/brand/citykart-drishti-logo-462.png",
+        "w": 340,
+        "h": 156,
+        "ratio": 2.179,
+        "left": 513,
+        "right": 853,
+        "bg": "rgba(0, 0, 0, 0)"
+      }
+    ],
+    "fields": [
+      {
+        "id": "email",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      },
+      {
+        "id": "password",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      }
+    ]
+  },
+  {
+    "shot": "D:\\ANKUR AI PROJECTS\\CCTV MONITORING TOOL\\docs\\drishti\\evidence\\p3-0\\BR-3-reset-password-redirect-1920.png",
+    "url": "/login",
+    "title": "Sign in — CityKart Drishti",
+    "vw": 1920,
+    "scrollW": 1920,
+    "logo": [
+      {
+        "src": "/brand/citykart-drishti-logo-462.png",
+        "w": 340,
+        "h": 156,
+        "ratio": 2.179,
+        "left": 790,
+        "right": 1130,
+        "bg": "rgba(0, 0, 0, 0)"
+      }
+    ],
+    "fields": [
+      {
+        "id": "email",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      },
+      {
+        "id": "password",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      }
+    ]
+  },
+  {
+    "shot": "D:\\ANKUR AI PROJECTS\\CCTV MONITORING TOOL\\docs\\drishti\\evidence\\p3-0\\BR-3-reset-password-redirect-390.png",
+    "url": "/login",
+    "title": "Sign in — CityKart Drishti",
+    "vw": 390,
+    "scrollW": 390,
+    "logo": [
+      {
+        "src": "/brand/citykart-drishti-logo-462.png",
+        "w": 240,
+        "h": 110,
+        "ratio": 2.179,
+        "left": 75,
+        "right": 315,
+        "bg": "rgba(0, 0, 0, 0)"
+      }
+    ],
+    "fields": [
+      {
+        "id": "email",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      },
+      {
+        "id": "password",
+        "border": "lab(55.8571 -1.79443 -9.05337)",
+        "borderW": "1px",
+        "bg": "lab(100 0 0)",
+        "h": 44
+      }
+    ]
+  },
+  {
+    "focusOrder": [
+      {
+        "tag": "INPUT",
+        "id": "email",
+        "name": "",
+        "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, lab(36.7078 0.525653 -35.098) 0px 0px 0px 2px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+        "outline": "none 2px lab(36.7078 0.525653 -35.098)",
+        "border": "lab(36.7078 0.525653 -35.098)"
+      },
+      {
+        "tag": "INPUT",
+        "id": "password",
+        "name": "",
+        "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, lab(36.7078 0.525653 -35.098) 0px 0px 0px 2px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+        "outline": "none 2px lab(36.7078 0.525653 -35.098)",
+        "border": "lab(36.7078 0.525653 -35.098)"
+      },
+      {
+        "tag": "BUTTON",
+        "id": "",
+        "name": "Show password",
+        "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, lab(36.7078 0.525653 -35.098) 0px 0px 0px 2px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+        "outline": "none 2px lab(36.7078 0.525653 -35.098)",
+        "border": "lab(88.386 -1.61055 -5.34052)"
+      },
+      {
+        "tag": "BUTTON",
+        "id": "",
+        "name": "Sign in",
+        "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, lab(98.2697 -0.986278 -1.98185) 0px 0px 0px 2px, lab(36.7078 0.525653 -35.098) 0px 0px 0px 4px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+        "outline": "none 2px lab(36.7078 0.525653 -35.098)",
+        "border": "rgba(0, 0, 0, 0)"
+      },
+      {
+        "tag": "A",
+        "id": "",
+        "name": "Forgot your password?",
+        "boxShadow": "none",
+        "outline": "solid 2px lab(36.7078 0.525653 -35.098)",
+        "border": "lab(88.386 -1.61055 -5.34052)"
+      }
+    ]
+  },
+  {
+    "tinted": "D:\\ANKUR AI PROJECTS\\CCTV MONITORING TOOL\\docs\\drishti\\evidence\\p3-0\\BR-3-logo-on-tinted-1366.png"
+  },
+  {
+    "invalid": "D:\\ANKUR AI PROJECTS\\CCTV MONITORING TOOL\\docs\\drishti\\evidence\\p3-0\\BR-2-field-invalid-look-1366.png",
+    "border": "lab(49.0306 69.7939 45.0284)"
+  }
+]

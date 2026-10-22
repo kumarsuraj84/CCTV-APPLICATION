@@ -3,7 +3,8 @@ import { redirect } from 'next/navigation'
 import { getCurrentProfile } from '@/lib/auth/profile'
 import { safeNext } from '@/lib/auth/safe-next'
 import { BRAND } from '@/lib/brand'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { FormAlert } from '@/components/ui/form-alert'
+import { AuthCard } from '../AuthCard'
 import { LoginForm } from './LoginForm'
 
 export const metadata = { title: 'Sign in' }
@@ -14,20 +15,17 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   // A person who is already signed in goes straight on. (The proxy does not do this, so a signed-in but deactivated person can still see the form.)
   if (await getCurrentProfile()) redirect(next)
   return (
-    <main className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle>{BRAND.name}</CardTitle>
-          <p className="text-sm text-muted-foreground">Sign in to continue.</p>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {sp.error === 'link' && <p className="text-sm text-destructive">That link has expired. Ask for a new one.</p>}
-          <LoginForm next={next} />
-          <Link href="/forgot-password" className="block text-center text-sm text-muted-foreground underline">
-            Forgot your password?
-          </Link>
-        </CardContent>
-      </Card>
-    </main>
+    <AuthCard
+      title={`Sign in to ${BRAND.name}`}
+      description={BRAND.subtitle}
+      footer={
+        <Link href="/forgot-password" className="rounded-sm font-medium text-primary underline-offset-4 hover:underline">
+          Forgot your password?
+        </Link>
+      }
+    >
+      {sp.error === 'link' && <FormAlert className="mb-5">That link has expired. Ask for a new one.</FormAlert>}
+      <LoginForm next={next} />
+    </AuthCard>
   )
 }

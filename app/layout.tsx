@@ -1,28 +1,20 @@
 import type { Metadata } from 'next'
 import { JetBrains_Mono, Manrope } from 'next/font/google'
 import { Toaster } from 'sonner'
-import { BRAND } from '@/lib/brand'
+import { ROOT_METADATA } from '@/lib/brand'
 import './globals.css'
 
 const manrope = Manrope({ variable: '--font-manrope', subsets: ['latin'], display: 'swap' })
 const jetbrainsMono = JetBrains_Mono({ variable: '--font-jetbrains', subsets: ['latin'], display: 'swap' })
 
-export const metadata: Metadata = {
-  title: { template: `%s — ${BRAND.short}`, default: BRAND.name },
-  description: BRAND.subtitle,
-}
+// Title, description and app name come from lib/brand.ts; the browser icons are app/icon.png, app/icon1.png and app/apple-icon.png
+// (the compact CityKart Drishti mark, copied unchanged from public/brand/).
+export const metadata: Metadata = ROOT_METADATA
 
+// One light theme only (P3-0): no theme switch and no saved theme.
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" data-theme="light" suppressHydrationWarning className={`${manrope.variable} ${jetbrainsMono.variable} h-full antialiased`}>
-      <head>
-        {/* Apply the saved theme before the first paint so the page does not flash. */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `(function(){try{var v=localStorage.getItem('cctvhub-theme')||'light';var r=document.documentElement;r.setAttribute('data-theme',v);r.classList.toggle('dark',v==='dark');}catch(e){}})()`,
-          }}
-        />
-      </head>
+    <html lang="en" className={`${manrope.variable} ${jetbrainsMono.variable} h-full antialiased`}>
       <body className="h-full">
         {children}
         <Toaster richColors position="bottom-right" />

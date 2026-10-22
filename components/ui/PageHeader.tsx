@@ -20,7 +20,7 @@ export function PageHeader({ title, description, breadcrumbs, actions, className
     <div className={cn('mb-3 flex flex-col gap-1.5 sm:flex-row sm:items-start sm:justify-between', className)}>
       <div className="min-w-0 space-y-0.5">
         {breadcrumbs && breadcrumbs.length > 0 && (
-          <nav className="flex items-center gap-1 text-[11px] text-muted-foreground/60 mb-1">
+          <nav className="flex items-center gap-1 text-xs text-muted-foreground mb-1">
             {breadcrumbs.map((crumb, i) => (
               <span key={i} className="flex items-center gap-1">
                 {i > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}

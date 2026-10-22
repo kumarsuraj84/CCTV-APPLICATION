@@ -23,7 +23,8 @@ function cleanHeaders(request: NextRequest): Headers {
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
-  const isAsset = pathname.startsWith('/_next') || pathname === '/favicon.ico' || /^\/[A-Za-z0-9._-]+\.(svg|png|jpg|jpeg|gif|webp|ico)$/.test(pathname)
+  // Image files at the top level of public/ and directly inside public/brand/ (the logo shown on the sign-in page, P3-0).
+  const isAsset = pathname.startsWith('/_next') || pathname === '/favicon.ico' || /^\/(?:brand\/)?[A-Za-z0-9._-]+\.(svg|png|jpg|jpeg|gif|webp|ico)$/.test(pathname)
   if (isAsset || PUBLIC_API.has(pathname) || pathname === '/auth/callback') {
     return NextResponse.next({ request: { headers: cleanHeaders(request) } })
   }

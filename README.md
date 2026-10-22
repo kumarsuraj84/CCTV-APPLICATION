@@ -1,6 +1,6 @@
-# CityKart Network Monitoring Hub
+# CityKart Drishti (CKDRISHTI)
 
-Monitors CCTV cameras, NVRs, servers, attendance machines, footfall counters and any other IP device,
+CityKart Drishti (formerly "CityKart Network Monitoring Hub"; the npm package name `cctv-hub` is unchanged). Monitors CCTV cameras, NVRs, servers, attendance machines, footfall counters and any other IP device,
 with live camera feeds and per-user access to stores and cameras. Built on the Citykart Desk stack
 (Next.js 16, Supabase/PostgreSQL, shadcn/ui). The app listens on **port 3212**.
 
