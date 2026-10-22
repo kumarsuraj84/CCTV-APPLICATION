@@ -74,7 +74,7 @@ Conventions applied everywhere (checked in the code named):
 - **Time**: `timestamptz` in UTC, shown in IST 24-hour through `lib/time.ts`. Exception: playback uses an internal "shown time" (a fake-UTC instant carrying the IST wall clock, `lib/streams/timeline.ts`), to be replaced by true UTC in D-17.
 - **Errors**: raw database or device messages never reach the UI (`lib/observability/sanitize-error.ts`); the logger redacts by key name and by pattern (`lib/observability/logger.ts`, `mask.ts`).
 - **Secrets per purpose** (`lib/secrets.ts` `getSecret`, minimum 16 characters, a missing secret turns the feature off). Caveat: the proxy's verified-user header is signed with `SUPABASE_SERVICE_ROLE_KEY` (`lib/auth/verified-user.ts`), so that key serves two purposes.
-- **Database**: numbered forward migrations, each with a rollback in `supabase/rollback/`; closed default privileges and explicit `REVOKE`/`GRANT` on every object; every SECURITY DEFINER function from migration 0009 on uses `SET search_path = ''` with qualified names. Functions from migrations 0001-0006 that were not redefined later still pin `search_path = public` (for example `monitor_apply_results`, `nvr_read_credential`) — fixed in P2-6.
+- **Database**: numbered forward migrations, each with a rollback in `supabase/rollback/`; closed default privileges and explicit `REVOKE`/`GRANT` on every object; every SECURITY DEFINER function uses `SET search_path = ''` with qualified names (P2-6 fixed the last four: `monitor_request_check`, `revoke_user_sessions`, `targets_uptime`, `privilege_violations`; `privilege_violations()` now flags any that does not).
 - **Wording**: plain English, IST times, no jargon; "Location" in user-visible text and routes (ruling T-1, done by the T-1 package: `/locations`, `/locations/[id]`, `/admin/locations`; the old `/stores` addresses redirect permanently; code identifiers and tables are renamed by P2-5a). A guard test (`tests/unit/terminology-guard.test.ts`) fails if a string in `app/`, `components/`, `lib/` or `scripts/` says "store" outside its documented allow-list.
 
 ---
@@ -124,28 +124,28 @@ All database access is over HTTP through supabase-js and PostgREST; there is no 
 | Process | Start | Port / bind | Status | Notes |
 |---|---|---|---|---|
 | Web app | `npm run dev` / `npm run start` | **3212**, all interfaces, plain HTTP | BUILT | No `--hostname` in `package.json`, so it listens on all interfaces (risk R10); `output: 'standalone'` |
-| Video gateway | `npm run gateway` (`services/gateway/index.ts`) | **3412**, `0.0.0.0`, plain HTTP/WS | BUILT | The only video endpoint a browser reaches; serves `/g/ws`, `/g/video-stream.js`, `/g/video-rtc.js`, `/g/health` (JSON); asks the media session registry in the database (PostgREST, service key) when a socket arrives and every 15 s (P2-4) |
-| go2rtc | `npm run stack:up` (`deploy/docker-compose.dev.yml`, `deploy/go2rtc.yaml`) | **1984** API and **8555** WebRTC tcp/udp, both published on `127.0.0.1` only | BUILT | `cap_drop: ALL`, `no-new-privileges`, config mounted read-only, RTSP server off. API has no credentials; WebRTC listener is unused but still enabled (D-13 removes it) |
+| Video gateway | `npm run gateway` (`services/gateway/index.ts`) | **3412**, `0.0.0.0`, plain HTTP/WS | BUILT | The only video endpoint a browser reaches; serves `/g/ws`, `/g/video-stream.js`, `/g/video-rtc.js`, `/g/health` (JSON); asks the media session registry in the database (PostgREST, its own key `SUPABASE_VIDEO_GATEWAY_KEY`, role `video_gateway`, P2-6) when a socket arrives and every 15 s (P2-4) |
+| go2rtc | `npm run stack:up` (`deploy/docker-compose.dev.yml`, `deploy/go2rtc.yaml`) | **1984** API, published on `127.0.0.1` only | BUILT | `cap_drop: ALL`, `no-new-privileges`, config mounted read-only, RTSP server off. P2-6: API login from `GO2RTC_API_USERNAME`/`GO2RTC_API_PASSWORD` (empty = none); WebRTC listener off and 8555 no longer published (a running container changes when it is recreated) |
 | go2rtc demo override | `npm run stack:up:demo` (+ `deploy/docker-compose.demo.yml`, `go2rtc.demo.yaml`) | adds RTSP **8554** on the container's own `127.0.0.1` (not published) | BUILT (dev only) | Needed only for the generated test picture (`DEMO_VIDEO=1`, non-production, loopback NVR address) |
-| Worker | `npm run worker` (`services/worker/index.ts`) | none | BUILT | Service-role key; heartbeat-based single-worker guard (`lib/monitor/guard.ts`) — to be replaced by a lease (P2-7) |
+| Worker | `npm run worker` (`services/worker/index.ts`) | none | BUILT | Its own key `SUPABASE_MONITOR_WORKER_KEY` (role `monitor_worker`, P2-6); housekeeping every ten minutes (rate-limit windows, media sessions, credential-read log); heartbeat-based single-worker guard (`lib/monitor/guard.ts`) — to be replaced by a lease (P2-7) |
 | Supabase | `npm run db:start` | 55321 API, 55322 DB, 55323 Studio, 55324 mail catcher (55320 shadow DB for diffs) | BUILT | `supabase/config.toml` |
 | Fake NVR and devices | `npm run fake:nvr` (`scripts/fake-nvr.ts`) | `127.0.0.1`: ISAPI 8081 (default), RTSP 8554, TCP 9101-9103 | BUILT (dev only) | Demo data: `npm run demo:seed` (DEMO organisation, generated passwords printed once) |
 | ffmpeg | spawned per fast-playback request by the web process (`lib/streams/vod.ts`) | none (pipe only) | BUILT (fakes only) | Not installed on the development host; never run end to end |
 
-### 3.3 Target service separation (D-14, D-14a; P2-6 PLANNED)
+### 3.3 Service separation (D-14, D-14a; P2-6 BUILT for the database, process separation of the media path WP-4.3)
 
-Today every server process uses the one `service_role` key. The accepted target is per-service database roles through PostgREST role-switching JWTs (after a spike; fallback: one key plus a credential broker process):
+The spike (`docs/drishti/adr-service-roles.md`) showed that PostgREST on the pinned stack switches to the role named by a JWT's `role` claim; migration `20261021000033_p26_service_roles.sql` creates the roles and their explicit grants, `scripts/gen-secrets.mjs` signs one key per role, and `lib/supabase/service-clients.ts` gives each process its own client (development without a key falls back to the service key with a `service_key_fallback` warning; production refuses):
 
-| Role | May do |
-|---|---|
-| `app_web` | no Vault access; writes through narrow RPCs |
-| `monitor_worker` | read recorder credentials for monitoring; write observations; lease RPCs |
-| `media_service` | read recorder credentials for video; manage `media_sessions` and `export_jobs`; owns go2rtc registration and ffmpeg (moved out of the web process, WP-4.3) |
-| `video_gateway` | EXECUTE only on `media_session_open` / `media_sessions_still_valid` / `media_session_close` |
-| `fleet_service` | Phase 7: job store and agent API; separate from media processing |
-| signer (separate Windows service) | holds the command-signing key in CNG, signs only after its own database checks (D-9) |
+| Role (key) | Process | May do (exact grants: the migration and `.superpowers/sdd/drishti/p2-6-report.md`) |
+|---|---|---|
+| `app_web` (`SUPABASE_APP_WEB_KEY`) | web app (`createAdminClient`) | the tables and RPCs the web code uses (BYPASSRLS; every query org-scoped); **no NVR login read**, no write to `check_state`/`outages`/`worker_state`/`monitor_gaps`, no worker, gateway, test or diagnostic function; writes an NVR password only through `recorder_store_credential` |
+| `media_service` (`SUPABASE_MEDIA_SERVICE_KEY`) | the video path of the web process (`createMediaClient`: open live, playback, fast playback; the NVR login of discovery and the connection test) | camera routes (SELECT on cameras, locations, mappings, recorders, assets), `media_session_create/open/still_valid/close`, `recorder_credential_read` for `live`/`playback`/`vod`/`export`/`discovery`/`connection_test`, the access audit rows of video |
+| `monitor_worker` (`SUPABASE_MONITOR_WORKER_KEY`) | worker | monitoring inputs, `monitor_apply_results`, its own `worker_state` columns, `monitor_gaps` insert, `cameras.camera_ip`, `recorder_credential_read` for `monitoring`, housekeeping prunes; lease RPCs in P2-7 |
+| `video_gateway` (`SUPABASE_VIDEO_GATEWAY_KEY`) | gateway | EXECUTE on `media_session_open` / `media_sessions_still_valid` / `media_session_close` only; no table (not even through the API description) |
+| `fleet_service` | Phase 7 | not created yet |
+| signer (separate Windows service) | D-9 | holds the command-signing key in CNG, signs only after its own database checks |
 
-Every Vault read will be logged (`vault_reads`, no values). Production packaging (Windows services with auto-start, `tsx` out of production, one-command update, visible version) is WP-5.4.
+`privilege_violations()` names any drift (the gateway with another grant, a credential read for another role, `app_web` writing observations). Every NVR password read is logged (`vault_reads`). The web process still holds the service key for GoTrue's admin API (user administration) and both web keys (the media path is not a separate process yet); production locks the service key out of NVR logins per organisation (`security_settings.service_role_credential_reads = false`, runbook section 5). Production packaging (Windows services with auto-start, `tsx` out of production, one-command update, visible version) is WP-5.4.
 
 ---
 
@@ -187,7 +187,7 @@ Functions (grouped; exact privileges are asserted by `tests/integration/access-m
 | Reporting / diagnostics only (never authorisation) | `report_effective_camera_ids/device_ids`, `access_session_capabilities`, `access_legacy_*`, `access_migrate_legacy(_test)`, `function_privileges()` |
 | Inventory secrets (service role) | `nvr_store_credential(store, secret)`, `nvr_read_credential(store)`, `nvr_delete_credential(store)` (Vault name keyed by store) |
 | Monitoring (service role) | `monitor_apply_results(org, results, threshold)`, `monitor_request_check()`, `monitor_stop_targets`, `monitor_stale_after_minutes()` (20), `targets_uptime(...)`; triggers `monitor_forget_target` (delete erases a target's state), `monitor_stop_*` (switching off closes outages) |
-| Hygiene | `privilege_violations()` (relations only; function EXECUTE, sequences and the global default ACL are not covered — P2-6) |
+| Hygiene | `privilege_violations()` (P2-6: relations, column grants, sequences, functions — PUBLIC/anon EXECUTE, SECURITY DEFINER without `search_path = ''`, credential readers, the gateway's three functions — the global function default ACL and the public schema defaults, vault schema usage); `privilege_violations_selftest()` proves it names a new function without grants and search_path, a PUBLIC grant and an open default |
 
 RLS summary (0011, 0014): cameras visible with any CCTV capability covering them; devices only with `it.inventory.view` or `it.monitoring.view` (a CCTV grant never reveals IT, AC-4); locations with any grant inside them; `check_state`/`outages` per target type (camera like cameras, device like devices, NVR with the IT view of the location); groups only with a visible member (an empty group: creator and `admin.inventory`); items per visible camera; profiles: own row, the organisation's with `admin.users` (no role literal since 0014); grants: own, the organisation's with `admin.access`; audit log with `admin.audit.read`. No table is writable by signed-in people; `anon` reads nothing (`tests/integration/hardening.test.ts`).
 
@@ -206,7 +206,7 @@ RLS summary (0011, 0014): cameras visible with any CCTV capability covering them
 | History re-keying | `check_state`/`outages` of type `nvr` → `recorder`; soft delete instead of the delete triggers that erase history | P2-5a | PLANNED |
 | `media_sessions` | session registry for video and remote sessions (section 6.6) | P2-4 (D-3) | PLANNED |
 | `worker_leases` (+ `monitor_requests`) | atomic lease with fencing token (section 6.9) | P2-7 (D-8) | PLANNED |
-| `rate_limit_hits`, `vault_reads` | shared rate limiter; credential-read log | P2-6 (D-11, D-14) | PLANNED |
+| `rate_limit_hits`, `vault_reads`, `security_settings` | shared rate limiter; credential-read log; per-organisation lock of the service key on NVR logins | P2-6 (D-11, D-14) | BUILT (migration `20261021000033`) |
 | Observation states and facets | `check_state.state` ∈ {healthy, degraded, failed, unreachable, unknown_parent, maintenance, unsupported, not_checked}; `stale` computed on read; `evidence jsonb`; per-camera facets reachability / stream / recording | WP-4.1 (D-7) | PLANNED |
 | `incidents` (replaces `outages`) | kind ∈ {failure, unreachable}, `parent_incident_id`, `cause_asset_id`; `targets_availability` returns up / down / unknown seconds and coverage | WP-4.1 | PLANNED |
 | `maintenance_windows` | suppress alerts; state `maintenance` | WP-4.1 | PLANNED |
@@ -594,7 +594,7 @@ The worker evaluates in dependency order: location uplink, then switch, then rec
 
 ### 8.1 Secrets and Vault (BUILT, with gaps)
 
-NVR passwords live only in Vault (`nvr_store_credential` / `nvr_read_credential` / `nvr_delete_credential`, service role only), read at use time and never stored in tables, logs or responses; signed-in people cannot read NVR address/login columns, the Vault id or camera addresses (column grants + IT-view views). App secrets per purpose with a 16-character minimum (`stream_token`, `cron`, `worker`, `system_log_ingest`; the last three have no consumer yet); `npm run env:local` generates them into `.env.local`; demo passwords are random and printed once. Gaps: no rotation procedure or key ids (P2-6, SO-6); the service-role key also signs the proxy header; Vault/pgsodium root key backup and restore untested (WP-5.4, SO-13); rollbacks do not delete Vault secrets.
+NVR passwords live only in Vault, written by `recorder_store_credential` (write-only; the web app's role may call it) and read only through `recorder_credential_read(recorder, purpose, actor)` (P2-6): the database lets `monitor_worker` read for `monitoring` and `media_service` for `live`/`playback`/`vod`/`export`/`discovery`/`connection_test`, the service role any purpose unless its organisation locked it out (`security_settings`), nobody else; every read writes a `vault_reads` row (role, person, recorder, purpose, outcome, time; never the value; kept 180 days); the import's saved-password comparison is logged as `import_compare`. Passwords are never stored in tables, logs or responses; signed-in people cannot read NVR address/login columns, the Vault id or camera addresses (column grants + IT-view views; probed by value for every table and view in `tests/integration/credential-exposure.test.ts`). App secrets per purpose (`lib/secrets.ts`): the first five need 16 characters, the P2-6 ones (`merge_confirm`, `verified_user`, `go2rtc_api`, `signer`, `agent_ingest`, `audit_checkpoint`) 32; all must differ; `sharedSecret()` gives the configured value (every app instance agrees) or, outside production only, one key per process. `node scripts/gen-secrets.mjs` generates them and the per-service keys into a file without printing; rotation per secret: `docs/drishti/runbooks/secret-rotation.md`. The proxy's verified-user header is signed with `VERIFIED_USER_SECRET` (development falls back to the service key; production does not). The logger masks text as well as key names (URL logins, Authorization values, JWTs, `sb_` keys). Gaps: Vault/pgsodium root key backup and restore untested (WP-5.4, SO-13); rollbacks do not delete Vault secrets; JWT keys cannot be revoked one by one (runbook section 3).
 
 ### 8.2 Tokens
 
@@ -602,25 +602,29 @@ Stream tokens: HMAC-SHA256, domain-separated (`stream.v1.`), one media session (
 
 ### 8.3 Gateway
 
-Exact path and Origin allow-list (`GATEWAY_ALLOWED_ORIGINS`), token check before any upstream connection, stream name derived only from the token, message-type allow-list, per-IP and total limits, slow-request timeouts, security headers, CORS only for allowed origins on the two player scripts, fixed error sentences. Binds `0.0.0.0` over plain HTTP/WS. **P2-4 (D-3):** before anything is connected upstream the token's media session must open in the database registry (`media_session_open`: the token's person, camera, kind and stream, once, in the 90 s window, still allowed; 1008 otherwise, 1013 when the registry cannot be asked); every 15 s one batched `media_sessions_still_valid` call re-checks every open socket and closes the invalid ones with 4403 "Access changed"; a socket without a good check for 45 s is closed ("Cannot verify access", fail closed). The registry client uses the service key from the environment (D-14: a least-privilege role in P2-6). `/g/health` is JSON (open sessions, age of the last check). Details and measured latencies: `docs/drishti/access-model.md` "Revoking open video (P2-4)".
+Exact path and Origin allow-list (`GATEWAY_ALLOWED_ORIGINS`), token check before any upstream connection, stream name derived only from the token, message-type allow-list, per-IP and total limits, slow-request timeouts, security headers, CORS only for allowed origins on the two player scripts, fixed error sentences. Binds `0.0.0.0` over plain HTTP/WS. **P2-4 (D-3):** before anything is connected upstream the token's media session must open in the database registry (`media_session_open`: the token's person, camera, kind and stream, once, in the 90 s window, still allowed; 1008 otherwise, 1013 when the registry cannot be asked); every 15 s one batched `media_sessions_still_valid` call re-checks every open socket and closes the invalid ones with 4403 "Access changed"; a socket without a good check for 45 s is closed ("Cannot verify access", fail closed). The registry client uses the gateway's own key `SUPABASE_VIDEO_GATEWAY_KEY` (P2-6: role `video_gateway`, EXECUTE on those three functions only, no table; proven in `tests/integration/service-roles.test.ts`), and sends go2rtc's API login on its upstream socket and script requests. `/g/health` is JSON (open sessions, age of the last check). Details and measured latencies: `docs/drishti/access-model.md` "Revoking open video (P2-4)".
 
-### 8.4 go2rtc review (SO-9 partial; D-13 PLANNED)
+### 8.4 go2rtc review (SO-9 partial; D-13 partly BUILT in P2-6)
 
-| Item | Today (`deploy/*`) | Planned (D-13) |
+| Item | Now (`deploy/*`, P2-6) | Still open |
 |---|---|---|
-| API 1984 | published on `127.0.0.1` only; **no credentials**; supports `exec:`/`ffmpeg:` sources | API credentials from a dedicated secret; only the media service registers; only `rtsp://` sources whose host:port is a registered recorder endpoint (plus the dev demo source) |
-| WebRTC 8555 tcp/udp | enabled and published on `127.0.0.1` though unused | `webrtc: listen: ""`, no publish |
+| API 1984 | published on `127.0.0.1` only; **API login** (`api.username`/`password` from `GO2RTC_API_USERNAME`/`GO2RTC_API_PASSWORD`; both empty = none, verified on 1.9.9 in a temporary container: 401 without it); the web app sends it on every request and registers only `rtsp://` sources whose host:port is a registered recorder endpoint, plus the demo picture outside production (`lib/security/targets.ts` `sourceRefusal`: `exec:`, `echo:`, `expr:`, other `ffmpeg:` inputs, `http`, `rtmp`, `#` options and special addresses refused before go2rtc is asked) | go2rtc 1.9.9 itself still ACCEPTS `echo:`, `expr:` and `ffmpeg:` through its API (verified), and lists sources with their passwords to anyone holding the API login: only the media service may hold it once it is a separate process (WP-4.3); an RTSP credential broker (sources without passwords) is not built |
+| WebRTC 8555 tcp/udp | `webrtc: listen: ""`, no longer published | the owner's running container keeps the old publishing until it is recreated (`npm run stack:up`) |
 | RTSP 8554 | off in `go2rtc.yaml`; on in the demo config inside the container loopback only | unchanged (demo only) |
-| Other modules (srtp, rtmp, homekit, hass) | defaults of 1.9.9 not reviewed | disabled explicitly; verified by `GET /api/config` and socket listing in an integration test |
+| Other modules (srtp, rtmp, homekit, hass) | not reviewed: 1.9.9 has no module allow-list that was verified (an `app: modules` key made no difference in the probe) | WP-4.3 (listener test with `GET /api/config` and socket listing) |
 | Container | digest-pinned 1.9.9, `cap_drop: ALL`, `no-new-privileges`, read-only config | separate media service, never sharing a host process with fleet execution |
 
-### 8.5 Outbound connections and egress
+### 8.5 Outbound connections and egress (P2-6, SO-4)
 
-There is no registered-target restriction yet: any syntactically valid host is accepted by the probes (`lib/probes.ts` `isValidHost`), including loopback and link-local (SO-4). Planned (`lib/security/targets.ts`, P2-6): one module every outbound connection must use (probes, NVR client, RTSP, discovery, go2rtc registration, ffmpeg downloads, later SNMP/WinRM/SSH/VNC) allowing only registered endpoints, refusing loopback/link-local/metadata ranges outside demo mode, pinning DNS answers, refusing `exec:`/`ffmpeg:` source strings.
+`lib/security/targets.ts` is the one place that answers "may I connect to host:port for this purpose?":
 
-### 8.6 Rate limits
+- `connectRefusal(host)` is the backstop in front of every socket (`lib/probes.ts` tcpCheck/icmpCheck, `lib/rtsp/describe.ts`, `lib/nvr/client.ts`, go2rtc sources): link-local (169.254/16, fe80::/10), cloud metadata (169.254.169.254, 169.254.170.2, 100.100.100.200, fd00:ec2::254, metadata names), unspecified, multicast, broadcast and reserved addresses are never reached; loopback ("this computer") only outside production. No socket is opened for a refusal.
+- `checkTarget({host, port, purpose})` lets through only endpoints this process read from the database in the last hour (the loaders `lib/inventory/recorders.ts`, `lib/monitor/supabase-db.ts` and the connection test register them) or `OUTBOUND_TARGET_ALLOWLIST`; a known host on another port is a port mismatch; a host name is resolved once and pinned for 12 hours, and a later answer sharing no address with it is refused (DNS rebinding); it returns the address to connect to. It is used by `lib/monitor/probes.ts` (worker, discovery, connection test) and the media path (`lib/streams/open.ts`, `playback.ts`, `vod.ts` through `findCamera`), so NVR requests, RTSP checks and go2rtc sources carry the checked address.
+- Not covered yet: SNMP/WinRM/SSH/VNC do not exist (they must call `checkTarget` when they arrive); the pin lives in process memory (a restart re-pins).
 
-In-process only (`lib/rate-limit.ts` via `processSingleton`, `lib/streams/request-limit.ts`, `lib/streams/limiter.ts`): sign-in, forgot password, check-now 3/min, user administration 30/min, access preview 30/min / save 10/min / review 30/min, the four video counts (section 5.6), fast playback 1 per person / 8 total. Inventory, import, discovery and group actions have no limit. Several app processes would each allow the full rate. Planned: database-backed `rate_limit_hit(key, limit, window)` with an in-process first filter and rising sign-in delays by e-mail + IP (D-11, P2-6).
+### 8.6 Rate limits (P2-6, D-11, SO-7)
+
+Shared by every app instance: `rate_limit_hit(key, limit, window_sec)` (atomic upsert per key, window size and fixed window start; `app_web` and `media_service`), `rate_limit_state` / `rate_limit_clear` (sign-in delays), `rate_limit_prune` (the worker, every ten minutes, with `media_sessions_prune` and `vault_reads_prune`). `lib/rate-limit-shared.ts` keeps an in-process first filter in front (an instance over the limit never asks the database) and hashes the subject into the key (no e-mail address or IP in the table). Limits (per person unless said): sign-in rising delay per e-mail address + IP (no lockout: from the third failure in 15 minutes 5 s, 10 s, ... 5 minutes; a success clears it); forgot password 3 / 15 min per address + IP; change password 5 / 15 min; every administration action 120 / min on top of its own count (users 30 / min, access preview 30 / save 10 / review 30 a minute, hierarchy previews 30 / min, camera search 60 / min, connection test and find cameras 6 / min, merge preview 30 / min, check-now 3 / min, import check 20 and apply 5 per 10 minutes, find cameras for all 3 per 10 minutes); video: live 30 / min (a 36-tile wall renewing every minute with retries in three tabs stays below it, tested), playback 30, lookups 60, fast playback 30 a minute. Database unreachable: sensitive actions are refused ("try again in a moment"), video opening is allowed within the in-process count. `TRUSTED_PROXY_HOPS` decides whether `X-Forwarded-For` is believed (otherwise "noip"). Fast playback keeps its own conversion limits (1 per person, 8 in all).
 
 ### 8.7 Test egress guard
 
@@ -698,7 +702,7 @@ The requirement-level status is the tracker (`docs/drishti/DELIVERY-STATUS.md`, 
 | T-1 Store → Location wording and routes (+ P2-5c re-review cleanups) | `t1-brief.md`, `.superpowers/sdd/drishti/t1-report.md` | BUILT (see the tracker) |
 | P2-4 session registry, ≤ 60 s revocation (WP-2.2) | `p2-4-brief.md` | PLANNED |
 | P2-5a/b/c locations, assets, recorders, mappings, network definitions, Wi-Fi inventory, import + discover-all (WP-2.3) | `p2-5-brief.md` | PLANNED |
-| P2-6 credential/SQL hardening, service roles, outbound restriction, shared rate limits (WP-2.4, D-11, D-14) | `p2-6-brief.md` | PLANNED |
+| P2-6 credential/SQL hardening, service roles, outbound restriction, shared rate limits (WP-2.4, D-11, D-14) | `p2-6-brief.md`, `p2-6-report.md` | BUILT (review pending) |
 | P2-7 worker lease and fencing (WP-2.5) | `p2-7-brief.md` | PLANNED |
 | P3-0 brand quick pass | `eef5b3b` | BUILT |
 | P3 shell, auth, MFA, CSP, visual QA (WP-3.1…3.5) | — | PLANNED |
@@ -721,9 +725,9 @@ Working tree at writing: `docs/drishti/DECISIONS.md` and `DELIVERY-STATUS.md` ha
 3. MFA disabled; no fresh authentication (P3).
 4. NVR-down marks cameras down; no unreachable/unknown/maintenance states; no recording health (WP-4.1, WP-5.2).
 5. Heartbeat-only worker guard with race windows; check-now global across organisations; late-result guard and NVR back-off in memory only (P2-7).
-6. Single service-role key in every process; no outbound target restriction; go2rtc API without credentials and an unused WebRTC listener; `search_path = public` on early functions; `privilege_violations()` blind to functions (P2-6).
+6. P2-6 closed the single-key, outbound-target, go2rtc-login, WebRTC-listener and `search_path` items (sections 3.3, 8.4, 8.5). Left: the web process still holds the service key (GoTrue admin API) and both web keys (media path not yet its own process, WP-4.3); go2rtc 1.9.9 accepts `echo:`/`expr:`/`ffmpeg:` through its API and lists sources with passwords to whoever has the API login; `app_web` still writes several tables directly instead of narrow RPCs.
 7. Plain HTTP/WS; app on all interfaces, gateway on `0.0.0.0`; no CSP (P3, WP-5.4).
-8. In-process rate limits; inventory/import/discovery unlimited (P2-6).
+8. Rate limits are shared since P2-6 (section 8.6); agent enrolment and check-in limits exist as names only until the agent API does (P6/P7).
 9. Best-effort, mutable audit (WP-5.4).
 10. Fast playback returns a savable MP4 (contrary to the D-L1 target) and runs ffmpeg inside the web process (P4-L2, WP-4.3).
 11. Group names unique per organisation leak the existence of a hidden group's name (AC-11).

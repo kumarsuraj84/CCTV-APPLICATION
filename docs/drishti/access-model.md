@@ -186,7 +186,7 @@ Decision D-3, directive AC-14 / CC-10, migration `20261021000029_p24_media_sessi
 - A file already downloaded by fast playback stays with the person; only the running transfer is cut.
 - The page's own router cache can show already-rendered pages for up to 30 s (`staleTimes.dynamic`); it holds no video.
 - MFA: `aal2` is stored per session but `mfa_enforced()` is off until P3, which must pass the verified assurance level when it makes sessions.
-- The gateway and the web app use the full service key (D-14: per-service roles in P2-6 narrow the gateway to `media_session_open`, `media_sessions_still_valid` and `media_session_close`). Remote sessions (`remote_view`, `remote_control`) have their kinds and checks but are made in P7.
+- P2-6 (D-14): the gateway uses its own database role `video_gateway` (key `SUPABASE_VIDEO_GATEWAY_KEY`), which may call `media_session_open`, `media_sessions_still_valid` and `media_session_close` and nothing else; the web app makes sessions through its video path's role `media_service` and ends them (revocation, revalidation) through its own role `app_web` (`docs/drishti/adr-service-roles.md`). In development a missing key falls back to the service key with a warning. Remote sessions (`remote_view`, `remote_control`) have their kinds and checks but are made in P7.
 
 ## How to add a capability
 

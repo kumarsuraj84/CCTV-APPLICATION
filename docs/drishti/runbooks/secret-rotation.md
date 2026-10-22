@@ -1,0 +1,114 @@
+# Runbook: secrets, service keys and their rotation (P2-6)
+
+Applies to: CityKart Drishti, local development and the later Windows deployment (WP-5.4). Written 2026-10-22 with P2-6
+(`docs/drishti/adr-service-roles.md`, migration `20261021000033_p26_service_roles.sql`).
+
+Rules that hold for every step below:
+
+- No value is ever printed, pasted into a ticket or chat, written into the repository or a log. Every tool here prints names only.
+- Every secret is generated: `node scripts/gen-secrets.mjs` (also `npm run secrets:gen`). It writes to one file (default
+  `.env.local`; `--file <path>` for another, for example a production file outside the repository), adds what is missing, and never
+  replaces a value that is set unless `--rotate` (all generated values) or `--rotate=NAME,NAME` (only those) says so. `--dry-run` shows
+  what would change. The service keys need the project JWT secret: on the local stack the script reads it from `supabase status`; in
+  production pass `--jwt-secret-env NAME` (the name of an environment variable that holds it).
+- Each purpose has its own secret (`lib/secrets.ts`): at least 16 characters for the first five, 32 for the P2-6 ones, all different
+  (`auditSecrets()` reports a short or repeated one, never the value).
+- After a change, restart exactly the processes in the "read by" column. The development web server (`npm run dev`) reloads
+  `.env.local` by itself; the gateway, the worker and go2rtc must be restarted.
+
+## 1. The secrets
+
+| Key | Purpose | Read by | Rotation (what happens) |
+|---|---|---|---|
+| `SUPABASE_APP_WEB_KEY` | the web app's own database role `app_web` (no NVR login read) | web app | `gen-secrets --rotate=SUPABASE_APP_WEB_KEY`, restart the web app. Old key stays valid until its `exp` (one year) — see section 3 to cut it off at once |
+| `SUPABASE_MEDIA_SERVICE_KEY` | the video path's role `media_service` (routes, media sessions, NVR logins for video, discovery, connection test) | web app | as above |
+| `SUPABASE_MONITOR_WORKER_KEY` | the worker's role `monitor_worker` | worker | as above, restart the worker |
+| `SUPABASE_VIDEO_GATEWAY_KEY` | the gateway's role `video_gateway` (three registry functions only) | gateway | as above, restart the gateway |
+| `SUPABASE_SERVICE_ROLE_KEY` | the full service key: scripts, seeding, tests, and GoTrue's admin API for user administration | web app (user administration only), scripts | made from the project JWT secret: rotate that (section 2) |
+| `STREAM_TOKEN_SECRET` | signs the 90-second video tokens | web app AND gateway (same value) | change in both, restart the gateway. Every older token is refused at once (`tests/unit/stream-token.test.ts`); open walls get new tokens on their next renewal (within a minute), sockets already open are not cut |
+| `ACCESS_PREVIEW_SECRET` | binds an access save to the preview shown (shared by every app instance) | web app | an open preview must be checked again |
+| `MERGE_CONFIRM_SECRET` | binds a camera merge to the pair confirmed (shared by every app instance) | web app | an open merge question must be asked again (they last 10 minutes anyway) |
+| `VERIFIED_USER_SECRET` | signs the proxy's verified-user header (was the service key before P2-6) | web app | nothing visible: unsigned or old headers make the page check the session itself |
+| `GO2RTC_API_USERNAME` / `GO2RTC_API_PASSWORD` | go2rtc's API login (D-13; go2rtc's stream list holds NVR sources with passwords) | web app, gateway, go2rtc container | section 4 (order matters) |
+| `CRON_SECRET`, `WORKER_SECRET`, `SYSTEM_LOG_INGEST_SECRET` | reserved purposes of the first release (no endpoint uses them today) | — | `gen-secrets --rotate=NAME` |
+| `SIGNER_SECRET`, `AGENT_INGEST_SECRET`, `AUDIT_CHECKPOINT_SECRET` | reserved for D-9 command signing, agent check-ins and D-15 checkpoints | — (later packages) | the package that uses one adds its own steps here |
+| NVR passwords | in the Vault, written by the admin screens and the import (write-only) | `media_service`, `monitor_worker` through `recorder_credential_read` (logged in `vault_reads`) | change the password on the NVR, then save it on the NVR's page (or re-import); the worker uses it from its next round |
+
+Production requires every key above that a running process reads: without its own key a service does not start (worker, gateway) or
+the web app refuses the request (`lib/supabase/service-clients.ts`); `MERGE_CONFIRM_SECRET`, `ACCESS_PREVIEW_SECRET` and
+`VERIFIED_USER_SECRET` have no per-process fallback in production.
+
+## 2. The project JWT secret (everything signed with it)
+
+The anon key, the service key, every signed-in person's session and the four service keys are JWTs signed with the project's JWT
+secret. Rotating it invalidates all of them at once: everybody signs in again, and every process needs its new keys.
+
+1. Hosted project: rotate it in the project's settings (JWT keys). Local stack: the CLI's default secret is the same on every
+   development machine (that is acceptable only because the local stack listens on this computer); a custom one is set in the CLI's
+   auth configuration and needs a stack restart — check the pinned CLI's documentation before relying on it (not verified in P2-6).
+2. Put the new anon and service keys into the env file (`npm run env:local -- --force` on the local stack writes a fresh `.env.local`;
+   it keeps nothing from the old one, so prefer editing the two lines by hand in production).
+3. `node scripts/gen-secrets.mjs --rotate=SUPABASE_APP_WEB_KEY,SUPABASE_MEDIA_SERVICE_KEY,SUPABASE_MONITOR_WORKER_KEY,SUPABASE_VIDEO_GATEWAY_KEY`
+   (production: add `--jwt-secret-env NAME --file <path>`).
+4. Restart the web app, the gateway and the worker.
+
+## 3. Cutting off one service key at once (a key was exposed)
+
+A JWT cannot be revoked by itself before its `exp`. To stop a role's keys immediately, as the database owner (psql on the database host):
+
+```sql
+REVOKE video_gateway FROM authenticator;   -- or app_web, media_service, monitor_worker: every key of that role stops working now
+```
+
+Then rotate the project JWT secret (section 2), and give the role back: `GRANT video_gateway TO authenticator;`. Until then the
+process of that role cannot reach the database (the gateway refuses new video; the worker waits; for `app_web`/`media_service` the web
+app fails), so do this only for a real exposure.
+
+To see which role a key in a file is for and when it ends, without showing the key:
+
+```powershell
+node -e "const f=require('fs').readFileSync('.env.local','utf8');for(const l of f.split(/\r?\n/)){const m=/^(SUPABASE_[A-Z_]+_KEY)=(.+)$/.exec(l);if(m){const c=JSON.parse(Buffer.from(m[2].split('.')[1]||'','base64url').toString()||'{}');console.log(m[1],c.role,c.exp?new Date(c.exp*1000).toISOString():'-')}}"
+```
+
+Rotate every service key before its `exp` (one year after it was made).
+
+## 4. go2rtc's API login (order matters)
+
+go2rtc 1.9.9 reads `api.username` / `api.password` from `GO2RTC_API_USERNAME` / `GO2RTC_API_PASSWORD` in its container
+(`deploy/go2rtc.yaml`; `npm run stack:up` passes them from `.env.local`). Both empty = no login (verified on 1.9.9). The web app and the
+gateway send the login when both are set; a go2rtc without a login ignores it. So:
+
+1. `node scripts/gen-secrets.mjs` (first time) or `--rotate=GO2RTC_API_PASSWORD`.
+2. Restart the gateway (the web app reloads `.env.local` by itself in development; restart it in production).
+3. Recreate go2rtc so it reads the new login: `npm run stack:up` (or `stack:up:demo`). Live video and playback reconnect within a minute.
+
+Between steps 2 and 3 everything works (go2rtc without a login ignores the header). After step 3 a process that still has the old
+login gets "The video server did not answer" until it is restarted.
+
+## 5. The lock of the service key on NVR logins (production checklist)
+
+The web app keeps the service key for GoTrue's admin API (user administration). So that this key cannot read NVR passwords, lock it
+out per organisation once every process runs with its own key:
+
+```sql
+-- as the database owner (psql), never through the API (not even the service key may write this table)
+INSERT INTO public.security_settings (org_id, service_role_credential_reads, note)
+VALUES ('<organisation id>', false, 'services use their own keys')
+ON CONFLICT (org_id) DO UPDATE SET service_role_credential_reads = false, updated_at = now();
+```
+
+Check it: `SELECT db_role, purpose, count(*) FROM public.vault_reads WHERE at > now() - interval '1 day' GROUP BY 1, 2;` shows only
+`media_service` and `monitor_worker` afterwards. Undo (for example to run a script that reads logins with the service key):
+the same statement with `true`.
+
+## 6. First switch of a running installation to per-service keys
+
+1. `node scripts/gen-secrets.mjs` (adds the four service keys, go2rtc's login and the P2-6 secrets; keeps everything that is set).
+2. Restart the gateway and the worker; the development web server reloads `.env.local` by itself (production: restart it).
+   Each process logs `service_key_fallback` while it still uses the service key; after the restart no such line appears.
+3. Recreate go2rtc (`npm run stack:up` or `stack:up:demo`) so its API asks for the login (section 4).
+4. Production only: lock the service key out of NVR logins (section 5).
+
+Back out: remove the new keys from the env file and restart the same processes (development falls back to the service key with a
+warning). The database part is undone by `supabase/rollback/20261021000033_p26_service_roles_rollback.sql` (dry run first:
+`BEGIN; \i …; ROLLBACK;`), only after every process is back on the service key.

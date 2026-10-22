@@ -68,13 +68,19 @@ video through; it is the only video address a browser can reach.
 | Port | What | Reachable from |
 | --- | --- | --- |
 | 3412 | gateway: `GET /g/health`, `GET /g/video-stream.js`, `GET /g/video-rtc.js`, WebSocket `/g/ws?token=...` | the network (browsers) |
-| 1984 | go2rtc API | this machine only (127.0.0.1) |
-| 8555 | go2rtc WebRTC (not used: live video goes through the gateway WebSocket) | this machine only (127.0.0.1) |
+| 1984 | go2rtc API (with its own login since P2-6) | this machine only (127.0.0.1) |
+
+go2rtc's WebRTC listener (8555) is off and no longer published (P2-6, D-13: live video goes through the gateway WebSocket).
 
 Settings (`.env.example` lists them): `GO2RTC_URL` (default `http://127.0.0.1:1984`), `GATEWAY_PORT` (default 3412) and
-`GATEWAY_ALLOWED_ORIGINS` (the web app address(es), comma separated, default `NEXT_PUBLIC_APP_URL`). Since P2-4 the gateway also needs
-the database address and service key (`SUPABASE_URL` or `NEXT_PUBLIC_SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`, from the same
-`.env.local`): it checks every video connection in the media session registry and does not start without it. `GET /g/health` answers
+`GATEWAY_ALLOWED_ORIGINS` (the web app address(es), comma separated, default `NEXT_PUBLIC_APP_URL`). The gateway also needs the
+database address (`SUPABASE_URL` or `NEXT_PUBLIC_SUPABASE_URL`) and, since P2-6, its own database key `SUPABASE_VIDEO_GATEWAY_KEY`
+(role `video_gateway`: it may call media_session_open, media_sessions_still_valid and media_session_close and nothing else; in
+development without it the gateway falls back to `SUPABASE_SERVICE_ROLE_KEY` with a warning, in production it does not start): it
+checks every video connection in the media session registry and does not start without it. go2rtc's API login
+(`GO2RTC_API_USERNAME`, `GO2RTC_API_PASSWORD`) is sent by the web app and the gateway; `npm run stack:up` passes the same two to the
+go2rtc container from `.env.local` (`--env-file`). `node scripts/gen-secrets.mjs` makes all of these keys without printing them
+(`docs/drishti/runbooks/secret-rotation.md`). `GET /g/health` answers
 JSON with the number of open video sessions and the age of the last access check (no ids, people or addresses); the Monitoring page
 shows it (`GATEWAY_HEALTH_URL` overrides the address the web server uses to read it).
 
@@ -93,7 +99,7 @@ The web app reads `NEXT_PUBLIC_STREAM_GATEWAY_URL` (the gateway address a browse
 - A browser may only send the player's start requests (`mse`, `mp4`, `mjpeg`) to go2rtc; anything else closes the socket. The player scripts are served with `Access-Control-Allow-Origin` for the listed web app addresses only.
 - The log has outcomes only (no tokens, stream names or people). Stop the gateway with Ctrl+C; it closes all sockets within 5 seconds.
 - Behind a proxy or load balancer the per-address limit sees the proxy's address. Put the gateway where browsers reach it directly, or move the limit to the proxy.
-- go2rtc's API (127.0.0.1:1984) has no password and can run commands (`exec:` sources), so it must never be exposed beyond this machine: do not publish ports 1984 or 8555 on other interfaces and do not put a proxy in front of them.
+- go2rtc's API (127.0.0.1:1984) can run commands (go2rtc 1.9.9 still accepts `echo:`, `expr:` and `ffmpeg:` sources through it, verified 2026-10-22) and its stream list holds NVR sources with their passwords, so it must never be exposed beyond this machine: do not publish port 1984 on other interfaces and do not put a proxy in front of it. Since P2-6 it asks for its own login (set `GO2RTC_API_USERNAME` / `GO2RTC_API_PASSWORD`), and the web app registers only `rtsp://` sources of NVRs it read from the database (plus the demo picture in development); every other source is refused before go2rtc is asked (`lib/security/targets.ts`).
 - The stream token travels in the query string of the WebSocket address, so any reverse proxy or load balancer in front of the gateway must not log query strings.
 - The go2rtc config file is mounted read-only on purpose: camera addresses and passwords are sent to go2rtc at run time and are never written into it. With a read-only file go2rtc answers 400 to a stream change after applying it in memory, so the app reads the stream list back to confirm every change instead of trusting the status. The image is pinned by digest in `deploy/docker-compose.dev.yml`; the container logs are rotated (3 x 10 MB).
 
@@ -101,3 +107,17 @@ The web app reads `NEXT_PUBLIC_STREAM_GATEWAY_URL` (the gateway address a browse
 
 No passwords, keys or tokens in the repository, logs or chat. NVR passwords live only in Supabase Vault.
 Do not connect to production systems from a development machine.
+
+Since P2-6 (`docs/drishti/adr-service-roles.md`):
+
+- Every process has its own database key: the web app `SUPABASE_APP_WEB_KEY` (it cannot read an NVR password) and
+  `SUPABASE_MEDIA_SERVICE_KEY` (its video path), the worker `SUPABASE_MONITOR_WORKER_KEY`, the gateway `SUPABASE_VIDEO_GATEWAY_KEY`.
+  `node scripts/gen-secrets.mjs` adds them (and the other secrets) to `.env.local` without printing them; then restart the gateway
+  and the worker (`npm run dev` reloads `.env.local` itself). Without them development keeps working on the service key and logs
+  `service_key_fallback`; production refuses. Every NVR password read is logged in `vault_reads` (who, which NVR, why; never the value).
+- Outbound connections go only to the NVRs and devices of the database (or `OUTBOUND_TARGET_ALLOWLIST`), never to link-local, cloud
+  metadata or other special addresses, and to this computer only in development (`lib/security/targets.ts`).
+- Sign-in, password changes, administration, import, discovery, connection tests and video opening are rate limited for every app
+  instance together (database `rate_limit_hit`). Sign-in waits longer after each wrong password (from the third: 5 s, 10 s, ... at most
+  5 minutes) instead of locking the account. The client address is believed only behind `TRUSTED_PROXY_HOPS` trusted proxies.
+- Rotation of every secret: `docs/drishti/runbooks/secret-rotation.md`.
