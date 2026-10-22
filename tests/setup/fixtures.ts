@@ -57,6 +57,8 @@ export async function createUser(orgId: string, role: Role, o: { storeId?: strin
 
 // Child tables first. Add new organisation-scoped tables here.
 export const ORG_TABLES_IN_DELETE_ORDER: string[] = [
+  'camera_group_items',
+  'camera_groups',
   'outages',
   'check_state',
   'admin_audit_log',

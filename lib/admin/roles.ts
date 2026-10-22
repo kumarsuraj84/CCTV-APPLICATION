@@ -15,3 +15,6 @@ export const SEES_EVERYTHING: readonly Role[] = ['manager', 'admin', 'platform_o
 
 // Operators and administrators may ask the worker to check everything now. Managers only read.
 export const canRunChecks = (role: Role): boolean => role === 'agent' || isAdminRole(role)
+
+// Operators and administrators build camera groups. Viewers and managers only use the ones they can see.
+export const canManageGroups = (role: Role): boolean => role === 'agent' || isAdminRole(role)

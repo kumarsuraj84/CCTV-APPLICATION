@@ -43,6 +43,52 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"camera_group_items": {
+                  Row: {
+                    "added_at": string,"camera_id": string,"group_id": string,"org_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "added_at"?: string,"camera_id": string,"group_id": string,"org_id": string
+                  }
+                  Update: {
+                    "added_at"?: string,"camera_id"?: string,"group_id"?: string,"org_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "camera_group_items_camera_id_org_id_fkey"
+      columns: ["camera_id","org_id"]
+isOneToOne: false
+      referencedRelation: "cameras"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "camera_group_items_group_id_org_id_fkey"
+      columns: ["group_id","org_id"]
+isOneToOne: false
+      referencedRelation: "camera_groups"
+      referencedColumns: ["id","org_id"]
+    }
+                  ]
+                },"camera_groups": {
+                  Row: {
+                    "created_at": string,"created_by": string | null,"id": string,"name": string,"org_id": string,"updated_at": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_at"?: string,"created_by"?: string | null,"id"?: string,"name": string,"org_id": string,"updated_at"?: string
+                  }
+                  Update: {
+                    "created_at"?: string,"created_by"?: string | null,"id"?: string,"name"?: string,"org_id"?: string,"updated_at"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "camera_groups_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"cameras": {
                   Row: {
                     "camera_ip": string | null,"channel": number,"created_at": string,"id": string,"is_active": boolean,"name": string,"org_id": string,"store_id": string,"updated_at": string
