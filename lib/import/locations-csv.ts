@@ -67,6 +67,8 @@ const ALIASES: Record<string, string> = {
   rtsp_port: 'port', video_port: 'port', web_port: 'http_port', httpport: 'http_port', username: 'user', nvr_user: 'user',
   nvr_password: 'password', cameras: 'channels', recorder_name: 'nvr_name', nvr: 'nvr_name', region_code: 'region', cluster_code: 'cluster',
   nvr_address: 'ip', host: 'ip', address_line: 'address',
+  // T-1: the location code column may be called location_code; the older store_code keeps working.
+  location_code: 'code', store_code: 'code',
 }
 const KIND_WORDS: Record<string, LocationKind> = {
   store: 'store', shop: 'store', 'head office': 'head_office', head_office: 'head_office', ho: 'head_office', office: 'head_office',
@@ -81,7 +83,9 @@ export const MSG_CELL_COUNT = (n: number, header: number) =>
 export const MSG_STRAY_QUOTE = 'A quote (") in the middle of a value: put the whole value in quotes and write a quote inside it twice (""). Nothing of this row is read.'
 export const MSG_UNCLOSED_QUOTE = 'A quote (") opened on this line is never closed, so nothing from this line on can be read. Close it, then check the file again.'
 export const MSG_NOT_UTF8 = 'The file is not saved as UTF-8 text (some characters cannot be read). Save it as “CSV UTF-8” and choose it again.'
-const MSG_FORMULA = 'Starts with =, +, - or @ (a spreadsheet would read it as a formula): remove that sign.'
+export const MSG_SWALLOWED = (n: number, opened: number, closed: number) =>
+  `Line ${n} is part of a value that was opened on line ${opened} and closed on line ${closed}, so it is not read as a row of its own.`
+const MSG_FORMULA ='Starts with =, +, - or @ (a spreadsheet would read it as a formula): remove that sign.'
 const MSG_LINE_BREAK = 'A line break inside the value: put it on one line.'
 
 const headerKey = (h: string) => {
@@ -190,6 +194,9 @@ export function parseLocationsCsv(text: string): ParsedLocations {
       const n = nameAt >= 0 ? cell(cells[nameAt]).replace(/\s+/g, ' ').toUpperCase() : ''
       return n !== '' && n.length <= 50 ? n : null
     })()
+    // T-1 (re-review N1): a quoted value that runs over several lines swallowed the lines after the first. Each is named, so that
+    // "skip the rows with problems" never drops a location without saying so. (They cannot be read as rows: nothing is guessed.)
+    if (row.lastLine !== undefined) for (let n = line + 1; n <= row.lastLine; n++) out.errors.push({ line: n, message: MSG_SWALLOWED(n, line, row.lastLine) })
     if (row.problem === 'stray_quote') {
       out.errors.push({ line, message: MSG_STRAY_QUOTE })
       markBad(roughCode, line)

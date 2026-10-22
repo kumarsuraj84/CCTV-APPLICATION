@@ -99,6 +99,46 @@ describe('planImport: what the import would do, row by row (never a password)', 
     expect(p.preview.counts.recordersNew).toBe(0)
   })
 
+  // T-1 carry-over (P2-5c re-review, B-M14 part): the legacy "one row = the location's primary NVR" rule is for a location with exactly ONE NVR.
+  // With two or more, a row whose address matches none of them used to change an arbitrary one of them (the preview did not even show the old address).
+  describe('legacy one-row rule on a location with two or more NVRs', () => {
+    const TWO: ImportSnapshot = { ...afterFirstImport(), recorders: [rec(), rec({ id: R2, name: 'Old box', host: '192.0.2.11', primary: false, expected_channels: 0 })] }
+    const MISTYPED = `${LEGACY}\nJCL,Jhansi,UP,192.0.2.99,554,80,viewer,Pw-JCL-1,4\n`
+
+    it('is not applied: the row matches no NVR by primary', () => {
+      expect([...matchRecorderRows(parseLocationsCsv(MISTYPED).groups, TWO).entries()]).toEqual([])
+    })
+
+    it('the row is refused with the addresses to choose from, and no password', () => {
+      const p = planImport(parseLocationsCsv(MISTYPED), TWO, { skipBadRows: false })
+      expect(p.preview.errors).toEqual([{
+        line: 2, column: 'ip',
+        message: 'This location has 2 NVRs: 192.0.2.10 (web port 80) and 192.0.2.11 (web port 80). The address in this row is neither of them. Give the address of the NVR you mean (to add another NVR, add it on the location page or list every NVR of the location in the file).',
+      }])
+      expect(p.preview.canApply).toBe(false)
+      expect(JSON.stringify(p.preview)).not.toContain('Pw-JCL-1')
+      expect(p.preview.counts.recordersNew).toBe(0)
+    })
+
+    it('three NVRs are named with commas and "and"', () => {
+      const three: ImportSnapshot = { ...TWO, recorders: [...TWO.recorders, rec({ id: 'bbbbbbbb-0000-4000-8000-000000000003', name: 'Third', host: '192.0.2.12', primary: false })] }
+      const msg = planImport(parseLocationsCsv(MISTYPED), three, { skipBadRows: false }).preview.errors[0].message
+      expect(msg).toContain('has 3 NVRs: 192.0.2.10 (web port 80), 192.0.2.11 (web port 80) and 192.0.2.12 (web port 80).')
+    })
+
+    it('a row that gives the address of one of the NVRs is that NVR, as before', () => {
+      const p = planImport(parseLocationsCsv(`${LEGACY}\nJCL,Jhansi,UP,192.0.2.11,554,80,viewer,,0\n`), TWO, { skipBadRows: false })
+      expect(p.preview.errors).toEqual([])
+      expect(p.preview.locations[0].recorders[0]).toMatchObject({ id: R2, matchedBy: 'address' })
+    })
+
+    it('"skip the rows with problems" leaves the location out whole', () => {
+      const p = planImport(parseLocationsCsv(MISTYPED), TWO, { skipBadRows: true })
+      expect(p.preview.skipped).toBe(1)
+      expect(p.apply.locations).toEqual([])
+    })
+  })
+
   it('review B-M2: empty port cells keep the saved ports; an NVR is then matched by its address alone (no second identity)', () => {
     const snap: ImportSnapshot = { ...afterFirstImport(), recorders: [rec({ http_port: 8080, rtsp_port: 8554 })] }
     const one = planImport(parseLocationsCsv(`${LEGACY}\nJCL,Jhansi,UP,192.0.2.10,,,viewer,,4\n`), snap, { skipBadRows: false })

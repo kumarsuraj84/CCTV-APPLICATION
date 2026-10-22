@@ -1,14 +1,15 @@
 export type CsvRow = { line: number; cells: string[] }
 
 /** A row of the strict reader: `problem` says why it cannot be read (it must then not be used at all). `multiline`: a quoted value had a line break. */
-export type StrictCsvRow = CsvRow & { problem?: 'stray_quote'; multiline?: number[] }
+export type StrictCsvRow = CsvRow & { problem?: 'stray_quote'; multiline?: number[]; lastLine?: number }
 
 /**
  * The strict CSV reader of the validated import (P2-5c-2 review B-I1, RFC 4180): a quote opens a quoted value ONLY at the start of a
  * cell; a quote anywhere else in an unquoted value, or anything but a comma or the line end after a closing quote, marks that row as
  * unreadable (the row still ends at its line end, so the next rows are read whole and nothing shifts). A quote that is never closed
  * makes the rest of the file unreadable: `unclosedAt` is the line where it was opened and no row from there on is returned.
- * `multiline` lists the cell positions whose quoted value contains a line break. A leading byte-order mark is ignored; blank lines
+ * `multiline` lists the cell positions whose quoted value contains a line break; `lastLine` is then the line the row ends on (the
+ * lines after `line` were swallowed by the quoted value: T-1, re-review N1). A leading byte-order mark is ignored; blank lines
  * are skipped but keep their line numbers.
  */
 export function parseCsvStrict(input: string): { rows: StrictCsvRow[]; unclosedAt?: number } {
@@ -30,7 +31,7 @@ export function parseCsvStrict(input: string): { rows: StrictCsvRow[]; unclosedA
   }
   const endRow = () => {
     endCell()
-    if (cells.some((c) => c.trim() !== '') || stray) rows.push({ line: startLine, cells, ...(stray ? { problem: 'stray_quote' as const } : {}), ...(multiline.length ? { multiline } : {}) })
+    if (cells.some((c) => c.trim() !== '') || stray) rows.push({ line: startLine, cells, ...(stray ? { problem: 'stray_quote' as const } : {}), ...(multiline.length ? { multiline, ...(line > startLine ? { lastLine: line } : {}) } : {}) })
     cells = []
     stray = false
     multiline = []

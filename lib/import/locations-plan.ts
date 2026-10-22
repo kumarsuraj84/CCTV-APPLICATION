@@ -124,6 +124,12 @@ export type PlanOptions = {
 
 const host = (h: string | null) => (h ?? '').trim().toLowerCase()
 export const MSG_ARCHIVED_CODE = 'A location with this code is archived. Restore it (Locations and NVRs → show archived ones) and check the file again.'
+/** T-1: the one row of a location with several NVRs matches none of them; the addresses (never a password) to choose from. */
+export const MSG_PICK_AN_NVR = (nvrs: readonly { host: string | null; http_port: number }[]) => {
+  const named = nvrs.map((n) => `${n.host ?? 'no address'} (web port ${n.http_port})`)
+  const list = named.length > 1 ? `${named.slice(0, -1).join(', ')} and ${named[named.length - 1]}` : named.join('')
+  return `This location has ${nvrs.length} NVRs: ${list}. The address in this row is ${nvrs.length === 2 ? 'neither of them' : 'none of them'}. Give the address of the NVR you mean (to add another NVR, add it on the location page or list every NVR of the location in the file).`
+}
 export const MSG_AMBIGUOUS_ADDRESS = 'Several NVRs of this location have this address: give the web port (http_port) to say which one.'
 
 /** Which existing NVR each row of the file is (by row line). Rows without a match are new NVRs. */
@@ -142,8 +148,9 @@ export function matchRecorderRows(groups: readonly LocationGroup[], snap: Pick<I
         out.set(row.line, { id: same[0].id, by: 'address' })
       }
     }
-    // The legacy file: one row per location is "the location's NVR" (its primary); a changed address updates it.
-    if (g.recorders.length === 1 && !out.has(g.recorders[0].line) && recs.length > 0) {
+    // The legacy file: one row per location is "the location's NVR" (its primary); a changed address updates it. T-1 (re-review B-M14): only
+    // for a location with exactly ONE NVR. With two or more, a row that matches none of them by address is refused by planImport (it names them).
+    if (g.recorders.length === 1 && !out.has(g.recorders[0].line) && recs.length === 1) {
       const row = g.recorders[0]
       const ambiguous = row.http_port === null && recs.filter((r) => host(r.host) === host(row.host)).length > 1
       const primary = recs.find((r) => r.primary) ?? recs[0]
@@ -276,6 +283,8 @@ export function planImport(parsed: ParsedLocations, snap: ImportSnapshot, opts: 
       } else {
         if (row.http_port === null && existingRecs.filter((x) => host(x.host) === host(row.host)).length > 1) {
           issues.push({ line: row.line, column: 'http_port', message: MSG_AMBIGUOUS_ADDRESS })
+        } else if (g.recorders.length === 1 && existingRecs.length >= 2) {
+          issues.push({ line: row.line, column: 'ip', message: MSG_PICK_AN_NVR(existingRecs) })
         }
         if (password === 'kept') issues.push({ line: row.line, column: 'password', message: 'A new NVR needs its password.' })
         const nvrName = row.name ?? (totalAfter === 1 ? 'NVR' : `NVR ${existingRecs.length + newRows.indexOf(row) + 1}`)

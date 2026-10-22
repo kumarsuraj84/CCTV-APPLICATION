@@ -158,6 +158,20 @@ describe('parseLocationsCsv: every problem names its line, its column and a plai
 })
 
 // Review B-I1: a row is read whole or not at all — never merged with the next row, never with its cells shifted.
+describe('parseLocationsCsv: the location code column (T-1: location_code, and the older store_code)', () => {
+  it.each(['code', 'location_code', 'store_code', 'Location Code', 'STORE-CODE'])('%s is the location code', (header) => {
+    const r = parseLocationsCsv(`${header},name,ip,user,password\nmdb,Madhubani,192.0.2.1,viewer,pw\n`)
+    expect(r.errors).toEqual([])
+    expect(r.warnings).toEqual([])
+    expect(r.groups.map((g) => g.code)).toEqual(['MDB'])
+  })
+
+  it('with both a code and a store_code column, the first column that is given wins', () => {
+    const r = parseLocationsCsv('code,store_code,ip,user,password\nAAA,BBB,192.0.2.1,viewer,pw\n')
+    expect(r.groups.map((g) => g.code)).toEqual(['AAA'])
+  })
+})
+
 describe('parseLocationsCsv: quotes and cell counts (review B-I1, B-I2, B-M7, B-M8)', () => {
   const H = 'name,city,zone,ip,port,http_port,user,password,channels'
 
@@ -200,8 +214,29 @@ describe('parseLocationsCsv: quotes and cell counts (review B-I1, B-I2, B-M7, B-
 
   it('a line break inside a quoted value is refused (every column is one line)', () => {
     const r = parseLocationsCsv(`${H}\nC1,"Patna\nCity",BR,192.0.2.1,554,80,viewer,p1,4\n`)
-    expect(r.errors).toEqual([{ line: 2, column: 'city', message: 'A line break inside the value: put it on one line.' }])
+    // T-1: the second physical line belongs to the value that was opened on line 2; it is named, not silently swallowed.
+    expect(r.errors).toEqual([
+      { line: 2, column: 'city', message: 'A line break inside the value: put it on one line.' },
+      { line: 3, message: 'Line 3 is part of a value that was opened on line 2 and closed on line 3, so it is not read as a row of its own.' },
+    ])
     expect(r.groups).toEqual([])
+  })
+
+  // T-1 carry-over (P2-5c re-review N1). The reviewer's case: a quote opens a value on line 2 and closes on line 4. Lines 3 and 4 are inside
+  // it. Each swallowed line is named (so "skip the rows with problems" never drops a location without saying so); the row after it is read whole.
+  it('a quote opened on one line and closed on a later one names every line it swallowed', () => {
+    const r = parseLocationsCsv(`${H}
+A1,"Old Town,BR,192.0.2.1,554,80,viewer,p1,4
+A2,Ranchi,JH,192.0.2.2,554,80,viewer,p2,4
+A3,Z",BR,192.0.2.3,554,80,viewer,p3,4
+A4,Gaya,BR,192.0.2.4,554,80,viewer,p4,4
+`)
+    const swallowed = (n: number) => ({ line: n, message: `Line ${n} is part of a value that was opened on line 2 and closed on line 4, so it is not read as a row of its own.` })
+    expect(r.errors.filter((e) => e.line >= 2 && e.line <= 4)).toEqual(expect.arrayContaining([swallowed(3), swallowed(4)]))
+    expect(r.errors.map((e) => e.line)).toContain(2)
+    expect(r.errors.map((e) => e.line).filter((l) => l > 4)).toEqual([])
+    expect(r.groups.map((g) => g.code)).toEqual(['A4'])
+    expect(JSON.stringify(r.errors)).not.toContain('p2')
   })
 
   it('quoted values, doubled quotes, Windows line endings and a byte-order mark are read correctly', () => {
