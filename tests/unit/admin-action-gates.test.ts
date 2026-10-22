@@ -72,7 +72,7 @@ function p25c(): (() => Promise<unknown>)[] {
     async () => (await load()).testConnectionAction('x'),
     async () => (await load()).discoverRecorderAction('x'),
     async () => (await load()).remapCameraAction({ cameraId: 'x', recorderId: 'y', channel: 1 }),
-    async () => (await load()).mergeCamerasAction({ keepId: 'x', duplicateId: 'y' }),
+    async () => (await load()).mergeCamerasAction({ keepId: 'x', duplicateId: 'y', confirmation: 'z' }),
     // P2-5c-1 review round 1: the merge preview (I-5), the organisation-wide camera search (M-2) and the proposal preview (M-1).
     async () => (await load()).previewMergeAction({ keepId: 'x', duplicateId: 'y' }),
     async () => (await load()).searchCamerasAction('door'),

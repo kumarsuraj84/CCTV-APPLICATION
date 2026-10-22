@@ -117,7 +117,8 @@ describe('P2-5c-1 review round 1', () => {
       await grant(orgId, p.id, ['cctv.live', 'cctv.playback'], atCamera(dup))
     }
     expect(await previewMerge(c(), actor, { keepId: keep, duplicateId: dup })).toEqual({
-      ok: true, keepName: 'Cash office', duplicateName: 'Cash office (new)', duplicatePlace: 'FXI5 · First floor, channel 2', peopleLosing: 2,
+      // Fix round 2 (A-N1 / A-N2): the preview also names the exact pair and whether the duplicate shows an NVR channel.
+      ok: true, keepId: keep, duplicateId: dup, keepName: 'Cash office', duplicateName: 'Cash office (new)', duplicatePlace: 'FXI5 · First floor, channel 2', duplicateLinked: true, peopleLosing: 2,
     })
     expect((await mappingOf(dup)).archived_at).toBeNull() // a preview writes nothing
   })

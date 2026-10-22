@@ -780,6 +780,8 @@ describe('capability access model (P2-1)', () => {
       // P2-5c-1 review round 1 (20261021000027): group counts for the caller; the ticked zone proposals in one transaction (server).
       group_member_counts: ['authenticated'],
       inventory_apply_proposals: server,
+      // P2-5c-1 fix round 2 (20261021000030): the effect of ticked zone proposals on access, all rows in one call (server only).
+      preview_hierarchy_proposals: server,
       // P2-5c-2 (20261021000028): the location import in one transaction, its placeholder twin and the saved-password comparison
       // (server only); the Wi-Fi inventory for the signed-in reader (it applies the reader's own wifi.inventory.view grants).
       inventory_import_apply: server,
@@ -855,6 +857,7 @@ describe('capability access model (P2-1)', () => {
       // P2-5c-1.
       ['camera_merge', { p_org: orgA, p_keep: c11, p_duplicate: randomUUID() }],
       ['inventory_apply_proposals', { p_org: orgA, p_items: [] }],
+      ['preview_hierarchy_proposals', { p_org: orgA, p_items: [] }],
     ]
     for (const [fn, args] of calls) {
       expect((await anon.rpc(fn, args as never)).error?.code, `anon ${fn}`).toBe('42501')

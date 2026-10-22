@@ -63,10 +63,10 @@ describe('administration form rules', () => {
   })
 
   it('review I-5 / M-3: the merge confirmation names both cameras, the duplicate\'s place and who loses access', () => {
-    expect(mergeSentence({ keepName: 'Cash office', duplicateName: 'Cash office (new)', duplicatePlace: 'JCL · First floor, channel 2', peopleLosing: 2 })).toBe(
+    expect(mergeSentence({ keepName: 'Cash office', duplicateName: 'Cash office (new)', duplicatePlace: 'JCL · First floor, channel 2', duplicateLinked: true, peopleLosing: 2 })).toBe(
       '“Cash office” keeps its identity, access, groups and history and takes over the NVR channel of “Cash office (new)” (JCL · First floor, channel 2), which is archived. 2 people have access to “Cash office (new)” only through a grant on it; that access ends.',
     )
-    expect(mergeSentence({ keepName: 'A', duplicateName: 'B', duplicatePlace: 'JCL · not linked', peopleLosing: 0 })).toBe(
+    expect(mergeSentence({ keepName: 'A', duplicateName: 'B', duplicatePlace: 'JCL · not linked', duplicateLinked: false, peopleLosing: 0 })).toBe(
       '“A” keeps its identity, access, groups and history; “B” (JCL · not linked) is archived. Nobody loses access through a grant on “B”.',
     )
   })
