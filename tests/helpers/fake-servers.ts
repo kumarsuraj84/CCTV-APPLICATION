@@ -75,9 +75,9 @@ export type FakeNvr = Bound & {
   requests: string[]
   /** Every Authorization header received, in order. */
   authorizations: string[]
-  /** Every POST that passed the Digest login and reached a known endpoint: path, body and content type. */
+  /** Test-only record of every POST that passed the Digest login and reached a known endpoint: path, body and content type. Bounded by the 64 KB body cap. */
   posts: { path: string; body: string; contentType: string }[]
-  /** The bodies of the POSTs to /ISAPI/ContentMgmt/download that passed the login. */
+  /** Test-only: the bodies of the POSTs to /ISAPI/ContentMgmt/download that passed the login (each at most 64 KB). */
   downloadBodies: string[]
   setStatuses: (s: Record<number, boolean>) => void
 }
@@ -110,7 +110,7 @@ function searchXml(list: Recording[], body: string, pageSize: number): string {
   const page = matches.slice(position, position + size)
   const more = position + page.length < matches.length
   const items = page
-    .map((r) => `<searchMatchItem><sourceID>{00000000-0000-0000-0000-000000000000}</sourceID><trackID>${channel}01</trackID><timeSpan><startTime>${stamp(r.s)}</startTime><endTime>${stamp(r.e)}</endTime></timeSpan><mediaSegmentDescriptor><contentType>video</contentType><codecType>H.264-BP</codecType></mediaSegmentDescriptor></searchMatchItem>`)
+    .map((r) => `<searchMatchItem><sourceID>{00000000-0000-0000-0000-000000000000}</sourceID><trackID>${channel}01</trackID><timeSpan><startTime>${stamp(r.s)}</startTime><endTime>${stamp(r.e)}</endTime></timeSpan><mediaSegmentDescriptor><contentType>video</contentType><codecType>H.264-BP</codecType><playbackURI>rtsp://127.0.0.1/Streaming/tracks/${channel}01?starttime=${stamp(r.s)}&amp;endtime=${stamp(r.e)}</playbackURI></mediaSegmentDescriptor></searchMatchItem>`)
     .join('')
   return (
     `<?xml version="1.0" encoding="UTF-8"?><CMSearchResult version="2.0" ${NS}><searchID>fake</searchID><responseStatus>true</responseStatus>` +

@@ -10,17 +10,19 @@ afterEach(async () => {
 })
 const client = (port: number, password = 'secret-pass', timeoutMs = 4000) => new NvrClient({ host: '127.0.0.1', port, username: 'viewer', password }, { timeoutMs })
 
-const item = (s: string, e: string) =>
-  `<searchMatchItem><sourceID>x</sourceID><trackID>101</trackID><timeSpan><startTime>${s}</startTime><endTime>${e}</endTime></timeSpan><mediaSegmentDescriptor><contentType>video</contentType></mediaSegmentDescriptor></searchMatchItem>`
+const item = (s: string, e: string, uri?: string) =>
+  `<searchMatchItem><sourceID>x</sourceID><trackID>101</trackID><timeSpan><startTime>${s}</startTime><endTime>${e}</endTime></timeSpan><mediaSegmentDescriptor><contentType>video</contentType>${uri === undefined ? '' : `<playbackURI>${uri}</playbackURI>`}</mediaSegmentDescriptor></searchMatchItem>`
 const answer = (items: string[], status = 'OK') =>
   `<?xml version="1.0" encoding="UTF-8"?><CMSearchResult version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema"><searchID>x</searchID><responseStatus>true</responseStatus><responseStatusStrg>${status}</responseStatusStrg><numOfMatches>${items.length}</numOfMatches><matchList>${items.join('')}</matchList></CMSearchResult>`
+const segsOf = async (c: NvrClient, o: { channel: number; day: string; offsetMin: number }) => (await findSegments(c, o)).segments
 const iso = (segs: { start: Date; end: Date }[]) => segs.map((s) => [s.start.toISOString(), s.end.toISOString()])
 
 describe('buildSearchBody', () => {
   const base = { channel: 1, start: new Date('2026-10-20T01:02:03Z'), end: new Date('2026-10-20T04:05:06Z'), position: 0, limit: 200, searchId: 'abc-123' }
   it('writes the elements the NVR expects, with its own spelling of searchResultPostion and Z times', () => {
     expect(buildSearchBody(base)).toBe(
-      '<CMSearchDescription><searchID>abc-123</searchID><trackIDList><trackID>101</trackID></trackIDList>' +
+      "<?xml version='1.0' encoding='utf-8'?>" +
+        '<CMSearchDescription><searchID>abc-123</searchID><trackIDList><trackID>101</trackID></trackIDList>' +
         '<timeSpanList><timeSpan><startTime>2026-10-20T01:02:03Z</startTime><endTime>2026-10-20T04:05:06Z</endTime></timeSpan></timeSpanList>' +
         '<maxResults>200</maxResults><searchResultPostion>0</searchResultPostion>' +
         '<metadataList><metadataDescriptor>//recordType.meta.std-cgi.com</metadataDescriptor></metadataList></CMSearchDescription>',
@@ -103,7 +105,10 @@ describe('parseSearchResult', () => {
         item('2026-02-30T13:00:00Z', '2026-03-01T12:00:00Z'), // no such day
         item('2026-13-01T13:00:00Z', '2026-13-01T14:00:00Z'), // no such month
         item('2026-10-20T25:00:00Z', '2026-10-20T26:00:00Z'), // no such hour
-        item('2026-10-20T13:00:00', '2026-10-20T14:00:00'), // no Z
+        item('2026-10-20T13:00:00.', '2026-10-20T14:00:00.'), // a dot and no digits
+        item('2026-10-20 13:00:00Z', '2026-10-20 14:00:00Z'), // no T
+        item('2026-10-20T13:00:00-05:00', '2026-10-20T14:00:00-05:00'), // an offset
+        item('2026-10-20T13:00:00.1234567890Z', '2026-10-20T14:00:00Z'), // ten fraction digits
         item('2026-10-20T13:00:00+05:30', '2026-10-20T14:00:00+05:30'), // an offset
         item('yesterday', 'today'),
         item('', ''),
@@ -113,6 +118,20 @@ describe('parseSearchResult', () => {
       ]),
     )
     expect(iso(r.segments)).toEqual([['2026-10-20T14:00:00.000Z', '2026-10-20T15:00:00.000Z']])
+  })
+  it('reads times with or without Z and with up to nine fraction digits (cut to milliseconds)', () => {
+    const r = parseSearchResult(
+      answer([
+        item('2026-10-20T01:00:00', '2026-10-20T02:00:00'),
+        item('2026-10-20T03:00:00.123456789', '2026-10-20T04:00:00.9999999Z'),
+        item('2026-10-20T05:00:00.5', '2026-10-20T06:00:00.05Z'),
+      ]),
+    )
+    expect(iso(r.segments)).toEqual([
+      ['2026-10-20T01:00:00.000Z', '2026-10-20T02:00:00.000Z'],
+      ['2026-10-20T03:00:00.123Z', '2026-10-20T04:00:00.999Z'],
+      ['2026-10-20T05:00:00.500Z', '2026-10-20T06:00:00.050Z'],
+    ])
   })
   it('reads a fraction of a second, entities and CDATA in times, and refuses markup smuggled into them', () => {
     const r = parseSearchResult(
@@ -158,6 +177,41 @@ describe('parseSearchResult', () => {
   })
 })
 
+describe('parseSearchResult playback address', () => {
+  const uriOf = (uri: string | undefined) => parseSearchResult(answer([item('2026-10-20T09:00:00Z', '2026-10-20T10:00:00Z', uri)])).segments[0]?.uri
+  it('keeps an rtsp, http or https address as written (entities decoded)', () => {
+    expect(uriOf('rtsp://192.0.2.1/Streaming/tracks/101?starttime=20261020T090000Z&amp;endtime=20261020T100000Z&amp;name=00001')).toBe('rtsp://192.0.2.1/Streaming/tracks/101?starttime=20261020T090000Z&endtime=20261020T100000Z&name=00001')
+    expect(uriOf('http://192.0.2.1/x')).toBe('http://192.0.2.1/x')
+    expect(uriOf('HTTPS://192.0.2.1/x')).toBe('HTTPS://192.0.2.1/x')
+  })
+  it.each([
+    ['nothing', undefined],
+    ['an empty one', ''],
+    ['another scheme', 'ftp://192.0.2.1/x'],
+    ['javascript', 'javascript:alert(1)'],
+    ['no scheme', '192.0.2.1/x'],
+    ['a space', 'rtsp://192.0.2.1/a b'],
+    ['a line break (as an entity)', 'rtsp://192.0.2.1/a&#10;b'],
+    ['a tab', 'rtsp://192.0.2.1/a&#9;b'],
+    ['a NUL character', 'rtsp://192.0.2.1/a b'],
+    ['a DEL', 'rtsp://192.0.2.1/a&#127;b'],
+    ['513 characters', `rtsp://${'a'.repeat(513 - 7)}`],
+  ])('leaves the address out for %s but keeps the segment', (_n, uri) => {
+    const r = parseSearchResult(answer([item('2026-10-20T09:00:00Z', '2026-10-20T10:00:00Z', uri)]))
+    expect(r.segments).toHaveLength(1)
+    expect(r.segments[0].uri).toBeUndefined()
+    expect('uri' in r.segments[0]).toBe(false)
+  })
+  it('accepts exactly 512 characters', () => {
+    expect(uriOf(`rtsp://${'a'.repeat(512 - 7)}`)).toHaveLength(512)
+  })
+  it('keeps the address of the first copy of a repeated segment, or fills it from a later one', () => {
+    const r = parseSearchResult(answer([item('2026-10-20T09:00:00Z', '2026-10-20T10:00:00Z'), item('2026-10-20T09:00:00Z', '2026-10-20T10:00:00Z', 'rtsp://192.0.2.1/x')]))
+    expect(r.segments).toHaveLength(1)
+    expect(r.segments[0].uri).toBe('rtsp://192.0.2.1/x')
+  })
+})
+
 describe('parseDailyDistribution', () => {
   const day = (d: string, rec: string) => `<day><dayOfMonth>${d}</dayOfMonth><record>${rec}</record><recordType>CMR</recordType></day>`
   const xml = (days: string[]) => `<?xml version="1.0"?><trackDailyDistribution version="2.0"><dayList>${days.join('')}</dayList></trackDailyDistribution>`
@@ -196,7 +250,7 @@ const positions = (n: FakeNvr) => searchPosts(n).map((p) => Number(/<searchResul
 describe('findSegments against the fake NVR', () => {
   it('pages until there is no more and shifts the shown times forward by the offset (ruling R13)', async () => {
     nvr = await startFakeNvr({ recordings: RECORDINGS })
-    const segs = await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 330 })
+    const segs = await segsOf(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 330 })
     expect(segs.every((s) => s.start instanceof Date && s.end instanceof Date)).toBe(true)
     expect(iso(segs)).toEqual([
       ['2026-10-19T23:30:00.000Z', '2026-10-20T00:30:00.000Z'], // nothing is clipped to the day
@@ -208,7 +262,7 @@ describe('findSegments against the fake NVR', () => {
   })
   it('asks the NVR for [day 00:00 - offset, next day 00:00 - offset)', async () => {
     nvr = await startFakeNvr({ recordings: RECORDINGS })
-    await findSegments(client(nvr.port), { channel: 5, day: '2026-10-20', offsetMin: 330 })
+    await segsOf(client(nvr.port), { channel: 5, day: '2026-10-20', offsetMin: 330 })
     const body = searchPosts(nvr)[0].body
     expect(body).toContain('<startTime>2026-10-19T18:30:00Z</startTime>')
     expect(body).toContain('<endTime>2026-10-20T18:30:00Z</endTime>')
@@ -218,17 +272,17 @@ describe('findSegments against the fake NVR', () => {
   })
   it('works with offset 0 and with a negative offset', async () => {
     nvr = await startFakeNvr({ recordings: RECORDINGS })
-    const zero = await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })
+    const zero = await segsOf(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })
     expect(iso(zero).map((s) => s[0])).toEqual(['2026-10-20T09:00:00.000Z', '2026-10-20T12:00:00.000Z', '2026-10-20T18:00:00.000Z', '2026-10-20T19:00:00.000Z'])
-    const neg = await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: -60 })
+    const neg = await segsOf(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: -60 })
     // window is [01:00, next day 01:00) in NVR terms; shown = NVR - 60 min
     expect(iso(neg)[0]).toEqual(['2026-10-20T08:00:00.000Z', '2026-10-20T08:30:00.000Z'])
   })
   it('uses a new search id for each call and the same one for every page of a call', async () => {
     nvr = await startFakeNvr({ recordings: RECORDINGS })
     const c = client(nvr.port)
-    await findSegments(c, { channel: 1, day: '2026-10-20', offsetMin: 330 })
-    await findSegments(c, { channel: 1, day: '2026-10-20', offsetMin: 330 })
+    await segsOf(c, { channel: 1, day: '2026-10-20', offsetMin: 330 })
+    await segsOf(c, { channel: 1, day: '2026-10-20', offsetMin: 330 })
     const ids = searchPosts(nvr).map((p) => /<searchID>([A-Za-z0-9-]+)</.exec(p.body)![1])
     expect(ids).toHaveLength(4)
     expect(ids[0]).toBe(ids[1])
@@ -237,13 +291,13 @@ describe('findSegments against the fake NVR', () => {
   })
   it('gives an empty list, after one request, for a day with nothing recorded', async () => {
     nvr = await startFakeNvr({ recordings: RECORDINGS })
-    expect(await findSegments(client(nvr.port), { channel: 1, day: '2026-10-25', offsetMin: 330 })).toEqual([])
+    expect(await segsOf(client(nvr.port), { channel: 1, day: '2026-10-25', offsetMin: 330 })).toEqual([])
     expect(positions(nvr)).toEqual([0])
   })
   it('only returns the recordings of the channel asked for', async () => {
     nvr = await startFakeNvr({ recordings: [{ start: '2026-10-20T09:00:00', end: '2026-10-20T09:30:00', channel: 2 }] })
-    expect(await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })).toEqual([])
-    expect(await findSegments(client(nvr.port), { channel: 2, day: '2026-10-20', offsetMin: 0 })).toHaveLength(1)
+    expect(await segsOf(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })).toEqual([])
+    expect(await segsOf(client(nvr.port), { channel: 2, day: '2026-10-20', offsetMin: 0 })).toHaveLength(1)
   })
   it('moves on by the number of items the NVR sent, even when some of them are unusable', async () => {
     const seen: number[] = []
@@ -254,7 +308,7 @@ describe('findSegments against the fake NVR', () => {
         return answer([item('2026-10-20T13:00:00Z', '2026-10-20T14:00:00Z')])
       },
     })
-    const segs = await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })
+    const segs = await segsOf(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })
     expect(seen).toEqual([0, 2])
     expect(segs).toHaveLength(2)
   })
@@ -265,18 +319,18 @@ describe('findSegments against the fake NVR', () => {
           ? answer([item('2026-10-20T13:00:00Z', '2026-10-20T14:00:00Z'), item('2026-10-20T11:00:00Z', '2026-10-20T12:00:00Z')], 'MORE')
           : answer([item('2026-10-20T11:00:00Z', '2026-10-20T12:00:00Z'), item('2026-10-20T09:00:00Z', '2026-10-20T10:00:00Z')]),
     })
-    const segs = await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })
+    const segs = await segsOf(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })
     expect(iso(segs).map((s) => s[0])).toEqual(['2026-10-20T09:00:00.000Z', '2026-10-20T11:00:00.000Z', '2026-10-20T13:00:00.000Z'])
   })
   it('stops when an NVR keeps saying MORE and sends the same items again', async () => {
     nvr = await startFakeNvr({ searchAnswer: () => answer([item('2026-10-20T09:00:00Z', '2026-10-20T10:00:00Z'), item('2026-10-20T11:00:00Z', '2026-10-20T12:00:00Z')], 'MORE') })
-    const segs = await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })
+    const segs = await segsOf(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })
     expect(segs).toHaveLength(2)
     expect(searchPosts(nvr)).toHaveLength(2)
   })
   it('stops when a page with MORE has no items at all', async () => {
     nvr = await startFakeNvr({ searchAnswer: () => answer([], 'MORE') })
-    expect(await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })).toEqual([])
+    expect(await segsOf(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })).toEqual([])
     expect(searchPosts(nvr)).toHaveLength(1)
   })
   it('reads at most 50 pages from an NVR that keeps sending one new item and MORE', async () => {
@@ -287,9 +341,10 @@ describe('findSegments against the fake NVR', () => {
         return answer([item(f(s), f(s + 30_000))], 'MORE')
       },
     })
-    const segs = await findSegments(client(nvr.port, 'secret-pass', 20_000), { channel: 1, day: '2026-10-20', offsetMin: 0 })
+    const { segments: segs, truncated } = await findSegments(client(nvr.port, 'secret-pass', 20_000), { channel: 1, day: '2026-10-20', offsetMin: 0 })
     expect(searchPosts(nvr)).toHaveLength(50)
     expect(segs).toHaveLength(50)
+    expect(truncated).toBe(true)
   }, 30_000)
   it('keeps at most 5000 segments from an NVR that never stops sending full pages', async () => {
     nvr = await startFakeNvr({
@@ -303,18 +358,106 @@ describe('findSegments against the fake NVR', () => {
         return answer(items, 'MORE')
       },
     })
-    const segs = await findSegments(client(nvr.port, 'secret-pass', 20_000), { channel: 1, day: '2026-10-20', offsetMin: 0 })
+    const { segments: segs, truncated } = await findSegments(client(nvr.port, 'secret-pass', 20_000), { channel: 1, day: '2026-10-20', offsetMin: 0 })
     expect(segs).toHaveLength(5000)
+    expect(truncated).toBe(true)
+    expect(segs[0].start.toISOString()).toBe('2026-10-20T00:00:00.000Z') // the FIRST 5000 are kept
     expect(searchPosts(nvr).length).toBeLessThanOrEqual(50)
     expect(searchPosts(nvr).length).toBe(25)
   }, 30_000)
+  it('says truncated is false for a complete list, and the result has segments, truncated and skipped', async () => {
+    nvr = await startFakeNvr({ recordings: RECORDINGS })
+    expect(await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 330 })).toMatchObject({ truncated: false, skipped: 0 })
+    expect(Object.keys(await findSegments(client(nvr.port), { channel: 1, day: '2026-10-25', offsetMin: 0 })).sort()).toEqual(['segments', 'skipped', 'truncated'])
+  })
+  it('says truncated when the NVR keeps repeating itself with MORE, or sends an empty page with MORE', async () => {
+    nvr = await startFakeNvr({ searchAnswer: () => answer([item('2026-10-20T09:00:00Z', '2026-10-20T10:00:00Z')], 'MORE') })
+    expect(await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })).toMatchObject({ truncated: true })
+    const empty = await startFakeNvr({ searchAnswer: () => answer([], 'MORE') })
+    expect(await findSegments(client(empty.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })).toMatchObject({ segments: [], truncated: true })
+    await empty.close()
+  })
+  it('does not say truncated when a repeated page is the last one (no MORE)', async () => {
+    nvr = await startFakeNvr({
+      searchAnswer: ({ position }) => (position === 0 ? answer([item('2026-10-20T09:00:00Z', '2026-10-20T10:00:00Z')], 'MORE') : answer([item('2026-10-20T09:00:00Z', '2026-10-20T10:00:00Z')])),
+    })
+    expect(await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })).toMatchObject({ truncated: false })
+  })
+  it('keeps the first 5000 segments, in order, and says truncated, when one answer holds more', async () => {
+    const f = (ms: number) => new Date(ms).toISOString().replace(/\.\d+Z$/, 'Z')
+    const items: string[] = []
+    for (let i = 0; i < 5200; i++) items.push(`<searchMatchItem><timeSpan><startTime>${f(Date.UTC(2026, 9, 20) + i * 10_000)}</startTime><endTime>${f(Date.UTC(2026, 9, 20) + i * 10_000 + 5_000)}</endTime></timeSpan></searchMatchItem>`) // small items: the whole answer must stay under 1 MB
+    nvr = await startFakeNvr({ searchAnswer: () => answer(items) })
+    const r = await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })
+    expect(r.segments).toHaveLength(5000)
+    expect(r.truncated).toBe(true)
+    expect(r.segments[4999].start.getTime()).toBe(Date.UTC(2026, 9, 20) + 4999 * 10_000)
+  })
+  it('reads NVR times written without Z exactly like times with Z, shifted by the offset', async () => {
+    nvr = await startFakeNvr({
+      searchAnswer: () => answer([item('2026-10-20T09:00:00', '2026-10-20T09:30:00'), item('2026-10-20T12:00:00.250000', '2026-10-20T13:00:00')]),
+    })
+    const withZ = await startFakeNvr({ searchAnswer: () => answer([item('2026-10-20T09:00:00Z', '2026-10-20T09:30:00Z'), item('2026-10-20T12:00:00.250Z', '2026-10-20T13:00:00Z')]) })
+    const a = await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 330 })
+    const b = await findSegments(client(withZ.port), { channel: 1, day: '2026-10-20', offsetMin: 330 })
+    await withZ.close()
+    expect(iso(a.segments)).toEqual(iso(b.segments))
+    expect(iso(a.segments)[0]).toEqual(['2026-10-20T14:30:00.000Z', '2026-10-20T15:00:00.000Z'])
+    expect(a.segments).toHaveLength(2)
+  })
+  it('keeps paging past a page whose items are all unusable, and counts what it could not read', async () => {
+    const seen: number[] = []
+    nvr = await startFakeNvr({
+      searchAnswer: ({ position }) => {
+        seen.push(position)
+        if (position === 0) return answer([item('garbage', 'garbage'), item('2026-10-20T10:00:00Z', '2026-10-20T09:00:00Z')], 'MORE')
+        return answer([item('2026-10-20T13:00:00Z', '2026-10-20T14:00:00Z'), item('', '')])
+      },
+    })
+    const r = await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })
+    expect(seen).toEqual([0, 2])
+    expect(r.segments).toHaveLength(1)
+    expect(r.skipped).toBe(3)
+    expect(r.truncated).toBe(false)
+  })
+  it('gives no segments, truncated false and the number skipped when every item was unusable', async () => {
+    nvr = await startFakeNvr({ searchAnswer: () => answer([item('x', 'y'), item('2026-10-20T10:00:00Z', '2026-10-20T09:00:00Z'), '<searchMatchItem>nothing</searchMatchItem>']) })
+    expect(await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })).toEqual({ segments: [], truncated: false, skipped: 3 })
+  })
+  it('reads at most 50 pages of unusable items with MORE, and says truncated', async () => {
+    nvr = await startFakeNvr({ searchAnswer: () => answer([item('x', 'y')], 'MORE') })
+    const r = await findSegments(client(nvr.port, 'secret-pass', 20_000), { channel: 1, day: '2026-10-20', offsetMin: 0 })
+    expect(searchPosts(nvr)).toHaveLength(50)
+    expect(r).toMatchObject({ segments: [], truncated: true, skipped: 50 })
+  }, 30_000)
+  it('carries the playback address the NVR gave, unchanged by the offset', async () => {
+    nvr = await startFakeNvr({ recordings: RECORDINGS })
+    const { segments } = await findSegments(client(nvr.port), { channel: 3, day: '2026-10-20', offsetMin: 330 })
+    expect(segments).toHaveLength(4)
+    expect(segments.every((s) => s.uri?.startsWith('rtsp://127.0.0.1/Streaming/tracks/301?starttime='))).toBe(true)
+    expect(segments[1].uri).toBe('rtsp://127.0.0.1/Streaming/tracks/301?starttime=2026-10-20T09:00:00Z&endtime=2026-10-20T09:30:00Z')
+  })
+  it.each([
+    ['2026-12-31', 330, '2026-12-30T18:30:00Z', '2026-12-31T18:30:00Z'],
+    ['2026-10-20', -300, '2026-10-20T05:00:00Z', '2026-10-21T05:00:00Z'],
+    ['2028-02-29', 0, '2028-02-29T00:00:00Z', '2028-03-01T00:00:00Z'],
+    ['2028-02-29', 330, '2028-02-28T18:30:00Z', '2028-02-29T18:30:00Z'],
+    ['2026-01-01', 330, '2025-12-31T18:30:00Z', '2026-01-01T18:30:00Z'],
+    ['2100-12-31', -330, '2100-12-31T05:30:00Z', '2101-01-01T05:30:00Z'],
+  ])('asks the NVR for the window of %s at offset %s: [%s, %s)', async (day, offsetMin, from, to) => {
+    nvr = await startFakeNvr({ recordings: [] })
+    await findSegments(client(nvr.port), { channel: 1, day, offsetMin })
+    const body = searchPosts(nvr)[0].body
+    expect(body).toContain('<startTime>' + from + '</startTime>')
+    expect(body).toContain('<endTime>' + to + '</endTime>')
+  })
   it('reports an answer that is not a search result as a bad response, not as "no recordings"', async () => {
     nvr = await startFakeNvr({ mode: 'garbage' })
     await expect(findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 })).rejects.toMatchObject({ kind: 'bad_response' })
   })
   it('reports an answer over 1 MB as a bad response', async () => {
     nvr = await startFakeNvr({ mode: 'huge' })
-    const err = await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 }).catch((e: unknown) => e)
+    const err = await segsOf(client(nvr.port), { channel: 1, day: '2026-10-20', offsetMin: 0 }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(NvrError)
     expect(err).toMatchObject({ kind: 'bad_response' })
   })
@@ -347,14 +490,14 @@ describe('findSegments against the fake NVR', () => {
     await expect(findSegments(client(nvr.port), { channel: 1, day, offsetMin: 0 })).rejects.not.toBeInstanceOf(NvrError)
     expect(nvr.requests).toEqual([])
   })
-  it.each([[0, 0], [4097, 0], [1.5, 0], [Number.NaN, 0], [1, Number.NaN], [1, 1441], [1, -1441], [1, Infinity]])('refuses channel %s with offset %s without asking the NVR', async (channel, offsetMin) => {
+  it.each([[0, 0], [4097, 0], [1.5, 0], [Number.NaN, 0], [1, Number.NaN], [1, 1441], [1, -1441], [1, Infinity], [1, 0.5], [1, 330.5], [1, '330' as unknown as number]])('refuses channel %s with offset %s without asking the NVR', async (channel, offsetMin) => {
     nvr = await startFakeNvr({ recordings: RECORDINGS })
     await expect(findSegments(client(nvr.port), { channel, day: '2026-10-20', offsetMin })).rejects.toThrow(Error)
     expect(nvr.requests).toEqual([])
   })
   it('accepts the first and last allowed years and a leap day', async () => {
     nvr = await startFakeNvr({ recordings: [] })
-    for (const day of ['2000-01-01', '2100-12-31', '2028-02-29']) expect(await findSegments(client(nvr.port), { channel: 1, day, offsetMin: 0 })).toEqual([])
+    for (const day of ['2000-01-01', '2100-12-31', '2028-02-29']) expect(await segsOf(client(nvr.port), { channel: 1, day, offsetMin: 0 })).toEqual([])
   })
 })
 

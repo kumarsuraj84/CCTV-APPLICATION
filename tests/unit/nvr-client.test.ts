@@ -311,13 +311,31 @@ describe('NvrClient.post', () => {
     expect(err).toMatchObject({ kind: 'unreachable' })
     expect(nvr.requests).toEqual([])
   })
-  it('gives one deadline to a shared signal, and a new one per call when none is given', async () => {
-    nvr = await startFakeNvr({ recordings: [], delayMs: 200 })
-    const c = client(nvr.port, 'secret-pass', 700)
+  it('gives one deadline to posts that share a signal, and a new one per call when none is given', async () => {
+    // Each post is 2 requests of 100 ms (about 200 ms): the first fits the 800 ms deadline four times over; the shared deadline then runs out.
+    nvr = await startFakeNvr({ recordings: [], delayMs: 100 })
+    const c = client(nvr.port, 'secret-pass', 800)
     const signal = c.deadline()
-    await c.post(SEARCH, XML, signal) // 2 requests, 400 ms
-    await expect(c.post(SEARCH, XML, signal)).rejects.toMatchObject({ kind: 'timeout' }) // the same 700 ms is used up
+    const t = Date.now()
+    await c.post(SEARCH, XML, signal)
+    let done = 1
+    const err = await (async () => {
+      for (let i = 0; i < 20; i++) {
+        await c.post(SEARCH, XML, signal)
+        done++
+      }
+    })().catch((e: unknown) => e)
+    expect(err).toMatchObject({ kind: 'timeout' })
+    expect(done).toBeGreaterThanOrEqual(2)
+    expect(done).toBeLessThanOrEqual(5)
+    expect(Date.now() - t).toBeLessThan(800 * 1.8)
     await expect(c.post(SEARCH, XML)).resolves.toContain('CMSearchResult') // a call with no signal starts its own deadline
+  })
+  it('gives a post that has no signal the client deadline', async () => {
+    nvr = await startFakeNvr({ mode: 'slow' })
+    const t = Date.now()
+    await expect(client(nvr.port, 'secret-pass', 300).post(SEARCH, XML)).rejects.toMatchObject({ kind: 'timeout' })
+    expect(Date.now() - t).toBeLessThan(300 * 2)
   })
   it('does not show the password in errors from failing posts', async () => {
     const PASSWORD = 'Sup3r-S3cret-pw-4711'
