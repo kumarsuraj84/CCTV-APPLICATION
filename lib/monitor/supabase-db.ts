@@ -66,6 +66,8 @@ export type SupabaseMonitorDbOptions = {
 }
 
 type FenceArgs = { p_lease: string; p_fencing_token: number }
+/** A worker clock further than this from the database clock is warned about (and the database dates results more than this ahead now()). */
+export const CLOCK_SKEW_WARN_MS = 30_000
 type RpcError = { code?: string; message: string } | null
 
 /**
@@ -77,6 +79,8 @@ type RpcError = { code?: string; message: string } | null
 export class SupabaseMonitorDb implements MonitorDb {
   private orgId: string | undefined
   private fence: LeaseFence | undefined
+  /** The clock difference last warned about; null while in step. */
+  private skewWarnedAt: number | null = null
 
   constructor(private admin: Admin, opts: SupabaseMonitorDbOptions = {}) {
     this.orgId = opts.orgId
@@ -215,7 +219,22 @@ export class SupabaseMonitorDb implements MonitorDb {
   }
 
   async touchHeartbeat(now: Date): Promise<void> {
-    await this.write('monitor_heartbeat', { p_at: now.toISOString() }, 'heartbeat')
+    // Review round 1 (I-1): the database answers how far this worker's clock is from its own (milliseconds, + = worker ahead). Result
+    // times come from the worker's clock, so a difference over 30 s is logged once (and once more when it is back in step); the worker
+    // status shows it too (lib/monitor/health.ts).
+    const skewMs = Number(await this.write('monitor_heartbeat', { p_at: now.toISOString() }, 'heartbeat'))
+    if (!Number.isFinite(skewMs)) return
+    const off = Math.abs(skewMs) > CLOCK_SKEW_WARN_MS
+    if (off && this.skewWarnedAt === null) {
+      this.skewWarnedAt = skewMs
+      logger.warn({
+        event: 'worker_clock_skew', aheadOfDatabaseSec: Math.round(skewMs / 1000),
+        message: 'This computer\'s clock differs from the database\'s by more than 30 seconds. Results are dated with this clock; set the clock right (time sync).',
+      })
+    } else if (!off && this.skewWarnedAt !== null) {
+      this.skewWarnedAt = null
+      logger.info({ event: 'worker_clock_in_step', aheadOfDatabaseSec: Math.round(skewMs / 1000) })
+    }
   }
 
   /** At start-up: if the last heartbeat is older than maxSilenceMs, the worker was not running in between. Remember that period. */

@@ -57,6 +57,8 @@ export type WorkerLeaseOptions = {
   ttlSec?: number
   renewEveryMs?: number
   marginMs?: number
+  /** How long a release waits for the database before giving up (default 3 s). */
+  releaseTimeoutMs?: number
   /** Milliseconds on a monotonic clock (performance.now by default). Only differences are used; the wall clock is never read. */
   monotonic?: () => number
   log?: LeaseLog
@@ -76,6 +78,7 @@ export class WorkerLease {
   private readonly ttlSec: number
   private readonly renewEveryMs: number
   private readonly marginMs: number
+  private readonly releaseTimeoutMs: number
   private readonly monotonic: () => number
   private readonly log: LeaseLog
   private readonly holderInfo: Record<string, string | number | boolean>
@@ -96,6 +99,7 @@ export class WorkerLease {
     this.ttlSec = o.ttlSec ?? LEASE_TTL_SEC
     this.renewEveryMs = o.renewEveryMs ?? LEASE_RENEW_EVERY_MS
     this.marginMs = o.marginMs ?? LEASE_MARGIN_MS
+    this.releaseTimeoutMs = o.releaseTimeoutMs ?? 3_000
     this.monotonic = o.monotonic ?? (() => performance.now())
     this.log = o.log ?? defaultLog
     this.holderInfo = o.holderInfo ?? {}
@@ -122,7 +126,7 @@ export class WorkerLease {
     this.arm(this.held)
     this.acquireFailures.clear()
     this.renewFailures.clear()
-    this.log({ event: 'lease_acquired', lease: this.name, token, ttlSec: this.ttlSec })
+    this.log({ event: 'lease_acquired', lease: this.name, epoch: token, ttlSec: this.ttlSec })
     return { result: 'acquired', token }
   }
 
@@ -171,7 +175,7 @@ export class WorkerLease {
     }
     if (this.held !== h) return 'not_held' // the epoch ended while the renewal was on its way
     if (failure !== undefined || !answer) {
-      this.renewFailures.report(failure, (e) => this.log({ event: 'lease_renew_failed', lease: this.name, token: h.token, error: e }))
+      this.renewFailures.report(failure, (e) => this.log({ event: 'lease_renew_failed', lease: this.name, epoch: h.token, error: e }))
       if (this.monotonic() >= h.validUntil) this.markLost(h, 'renewal_timed_out')
       return 'error'
     }
@@ -230,21 +234,31 @@ export class WorkerLease {
     return () => this.listeners.delete(fn)
   }
 
-  /** Hands the lease back (graceful shutdown) so another worker can take it at once. Never throws; false when nothing was released. */
+  /**
+   * Hands the lease back (graceful shutdown) so another worker can take it at once. Never throws; false when nothing was released.
+   * Waits at most releaseTimeoutMs for the database (review round 1, M-3): a stop never hangs on an unanswered call; the lease then
+   * simply runs out.
+   */
   async release(): Promise<boolean> {
     const h = this.held
     if (!h) return false
     this.held = null // no write of this epoch is sent from now on
     clearTimeout(this.watchdog)
+    let timer: NodeJS.Timeout | undefined
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`no answer within ${this.releaseTimeoutMs} ms`)), this.releaseTimeoutMs)
+    })
     try {
-      const answer = await this.rpc('worker_release_lease', { p_name: this.name, p_holder: this.holder, p_fencing_token: h.token })
+      const answer = await Promise.race([this.rpc('worker_release_lease', { p_name: this.name, p_holder: this.holder, p_fencing_token: h.token }), timeout])
       if (answer.error) throw new Error(answer.error.message)
       const released = answer.data === true
-      this.log({ event: 'lease_released', lease: this.name, token: h.token, released })
+      this.log({ event: 'lease_released', lease: this.name, epoch: h.token, released })
       return released
     } catch (e) {
-      this.log({ event: 'lease_release_failed', lease: this.name, token: h.token, message: 'Could not hand the lease back; it runs out by itself.', error: e })
+      this.log({ event: 'lease_release_failed', lease: this.name, epoch: h.token, message: 'Could not hand the lease back; it runs out by itself.', error: e })
       return false
+    } finally {
+      clearTimeout(timer)
     }
   }
 
@@ -274,7 +288,7 @@ export class WorkerLease {
     if (this.held !== h) return
     this.held = null
     clearTimeout(this.watchdog)
-    this.log({ event: 'lease_lost', lease: this.name, token: h.token, reason, message: 'The lease is no longer this worker\'s: all work stops and the worker waits in standby.' })
+    this.log({ event: 'lease_lost', lease: this.name, epoch: h.token, reason, message: 'The lease is no longer this worker\'s: all work stops and the worker waits in standby.' })
     for (const fn of [...this.listeners]) {
       try {
         fn(reason)

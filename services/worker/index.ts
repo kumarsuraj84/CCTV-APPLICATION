@@ -72,7 +72,8 @@ async function main() {
     log: (e) => (e.event === 'worker_start_failed' || e.event === 'worker_shutdown_failed' ? logger.error(e) : logger.warn(e)),
     makeRunner: (fence) => new MonitorRunner({ db: new SupabaseMonitorDb(admin, { fence }), probes: realProbes, cfg, clock: () => new Date() }),
     onActive: (token) =>
-      logger.info({ event: 'worker_started', lease: lease.name, token, deviceCheckSec: cfg.deviceCheckSec, cameraCheckSec: cfg.cameraCheckSec, failThreshold: cfg.failThreshold }),
+      // The fencing token is logged as "epoch": it is no secret, and the logger hides every field whose name contains "token".
+      logger.info({ event: 'worker_started', lease: lease.name, epoch: token, deviceCheckSec: cfg.deviceCheckSec, cameraCheckSec: cfg.cameraCheckSec, failThreshold: cfg.failThreshold }),
   })
   started.supervisor = supervisor
   if (stopping) return

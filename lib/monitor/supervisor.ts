@@ -52,7 +52,11 @@ export class WorkerSupervisor {
     while (!stop.aborted) {
       this.phase = 'standby'
       if (!(await lease.acquire(stop, sleep))) break
-      if (stop.aborted) break // taken just as the worker was asked to stop: stop() hands it back
+      if (stop.aborted) {
+        // Taken just as the worker was asked to stop (stop() found nothing to release then): hand it back at once (review M-3).
+        await lease.release()
+        break
+      }
       let off: () => void = () => {}
       const lost = new Promise<LeaseLostReason>((resolve) => (off = lease.onLost(resolve)))
       const renewing = new AbortController()

@@ -17,6 +17,13 @@ export type WorkerStatus = WorkerHealth & {
   progressTotal: number
   /** P2-7: the worker's lease ('monitor'): who holds it, with which token, and how long ago it was renewed. null = never taken / unreadable. */
   lease: WorkerLeaseStatus | null
+  /**
+   * P2-7 review round 1 (I-1): how far the worker's clock was ahead of the database's at the last heartbeat (seconds; negative =
+   * behind; null = not known). Result times are the worker's; more than 30 s off is a warning (the database dates results that are
+   * more than 30 s in the future at its own time, and a clock behind makes results look old).
+   */
+  clockSkewSec: number | null
+  clockSkewWarning: boolean
 }
 
 /**
@@ -40,6 +47,8 @@ type Admin = SupabaseClient<Database>
 
 /** The worker beats every 5 seconds; no beat for 30 seconds means it is not running. */
 const MAX_AGE_SEC = 30
+/** The same 30 s as the worker's own warning and the database's limit for results dated in the future (P2-7 review I-1). */
+const CLOCK_SKEW_WARN_SEC = 30
 
 async function readState(admin: Admin) {
   const { data, error } = await admin.from('worker_state').select('*').eq('id', 1).single()
@@ -85,7 +94,12 @@ export async function getWorkerStatus(admin: Admin, now = new Date()): Promise<W
     return null
   })
   const heartbeatAgeSec = age(s.last_heartbeat, now)
+  // heartbeat_db_at (migration 20261021000039) is read from the row as it comes; types/database.ts is regenerated separately.
+  const dbBeat = (s as unknown as { heartbeat_db_at?: string | null }).heartbeat_db_at
+  const clockSkewSec = s.last_heartbeat && dbBeat ? Math.round((Date.parse(s.last_heartbeat) - Date.parse(dbBeat)) / 1000) : null
   return {
+    clockSkewSec,
+    clockSkewWarning: clockSkewSec !== null && Math.abs(clockSkewSec) > CLOCK_SKEW_WARN_SEC,
     ok: heartbeatAgeSec !== null && heartbeatAgeSec < MAX_AGE_SEC,
     heartbeatAgeSec,
     requestedAt: s.check_requested_at,
