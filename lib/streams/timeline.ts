@@ -5,7 +5,11 @@
 // (India time). It is NVR time + PLAYBACK_OFFSET_MIN, so it is NOT the real UTC instant. The clock fields are read as written, with no
 // time zone conversion anywhere, which keeps the screen the same whatever the time zone of the browser or the server is.
 
-/** The clock people see is India time: the shown clock is the real clock + 330 minutes. Used for "today" and for "not in the future". */
+/**
+ * The clock people see is India time: the shown clock is the real clock + 330 minutes. Used for "today" and for "not in the future".
+ * This is the offset of DISPLAY_TIME_ZONE in lib/time.ts (India has no daylight saving time, so it is a constant); a unit test fails if that
+ * zone changes, so the two cannot drift apart.
+ */
 export const SHOWN_CLOCK_OFFSET_MIN = 330
 export const MINUTES_PER_DAY = 1440
 /** Lengths offered on the screen, in minutes. */
@@ -60,6 +64,15 @@ export function dayBlocks(day: string, segments: readonly { start: string; end: 
     else joined.push({ ...s })
   }
   return joined.map((b) => ({ ...b, left: (b.startMin * 100) / MINUTES_PER_DAY, width: ((b.endMin - b.startMin) * 100) / MINUTES_PER_DAY }))
+}
+
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** A shown-time instant (ISO string) as "22 Oct, 14:35" (its clock fields, 24 hour), or an empty string when it does not parse. */
+export function formatShortDateTime(iso: string): string {
+  const d = new Date(iso)
+  if (!Number.isFinite(d.getTime())) return ''
+  return `${d.getUTCDate()} ${SHORT_MONTHS[d.getUTCMonth()]}, ${two(d.getUTCHours())}:${two(d.getUTCMinutes())}`
 }
 
 /** Minutes since midnight as 24 hour `HH:MM` (1440 is `24:00`, the end of the day). */

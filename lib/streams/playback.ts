@@ -21,8 +21,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_OFFSET_MIN = 1440
 export const MIN_PLAY_MINUTES = 1
 export const MAX_PLAY_MINUTES = 60
-/** The newest start allowed is this far ahead of the shown clock, the oldest this far behind it. */
-const FUTURE_SLACK_MS = 60_000
+/**
+ * The newest start allowed is this far ahead of the shown clock (15 minutes: NVR clocks often run fast, and a recording can then end
+ * "in the future" by the shown clock), the oldest is MAX_AGE_MS behind it.
+ */
+export const FUTURE_SLACK_MS = 15 * 60_000
+/** How many one-second shifts of the start are tried to find a stream nobody is watching (ruling R19). */
+export const MAX_START_SHIFTS = 20
 const MAX_AGE_MS = 365 * 86_400_000
 
 export const MSG_CAMERA_NOT_FOUND = 'Camera not found.'
@@ -33,6 +38,9 @@ const MSG_READ_RECORDINGS = 'Could not read the recordings. Please try again.'
 const MSG_BAD_REQUEST = 'That request is not valid.'
 const MSG_BAD_START = 'Choose a start time within the last year, not in the future.'
 const MSG_BAD_LENGTH = 'Choose how long to play.'
+export const MSG_TOO_BUSY = 'Too many people are watching this recording right now. Try again in a moment.'
+/** After this many answers in a row that could not be read, go2rtc is taken to be down. */
+const MAX_UNREADABLE_IN_A_ROW = 3
 
 type StoreRow = { code: string; nvr_ip: string; http_port: number; rtsp_port: number; nvr_username: string }
 type CameraRow = { id: string; name: string; channel: number; store_id: string; stores: StoreRow | null }
@@ -162,9 +170,14 @@ export async function listDaySegments(
 }
 
 /**
- * Starts playback of `minutes` (1 to 60) from a shown-time `start` (not in the future, not older than a year, both on the shown clock):
- * registers `pb_<camera>_<start in seconds>` with go2rtc, pointing at the NVR's playback address (shown time - offsetMin), and signs a
- * 10 minute `pb` token for it. An unchanged stream is not registered twice. The address with the NVR password stays inside this function.
+ * Starts playback of `minutes` (1 to 60) from a shown-time `start` (not more than 15 minutes ahead of the shown clock, not older than a
+ * year): registers `pb_<camera>_<start in seconds>` with go2rtc, pointing at the NVR's playback address (shown time - offsetMin), and signs
+ * a 10 minute `pb` token for it. The address with the NVR password stays inside this function.
+ *
+ * One go2rtc stream has one running source, and everybody watching it sees the same moment of it. So a request is only given a stream that
+ * nobody is using (ruling R19): when the stream of that name already has a viewer or a running source, or its state cannot be read, the
+ * start is moved on by one second (up to 20 tries; one second cannot be seen) and the token and the NVR address carry the moved start. An
+ * idle stream with the same source is reused. After 20 tries the answer is "too many people are watching".
  */
 export async function openPlayback(deps: OpenPlaybackDeps, actor: Who, cameraId: string, start: Date, minutes: number, offsetMin: number): Promise<Result<{ token: string; name: string }>> {
   const secret = getSecret('stream_token')
@@ -178,24 +191,38 @@ export async function openPlayback(deps: OpenPlaybackDeps, actor: Who, cameraId:
   if (deps.limiter && !deps.limiter.allow(actor.id)) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
 
   const length = Math.min(MAX_PLAY_MINUTES, Math.max(MIN_PLAY_MINUTES, Math.round(minutes)))
-  const s = Math.floor(start.getTime() / 1000)
-  const e = s + length * 60
+  const wanted = Math.floor(start.getTime() / 1000)
 
   const c = await findCamera(deps, cameraId, { password: 'unless-demo', env: deps.env })
   if (!c.ok) return c
   const { camera, password, demo } = c
   const store = camera.stores
   try {
-    const src = demo
-      ? demoSource(camera.channel, `${camera.id}:${s}`)
-      : buildPlaybackUrl({ host: store.nvr_ip, port: store.rtsp_port, username: store.nvr_username, password: password!, channel: camera.channel, start: new Date(s * 1000), end: new Date(e * 1000), offsetMin })
-    const name = streamName({ c: camera.id, k: 'pb', s })
-    await deps.go2rtc.register(name, src, { keepExisting: demo })
-    const token = signStreamToken({ u: actor.id, c: camera.id, k: 'pb', exp: Math.floor(now() / 1000) + TOKEN_LIFETIME_SEC, s, e }, secret)
-    // Streams nobody has watched for a long time are removed from go2rtc (at most once a minute; never waits, never fails the request).
-    // (go2rtc's idle clock is the machine clock, so the real time is used here, not the injected one.)
-    void deps.go2rtc.prune().catch(() => {})
-    return { ok: true, token, name }
+    let unreadable = 0
+    for (let shift = 0; shift < MAX_START_SHIFTS; shift++) {
+      const s = wanted + shift
+      const e = s + length * 60
+      const name = streamName({ c: camera.id, k: 'pb', s })
+      let busy: boolean
+      try {
+        busy = (await deps.go2rtc.inspect(name)).busy
+        unreadable = 0
+      } catch {
+        busy = true // the state cannot be read: the stream is taken to be in use
+        if (++unreadable >= MAX_UNREADABLE_IN_A_ROW) return { ok: false, error: MSG_UNAVAILABLE } // go2rtc is not answering at all
+      }
+      if (busy) continue
+      const src = demo
+        ? demoSource(camera.channel, `${camera.id}:${s}`)
+        : buildPlaybackUrl({ host: store.nvr_ip, port: store.rtsp_port, username: store.nvr_username, password: password!, channel: camera.channel, start: new Date(s * 1000), end: new Date(e * 1000), offsetMin })
+      await deps.go2rtc.register(name, src, { keepExisting: demo })
+      const token = signStreamToken({ u: actor.id, c: camera.id, k: 'pb', exp: Math.floor(now() / 1000) + TOKEN_LIFETIME_SEC, s, e }, secret)
+      // Streams nobody has watched for a long time are removed from go2rtc (at most once a minute; never waits, never fails the request).
+      // (go2rtc's idle clock is the machine clock, so the real time is used here, not the injected one.)
+      void deps.go2rtc.prune().catch(() => {})
+      return { ok: true, token, name }
+    }
+    return { ok: false, error: MSG_TOO_BUSY }
   } catch {
     logger.error({ event: 'open_playback_failed', store: store.code, channel: camera.channel }) // no address, no error text: they can carry a password
     return { ok: false, error: MSG_UNAVAILABLE }

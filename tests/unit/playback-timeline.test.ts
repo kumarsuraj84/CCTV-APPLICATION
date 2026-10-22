@@ -1,15 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { dayLabel, daysInMonth, dayString, monthGrid, monthLabel, shiftMonth } from '@/lib/streams/calendar'
+import { clampDay, dayLabel, daysInMonth, dayString, monthBounds, monthGrid, monthInBounds, monthLabel, shiftMonth } from '@/lib/streams/calendar'
+import { DISPLAY_TIME_ZONE } from '@/lib/time'
 import {
   blockAt,
   dayBlocks,
   describeBlocks,
   formatClock,
+  formatShortDateTime,
   minuteAt,
   nextBlockStart,
   parseClock,
   parseDay,
   parseStartIso,
+  SHOWN_CLOCK_OFFSET_MIN,
   shownToday,
   startIso,
 } from '@/lib/streams/timeline'
@@ -208,5 +211,41 @@ describe('calendar', () => {
     expect(dayString(2026, 3, 7)).toBe('2026-03-07')
     expect(monthLabel(2026, 10)).toBe('October 2026')
     expect(dayLabel(2026, 10, 22)).toBe('Thursday 22 October 2026')
+  })
+})
+
+describe('the shown clock', () => {
+  it('is the offset of the zone every screen shows (a change of zone in lib/time.ts must change SHOWN_CLOCK_OFFSET_MIN too)', () => {
+    const offsetMinutes = (zone: string, at: Date) => {
+      const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }).formatToParts(at).map((x) => [x.type, x.value]))
+      return (Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute), Number(p.second)) - at.getTime()) / 60_000
+    }
+    for (const at of [new Date(Date.UTC(2026, 0, 15)), new Date(Date.UTC(2026, 6, 15)), new Date(Date.UTC(2027, 9, 30))]) expect(offsetMinutes(DISPLAY_TIME_ZONE, at)).toBe(SHOWN_CLOCK_OFFSET_MIN)
+  })
+})
+
+describe('formatShortDateTime', () => {
+  it('writes the day, month and 24 hour clock of a shown time', () => {
+    expect(formatShortDateTime('2026-10-22T14:35:00.000Z')).toBe('22 Oct, 14:35')
+    expect(formatShortDateTime('2026-01-05T00:05:59Z')).toBe('5 Jan, 00:05')
+    expect(formatShortDateTime('nonsense')).toBe('')
+  })
+})
+
+describe('month bounds', () => {
+  it('allows the current month and the 12 months before it', () => {
+    expect(monthBounds('2026-10-22')).toEqual({ min: { year: 2025, month: 10 }, max: { year: 2026, month: 10 } })
+    expect(monthBounds('2026-03-01')).toEqual({ min: { year: 2025, month: 3 }, max: { year: 2026, month: 3 } })
+    expect(monthInBounds(2026, 10, '2026-10-22')).toBe(true)
+    expect(monthInBounds(2025, 10, '2026-10-22')).toBe(true)
+    expect(monthInBounds(2025, 9, '2026-10-22')).toBe(false)
+    expect(monthInBounds(2026, 11, '2026-10-22')).toBe(false)
+  })
+  it('turns a day outside them into today', () => {
+    expect(clampDay('2026-10-01', '2026-10-22')).toBe('2026-10-01')
+    expect(clampDay('2025-10-31', '2026-10-22')).toBe('2025-10-31')
+    expect(clampDay('2025-09-30', '2026-10-22')).toBe('2026-10-22')
+    expect(clampDay('2026-11-02', '2026-10-22')).toBe('2026-10-22')
+    expect(clampDay('2030-01-01', '2026-10-22')).toBe('2026-10-22')
   })
 })

@@ -42,11 +42,12 @@ export function PlaybackPlayer({
   /** What is being played, for example "PA, Front Door, 22 Oct 14:30". */
   label: string
   onStop: () => void
-  /** Called with the seconds that were played, to carry on from there. */
+  /** Called with the seconds of the recording that were played, to carry on from there. */
   onContinue: (playedSeconds: number) => void
 }) {
   const host = useRef<HTMLDivElement>(null)
   const playedAt = useRef(0)
+  const video = useRef<HTMLVideoElement | null>(null)
   const [state, setState] = useState<State>(GATEWAY ? 'connecting' : 'unavailable')
   const [played, setPlayed] = useState(0)
 
@@ -64,7 +65,10 @@ export function PlaybackPlayer({
     }
     const done = (reason: 'ended' | 'timer') => {
       if (cancelled) return
-      const seconds = playedAt.current > 0 ? Math.floor((Date.now() - playedAt.current) / 1000) : 0
+      // How far the picture got: the video element knows; the clock is the fallback when it does not say.
+      const wall = playedAt.current > 0 ? Math.floor((Date.now() - playedAt.current) / 1000) : 0
+      const shown = video.current?.currentTime
+      const seconds = Math.min(minutes * 60, typeof shown === 'number' && Number.isFinite(shown) && shown > 0 ? Math.floor(shown) : wall)
       halt()
       setPlayed(seconds)
       if (playedAt.current === 0) setState('unavailable')
@@ -84,6 +88,9 @@ export function PlaybackPlayer({
             setState('playing')
           },
           onEnded: () => done('ended'),
+          onVideo: (v) => {
+            video.current = v
+          },
         })
         watchdog = setTimeout(() => done('ended'), CONNECT_TIMEOUT_MS)
       })

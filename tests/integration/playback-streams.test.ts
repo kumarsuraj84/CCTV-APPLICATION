@@ -17,24 +17,31 @@ const nvrClient = (ep: ConstructorParameters<typeof NvrClient>[0]) => new NvrCli
 
 // ── a fake go2rtc (like the real one with a read-only config: it answers 400 to a change it has applied) ──
 type Seen = { method: string; name: string | null; src: string | null }
-type FakeGo2rtc = { client: Go2rtcClient; seen: Seen[]; streams: Map<string, string>; watched: Set<string>; failAll: boolean; close: () => Promise<void> }
+type FakeGo2rtc = { client: Go2rtcClient; seen: Seen[]; streams: Map<string, string>; watched: Set<string>; running: Set<string>; unreadable: Set<string>; failAll: boolean; close: () => Promise<void> }
 async function startFakeGo2rtc(): Promise<FakeGo2rtc> {
   const seen: Seen[] = []
   const streams = new Map<string, string>()
   const watched = new Set<string>()
+  const running = new Set<string>() // sources that are already connected (go2rtc then lists more than the address)
+  const unreadable = new Set<string>() // names whose state cannot be read
   const fake = { failAll: false }
   const server = http.createServer((req, res) => {
     const u = new URL(req.url ?? '/', 'http://x')
     const consumers = (k: string) => (watched.has(k) ? [{ id: 1 }] : null)
+    const producer = (k: string) => (running.has(k) ? { id: 7, url: streams.get(k), medias: ['video, recvonly, H264'] } : { url: streams.get(k) })
     if (req.method === 'GET') {
       res.setHeader('content-type', 'application/json')
       const one = u.searchParams.get('src')
       if (one === null) return void res.end(JSON.stringify(Object.fromEntries([...streams].map(([k, v]) => [k, { producers: [{ url: v }], consumers: consumers(k) }]))))
+      if (unreadable.has(one)) {
+        res.statusCode = 500
+        return void res.end('boom')
+      }
       if (!streams.has(one)) {
         res.statusCode = 404
         return void res.end('not found')
       }
-      return void res.end(JSON.stringify({ producers: [{ url: streams.get(one) }], consumers: consumers(one) }))
+      return void res.end(JSON.stringify({ producers: [producer(one)], consumers: consumers(one) }))
     }
     const name = u.searchParams.get('name')
     seen.push({ method: req.method ?? '', name, src: u.searchParams.get('src') })
@@ -54,6 +61,8 @@ async function startFakeGo2rtc(): Promise<FakeGo2rtc> {
     seen,
     streams,
     watched,
+    running,
+    unreadable,
     close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()) }),
   })
 }
@@ -69,14 +78,15 @@ const RECORDINGS = [
 describe('playback streams', () => {
   let orgId: string, otherOrg: string
   let sA: string, sB: string, sNoPass: string, sDown: string, sWrong: string
+  let offStoreCamera: string
   let a1: string, a2: string, aOff: string, b1: string, n1: string, d1: string, w1: string, foreign: string
   let viewer: TestUser, nobody: TestUser, manager: TestUser
   let nvr: FakeNvr
   let fake: FakeGo2rtc
   const savedSecret = process.env.STREAM_TOKEN_SECRET
 
-  async function addStore(org: string, code: string, o: { port?: number } = {}) {
-    const { data, error } = await admin().from('stores').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', http_port: o.port ?? nvr.port, rtsp_port: 554, nvr_username: NVR_USER }).select('id').single()
+  async function addStore(org: string, code: string, o: { port?: number; active?: boolean } = {}) {
+    const { data, error } = await admin().from('stores').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', http_port: o.port ?? nvr.port, rtsp_port: 554, nvr_username: NVR_USER, is_active: o.active ?? true }).select('id').single()
     if (error || !data) throw new Error(`addStore: ${error?.message}`)
     return data.id
   }
@@ -105,6 +115,9 @@ describe('playback streams', () => {
     n1 = await addCamera(orgId, sNoPass, 1, 'No password yet')
     d1 = await addCamera(orgId, sDown, 1, 'Down NVR')
     w1 = await addCamera(orgId, sWrong, 1, 'Wrong password')
+    const sOff = await addStore(orgId, 'POF', { active: false })
+    await savePassword(sOff, NVR_PASSWORD)
+    offStoreCamera = await addCamera(orgId, sOff, 1, 'In a switched-off store')
     foreign = await addCamera(otherOrg, await addStore(otherOrg, 'PX'), 1, 'Other org')
     await savePassword(await addStore(otherOrg, 'PY'), NVR_PASSWORD)
     viewer = await createUser(orgId, 'user')
@@ -160,6 +173,32 @@ describe('playback streams', () => {
       expect(await segments(nobody, a1, '2026-10-20')).toEqual({ ok: false, error: 'Camera not found.' })
       expect(nvr.requests).toHaveLength(0)
       expect(fake.seen).toHaveLength(0)
+    })
+
+    it('a camera in a store that has been switched off is refused, also for somebody who sees every store, and nothing is asked of the NVR or go2rtc', async () => {
+      expect(await days(manager, offStoreCamera)).toEqual({ ok: false, error: 'Camera not found.' })
+      expect(await segments(manager, offStoreCamera, '2026-10-20')).toEqual({ ok: false, error: 'Camera not found.' })
+      expect(await play(manager, offStoreCamera, new Date(SHOWN_NOW - 3_600_000))).toEqual({ ok: false, error: 'Camera not found.' })
+      expect(nvr.requests).toHaveLength(0)
+      expect(fake.seen).toHaveLength(0)
+    })
+
+    it('somebody with a grant for one camera only can play back that camera and not another camera of the same store', async () => {
+      const cameraOnly = await createUser(orgId, 'user')
+      const { error } = await admin().rpc('replace_user_access', { p_user: cameraOnly.id, p_stores: [], p_zones: [], p_cameras: [a1] })
+      expect(error).toBeNull()
+      const start = new Date(SHOWN_NOW - 3_600_000)
+      expect(await days(cameraOnly, a1)).toEqual({ ok: true, days: [20, 21, 22] })
+      expect((await segments(cameraOnly, a1, '2026-10-20')).ok).toBe(true)
+      const played = await play(cameraOnly, a1, start)
+      expect(played.ok).toBe(true)
+      expect(fake.seen.map((x) => x.name)).toHaveLength(1)
+      const before = nvr.requests.length
+      expect(await days(cameraOnly, a2)).toEqual({ ok: false, error: 'Camera not found.' })
+      expect(await segments(cameraOnly, a2, '2026-10-20')).toEqual({ ok: false, error: 'Camera not found.' })
+      expect(await play(cameraOnly, a2, start)).toEqual({ ok: false, error: 'Camera not found.' })
+      expect(nvr.requests).toHaveLength(before)
+      expect(fake.seen).toHaveLength(1)
     })
 
     it('a manager, who sees every store, can look at a camera in any store of the organisation', async () => {
@@ -412,6 +451,96 @@ describe('playback streams', () => {
       expect(verifyStreamToken(b.token, NOW, SECRET)!.u).toBe(manager.id)
     })
 
+    describe('a stream somebody is already using is not shared (ruling R19)', () => {
+      const secondsOf = (name: string) => Number(name.slice(name.lastIndexOf('_') + 1))
+      const S = START.getTime() / 1000
+
+      it('the second request for a watched window gets its own stream, one second later, with its own address and token', async () => {
+        const first = okOf(await play(viewer, a1, START, 10))
+        fake.watched.add(first.name)
+        const second = okOf(await play(manager, a1, START, 10))
+        expect(first.name).toBe(`pb_${a1}_${S}`)
+        expect(second.name).toBe(`pb_${a1}_${S + 1}`)
+        expect(fake.streams.get(second.name)).toContain('starttime=20261022T143001Z&endtime=20261022T144001Z')
+        expect(fake.streams.get(first.name)).toContain('starttime=20261022T143000Z&endtime=20261022T144000Z') // the first viewer's stream is untouched
+        expect(fake.seen.filter((x) => x.method === 'PUT').map((x) => x.name)).toEqual([first.name, second.name])
+        expect(verifyStreamToken(second.token, NOW, SECRET)).toEqual({ u: manager.id, c: a1, k: 'pb', exp: NOW / 1000 + 600, s: S + 1, e: S + 1 + 600 })
+        // And a third while both are watched moves on again.
+        fake.watched.add(second.name)
+        expect(secondsOf(okOf(await play(viewer, a1, START, 10)).name)).toBe(S + 2)
+      })
+
+      it('the shift also applies with an offset: the NVR is asked for the shifted start minus the offset', async () => {
+        const first = okOf(await play(viewer, a1, START, 10, 330))
+        fake.watched.add(first.name)
+        const second = okOf(await play(viewer, a1, START, 10, 330))
+        expect(fake.streams.get(second.name)).toContain('starttime=20261022T090001Z&endtime=20261022T091001Z')
+        expect(verifyStreamToken(second.token, NOW, SECRET)).toMatchObject({ s: S + 1, e: S + 601 })
+      })
+
+      it('a source that is already connected counts as in use, even before a viewer shows up', async () => {
+        const first = okOf(await play(viewer, a1, START))
+        fake.running.add(first.name)
+        expect(okOf(await play(manager, a1, START)).name).toBe(`pb_${a1}_${S + 1}`)
+      })
+
+      it('an existing stream that nobody is using is reused (no second registration), with a fresh token', async () => {
+        const first = okOf(await play(viewer, a1, START))
+        const again = okOf(await play(manager, a1, START, 10, 0, { now: () => NOW + 5000 }))
+        expect(again.name).toBe(first.name)
+        expect(fake.seen.filter((x) => x.method === 'PUT')).toHaveLength(1)
+        expect(again.token).not.toBe(first.token)
+        fake.watched.add(first.name)
+        fake.watched.clear() // the viewer left: free again
+        expect(okOf(await play(viewer, a1, START)).name).toBe(first.name)
+      })
+
+      it('when the state of a stream cannot be read it is taken to be in use, and the next second is tried', async () => {
+        fake.unreadable.add(`pb_${a1}_${S}`)
+        const res = okOf(await play(viewer, a1, START))
+        expect(res.name).toBe(`pb_${a1}_${S + 1}`)
+        expect(fake.seen.filter((x) => x.method === 'PUT').map((x) => x.name)).toEqual([res.name])
+      })
+
+      it('when go2rtc cannot be read at all the answer is the plain video server message, not "too many people"', async () => {
+        for (let i = 0; i < 5; i++) fake.unreadable.add(`pb_${a1}_${S + i}`)
+        expect(await play(viewer, a1, START)).toEqual({ ok: false, error: 'The video server is not available.' })
+        expect(fake.seen).toHaveLength(0)
+      })
+
+      it('the 21st request for a window that 20 people are watching is refused with a plain message, and nothing more is registered', async () => {
+        const names: string[] = []
+        for (let i = 0; i < 20; i++) {
+          const res = okOf(await play(viewer, a1, START))
+          fake.watched.add(res.name)
+          names.push(res.name)
+        }
+        expect(names).toEqual(Array.from({ length: 20 }, (_, i) => `pb_${a1}_${S + i}`))
+        const refused = await play(viewer, a1, START)
+        expect(refused).toEqual({ ok: false, error: 'Too many people are watching this recording right now. Try again in a moment.' })
+        expect(fake.seen.filter((x) => x.method === 'PUT')).toHaveLength(20)
+        // Somebody who asks for a different moment is not affected.
+        expect(okOf(await play(viewer, a1, new Date(START.getTime() + 3_600_000))).name).toBe(`pb_${a1}_${S + 3600}`)
+      })
+
+      it('other cameras and other windows are independent', async () => {
+        const first = okOf(await play(viewer, a1, START))
+        fake.watched.add(first.name)
+        expect(okOf(await play(manager, a2, START)).name).toBe(`pb_${a2}_${S}`)
+        expect(okOf(await play(manager, a1, new Date(START.getTime() + 60_000))).name).toBe(`pb_${a1}_${S + 60}`)
+      })
+
+      it('a watched playback stream is still never removed by the pruner (after being moved on too)', async () => {
+        const first = okOf(await play(viewer, a1, START))
+        fake.watched.add(first.name)
+        const second = okOf(await play(manager, a1, START))
+        fake.watched.add(second.name)
+        expect(await fake.client.prune({ now: Date.now() + 31 * 60_000, everyMs: 0 })).toBe(0)
+        expect(await fake.client.prune({ now: Date.now() + 10 * 60 * 60_000, everyMs: 0 })).toBe(0)
+        expect([...fake.streams.keys()].sort()).toEqual([first.name, second.name].sort())
+      })
+    })
+
     it('a different length for the same start is registered again with the new end (the source changed)', async () => {
       okOf(await play(viewer, a1, START, 10))
       okOf(await play(viewer, a1, START, 30))
@@ -421,9 +550,9 @@ describe('playback streams', () => {
 
     it('refuses a start in the future, or older than a year, or not a date, and registers nothing', async () => {
       const one = 60_000
-      expect((await play(viewer, a1, new Date(SHOWN_NOW + 30_000))).ok).toBe(true) // within a minute of now: allowed
+      expect((await play(viewer, a1, new Date(SHOWN_NOW + 14 * one))).ok).toBe(true) // within 15 minutes of now (NVR clocks run fast): allowed
       fake.seen.length = 0
-      for (const bad of [new Date(SHOWN_NOW + 2 * one), new Date(SHOWN_NOW + 2 * 86_400_000), new Date(SHOWN_NOW - 366 * 86_400_000), new Date(0), new Date(Number.NaN), new Date(Number.POSITIVE_INFINITY), 'yesterday' as never, null as never]) {
+      for (const bad of [new Date(SHOWN_NOW + 16 * one), new Date(SHOWN_NOW + 2 * 86_400_000), new Date(SHOWN_NOW - 366 * 86_400_000), new Date(0), new Date(Number.NaN), new Date(Number.POSITIVE_INFINITY), 'yesterday' as never, null as never]) {
         expect((await play(viewer, a1, bad)).ok, String(bad)).toBe(false)
       }
       expect(fake.seen).toHaveLength(0)

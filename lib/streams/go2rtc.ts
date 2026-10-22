@@ -38,7 +38,7 @@ function loopbackOrigin(baseUrl: string): string {
   return u.origin
 }
 
-type Read = { present: boolean; urls: string[] }
+type Read = { present: boolean; busy: boolean; urls: string[] }
 
 export class Go2rtcClient {
   private readonly base: string
@@ -95,7 +95,7 @@ export class Go2rtcClient {
     const res = await this.send('GET', `/api/streams?src=${encodeURIComponent(name)}`, MSG_READ)
     if (res.status === 404) {
       await res.body?.cancel().catch(() => {})
-      return { present: false, urls: [] }
+      return { present: false, busy: false, urls: [] }
     }
     if (!res.ok) {
       await res.body?.cancel().catch(() => {})
@@ -108,7 +108,7 @@ export class Go2rtcClient {
       throw new Error(MSG_READ)
     }
     if (typeof stream !== 'object' || stream === null || Array.isArray(stream)) throw new Error(MSG_READ)
-    return { present: true, urls: producerUrls(stream) }
+    return { present: true, busy: streamBusy(stream), urls: producerUrls(stream) }
   }
 
   /** Sends a change and trusts nothing but what is read back; `ok` decides from the new state whether it worked. */
@@ -166,6 +166,16 @@ export class Go2rtcClient {
     if (typeof name !== 'string' || !NAME.test(name)) throw new Error(MSG_REMOVE)
     await this.change('DELETE', `/api/streams?src=${encodeURIComponent(name)}`, name, MSG_REMOVE, (now) => !now.present)
     lastUsed.delete(this.key(name))
+  }
+
+  /**
+   * One stream's state, read on its own: whether go2rtc has it and whether anything is using it (a viewer, or a source that is already
+   * connected). Throws when the answer cannot be read (callers then treat the stream as busy). Never returns the source.
+   */
+  async inspect(name: string): Promise<{ present: boolean; busy: boolean }> {
+    if (typeof name !== 'string' || !NAME.test(name)) throw new Error(MSG_READ)
+    const { present, busy } = await this.read(name)
+    return { present, busy }
   }
 
   async has(name: string): Promise<boolean> {
@@ -234,6 +244,16 @@ export class Go2rtcClient {
     for (const k of [...lastUsed.keys()]) if (k.startsWith(`${this.base}|`) && !present.has(k)) lastUsed.delete(k)
     return removed
   }
+}
+
+/**
+ * A stream is in use when it has a consumer (a viewer), or one of its producers is already connected: go2rtc lists a producer that is not
+ * running with its address only, and adds more fields (connection, media, counters) once it runs.
+ */
+function streamBusy(stream: unknown): boolean {
+  const s = typeof stream === 'object' && stream !== null ? (stream as { consumers?: unknown; producers?: unknown }) : {}
+  if (Array.isArray(s.consumers) && s.consumers.length > 0) return true
+  return Array.isArray(s.producers) && s.producers.some((p) => typeof p === 'object' && p !== null && Object.keys(p).some((k) => k !== 'url'))
 }
 
 /** The source addresses go2rtc lists for one stream. Never logged or returned: they can hold a camera password. */

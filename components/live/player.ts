@@ -35,6 +35,8 @@ export type PlayerEvents = {
   onPlaying: () => void
   /** The socket closed or go2rtc reported an error. */
   onEnded: () => void
+  /** The picture element, as soon as it exists (its currentTime says how far the picture has played). */
+  onVideo?: (video: HTMLVideoElement) => void
 }
 
 /**
@@ -93,6 +95,7 @@ export function startPlayer(host: HTMLElement, socketUrl: string, events: Player
       if (!stopped) events.onPlaying()
     })
   }
+  if (el.video) events.onVideo?.(el.video)
   el.src = socketUrl
 
   return () => {

@@ -27,3 +27,23 @@ export const dayLabel = (year: number, month: number, day: number): string =>
   `${WEEKDAYS[new Date(Date.UTC(year, month - 1, day)).getUTCDay()]} ${day} ${MONTHS[month - 1]} ${year}`
 
 export const WEEKDAY_NAMES: readonly string[] = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+/** How many months back from the current month the calendar goes. */
+export const MONTHS_BACK = 12
+
+const monthIndex = (year: number, month: number) => year * 12 + (month - 1)
+
+/** The first and last month that can be shown, for today's day (yyyy-mm-dd): the current month and 12 months before it. */
+export function monthBounds(today: string): { min: { year: number; month: number }; max: { year: number; month: number } } {
+  const max = { year: Number(today.slice(0, 4)), month: Number(today.slice(5, 7)) }
+  return { min: shiftMonth(max.year, max.month, -MONTHS_BACK), max }
+}
+
+export function monthInBounds(year: number, month: number, today: string): boolean {
+  const { min, max } = monthBounds(today)
+  const i = monthIndex(year, month)
+  return i >= monthIndex(min.year, min.month) && i <= monthIndex(max.year, max.month)
+}
+
+/** The day if its month can be shown, else today. */
+export const clampDay = (day: string, today: string): string => (monthInBounds(Number(day.slice(0, 4)), Number(day.slice(5, 7)), today) ? day : today)

@@ -7,12 +7,13 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { listDaySegmentsAction, listRecordedDaysAction, openPlaybackAction } from '@/lib/actions/playback'
-import { dayLabel, shiftMonth } from '@/lib/streams/calendar'
+import { clampDay, dayLabel, monthInBounds, shiftMonth } from '@/lib/streams/calendar'
 import {
   blockAt,
   dayBlocks,
   DEFAULT_LENGTH,
   formatClock,
+  formatShortDateTime,
   LENGTH_CHOICES,
   nextBlockStart,
   parseClock,
@@ -37,8 +38,9 @@ const COULD_NOT_REACH = 'Could not reach the server.'
  * type HH:MM), a length, and the picture. Times are the clock people see (India time, 24 hour).
  */
 export function PlaybackView({ camera, today, initialDay }: { camera: PlaybackCamera; today: string; initialDay: string }) {
-  const first = parseDay(initialDay) ?? parseDay(today)!
-  const [day, setDay] = useState(initialDay)
+  const startDay = clampDay(parseDay(initialDay) ? initialDay : today, today)
+  const first = parseDay(startDay)!
+  const [day, setDay] = useState(startDay)
   const [view, setView] = useState({ year: first.y, month: first.m })
   const [pick, setPick] = useState<{ day: string; minute: number } | null>(null)
   const [draft, setDraft] = useState<string | null>(null)
@@ -98,10 +100,21 @@ export function PlaybackView({ camera, today, initialDay }: { camera: PlaybackCa
     }
     choose(m)
   }
-  const changeMonth = (delta: number) => setView((v) => shiftMonth(v.year, v.month, delta))
+  // The calendar goes back 12 months from the current month and no further forward than the current month.
+  const before = shiftMonth(view.year, view.month, -1)
+  const after = shiftMonth(view.year, view.month, 1)
+  const canPrev = monthInBounds(before.year, before.month, today)
+  const canNext = monthInBounds(after.year, after.month, today)
+  const changeMonth = (delta: number) => setView((v) => {
+    const to = shiftMonth(v.year, v.month, delta)
+    return monthInBounds(to.year, to.month, today) ? to : v
+  })
   const selectDay = (d: string) => {
     setDay(d)
     setPlayError(null)
+    // A time that was typed for another day is not carried over.
+    setDraft(null)
+    setClockError(null)
     // Keep the address in step so the page can be shared or reloaded (the server page reads ?day=).
     try {
       const url = new URL(window.location.href)
@@ -150,7 +163,7 @@ export function PlaybackView({ camera, today, initialDay }: { camera: PlaybackCa
     if (!session) return
     const from = new Date(Date.parse(session.startIso) + seconds * 1000)
     const remaining = Math.max(1, Math.ceil((session.minutes * 60 - seconds) / 60))
-    void start(from.toISOString(), remaining, `from ${from.toISOString().slice(11, 16)}`)
+    void start(from.toISOString(), remaining, `from ${formatShortDateTime(from.toISOString())}`)
   }
 
   const summary = !loaded
@@ -165,7 +178,7 @@ export function PlaybackView({ camera, today, initialDay }: { camera: PlaybackCa
     <div className="space-y-6">
       <div className="grid gap-6 md:grid-cols-[auto_1fr]">
         <div className="min-w-0">
-          <DayCalendar year={view.year} month={view.month} selected={day} today={today} marked={marks?.days ?? []} onSelect={selectDay} onMonth={changeMonth} />
+          <DayCalendar year={view.year} month={view.month} selected={day} today={today} marked={marks?.days ?? []} onSelect={selectDay} onMonth={changeMonth} canPrev={canPrev} canNext={canNext} />
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <Button type="button" size="sm" variant="outline" onClick={() => { const t = parseDay(today)!; setView({ year: t.y, month: t.m }); selectDay(today) }}>
               Today
@@ -180,10 +193,11 @@ export function PlaybackView({ camera, today, initialDay }: { camera: PlaybackCa
             <p className="text-xs text-muted-foreground">Times are India time (IST), 24-hour.</p>
           </div>
 
+          {loaded?.error && <p role="alert" className="text-sm text-destructive">{loaded.error}</p>}
           <div aria-live="polite" className="text-sm">
-            {loaded?.error ? <p role="alert" className="text-destructive">{loaded.error}</p> : <p className="text-muted-foreground">{summary}</p>}
+            {!loaded?.error && <p className="text-muted-foreground">{summary}</p>}
             {loaded && !loaded.error && loaded.truncated && (
-              <p className="text-amber-800 dark:text-amber-300">Too many recordings on this day — only the first part is shown. Pick a shorter time range.</p>
+              <p className="text-amber-800 dark:text-amber-300">There are too many recordings on this day to show them all. The first part is shown.</p>
             )}
             {loaded && !loaded.error && loaded.skipped > 0 && <p className="text-amber-800 dark:text-amber-300">Some recordings could not be read.</p>}
           </div>

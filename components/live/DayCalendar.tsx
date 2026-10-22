@@ -1,15 +1,16 @@
 'use client'
 
 import { ChevronLeft, ChevronRight } from 'lucide-react'
-import { useRef, type KeyboardEvent } from 'react'
+import { useEffect, useRef, type KeyboardEvent } from 'react'
 import { Button } from '@/components/ui/button'
-import { dayLabel, dayString, monthGrid, monthLabel, WEEKDAY_NAMES } from '@/lib/streams/calendar'
+import { dayLabel, daysInMonth, dayString, monthGrid, monthLabel, shiftMonth, WEEKDAY_NAMES } from '@/lib/streams/calendar'
 import { cn } from '@/lib/utils'
 
 /**
  * A month to pick a day from. Days the NVR marks as having recordings get a dot and "has recordings" in their name, but they are only a
- * hint (the NVR's days can differ from the days shown, near midnight), so every day can be opened. Arrow keys move between days, Page Up
- * and Page Down change the month.
+ * hint (the NVR's days can differ from the days shown, near midnight), so every day can be opened. Arrow keys move between days and carry on
+ * into the previous or next month at the edges; Page Up and Page Down change the month. The month buttons are marked unavailable at the
+ * ends of the range that can be shown (the parent says which).
  */
 export function DayCalendar({
   year,
@@ -19,6 +20,8 @@ export function DayCalendar({
   marked,
   onSelect,
   onMonth,
+  canPrev,
+  canNext,
 }: {
   year: number
   month: number
@@ -30,6 +33,9 @@ export function DayCalendar({
   marked: readonly number[]
   onSelect: (day: string) => void
   onMonth: (delta: number) => void
+  /** Whether the previous / next month may be shown. */
+  canPrev: boolean
+  canNext: boolean
 }) {
   const grid = monthGrid(year, month)
   const buttons = useRef(new Map<number, HTMLButtonElement>())
@@ -39,30 +45,51 @@ export function DayCalendar({
   const tabbable = selectedDay ?? todayDay ?? 1
   const last = grid.flat().filter((d): d is number => d !== null).length
 
+  // After the month changes, the focus goes to this day of the new month.
+  const pending = useRef<number | null>(null)
+  useEffect(() => {
+    const d = pending.current
+    pending.current = null
+    if (d !== null) buttons.current.get(d)?.focus()
+  }, [year, month])
+
+  const focusDay = (d: number) => buttons.current.get(Math.min(last, Math.max(1, d)))?.focus()
+  const goMonth = (delta: -1 | 1, day: number) => {
+    if (delta === -1 ? !canPrev : !canNext) return false
+    const to = shiftMonth(year, month, delta)
+    pending.current = Math.min(daysInMonth(to.year, to.month), Math.max(1, day))
+    onMonth(delta)
+    return true
+  }
   const onKey = (e: KeyboardEvent, day: number) => {
     const step: Record<string, number> = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }
     if (e.key === 'PageUp' || e.key === 'PageDown') {
       e.preventDefault()
-      onMonth(e.key === 'PageUp' ? -1 : 1)
+      goMonth(e.key === 'PageUp' ? -1 : 1, day)
       return
     }
-    let next: number | null = null
-    if (e.key in step) next = day + step[e.key]
-    else if (e.key === 'Home') next = 1
-    else if (e.key === 'End') next = last
-    if (next === null) return
+    let target: number
+    if (e.key in step) target = day + step[e.key]
+    else if (e.key === 'Home') target = 1
+    else if (e.key === 'End') target = last
+    else return
     e.preventDefault()
-    buttons.current.get(Math.min(last, Math.max(1, next)))?.focus()
+    if (target < 1) {
+      const to = shiftMonth(year, month, -1)
+      if (!goMonth(-1, daysInMonth(to.year, to.month) + target)) focusDay(1) // at the first month there is nowhere to go
+    } else if (target > last) {
+      if (!goMonth(1, target - last)) focusDay(last)
+    } else focusDay(target)
   }
 
   return (
     <div className="w-full max-w-sm">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <Button type="button" size="icon" variant="outline" aria-label="Previous month" onClick={() => onMonth(-1)}>
+        <Button type="button" size="icon" variant="outline" aria-label="Previous month" aria-disabled={!canPrev} title={canPrev ? undefined : "Not available: the calendar goes back 12 months."} className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50" onClick={() => canPrev && onMonth(-1)}>
           <ChevronLeft aria-hidden="true" />
         </Button>
         <h3 className="text-sm font-semibold" aria-live="polite">{monthLabel(year, month)}</h3>
-        <Button type="button" size="icon" variant="outline" aria-label="Next month" onClick={() => onMonth(1)}>
+        <Button type="button" size="icon" variant="outline" aria-label="Next month" aria-disabled={!canNext} title={canNext ? undefined : "Not available: this is the current month."} className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50" onClick={() => canNext && onMonth(1)}>
           <ChevronRight aria-hidden="true" />
         </Button>
       </div>

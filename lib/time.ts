@@ -1,6 +1,8 @@
 // 24-hour clock in IST, no AM/PM: the one format used across the app.
+/** The time zone every screen shows. The playback screen's shown clock (SHOWN_CLOCK_OFFSET_MIN in lib/streams/timeline.ts) must be this zone's offset; a test checks it. */
+export const DISPLAY_TIME_ZONE = 'Asia/Kolkata'
 const dtf = new Intl.DateTimeFormat('en-GB', {
-  timeZone: 'Asia/Kolkata',
+  timeZone: DISPLAY_TIME_ZONE,
   day: '2-digit',
   month: 'short',
   year: 'numeric',
