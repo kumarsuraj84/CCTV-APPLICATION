@@ -92,7 +92,7 @@ flowchart LR
   subgraph Hub["Hub host (local development)"]
     APP["Next.js app :3212<br/>pages, Server Actions, /api/health, /api/version, /api/vod"]
     FF["ffmpeg (optional, spawned by the app<br/>for fast playback)"]
-    GW["Gateway :3213<br/>WebSocket proxy, HMAC token check"]
+    GW["Gateway :3412<br/>WebSocket proxy, HMAC token check"]
     WRK["Worker (no port)<br/>probes, state machine, check-now"]
     G2R["go2rtc 1.9.9 (Docker)<br/>API 127.0.0.1:1984, WebRTC 127.0.0.1:8555"]
     subgraph SB["Supabase (Docker) 55321-55324"]
@@ -124,7 +124,7 @@ All database access is over HTTP through supabase-js and PostgREST; there is no 
 | Process | Start | Port / bind | Status | Notes |
 |---|---|---|---|---|
 | Web app | `npm run dev` / `npm run start` | **3212**, all interfaces, plain HTTP | BUILT | No `--hostname` in `package.json`, so it listens on all interfaces (risk R10); `output: 'standalone'` |
-| Video gateway | `npm run gateway` (`services/gateway/index.ts`) | **3213**, `0.0.0.0`, plain HTTP/WS | BUILT | The only video endpoint a browser reaches; serves `/g/ws`, `/g/video-stream.js`, `/g/video-rtc.js`, `/g/health`; no database connection today |
+| Video gateway | `npm run gateway` (`services/gateway/index.ts`) | **3412**, `0.0.0.0`, plain HTTP/WS | BUILT | The only video endpoint a browser reaches; serves `/g/ws`, `/g/video-stream.js`, `/g/video-rtc.js`, `/g/health`; no database connection today |
 | go2rtc | `npm run stack:up` (`deploy/docker-compose.dev.yml`, `deploy/go2rtc.yaml`) | **1984** API and **8555** WebRTC tcp/udp, both published on `127.0.0.1` only | BUILT | `cap_drop: ALL`, `no-new-privileges`, config mounted read-only, RTSP server off. API has no credentials; WebRTC listener is unused but still enabled (D-13 removes it) |
 | go2rtc demo override | `npm run stack:up:demo` (+ `deploy/docker-compose.demo.yml`, `go2rtc.demo.yaml`) | adds RTSP **8554** on the container's own `127.0.0.1` (not published) | BUILT (dev only) | Needed only for the generated test picture (`DEMO_VIDEO=1`, non-production, loopback NVR address) |
 | Worker | `npm run worker` (`services/worker/index.ts`) | none | BUILT | Service-role key; heartbeat-based single-worker guard (`lib/monitor/guard.ts`) — to be replaced by a lease (P2-7) |
@@ -356,7 +356,7 @@ sequenceDiagram
   participant DB as RLS client
   participant SR as Service role / Vault
   participant G as go2rtc
-  participant W as Gateway :3213
+  participant W as Gateway :3412
   T->>A: camera ids (max 36) + kind sub or main
   A->>A: profile, cctv.live in summary, 30/min/person
   A->>DB: cameras_with_capability('cctv.live', ids)

@@ -4,7 +4,7 @@ import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 
 // The video gateway: a small process next to the web app. Run it with `npm run gateway`. It is the only video endpoint a browser
-// reaches (port 3213); go2rtc itself listens on this machine only.
+// reaches (port 3412); go2rtc itself listens on this machine only.
 function main() {
   process.on('unhandledRejection', (e) => logger.error({ event: 'gateway_unhandled_rejection', error: e }))
 
@@ -16,7 +16,7 @@ function main() {
     process.exit(1)
   }
   const go2rtcUrl = process.env.GO2RTC_URL?.trim() || 'http://127.0.0.1:1984'
-  const portText = process.env.GATEWAY_PORT?.trim() || '3213'
+  const portText = process.env.GATEWAY_PORT?.trim() || '3412'
   const port = Number(portText)
   if (!/^\d+$/.test(portText) || port < 1 || port > 65535) {
     logger.error({ event: 'gateway_config_invalid', message: 'GATEWAY_PORT must be a number from 1 to 65535.' })

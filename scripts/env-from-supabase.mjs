@@ -24,7 +24,7 @@ const lines = {
   SUPABASE_SERVICE_ROLE_KEY: status.SERVICE_ROLE_KEY,
   SUPABASE_URL: status.API_URL,
   NEXT_PUBLIC_APP_URL: 'http://localhost:3212',
-  NEXT_PUBLIC_STREAM_GATEWAY_URL: 'http://localhost:3213',
+  NEXT_PUBLIC_STREAM_GATEWAY_URL: 'http://localhost:3412',
   TZ: 'Asia/Kolkata',
   CRON_SECRET: secret(),
   WORKER_SECRET: secret(),

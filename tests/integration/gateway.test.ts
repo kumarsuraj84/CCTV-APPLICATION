@@ -357,7 +357,7 @@ describe('gateway: who may connect', () => {
     const fake = await startFakeGo2rtc()
     const { port, clock } = await startGateway(fake.url)
     const url = wsUrl(port, tokenFor(clock))
-    for (const origin of [null, 'http://evil.test', 'https://app.test:3212', 'http://app.test:3213', 'http://app.test', 'http://sub.app.test:3212', 'http://app.test:3212.evil.test', 'http://app.test:3212/x', 'http://app.test:3212/', 'null', '*', 'app.test:3212', 'ftp://app.test:3212', 'http://user@app.test:3212']) {
+    for (const origin of [null, 'http://evil.test', 'https://app.test:3212', 'http://app.test:3412', 'http://app.test', 'http://sub.app.test:3212', 'http://app.test:3212.evil.test', 'http://app.test:3212/x', 'http://app.test:3212/', 'null', '*', 'app.test:3212', 'ftp://app.test:3212', 'http://user@app.test:3212']) {
       const c = open(url, origin)
       expect(await c.closed, String(origin)).toEqual({ code: 1008, reason: 'Not allowed' })
     }

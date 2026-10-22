@@ -62,19 +62,19 @@ Live video goes camera/NVR -> go2rtc -> gateway -> browser. The gateway is a sma
 video through; it is the only video address a browser can reach.
 
     npm run stack:up        # starts go2rtc in Docker (image alexxit/go2rtc:1.9.9)
-    npm run gateway         # the gateway on port 3213; needs STREAM_TOKEN_SECRET in .env.local
+    npm run gateway         # the gateway on port 3412; needs STREAM_TOKEN_SECRET in .env.local
     npm run stack:down      # stops and removes go2rtc
 
 | Port | What | Reachable from |
 | --- | --- | --- |
-| 3213 | gateway: `GET /g/health`, `GET /g/video-stream.js`, `GET /g/video-rtc.js`, WebSocket `/g/ws?token=...` | the network (browsers) |
+| 3412 | gateway: `GET /g/health`, `GET /g/video-stream.js`, `GET /g/video-rtc.js`, WebSocket `/g/ws?token=...` | the network (browsers) |
 | 1984 | go2rtc API | this machine only (127.0.0.1) |
 | 8555 | go2rtc WebRTC (not used: live video goes through the gateway WebSocket) | this machine only (127.0.0.1) |
 
-Settings (`.env.example` lists them): `GO2RTC_URL` (default `http://127.0.0.1:1984`), `GATEWAY_PORT` (default 3213) and
+Settings (`.env.example` lists them): `GO2RTC_URL` (default `http://127.0.0.1:1984`), `GATEWAY_PORT` (default 3412) and
 `GATEWAY_ALLOWED_ORIGINS` (the web app address(es), comma separated, default `NEXT_PUBLIC_APP_URL`).
 
-The web app reads `NEXT_PUBLIC_STREAM_GATEWAY_URL` (the gateway address a browser can reach, for example `http://localhost:3213`; it is built into the pages, so restart `npm run dev` or rebuild after changing it). The **Live** page loads the player script from `<that address>/g/video-stream.js` and opens its sockets there, so the web app address must also be in `GATEWAY_ALLOWED_ORIGINS`, exactly as a browser spells it (scheme, host and port, no path). If it is not, tiles say "Video is not available right now."
+The web app reads `NEXT_PUBLIC_STREAM_GATEWAY_URL` (the gateway address a browser can reach, for example `http://localhost:3412`; it is built into the pages, so restart `npm run dev` or rebuild after changing it). The **Live** page loads the player script from `<that address>/g/video-stream.js` and opens its sockets there, so the web app address must also be in `GATEWAY_ALLOWED_ORIGINS`, exactly as a browser spells it (scheme, host and port, no path). If it is not, tiles say "Video is not available right now."
 
 **Live wall** (`/live`, `/live?store=<id>`, `/live?group=<id>`, `/live?camera=<id>`): the web app asks for the cameras the signed-in person may see (at most 36 per request, 30 requests per person per minute), registers each in go2rtc and hands the browser one signed token per camera; nothing else about the camera, and never its password or RTSP address, reaches the browser. Tokens last 10 minutes and are renewed every 8 minutes while the tab is open; pictures stop while the tab is hidden. Needs `STREAM_TOKEN_SECRET`; without it the page says live video is not set up.
 

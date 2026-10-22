@@ -48,23 +48,23 @@ describe('wall timing', () => {
 
 describe('gateway addresses', () => {
   it('accepts an http(s) origin and drops a trailing slash', () => {
-    expect(gatewayBase('http://localhost:3213')).toBe('http://localhost:3213')
+    expect(gatewayBase('http://localhost:3412')).toBe('http://localhost:3412')
     expect(gatewayBase('https://video.example.com/')).toBe('https://video.example.com')
-    expect(gatewayBase('http://10.0.0.5:3213/')).toBe('http://10.0.0.5:3213')
+    expect(gatewayBase('http://10.0.0.5:3412/')).toBe('http://10.0.0.5:3412')
   })
 
   it('refuses anything else', () => {
-    for (const v of [undefined, '', 'localhost:3213', 'ftp://x', 'javascript:alert(1)', 'http://u:p@host', 'http://host?x=1', 'http://host#a', 'not a url']) expect(gatewayBase(v), String(v)).toBeNull()
+    for (const v of [undefined, '', 'localhost:3412', 'ftp://x', 'javascript:alert(1)', 'http://u:p@host', 'http://host?x=1', 'http://host#a', 'not a url']) expect(gatewayBase(v), String(v)).toBeNull()
   })
 
   it('builds the socket address with the token as the only parameter', () => {
-    expect(gatewaySocketUrl('http://localhost:3213', 'abc.def')).toBe('ws://localhost:3213/g/ws?token=abc.def')
+    expect(gatewaySocketUrl('http://localhost:3412', 'abc.def')).toBe('ws://localhost:3412/g/ws?token=abc.def')
     expect(gatewaySocketUrl('https://v.example.com', 'a b')).toBe('wss://v.example.com/g/ws?token=a%20b')
   })
 
   it('builds the player script address, with a fresh query only on a retry', () => {
-    expect(gatewayScriptUrl('http://localhost:3213')).toBe('http://localhost:3213/g/video-stream.js')
-    expect(gatewayScriptUrl('http://localhost:3213', 2)).toBe('http://localhost:3213/g/video-stream.js?r=2')
+    expect(gatewayScriptUrl('http://localhost:3412')).toBe('http://localhost:3412/g/video-stream.js')
+    expect(gatewayScriptUrl('http://localhost:3412', 2)).toBe('http://localhost:3412/g/video-stream.js?r=2')
   })
 })
 
