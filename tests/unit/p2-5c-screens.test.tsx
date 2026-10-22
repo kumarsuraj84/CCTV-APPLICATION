@@ -5,7 +5,7 @@ const no = vi.hoisted(() => async () => ({}))
 vi.mock('@/lib/actions/admin/locations', () => ({
   saveRegionAction: no, saveClusterAction: no, previewMoveAction: no, moveNodeAction: no, applyProposalsAction: no, saveLocationAction: no, saveNetworkAction: no,
   saveRecorderAction: no, setMonitoringAction: no, testConnectionAction: no, discoverRecorderAction: no, remapCameraAction: no, mergeCamerasAction: no,
-  dismissFindingAction: no, linkFindingAction: no, archiveNodeAction: no, restoreNodeAction: no,
+  dismissFindingAction: no, linkFindingAction: no, archiveNodeAction: no, restoreNodeAction: no, previewMergeAction: no, searchCamerasAction: no, previewProposalsAction: no,
 }))
 vi.mock('@/lib/actions/admin/assets', () => ({ saveAssetAction: no, addDependencyAction: no, removeDependencyAction: no, addEndpointAction: no, retireEndpointAction: no }))
 vi.mock('@/lib/actions/groups', () => ({ addRuleAction: no, removeRuleAction: no, addCamerasAction: no, addByKeywordAction: no, removeCameraAction: no }))
@@ -24,6 +24,7 @@ import { ProposalTool } from '@/components/admin/inventory/ProposalTool'
 import { MonitoringSwitch, RecorderForm, TestConnectionButton } from '@/components/admin/inventory/RecorderForm'
 import { GroupRules } from '@/components/groups/GroupRules'
 import { AccessBuilder } from '@/components/admin/AccessBuilder'
+import { MSG_OPEN_VIDEO } from '@/lib/inventory/forms'
 
 /** Form controls without an accessible name (the same check as the P2-3 component tests). */
 function unnamed(html: string): string[] {
@@ -91,7 +92,9 @@ describe('P2-5c-1 screens: every field has a visible label and the wording is pl
   it('the NVR password is never put into the page; an edit says whether one is saved', () => {
     const html = renderToStaticMarkup(<RecorderForm locationId={L} recorder={{ id: N, name: 'Ground', host: '10.0.0.5', http_port: 80, rtsp_port: 554, username: 'viewer', expected_channels: 16, clock_offset_sec: 30, password_saved: true }} />)
     expect(html).toMatch(/type="password"[^>]*autoComplete="new-password"|autoComplete="new-password"[^>]*type="password"/i)
-    expect(text(html)).toContain('A password is saved. Leave empty to keep it.')
+    // Review I-4: the saved password is kept only while the address and web port stay the same.
+    expect(text(html)).toContain('A password is saved. Leave empty to keep it (only while the address and web port stay the same).')
+    expect(text(html)).toContain('Changing it (or the web port) needs the password again.')
     expect(html).not.toMatch(/name="password"[^>]*value="[^"]+"/)
   })
 
@@ -99,6 +102,21 @@ describe('P2-5c-1 screens: every field has a visible label and the wording is pl
     const t = text(renderToStaticMarkup(<MoveForm kind="location" id={L} current={C} options={[{ id: C, label: 'PAT · Patna' }]} />))
     expect(t).toContain('Check the effect on access')
     expect(t).toContain('No cluster')
+    // Review I-1: until the session registry (P2-4) lands, the screen must not promise that open video is re-checked.
+    expect(t).toContain(MSG_OPEN_VIDEO)
+    expect(MSG_OPEN_VIDEO).toBe('Video that is already open is not cut off yet: it keeps playing until the person closes it.')
+    expect(t).not.toMatch(/checked again/i)
+  })
+
+  it('review I-5: the reconciliation list never merges or links on one click (each asks first)', () => {
+    const html = renderToStaticMarkup(<FindingsList findings={[
+      { id: K, kind: 'channel_taken', recorderId: N, recorderName: 'Ground', locationId: L, locationCode: 'JCL', channel: 3, cameraId: K, cameraName: 'Back', otherCameraId: R, reportedName: null, because: null, foundAt: '2026-10-22T05:00:00Z' },
+      { id: R, kind: 'possible_move', recorderId: N, recorderName: 'Ground', locationId: L, locationCode: 'JCL', channel: 5, cameraId: K, cameraName: 'Door', otherCameraId: null, reportedName: 'Door', because: 'same_name', foundAt: '2026-10-22T05:00:00Z' },
+    ]} mergeCandidates={{}} />)
+    const t = text(html)
+    expect(t).toContain('Keep the restored camera…')
+    expect(t).toContain('Link it to channel 5…')
+    expect(t).not.toMatch(/Yes, merge|Yes, link/)
   })
 
   it('the access editor offers "A region", "A cluster" and "NVR(s)" next to locations and cameras', () => {

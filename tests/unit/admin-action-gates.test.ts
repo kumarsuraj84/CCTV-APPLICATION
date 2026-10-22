@@ -32,10 +32,10 @@ vi.mock('@/lib/import/apply', () => ({ importStores: async () => ({}), importDev
 vi.mock('@/lib/monitor/discovery', () => ({ discoverStoreCameras: async () => ({ ok: false, error: 'x' }), discoverRecorderCameras: async () => ({ ok: false, error: 'x' }) }))
 // P2-5c-1 services (the actions are tested here for their gate; the services in tests/integration/p2-5c-admin.test.ts).
 const no = async () => ({ ok: false, error: 'x' })
-vi.mock('@/lib/inventory/hierarchy', () => ({ saveRegion: no, saveCluster: no, previewMove: no, moveNode: no, hierarchyProposals: no, applyProposals: no }))
+vi.mock('@/lib/inventory/hierarchy', () => ({ saveRegion: no, saveCluster: no, previewMove: no, moveNode: no, hierarchyProposals: no, applyProposals: no, previewProposals: no }))
 vi.mock('@/lib/inventory/locations', () => ({ saveLocation: no, saveNetworkDefinition: no }))
 vi.mock('@/lib/inventory/recorder-admin', () => ({ saveRecorder: no, setRecorderMonitoring: no, testRecorderConnection: no }))
-vi.mock('@/lib/inventory/mapping', () => ({ remapCamera: no, mergeCameras: no }))
+vi.mock('@/lib/inventory/mapping', () => ({ remapCamera: no, mergeCameras: no, previewMerge: no, searchCameras: no }))
 vi.mock('@/lib/inventory/findings', () => ({ dismissFinding: no, linkFinding: no }))
 vi.mock('@/lib/inventory/assets', () => ({ saveAsset: no, addDependency: no, removeDependency: no, addEndpoint: no, retireEndpoint: no }))
 vi.mock('@/lib/inventory/archive', () => ({ archiveInventory: no, restoreInventory: no }))
@@ -73,6 +73,10 @@ function p25c(): (() => Promise<unknown>)[] {
     async () => (await load()).discoverRecorderAction('x'),
     async () => (await load()).remapCameraAction({ cameraId: 'x', recorderId: 'y', channel: 1 }),
     async () => (await load()).mergeCamerasAction({ keepId: 'x', duplicateId: 'y' }),
+    // P2-5c-1 review round 1: the merge preview (I-5), the organisation-wide camera search (M-2) and the proposal preview (M-1).
+    async () => (await load()).previewMergeAction({ keepId: 'x', duplicateId: 'y' }),
+    async () => (await load()).searchCamerasAction('door'),
+    async () => (await load()).previewProposalsAction([]),
     async () => (await load()).dismissFindingAction('x', 'note'),
     async () => (await load()).linkFindingAction('x'),
     async () => (await load()).archiveNodeAction('location', 'x'),

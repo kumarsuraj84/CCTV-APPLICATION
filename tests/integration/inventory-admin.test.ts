@@ -73,7 +73,8 @@ describe('inventory administration', () => {
     expect(onPrimary).toEqual([1, 2, 3, 4, 5, 6])
     expect((await admin().from('cameras').select('id').eq('recorder_id', second)).data).toEqual([])
     // The same through the store form.
-    expect((await updateStore(admin(), actor, alpha!.id, { name: 'Alpha', ip: '192.0.2.97', nvr_user: 'viewer', channels: 6 })).ok).toBe(true)
+    // P2-5c-1 review I-4: a changed NVR address needs the password again (tests/integration/p2-5c-fixes.test.ts), so the form sends it.
+    expect((await updateStore(admin(), actor, alpha!.id, { name: 'Alpha', ip: '192.0.2.97', nvr_user: 'viewer', nvr_password: 'Secret-A3', channels: 6 })).ok).toBe(true)
     expect((await admin().from('recorders').select('assets!recorders_asset_fk!inner(ip)').eq('id', second).single()).data).toEqual({ assets: { ip: '192.0.2.150' } })
   })
 

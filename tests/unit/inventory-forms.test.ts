@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  ASSET_TYPES, displayName, isCidr, isHostOrIp, LOCATION_KINDS, LOCATION_KIND_LABELS, normaliseCode, parseChannel, parseClockOffset, parseList, parseVlan,
+  ASSET_TYPES, displayName, isCidr, isHostOrIp, LOCATION_KINDS, LOCATION_KIND_LABELS, locationTitle, mergeSentence, normaliseCode, parseChannel, parseClockOffset, parseList,
+  parseVlan,
 } from '@/lib/inventory/forms'
 
 // P2-5c-1: the small pure rules of the administration forms (the services use them; the database checks the same things again).
@@ -59,6 +60,20 @@ describe('administration form rules', () => {
     expect(isHostOrIp('switch-01.store.local')).toBe(true)
     expect(isHostOrIp('bad host!')).toBe(false)
     expect(isHostOrIp('')).toBe(false)
+  })
+
+  it('review I-5 / M-3: the merge confirmation names both cameras, the duplicate\'s place and who loses access', () => {
+    expect(mergeSentence({ keepName: 'Cash office', duplicateName: 'Cash office (new)', duplicatePlace: 'JCL · First floor, channel 2', peopleLosing: 2 })).toBe(
+      '“Cash office” keeps its identity, access, groups and history and takes over the NVR channel of “Cash office (new)” (JCL · First floor, channel 2), which is archived. 2 people have access to “Cash office (new)” only through a grant on it; that access ends.',
+    )
+    expect(mergeSentence({ keepName: 'A', duplicateName: 'B', duplicatePlace: 'JCL · not linked', peopleLosing: 0 })).toBe(
+      '“A” keeps its identity, access, groups and history; “B” (JCL · not linked) is archived. Nobody loses access through a grant on “B”.',
+    )
+  })
+
+  it('review M-12: a location title does not repeat its code', () => {
+    expect(locationTitle('PTN1', 'PTN1 - Patna')).toBe('PTN1 - Patna')
+    expect(locationTitle('HO-PAT', 'Head office, Patna')).toBe('HO-PAT · Head office, Patna')
   })
 
   it('asset types are the database enum without the NVR (an NVR is added on its location)', () => {

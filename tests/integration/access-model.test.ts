@@ -777,6 +777,9 @@ describe('capability access model (P2-1)', () => {
       group_rule_members: ['authenticated'],
       camera_group_rule_members: [],
       camera_group_rules_check: [],
+      // P2-5c-1 review round 1 (20261021000027): group counts for the caller; the ticked zone proposals in one transaction (server).
+      group_member_counts: ['authenticated'],
+      inventory_apply_proposals: server,
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)
@@ -808,6 +811,8 @@ describe('capability access model (P2-1)', () => {
       'cctv_visible_group_ids', 'my_access_summary', 'status_reasons', 'cameras_monitoring_off', 'it_view_endpoint_asset_ids',
       // P2-5c-1: dynamic group members of groups the caller may see, cameras the caller may see.
       'group_rule_members',
+      // P2-5c-1 review I-7: per-group counts of the cameras the caller may see.
+      'group_member_counts',
     ])
     for (const f of data ?? []) {
       expect(f.grantees.filter((g) => g === 'anon' || g.startsWith('PUBLIC')), `${f.name}(${f.args})`).toEqual([])
@@ -841,6 +846,7 @@ describe('capability access model (P2-1)', () => {
       ['discovery_apply', { p_org: orgA, p_recorder: randomUUID(), p_ops: [] }],
       // P2-5c-1.
       ['camera_merge', { p_org: orgA, p_keep: c11, p_duplicate: randomUUID() }],
+      ['inventory_apply_proposals', { p_org: orgA, p_items: [] }],
     ]
     for (const [fn, args] of calls) {
       expect((await anon.rpc(fn, args as never)).error?.code, `anon ${fn}`).toBe('42501')
