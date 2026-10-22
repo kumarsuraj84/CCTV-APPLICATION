@@ -85,4 +85,4 @@ export function startupProblems(proc: ProcessName, env: Env = process.env, now: 
 
 /** The plain line a process logs when it refuses to start. */
 export const refusalMessage = (proc: ProcessName, problems: string[]) =>
-  `The ${proc === 'web' ? 'web app' : proc} does not start in production mode (DRISHTI_ENV=production): ${problems.join(' ')}`
+  `The ${proc === 'web' ? 'web app' : proc} does not start in production mode (DRISHTI_ENV=production or NODE_ENV=production): ${problems.join(' ')}`

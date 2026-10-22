@@ -15,6 +15,14 @@ Rules that hold for every step below:
   (`auditSecrets()` reports a short or repeated one, never the value).
 - After a change, restart exactly the processes in the "read by" column. The development web server (`npm run dev`) reloads
   `.env.local` by itself; the gateway, the worker and go2rtc must be restarted.
+- Windows: the generator's file mode (0600) has no effect there. Restrict every env file to the account that runs the process
+  (review round 1, M-14), once after it is created: `icacls <file> /inheritance:r /grant:r "%USERNAME%:F"` (in PowerShell:
+  `icacls <file> /inheritance:r /grant:r "${env:USERNAME}:F"`). The generator fills an empty `KEY=` line in place and keeps the file's
+  Windows line ends.
+- Production mode (review round 1, I-1): `DRISHTI_ENV=production` in every process's environment (`deploy/production.env.example`).
+  Each process then checks its own keys and secrets at start-up and refuses with one plain line (exit code 1) when one is missing,
+  ended or in the wrong process; development only warns. Give each process its own env file: in production the worker and the gateway
+  refuse to start with `SUPABASE_SERVICE_ROLE_KEY` in their environment.
 
 ## 1. The secrets
 
@@ -34,9 +42,10 @@ Rules that hold for every step below:
 | `SIGNER_SECRET`, `AGENT_INGEST_SECRET`, `AUDIT_CHECKPOINT_SECRET` | reserved for D-9 command signing, agent check-ins and D-15 checkpoints | — (later packages) | the package that uses one adds its own steps here |
 | NVR passwords | in the Vault, written by the admin screens and the import (write-only) | `media_service`, `monitor_worker` through `recorder_credential_read` (logged in `vault_reads`) | change the password on the NVR, then save it on the NVR's page (or re-import); the worker uses it from its next round |
 
-Production requires every key above that a running process reads: without its own key a service does not start (worker, gateway) or
-the web app refuses the request (`lib/supabase/service-clients.ts`); `MERGE_CONFIRM_SECRET`, `ACCESS_PREVIEW_SECRET` and
-`VERIFIED_USER_SECRET` have no per-process fallback in production.
+Production requires every key above that a running process reads: without its own key no process starts — the worker and the gateway
+check at start-up, the web app in `instrumentation.ts` (review round 1, M-16) — and `STREAM_TOKEN_SECRET`, `MERGE_CONFIRM_SECRET`,
+`ACCESS_PREVIEW_SECRET`, `VERIFIED_USER_SECRET` and go2rtc's login are checked the same way (`lib/startup-checks.ts`). A service key
+that ends within 30 days is announced at every start (rotate it); an ended one stops the process.
 
 ## 2. The project JWT secret (everything signed with it)
 
@@ -85,6 +94,12 @@ gateway send the login when both are set; a go2rtc without a login ignores it. S
 Between steps 2 and 3 everything works (go2rtc without a login ignores the header). After step 3 a process that still has the old
 login gets "The video server did not answer" until it is restarted.
 
+Production (review round 1, I-2): the login is required. `npm run stack:up` runs `scripts/check-go2rtc-env.mjs` first, which refuses to
+start go2rtc without both values (password 32+ characters); the web app and the gateway refuse to start without them, and both probe
+go2rtc once at start-up (`GET /api/streams` without the login must be refused with 401) — a go2rtc container that was started before
+the login was set is caught there ("answers without its login: recreate it"). So in production the order is: generate, recreate
+go2rtc (step 3), then restart the gateway and the web app (step 2).
+
 ## 5. The lock of the service key on NVR logins (production checklist)
 
 The web app keeps the service key for GoTrue's admin API (user administration). So that this key cannot read NVR passwords, lock it
@@ -101,14 +116,33 @@ Check it: `SELECT db_role, purpose, count(*) FROM public.vault_reads WHERE at > 
 `media_service` and `monitor_worker` afterwards. Undo (for example to run a script that reads logins with the service key):
 the same statement with `true`.
 
+In production the web app does not start while an organisation in use (trial or active) has no such row with `false` (review round
+1, M-3; `SELECT * FROM public.security_unlocked_organizations();` lists them). Do this step before the first production start, and for
+every new organisation. A refused read leaves a line in the database server log (`drishti: NVR login read refused (role …, recorder
+…, purpose …, reason …)`, never a value), since a refused read cannot write `vault_reads`.
+
+## 5a. Sign-in limits and GoTrue (review round 1, I-3, I-4)
+
+The app's own brute-force limit is the sign-in gate (`sign_in_gate`, migration `20261021000035`): per e-mail address + client IP, the
+try is counted before the password is checked, in one atomic step; from the third failure the next try waits 5 s, 10 s, … 5 minutes;
+a success clears it; nothing is locked. Behind a reverse proxy (`TRUSTED_PROXY_HOPS=1`) a client IP also has a ceiling of 100 tries in
+15 minutes over all addresses. GoTrue sees every sign-in as coming from the web server (verified on the local stack: 10,221 password
+sign-ins in six hours, every one from the same address), so its own per-IP limit is one counter for the whole installation: set the
+hosted project's sign-in rate limit to at least 1000 per 5 minutes (local stack: `[auth.rate_limit] sign_in_sign_ups`). A 429 or
+error from GoTrue is answered "Sign-in is busy, please try again in a moment" and is not counted as a wrong password.
+
 ## 6. First switch of a running installation to per-service keys
 
 1. `node scripts/gen-secrets.mjs` (adds the four service keys, go2rtc's login and the P2-6 secrets; keeps everything that is set).
 2. Restart the gateway and the worker; the development web server reloads `.env.local` by itself (production: restart it).
    Each process logs `service_key_fallback` while it still uses the service key; after the restart no such line appears.
 3. Recreate go2rtc (`npm run stack:up` or `stack:up:demo`) so its API asks for the login (section 4).
-4. Production only: lock the service key out of NVR logins (section 5).
+4. Production only: lock the service key out of NVR logins (section 5), set `DRISHTI_ENV=production` in every process's own env file
+   (`deploy/production.env.example`), restrict the files (icacls, above), then start go2rtc, the gateway, the worker and the web app;
+   each refuses with a plain line if something is missing.
 
 Back out: remove the new keys from the env file and restart the same processes (development falls back to the service key with a
-warning). The database part is undone by `supabase/rollback/20261021000033_p26_service_roles_rollback.sql` (dry run first:
-`BEGIN; \i …; ROLLBACK;`), only after every process is back on the service key.
+warning). The database part is undone newest first, each script in its own transaction (review round 1, M-13):
+`supabase/rollback/20261021000035_p26_review_fixes_rollback.sql`, then (after P3-1's `20261021000034` rollback)
+`supabase/rollback/20261021000033_p26_service_roles_rollback.sql`. Dry run each first with `psql -v ON_ERROR_STOP=1 -v drishti_dry_run=1
+-f <file>` (everything is undone at its end); then without `drishti_dry_run`. Only after every process is back on the service key.
