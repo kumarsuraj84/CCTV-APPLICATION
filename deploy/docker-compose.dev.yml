@@ -1,0 +1,14 @@
+name: cctv-hub-media
+services:
+  go2rtc:
+    image: alexxit/go2rtc:1.9.9
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # Nothing here is reachable from another machine. The browser's only video endpoint is the gateway (npm run gateway, port 3213).
+    ports:
+      - "127.0.0.1:1984:1984"
+      - "127.0.0.1:8555:8555/tcp"
+      - "127.0.0.1:8555:8555/udp"
+    volumes:
+      - ./go2rtc.yaml:/config/go2rtc.yaml:ro

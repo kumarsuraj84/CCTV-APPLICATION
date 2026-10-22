@@ -56,6 +56,31 @@ Everything it creates points at 127.0.0.1 and lives in its own organisation. Sto
 `npm run demo:seed -- --reset` removes that organisation and nothing else (`-- --fresh` removes and adds it again).
 Sign in as the demo administrator, press **Find cameras** for DEMO1 on Manage stores, then **Check now** on Monitoring.
 
+## Video gateway and go2rtc
+
+Live video goes camera/NVR -> go2rtc -> gateway -> browser. The gateway is a small process that checks a signed stream token and then passes the
+video through; it is the only video address a browser can reach.
+
+    npm run stack:up        # starts go2rtc in Docker (image alexxit/go2rtc:1.9.9)
+    npm run gateway         # the gateway on port 3213; needs STREAM_TOKEN_SECRET in .env.local
+    npm run stack:down      # stops and removes go2rtc
+
+| Port | What | Reachable from |
+| --- | --- | --- |
+| 3213 | gateway: `GET /g/health`, `GET /g/video-stream.js`, `GET /g/video-rtc.js`, WebSocket `/g/ws?token=...` | the network (browsers) |
+| 1984 | go2rtc API | this machine only (127.0.0.1) |
+| 8555 | go2rtc WebRTC (not used: live video goes through the gateway WebSocket) | this machine only (127.0.0.1) |
+
+Settings (`.env.example` lists them): `GO2RTC_URL` (default `http://127.0.0.1:1984`), `GATEWAY_PORT` (default 3213) and
+`GATEWAY_ALLOWED_ORIGINS` (the web app address(es), comma separated, default `NEXT_PUBLIC_APP_URL`).
+
+- A video socket is accepted only with a valid, unexpired token and an `Origin` that is in `GATEWAY_ALLOWED_ORIGINS`; anything else is closed (code 1008).
+- The go2rtc stream name comes from the signed token only. Nothing the browser sends can choose a stream, and go2rtc's address and error texts never reach a browser.
+- At most 300 sockets at once, 60 connection attempts per address per minute, 4 MB per message; a session lasts at most 30 minutes (the page reconnects with a new token).
+- The log has outcomes only (no tokens, stream names or people). Stop the gateway with Ctrl+C; it closes all sockets within 5 seconds.
+- Behind a proxy or load balancer the per-address limit sees the proxy's address. Put the gateway where browsers reach it directly, or move the limit to the proxy.
+- Do not publish go2rtc's ports (1984, 8555) on other interfaces: its API can register streams and read camera addresses.
+
 ## Safety rules
 
 No passwords, keys or tokens in the repository, logs or chat. NVR passwords live only in Supabase Vault.
