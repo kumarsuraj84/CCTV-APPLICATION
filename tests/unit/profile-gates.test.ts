@@ -9,6 +9,8 @@ const m = vi.hoisted(() => ({
   summary: [] as unknown[],
   summaryError: null as null | { code: string },
   rpcCalls: [] as string[],
+  // P3-1: the session facts (my_session_status) read next to the summary.
+  session: null as null | Record<string, unknown>,
 }))
 
 vi.mock('react', async (orig) => ({ ...(await orig<typeof import('react')>()), cache: <T,>(f: T) => f }))
@@ -24,6 +26,7 @@ vi.mock('@/lib/supabase/server', () => ({
     from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: m.profile }) }) }) }),
     rpc: async (fn: string) => {
       m.rpcCalls.push(fn)
+      if (fn === 'my_session_status') return { data: m.session ? [m.session] : [], error: null }
       return { data: m.summaryError ? null : m.summary, error: m.summaryError }
     },
   }),
@@ -38,6 +41,7 @@ beforeEach(() => {
   m.summary = []
   m.summaryError = null
   m.rpcCalls = []
+  m.session = { mfa_enforced: false, privileged: false, aal2: false, has_factor: false, session_id: null, signed_in_at: null, last_auth_at: null }
 })
 
 describe('getCurrentProfile', () => {
@@ -47,7 +51,8 @@ describe('getCurrentProfile', () => {
     const p = await getCurrentProfile()
     expect(p?.capabilities.failed).toBe(false)
     expect(Object.keys(p!.capabilities.grants)).toEqual(['cctv.live', 'it.monitoring.view'])
-    expect(m.rpcCalls).toEqual(['my_access_summary'])
+    // P3-1: the session facts are read once per request too (my_session_status), next to the summary.
+    expect(m.rpcCalls.sort()).toEqual(['my_access_summary', 'my_session_status'])
   })
 
   it('reads no summary for a deactivated person (there is no profile)', async () => {
@@ -113,6 +118,39 @@ describe('requireAdministration and mayAdminister', () => {
       m.summary = [row('admin.users', true)]
       await expect(requireAdministration('admin.users'), role).rejects.toThrow('REDIRECT:/home')
     }
+  })
+
+  it('P3-1: a person with an authenticator app finishes the code first (before anything else, even choosing a password)', async () => {
+    const { requireProfile, requireAdministration } = await import('@/lib/auth/profile')
+    m.profile = { ...base, role: 'user', must_reset_password: true }
+    m.session = { ...m.session, has_factor: true }
+    await expect(requireProfile()).rejects.toThrow('REDIRECT:/mfa?next=%2Fhome')
+    m.profile = { ...base, role: 'admin' }
+    m.summary = [row('admin.users', true)]
+    await expect(requireAdministration('admin.users')).rejects.toThrow('REDIRECT:/mfa')
+    m.session = { ...m.session, has_factor: true, aal2: true }
+    expect((await requireAdministration('admin.users')).id).toBe('u1')
+  })
+
+  it('P3-1: switched on, an administrator without an authenticator app must set one up; switched off, nobody must', async () => {
+    const { requireProfile } = await import('@/lib/auth/profile')
+    m.profile = { ...base, role: 'admin' }
+    m.session = { ...m.session, privileged: true, mfa_enforced: true }
+    await expect(requireProfile()).rejects.toThrow('REDIRECT:/mfa/enrol?next=%2Fhome')
+    m.session = { ...m.session, privileged: true, mfa_enforced: false }
+    expect((await requireProfile()).id).toBe('u1')
+    m.profile = { ...base, role: 'user' }
+    m.session = { ...m.session, privileged: false, mfa_enforced: true }
+    expect((await requireProfile()).id).toBe('u1') // optional for viewers (D-10a)
+  })
+
+  it('P3-1: the session facts are on the profile (seconds), and unreadable facts mean no facts (the database still decides access)', async () => {
+    const { getCurrentProfile, requireProfile } = await import('@/lib/auth/profile')
+    m.session = { ...m.session, signed_in_at: '2026-10-23T00:00:00Z', last_auth_at: '2026-10-23T00:05:00Z', session_id: 's1' }
+    expect((await getCurrentProfile())?.session).toMatchObject({ signedInAt: 1792713600, lastAuthAt: 1792713900, sessionId: 's1' })
+    m.session = null
+    expect((await getCurrentProfile())?.session).toBeNull()
+    expect((await requireProfile()).id).toBe('u1')
   })
 
   it('requireAdmin (the role-only gate) is gone', async () => {

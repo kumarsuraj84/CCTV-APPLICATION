@@ -12,7 +12,8 @@ vi.mock('@/lib/auth/profile', () => ({
   requireAdministration: async (cap: string) => {
     m.asked.push(cap)
     if (m.refuse) throw new Error('REDIRECT:/home')
-    return { id: 'a1', org_id: 'o1', role: 'admin' }
+    // P3-1: saving needs a fresh sign-in; this administrator signed in just now (stale sessions: tests/integration/mfa-gating.test.ts).
+    return { id: 'a1', org_id: 'o1', role: 'admin', session: { lastAuthAt: Math.floor(Date.now() / 1000) } }
   },
   mayAdminister: () => m.mayAccess,
 }))

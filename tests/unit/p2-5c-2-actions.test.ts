@@ -10,7 +10,8 @@ vi.mock('@/lib/auth/profile', () => ({
   requireAdministration: async (cap: string) => {
     m.asked.push(cap)
     if (m.refuse) throw new Error('REDIRECT:/home')
-    return { id: 'u1', org_id: 'o1', role: 'admin' }
+    // P3-1: the import writes NVR passwords and needs a fresh sign-in; this administrator signed in just now.
+    return { id: 'u1', org_id: 'o1', role: 'admin', session: { lastAuthAt: Math.floor(Date.now() / 1000) } }
   },
 }))
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))

@@ -144,7 +144,8 @@ describe('GET /api/vod', () => {
     const [deps, actor, query, signal] = mocks.serve.mock.calls[0]
     expect(deps).toMatchObject({ rls: { tag: 'rls' }, admin: { tag: 'media' }, limiter: exportRequestLimiter })
     // The organisation goes along so that every service-role read of the service is scoped to it (P2-1).
-    expect(actor).toEqual({ id: 'user-1', orgId: 'org-1' })
+    // P3-1: and the session's verified level (aal2), so the fast-playback session counts export while multi-factor is switched on.
+    expect(actor).toEqual({ id: 'user-1', orgId: 'org-1', aal2: false })
     expect(query).toMatchObject({ camera: ID, minutes: 10, probe: true })
     expect(query.start.toISOString()).toBe('2026-10-22T09:20:00.000Z')
     expect(signal).toBeInstanceOf(AbortSignal)
