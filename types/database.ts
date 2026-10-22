@@ -721,6 +721,20 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"mfa_used_codes": {
+                  Row: {
+                    "code_hash": string,"used_at": string,"user_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "code_hash": string,"used_at"?: string,"user_id": string
+                  }
+                  Update: {
+                    "code_hash"?: string,"used_at"?: string,"user_id"?: string
+                  }
+                  Relationships: [
+                    
+                  ]
                 },"monitor_gaps": {
                   Row: {
                     "ended_at": string,"id": string,"started_at": string
@@ -1422,6 +1436,9 @@ isOneToOne: false
 "auth_event_record":
 { Args: { "p_actor": string,"p_detail": Json,"p_email": string,"p_email_hash": string,"p_event": string,"p_ip": string,"p_user": string,"p_user_agent": string }; Returns: string
                            },
+"auth_events_guard_status":
+{ Args: Record<PropertyKey, never>; Returns: Json
+                           },
 "auth_session_end":
 { Args: { "p_session": string,"p_user": string }; Returns: boolean
                            },
@@ -1599,11 +1616,19 @@ isOneToOne: false
               "reason": string,"sid": string
             }[]
                            },
+"mfa_code_claim":
+{ Args: { "p_hash": string,"p_user": string }; Returns: boolean
+                           },
 "mfa_enforced":
 { Args: Record<PropertyKey, never>; Returns: boolean
                            },
 "mfa_enforced_for_user":
 { Args: { "p_user": string }; Returns: boolean
+                           },
+"mfa_enrolment_events":
+{ Args: { "p_org": string }; Returns: {
+              "enrolled_at": string,"enrolled_ip": string,"user_id": string
+            }[]
                            },
 "mfa_factor_people":
 { Args: { "p_org": string }; Returns: {

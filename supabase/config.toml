@@ -276,7 +276,8 @@ max_frequency = "5s"
 # Force log out after the specified duration.
 timebox = "12h"
 # Force log out if the user has been inactive longer than the specified duration.
-# inactivity_timeout = "8h"
+# P3-1 review I-5: the auth server's own backstop (no refresh after 8 hours without one), even for a client that talks to it directly.
+inactivity_timeout = "8h"
 
 # This hook runs before a new user is created and allows developers to reject the request based on the incoming user object.
 # [auth.hook.before_user_created]
@@ -299,7 +300,10 @@ auth_token = "env(SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN)"
 # Multi-factor-authentication is available to Supabase Pro plan.
 [auth.mfa]
 # Control how many MFA factors can be enrolled at once per user.
-max_enrolled_factors = 10
+# P3-1 review I-5: one authenticator app per person, enforced by the auth server too (not only by the app). GoTrue's own limit on code
+# checks (GOTRUE_MFA_RATE_LIMIT_CHALLENGE_AND_VERIFY, per second per IP, default 15) is not exposed by this CLI's config: see
+# docs/drishti/runbook-tls.md section 5 (production) and the app's own count (6 codes per person in 5 minutes).
+max_enrolled_factors = 1
 
 # Control MFA via App Authenticator (TOTP)
 # P3-1 (D-10): authenticator apps are available to everybody (viewers may set one up). Whether administrators MUST use one is the

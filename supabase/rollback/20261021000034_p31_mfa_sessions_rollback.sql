@@ -18,7 +18,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
   SELECT * FROM public.access_grants_eval(p_user, p_at, p_ignore_status, p_aal2, public.mfa_enforced())
 $$;
 
--- CREATE OR REPLACE cannot drop SECURITY DEFINER; the old function was SECURITY INVOKER.
+-- The old function was SECURITY INVOKER; saying so explicitly in CREATE OR REPLACE turns SECURITY DEFINER off again (dry run checked).
 CREATE OR REPLACE FUNCTION public.mfa_enforced() RETURNS boolean
 LANGUAGE sql STABLE PARALLEL SAFE SECURITY INVOKER SET search_path = '' AS $$ SELECT false $$;
 REVOKE ALL ON FUNCTION public.mfa_enforced() FROM PUBLIC, anon, app_web, media_service, monitor_worker, video_gateway;
