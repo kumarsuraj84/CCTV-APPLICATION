@@ -144,8 +144,8 @@ describe('SupabaseMonitorDb', () => {
 
   it('reads the check request and tracks the progress of a run', async () => {
     const t0 = new Date()
-    await admin().from('worker_state').update({ check_requested_at: t0.toISOString(), run_started_at: null }).eq('id', 1)
-    expect(await db.readRequest()).toEqual({ requestedAt: t0, runStartedAt: null })
+    await admin().from('worker_state').update({ check_requested_at: t0.toISOString(), run_started_at: null, run_finished_at: null }).eq('id', 1)
+    expect(await db.readRequest()).toEqual({ requestedAt: t0, runStartedAt: null, runFinishedAt: null })
     await db.markRunStarted(new Date(t0.getTime() + 1000), 3)
     await db.markProgress(2, 3)
     const { data } = await admin().from('worker_state').select('progress_done, progress_total, run_finished_at').eq('id', 1).single()

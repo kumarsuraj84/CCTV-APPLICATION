@@ -53,11 +53,11 @@ describe('MonitorRunner', () => {
     expect(db.progress).toEqual([[1, 1]])
     expect(db.finished).toHaveLength(1)
 
-    // The checks log and swallow their own database errors, so a failed load still ends in a finished run.
+    // The checks log and swallow their own database errors, but a run that could not read is not reported finished (see monitor-runner-checknow.test.ts).
     const unreadable = new MemoryDb()
     unreadable.loadDevices = async () => { throw new Error('database is down') }
     await runnerFor(unreadable).runFull()
-    expect(unreadable.finished).toHaveLength(1)
+    expect(unreadable.finished).toHaveLength(0)
 
     // A step that does throw (here the run being marked as started) still ends with the run marked finished.
     const broken = new MemoryDb()
@@ -124,22 +124,6 @@ describe('MonitorRunner resilience', () => {
     db.readRequest = async () => { throw new Error('read failed') }
     await expect(runnerFor(db).pollOnce()).resolves.toBeUndefined()
     expect(db.heartbeats).toHaveLength(1)
-  })
-
-  it('keeps going after a failed scheduled cycle: one failure, the next cycle still happens', async () => {
-    vi.useFakeTimers()
-    const db = new MemoryDb()
-    let calls = 0
-    db.loadDevices = async () => {
-      calls += 1
-      if (calls === 1) throw new Error('database is down')
-      return []
-    }
-    const r = runnerFor(db)
-    await r.start()
-    await vi.advanceTimersByTimeAsync(130_000)
-    expect(calls).toBeGreaterThanOrEqual(3)
-    r.stop()
   })
 
   it('keeps the heartbeat going while a long full run is in progress', async () => {

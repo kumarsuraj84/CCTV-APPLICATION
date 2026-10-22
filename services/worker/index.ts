@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { anotherWorkerIsRunning } from '@/lib/monitor/guard'
+import { waitForSoleWorker } from '@/lib/monitor/guard'
 import { loadMonitorConfig } from '@/lib/monitor/config'
 import { realProbes } from '@/lib/monitor/probes'
 import { MonitorRunner } from '@/lib/monitor/runner'
@@ -13,6 +13,28 @@ const SHUTDOWN_WAIT_MS = 15_000
 
 // The monitoring worker: a long-running process next to the web app. Run it with `npm run worker`.
 async function main() {
+  // A forgotten rejection must not stop monitoring; it is logged and the loops carry on.
+  process.on('unhandledRejection', (e) => logger.error({ event: 'worker_unhandled_rejection', error: e }))
+
+  const stop = new AbortController()
+  const started: { runner?: MonitorRunner } = {}
+  let stopping = false
+  // SIGBREAK is what Ctrl+Break and closing the console send on Windows.
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK'] as const) {
+    process.on(signal, () => {
+      if (stopping) {
+        logger.warn({ event: 'worker_forced_stop', signal })
+        process.exit(0)
+      }
+      stopping = true
+      stop.abort() // ends the wait at start-up, if that is where the worker is
+      void (started.runner ? started.runner.shutdown(SHUTDOWN_WAIT_MS) : Promise.resolve(true)).then((drained) => {
+        logger.info({ event: 'worker_stopped', signal, finishedCurrentChecks: drained })
+        process.exit(0)
+      })
+    })
+  }
+
   if (existsSync('.env.local')) process.loadEnvFile('.env.local') // development; in production the service sets the environment
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     logger.error({ event: 'worker_config_missing', message: 'NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required' })
@@ -21,40 +43,36 @@ async function main() {
   const cfg = loadMonitorConfig()
   const admin = createAdminClient()
 
-  // Only one worker may run against a database. Refuse to start next to a live one.
-  const another = await anotherWorkerIsRunning({
-    readHeartbeat: async () => {
-      const { data, error } = await admin.from('worker_state').select('last_heartbeat').eq('id', 1).single()
-      if (error) throw new Error(`reading the heartbeat failed: ${error.message}`)
-      return data.last_heartbeat ? new Date(data.last_heartbeat) : null
+  // Only one worker may run against a database. Refuse to start next to a live one; wait patiently if the database cannot be read.
+  const guard = await waitForSoleWorker(
+    {
+      readHeartbeat: async () => {
+        const { data, error } = await admin.from('worker_state').select('last_heartbeat').eq('id', 1).single()
+        if (error) throw new Error(`reading the heartbeat failed: ${error.message}`)
+        return data.last_heartbeat ? new Date(data.last_heartbeat) : null
+      },
+      now: () => new Date(),
+      sleep: (ms, signal) => sleep(ms, undefined, { signal }),
+      pollSec: cfg.pollSec,
     },
-    now: () => new Date(),
-    sleep: (ms) => sleep(ms),
-    pollSec: cfg.pollSec,
-  })
-  if (another) {
+    {
+      retryMs: cfg.pollSec * 1000,
+      signal: stop.signal,
+      onError: (e) => logger.error({ event: 'worker_waiting_for_database', message: 'Could not check for another worker; trying again.', error: e }),
+    },
+  )
+  if (guard === 'aborted') return // the stop handler ends the process
+  if (guard === 'taken') {
     logger.error({ event: 'worker_already_running', message: 'Another worker is already beating on this database. Stop it first, then start this one.' })
     process.exit(1)
   }
 
   const runner = new MonitorRunner({ db: new SupabaseMonitorDb(admin), probes: realProbes, cfg, clock: () => new Date() })
-  await runner.start()
-  logger.info({ event: 'worker_started', deviceCheckSec: cfg.deviceCheckSec, cameraCheckSec: cfg.cameraCheckSec, failThreshold: cfg.failThreshold })
-
-  let stopping = false
-  // SIGBREAK is what Ctrl+Break and closing the console send on Windows.
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK'] as const) {
-    process.on(signal, () => {
-      if (stopping) return
-      stopping = true
-      void runner.shutdown(SHUTDOWN_WAIT_MS).then((drained) => {
-        logger.info({ event: 'worker_stopped', signal, finishedCurrentChecks: drained })
-        process.exit(0)
-      })
-    })
-  }
-  // A forgotten rejection must not stop monitoring; it is logged and the loops carry on.
-  process.on('unhandledRejection', (e) => logger.error({ event: 'worker_unhandled_rejection', error: e }))
+  started.runner = runner
+  // "Started" is logged once the database has accepted the worker (the start-up gap is recorded), not before.
+  await runner.start({
+    onReady: () => logger.info({ event: 'worker_started', deviceCheckSec: cfg.deviceCheckSec, cameraCheckSec: cfg.cameraCheckSec, failThreshold: cfg.failThreshold }),
+  })
 }
 
 main().catch((e) => {

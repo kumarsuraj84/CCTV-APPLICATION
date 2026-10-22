@@ -14,7 +14,12 @@ export type StoreJob = {
   nvr_checked_at: string | null
   cameras: { id: string; channel: number; camera_ip: string | null }[]
 }
-export type WorkerRequest = { requestedAt: Date | null; runStartedAt: Date | null }
+export type WorkerRequest = {
+  requestedAt: Date | null
+  runStartedAt: Date | null
+  /** When the last run finished; null while one is unfinished. Optional so that a data layer that does not know it can leave it out. */
+  runFinishedAt?: Date | null
+}
 
 export interface MonitorDb {
   loadDevices(): Promise<DeviceJob[]>

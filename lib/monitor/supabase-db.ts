@@ -138,11 +138,12 @@ export class SupabaseMonitorDb implements MonitorDb {
   }
 
   async readRequest(): Promise<WorkerRequest> {
-    const { data, error } = await this.admin.from('worker_state').select('check_requested_at, run_started_at').eq('id', 1).single()
+    const { data, error } = await this.admin.from('worker_state').select('check_requested_at, run_started_at, run_finished_at').eq('id', 1).single()
     if (error) throw new Error(`reading the check request failed: ${error.message}`)
     return {
       requestedAt: data.check_requested_at ? new Date(data.check_requested_at) : null,
       runStartedAt: data.run_started_at ? new Date(data.run_started_at) : null,
+      runFinishedAt: data.run_finished_at ? new Date(data.run_finished_at) : null,
     }
   }
 

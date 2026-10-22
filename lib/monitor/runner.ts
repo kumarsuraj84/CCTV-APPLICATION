@@ -1,57 +1,141 @@
 import { logger } from '@/lib/observability/logger'
 import { checkCameras, checkDevices, checkNvrs, type Deps } from '@/lib/monitor/checks'
+import { DistinctFailures } from '@/lib/monitor/failure-log'
+import type { MonitorDb } from '@/lib/monitor/types'
 
 const MAX_SILENCE_MS = 30_000
+
+type Kind = 'devices' | 'nvrs' | 'cameras'
+
+/** The calls whose failure the checks log and swallow. The runner counts them, so that a run is never reported clean when its database work failed. */
+const COUNTED: ReadonlySet<string | symbol> = new Set(['loadDevices', 'loadNvrs', 'loadStoreJobs', 'applyResults'])
+
+/**
+ * The checks never throw: a database error is logged and the round carries on. That is right for a schedule, but a "check now" must not say
+ * "done" after a round that could not read or save. This wrapper passes every call through and counts the failures of the calls above.
+ * Methods are looked up at call time, so a replaced method is still seen.
+ */
+function counting(db: MonitorDb, onFailure: () => void): MonitorDb {
+  return new Proxy(db, {
+    get(target, prop) {
+      const value: unknown = Reflect.get(target, prop, target)
+      if (typeof value !== 'function') return value
+      if (!COUNTED.has(prop)) return (value as (...a: unknown[]) => unknown).bind(target)
+      return async (...args: unknown[]) => {
+        try {
+          return await (value as (...a: unknown[]) => unknown).apply(target, args)
+        } catch (e) {
+          onFailure()
+          throw e
+        }
+      }
+    },
+  })
+}
 
 /** Runs the checks on their schedules, answers "check now" requests and keeps the heartbeat. */
 export class MonitorRunner {
   private timers = new Set<NodeJS.Timeout>()
   private inflight = new Set<Promise<void>>()
+  private running: Partial<Record<Kind, Promise<void>>> = {}
   private stopped = false
-  private busy = { devices: false, cameras: false, full: false }
+  private fullBusy = false
+  /** A run has been marked started in the database and not yet marked finished. */
+  private runOpen = false
+  /** The last run could not read or save everything; it is run once more on the next poll. */
+  private retryPending = false
+  private dbFailures = 0
+  private waiting = new DistinctFailures()
+  private deps: Deps
 
-  constructor(private deps: Deps) {}
+  constructor(deps: Deps) {
+    this.deps = { ...deps, db: counting(deps.db, () => (this.dbFailures += 1)) }
+  }
+
+  /** One check of one kind. Callers that only want the schedule kept skip it when one is already running. */
+  private cycle(kind: Kind, fn: () => Promise<unknown>): Promise<void> {
+    const self: { p?: Promise<void> } = {}
+    const p: Promise<void> = (async () => {
+      await Promise.resolve() // so that `p` is set before anything below can finish
+      try {
+        await fn()
+      } finally {
+        if (this.running[kind] === self.p) delete this.running[kind]
+      }
+    })()
+    self.p = p
+    this.running[kind] = p
+    return p
+  }
+
+  /** The scheduled way: if the same kind is already running, leave it be. */
+  private scheduled(kind: Kind, fn: () => Promise<unknown>): Promise<void> {
+    return this.running[kind] ? Promise.resolve() : this.cycle(kind, fn)
+  }
+
+  /** The "check now" way: let one already running finish (its results may predate the request), then run one that starts afterwards. */
+  private async fresh(kind: Kind, fn: () => Promise<unknown>): Promise<void> {
+    const earlier = this.running[kind]
+    if (earlier) {
+      await earlier.catch(() => undefined)
+      const next = this.running[kind] // a scheduled cycle that began in the meantime also began after the request
+      if (next) return next
+    }
+    return this.cycle(kind, fn)
+  }
 
   async runDevices(): Promise<void> {
-    if (this.busy.devices) return
-    this.busy.devices = true
-    try {
-      await checkDevices(this.deps)
-      await checkNvrs(this.deps)
-    } finally {
-      this.busy.devices = false
-    }
+    await this.scheduled('devices', () => checkDevices(this.deps))
+    await this.scheduled('nvrs', () => checkNvrs(this.deps))
   }
 
   async runCameras(onProgress?: (done: number, total: number) => void): Promise<void> {
-    if (this.busy.cameras) return
-    this.busy.cameras = true
-    try {
-      await checkCameras(this.deps, onProgress)
-    } finally {
-      this.busy.cameras = false
-    }
+    await this.scheduled('cameras', () => checkCameras(this.deps, onProgress))
   }
 
   /** Everything now: devices, NVRs, then every store's cameras, with progress for the Monitoring page. */
   async runFull(): Promise<void> {
-    if (this.busy.full) return
-    this.busy.full = true
+    await this.fullRun(false)
+  }
+
+  /**
+   * A run is marked finished only when it really checked: cycles already in progress are waited for and then repeated, and if the database
+   * failed during the run (nothing could be read or saved) the run stays open and is repeated once on the next poll. The second time it is closed
+   * either way, so the page never waits forever; worker_state has no field for a failure note.
+   */
+  private async fullRun(isRetry: boolean): Promise<void> {
+    if (this.fullBusy) return
+    this.fullBusy = true
     const { db, clock } = this.deps
+    const failuresBefore = this.dbFailures
     let writes: Promise<void> = Promise.resolve()
+    let threw = true
     try {
       await db.markRunStarted(clock(), 0)
-      await this.runDevices()
-      await this.runCameras((done, total) => {
-        writes = writes.then(() => db.markProgress(done, total)).catch((e) => logger.error({ event: 'progress_write_failed', error: e }))
-      })
+      this.runOpen = true
+      await this.fresh('devices', () => checkDevices(this.deps))
+      await this.fresh('nvrs', () => checkNvrs(this.deps))
+      await this.fresh('cameras', () =>
+        checkCameras(this.deps, (done, total) => {
+          writes = writes.then(() => db.markProgress(done, total)).catch((e) => logger.error({ event: 'progress_write_failed', error: e }))
+        }),
+      )
+      threw = false
     } finally {
       try {
         await writes
-        await db.markRunFinished(clock())
+        const clean = !threw && this.dbFailures === failuresBefore
+        if (clean || isRetry || threw) {
+          this.retryPending = false
+          await db.markRunFinished(clock())
+          this.runOpen = false
+        } else {
+          logger.warn({ event: 'run_not_clean', message: 'The database failed during the run; it will be repeated once.' })
+          this.retryPending = true
+        }
       } finally {
         // Whatever happened above, the next request must be able to start a run.
-        this.busy.full = false
+        this.fullBusy = false
       }
     }
   }
@@ -67,6 +151,11 @@ export class MonitorRunner {
 
   /** Runs everything if someone asked for a check since the last run began. A failed read is logged; the next poll asks again. */
   async checkRequests(): Promise<void> {
+    if (this.retryPending) {
+      this.retryPending = false
+      await this.fullRun(true)
+      return
+    }
     let req
     try {
       req = await this.deps.db.readRequest()
@@ -74,7 +163,7 @@ export class MonitorRunner {
       logger.error({ event: 'check_request_read_failed', error: e })
       return
     }
-    if (req.requestedAt && (!req.runStartedAt || req.requestedAt > req.runStartedAt)) await this.runFull()
+    if (req.requestedAt && (!req.runStartedAt || req.requestedAt > req.runStartedAt)) await this.fullRun(false)
   }
 
   /** One beat: heartbeat, then run everything if someone asked for a check since the last run began. */
@@ -84,30 +173,51 @@ export class MonitorRunner {
   }
 
   /**
-   * Notes the time the worker was not running, then starts the timers. If the gap cannot be recorded (the database is unreachable), the heartbeat is
-   * left where it was so that nothing is lost, and recording is tried again every poll interval; the timers start once it works.
+   * Notes the time the worker was not running, closes a run that a crash left open, then starts the timers. If the gap cannot be recorded
+   * (the database is unreachable), the heartbeat is left where it was so that nothing is lost, and recording is tried again every poll
+   * interval; the timers start once it works. onReady is called once, when they do.
    */
-  async start(): Promise<void> {
+  async start(opts: { onReady?: () => void } = {}): Promise<void> {
     this.stopped = false
     const { db, clock, cfg } = this.deps
     try {
       await db.recordStartupGap(clock(), MAX_SILENCE_MS)
     } catch (e) {
-      logger.error({ event: 'startup_gap_failed', error: e })
+      this.waiting.report(e, (err) =>
+        logger.error({ event: 'worker_waiting_for_database', message: 'Could not record the start-up gap; trying again.', error: err }),
+      )
       if (this.stopped) return
       const t = setTimeout(() => {
         this.timers.delete(t)
-        this.track(this.start())
+        this.track(this.start(opts))
       }, cfg.pollSec * 1000)
       this.timers.add(t)
       return
     }
+    this.waiting.clear()
+    if (this.stopped) return
+    await this.closeStaleRun()
     if (this.stopped) return
     // The heartbeat has its own timer, so a long "check now" run cannot make the worker look dead.
     this.loop(() => this.beat(), cfg.pollSec * 1000)
     this.loop(() => this.checkRequests(), cfg.pollSec * 1000)
     this.loop(() => this.runDevices(), cfg.deviceCheckSec * 1000)
     this.loop(() => this.runCameras(), cfg.cameraCheckSec * 1000)
+    opts.onReady?.()
+  }
+
+  /** A previous worker that crashed in the middle of a run left it open, and the page would show it running for ever. */
+  private async closeStaleRun(): Promise<void> {
+    try {
+      const req = await this.deps.db.readRequest()
+      // runFinishedAt undefined means the data layer cannot say; leave it alone.
+      if (req.runStartedAt && req.runFinishedAt !== undefined && (!req.runFinishedAt || req.runFinishedAt < req.runStartedAt)) {
+        await this.deps.db.markRunFinished(this.deps.clock())
+        logger.warn({ event: 'stale_run_closed', message: 'A run left open by an earlier worker was marked finished.' })
+      }
+    } catch (e) {
+      logger.error({ event: 'stale_run_check_failed', error: e })
+    }
   }
 
   stop(): void {
@@ -116,20 +226,34 @@ export class MonitorRunner {
     this.timers.clear()
   }
 
-  /** Stops the timers, then waits for the cycles in progress, up to maxWaitMs. Returns false if some were still running. */
+  /**
+   * Stops the timers, then waits for the cycles in progress, up to maxWaitMs. A run still open afterwards is marked finished, so the page
+   * does not show it running for ever. Returns false if some cycles were still going.
+   */
   async shutdown(maxWaitMs: number): Promise<boolean> {
     this.stop()
-    if (this.inflight.size === 0) return true
-    let timer: NodeJS.Timeout | undefined
-    const timeout = new Promise<boolean>((resolve) => {
-      timer = setTimeout(() => resolve(false), maxWaitMs)
-    })
-    const drained = Promise.allSettled([...this.inflight]).then(() => true)
-    try {
-      return await Promise.race([drained, timeout])
-    } finally {
-      clearTimeout(timer)
+    let drained = true
+    if (this.inflight.size > 0) {
+      let timer: NodeJS.Timeout | undefined
+      const timeout = new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), maxWaitMs)
+      })
+      const all = Promise.allSettled([...this.inflight]).then(() => true)
+      try {
+        drained = await Promise.race([all, timeout])
+      } finally {
+        clearTimeout(timer)
+      }
     }
+    if (this.runOpen) {
+      try {
+        await this.deps.db.markRunFinished(this.deps.clock())
+        this.runOpen = false
+      } catch (e) {
+        logger.error({ event: 'run_close_failed', error: e })
+      }
+    }
+    return drained
   }
 
   private track(p: Promise<void>): void {
@@ -141,19 +265,22 @@ export class MonitorRunner {
     void done.then(() => this.inflight.delete(done))
   }
 
+  /** Runs fn every `ms`, counted from the start of the last run, not its end (a slow run does not push the schedule back). */
   private loop(fn: () => Promise<void>, ms: number): void {
     const tick = async () => {
       if (this.stopped) return
+      const began = Date.now()
       try {
         await fn()
       } catch (e) {
         logger.error({ event: 'worker_loop_failed', error: e })
       }
       if (!this.stopped) {
+        const elapsed = Math.min(ms, Math.max(0, Date.now() - began))
         const t = setTimeout(() => {
           this.timers.delete(t)
           this.track(tick())
-        }, ms)
+        }, ms - elapsed)
         this.timers.add(t)
       }
     }

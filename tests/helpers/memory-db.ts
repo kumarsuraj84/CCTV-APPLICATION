@@ -24,8 +24,8 @@ export class MemoryDb implements MonitorDb {
   async touchHeartbeat(now: Date) { this.heartbeats.push(now) }
   async recordStartupGap() { return this.gapRecorded }
   async readRequest() { return this.request }
-  async markRunStarted(at: Date, total: number) { this.started.push({ at, total }); this.request = { ...this.request, runStartedAt: at } }
+  async markRunStarted(at: Date, total: number) { this.started.push({ at, total }); this.request = { ...this.request, runStartedAt: at, runFinishedAt: null } }
   async markProgress(done: number, total: number) { this.progress.push([done, total]) }
-  async markRunFinished(at: Date) { this.finished.push(at) }
+  async markRunFinished(at: Date) { this.finished.push(at); this.request = { ...this.request, runFinishedAt: at } }
   results() { return this.applied.flatMap((a) => a.results) }
 }
