@@ -2,15 +2,29 @@
 // the address, the source, the name or the underlying error: callers get a plain sentence and nothing that could be logged by mistake.
 
 const NAME = /^[A-Za-z0-9_-]{1,200}$/
+/** The only stream names the pruner may remove: live (cam_<id>_sub|main) and playback (pb_<id>_<start>) streams made by this app. */
+const PRUNABLE = /^(cam|pb)_[0-9a-f-]{36}_(sub|main|\d+)$/
 const MSG_REGISTER = 'The video server did not accept the stream.'
 const MSG_REMOVE = 'The video server did not remove the stream.'
 const MSG_READ = 'The video server did not answer.'
 const MSG_ADDRESS = 'The video server address is not valid.'
 
 export const GO2RTC_TIMEOUT_MS = 5000
-/** The stream list is small; anything bigger than this is not go2rtc talking. */
-export const MAX_LIST_BYTES = 1024 * 1024
+/** One stream's entry is small; anything bigger than this is not go2rtc talking. */
+export const MAX_STREAM_BYTES = 1024 * 1024
+/** The whole list holds every stream of every organisation, with its source; it is only read to prune. */
+export const MAX_LIST_BYTES = 16 * 1024 * 1024
+/** A stream nobody watched for this long (and that this process has not registered again) may be pruned. */
+export const PRUNE_IDLE_MS = 30 * 60_000
+export const PRUNE_EVERY_MS = 60_000
+export const PRUNE_MAX_REMOVALS = 50
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost'])
+
+/** When this process last registered or saw a watched stream, per go2rtc address and name. Several requests share it. */
+const lastUsed = new Map<string, number>()
+const lastPrune = new Map<string, number>()
+/** Registrations in progress, so that requests for the same stream at the same moment share one. */
+const inFlight = new Map<string, Promise<void>>()
 
 /** Only a go2rtc on this machine: stream sources carry camera passwords and must never be sent anywhere else. */
 function loopbackOrigin(baseUrl: string): string {
@@ -24,6 +38,8 @@ function loopbackOrigin(baseUrl: string): string {
   return u.origin
 }
 
+type Read = { present: boolean; urls: string[] }
+
 export class Go2rtcClient {
   private readonly base: string
 
@@ -35,10 +51,10 @@ export class Go2rtcClient {
     this.base = loopbackOrigin(baseUrl)
   }
 
-  /** The body as text, refusing anything over MAX_LIST_BYTES without reading the rest. */
-  private async readCapped(res: Response): Promise<string> {
+  /** The body as text, refusing anything over `cap` bytes without reading the rest. */
+  private async readCapped(res: Response, cap: number): Promise<string> {
     const declared = Number(res.headers.get('content-length'))
-    if (Number.isFinite(declared) && declared > MAX_LIST_BYTES) {
+    if (Number.isFinite(declared) && declared > cap) {
       await res.body?.cancel().catch(() => {})
       throw new Error(MSG_READ)
     }
@@ -51,7 +67,7 @@ export class Go2rtcClient {
         const { done, value } = await reader.read()
         if (done) break
         total += value.byteLength
-        if (total > MAX_LIST_BYTES) throw new Error(MSG_READ)
+        if (total > cap) throw new Error(MSG_READ)
         chunks.push(value)
       }
     } catch {
@@ -70,74 +86,153 @@ export class Go2rtcClient {
     }
   }
 
-  /** One call to go2rtc. Any failure (network, timeout, redirect, non-2xx) becomes `message`; the response body is dropped unread. */
-  private async call(method: string, pathAndQuery: string, message: string): Promise<Response> {
-    const res = await this.send(method, pathAndQuery, message)
-    if (!res.ok) {
-      await res.body?.cancel().catch(() => {})
-      throw new Error(message)
-    }
-    return res
+  private key(name: string): string {
+    return `${this.base}|${name}`
   }
 
-  /**
-   * A change to the stream list. go2rtc runs with a read-only config file: it applies the change in memory but then answers 400 because it
-   * cannot save the file, so the status alone proves nothing. 2xx and 400 are "maybe": the list is read back and decides. Any other status
-   * (or no answer) is a failure, and so is a list that is not as asked.
-   */
-  private async change(method: 'PUT' | 'DELETE', pathAndQuery: string, name: string, wanted: boolean, message: string): Promise<void> {
+  /** One stream, read on its own (GET /api/streams?src=<name>: only that stream, 404 when go2rtc does not have it). */
+  private async read(name: string): Promise<Read> {
+    const res = await this.send('GET', `/api/streams?src=${encodeURIComponent(name)}`, MSG_READ)
+    if (res.status === 404) {
+      await res.body?.cancel().catch(() => {})
+      return { present: false, urls: [] }
+    }
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {})
+      throw new Error(MSG_READ)
+    }
+    let stream: unknown
+    try {
+      stream = JSON.parse(await this.readCapped(res, MAX_STREAM_BYTES))
+    } catch {
+      throw new Error(MSG_READ)
+    }
+    if (typeof stream !== 'object' || stream === null || Array.isArray(stream)) throw new Error(MSG_READ)
+    return { present: true, urls: producerUrls(stream) }
+  }
+
+  /** Sends a change and trusts nothing but what is read back; `ok` decides from the new state whether it worked. */
+  private async change(method: 'PUT' | 'DELETE', pathAndQuery: string, name: string, message: string, ok: (now: Read) => boolean): Promise<void> {
     const res = await this.send(method, pathAndQuery, message)
     await res.body?.cancel().catch(() => {})
+    // go2rtc runs with a read-only config: it applies the change in memory and then answers 400 because it cannot save the file.
+    // So 2xx and 400 are "maybe"; any other status is a failure at once.
     if (!res.ok && res.status !== 400) throw new Error(message)
-    let present: boolean
+    let now: Read
     try {
-      present = await this.has(name)
+      now = await this.read(name)
     } catch {
       throw new Error(message)
     }
-    if (present !== wanted) throw new Error(message)
+    if (!ok(now)) throw new Error(message)
   }
 
   /**
    * Registers a stream, unless go2rtc already has it from this very source. Registering again replaces go2rtc's stream with a new one:
    * viewers already watching stay on the old one, and the next viewer starts a second connection to the camera (an NVR allows only a few).
-   * So an unchanged stream is left alone, and a changed source (a new password) is registered again. go2rtc lists a running generated
-   * source (the demo picture) without its address, so a caller that knows its source never changes can pass `keepExisting`: any stream of
-   * that name is then left alone.
+   * So an unchanged stream is left alone, and a changed source (a new password) is registered again and must then be listed with the new
+   * source: a 400 that did not apply fails the registration. go2rtc lists a running generated source (the demo picture) without its
+   * address, so a caller that knows its source never changes can pass `keepExisting`: any stream of that name is then left alone.
+   * Requests for the same stream at the same moment share one registration.
    */
-  async register(name: string, src: string, opts: { keepExisting?: boolean } = {}): Promise<void> {
-    if (typeof name !== 'string' || !NAME.test(name) || typeof src !== 'string' || src === '') throw new Error(MSG_REGISTER)
-    let listed: Record<string, unknown>
+  register(name: string, src: string, opts: { keepExisting?: boolean } = {}): Promise<void> {
+    if (typeof name !== 'string' || !NAME.test(name) || typeof src !== 'string' || src === '') return Promise.reject(new Error(MSG_REGISTER))
+    const key = `${this.key(name)}|${opts.keepExisting === true ? 'keep' : 'exact'}|${src}`
+    const running = inFlight.get(key)
+    if (running) return running
+    const job = this.registerNow(name, src, opts.keepExisting === true).finally(() => inFlight.delete(key))
+    inFlight.set(key, job)
+    return job
+  }
+
+  private async registerNow(name: string, src: string, keepExisting: boolean): Promise<void> {
+    let before: Read
     try {
-      listed = await this.list()
+      before = await this.read(name)
     } catch {
       throw new Error(MSG_REGISTER)
     }
-    if (Object.hasOwn(listed, name) && (opts.keepExisting === true || producerUrls(listed[name]).includes(src))) return
-    await this.change('PUT', `/api/streams?name=${encodeURIComponent(name)}&src=${encodeURIComponent(src)}`, name, true, MSG_REGISTER)
+    if (before.present && (keepExisting || before.urls.includes(src))) {
+      lastUsed.set(this.key(name), Date.now())
+      return
+    }
+    // A stream that was not there is accepted as listed; one that was there with another source must now show the new one.
+    const path = `/api/streams?name=${encodeURIComponent(name)}&src=${encodeURIComponent(src)}`
+    await this.change('PUT', path, name, MSG_REGISTER, (now) => now.present && (!before.present || now.urls.includes(src)))
+    lastUsed.set(this.key(name), Date.now())
   }
 
   async remove(name: string): Promise<void> {
     if (typeof name !== 'string' || !NAME.test(name)) throw new Error(MSG_REMOVE)
-    await this.change('DELETE', `/api/streams?src=${encodeURIComponent(name)}`, name, false, MSG_REMOVE)
-  }
-
-  /** The streams go2rtc has, by name (GET /api/streams). Whatever is wrong with the answer becomes the plain message. */
-  private async list(): Promise<Record<string, unknown>> {
-    const res = await this.call('GET', '/api/streams', MSG_READ)
-    let list: unknown
-    try {
-      list = JSON.parse(await this.readCapped(res))
-    } catch {
-      throw new Error(MSG_READ)
-    }
-    if (typeof list !== 'object' || list === null || Array.isArray(list)) throw new Error(MSG_READ)
-    return list as Record<string, unknown>
+    await this.change('DELETE', `/api/streams?src=${encodeURIComponent(name)}`, name, MSG_REMOVE, (now) => !now.present)
+    lastUsed.delete(this.key(name))
   }
 
   async has(name: string): Promise<boolean> {
     if (typeof name !== 'string' || !NAME.test(name)) return false
-    return Object.hasOwn(await this.list(), name)
+    return (await this.read(name)).present
+  }
+
+  /** Every stream go2rtc has and whether anybody is watching it (GET /api/streams). Sources are never returned. */
+  async list(): Promise<{ name: string; busy: boolean }[]> {
+    const res = await this.send('GET', '/api/streams', MSG_READ)
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {})
+      throw new Error(MSG_READ)
+    }
+    let all: unknown
+    try {
+      all = JSON.parse(await this.readCapped(res, MAX_LIST_BYTES))
+    } catch {
+      throw new Error(MSG_READ)
+    }
+    if (typeof all !== 'object' || all === null || Array.isArray(all)) throw new Error(MSG_READ)
+    return Object.entries(all).map(([name, s]) => {
+      const consumers = typeof s === 'object' && s !== null ? (s as { consumers?: unknown }).consumers : undefined
+      return { name, busy: Array.isArray(consumers) && consumers.length > 0 }
+    })
+  }
+
+  /**
+   * Keeps go2rtc's stream list from growing for ever: removes streams made by this app that nobody has watched for `idleMs`.
+   * Never removes a stream with a viewer, a name that is not one of ours, or more than `max` in one go; a stream seen for the first time
+   * only starts its clock. At most one pass a minute per go2rtc. Failures are ignored. Returns how many were removed.
+   */
+  async prune(o: { now?: number; idleMs?: number; max?: number; everyMs?: number } = {}): Promise<number> {
+    const now = o.now ?? Date.now()
+    const last = lastPrune.get(this.base)
+    if (last !== undefined && now - last < (o.everyMs ?? PRUNE_EVERY_MS)) return 0
+    lastPrune.set(this.base, now)
+    let streams: { name: string; busy: boolean }[]
+    try {
+      streams = await this.list()
+    } catch {
+      return 0
+    }
+    const idleMs = o.idleMs ?? PRUNE_IDLE_MS
+    const max = o.max ?? PRUNE_MAX_REMOVALS
+    let removed = 0
+    for (const s of streams) {
+      if (removed >= max) break
+      if (!PRUNABLE.test(s.name)) continue
+      const k = this.key(s.name)
+      const seen = lastUsed.get(k)
+      if (s.busy || seen === undefined) {
+        lastUsed.set(k, now) // watched now, or first seen: the clock starts here
+        continue
+      }
+      if (now - seen < idleMs) continue
+      try {
+        await this.remove(s.name)
+        removed++
+      } catch {
+        // left for the next pass
+      }
+    }
+    // Forget names go2rtc no longer has.
+    const present = new Set(streams.map((s) => this.key(s.name)))
+    for (const k of [...lastUsed.keys()]) if (k.startsWith(`${this.base}|`) && !present.has(k)) lastUsed.delete(k)
+    return removed
   }
 }
 
@@ -147,3 +242,5 @@ function producerUrls(stream: unknown): string[] {
   if (!Array.isArray(producers)) return []
   return producers.map((p) => (typeof p === 'object' && p !== null ? (p as { url?: unknown }).url : undefined)).filter((u): u is string => typeof u === 'string')
 }
+
+export const pruneStreams = (client: Go2rtcClient, o?: Parameters<Go2rtcClient['prune']>[0]): Promise<number> => client.prune(o)

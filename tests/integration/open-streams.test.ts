@@ -12,18 +12,27 @@ const ENCODED_PASSWORD = 'p%40ss%3Aw%2Frd%231%21'
 const admin = () => adminClient()
 
 type Seen = { method: string; name: string | null; src: string | null }
-type FakeGo2rtc = { client: Go2rtcClient; seen: Seen[]; streams: Map<string, string>; failNames: Set<string>; failAll: boolean; close: () => Promise<void> }
+type FakeGo2rtc = { client: Go2rtcClient; seen: Seen[]; streams: Map<string, string>; failNames: Set<string>; failAll: boolean; applies: boolean; wholeListReads: number; close: () => Promise<void> }
 
 /** A fake go2rtc on loopback. Like the real one with a read-only config, it answers 400 to a change it has applied. */
 async function startFakeGo2rtc(): Promise<FakeGo2rtc> {
   const seen: Seen[] = []
   const streams = new Map<string, string>()
-  const fake = { failNames: new Set<string>(), failAll: false }
+  const fake = { failNames: new Set<string>(), failAll: false, applies: true, wholeListReads: 0 }
   const server = http.createServer((req, res) => {
     const u = new URL(req.url ?? '/', 'http://x')
     if (req.method === 'GET') {
       res.setHeader('content-type', 'application/json')
-      return void res.end(JSON.stringify(Object.fromEntries([...streams].map(([k, v]) => [k, { producers: [{ url: v }] }]))))
+      const one = u.searchParams.get('src')
+      if (one === null) {
+        fake.wholeListReads++ // the list holds every stream's source: only the pruner may read it
+        return void res.end(JSON.stringify(Object.fromEntries([...streams].map(([k, v]) => [k, { producers: [{ url: v }], consumers: null }]))))
+      }
+      if (!streams.has(one)) {
+        res.statusCode = 404
+        return void res.end('not found')
+      }
+      return void res.end(JSON.stringify({ producers: [{ url: streams.get(one) }], consumers: null }))
     }
     const name = u.searchParams.get('name')
     seen.push({ method: req.method ?? '', name, src: u.searchParams.get('src') })
@@ -31,7 +40,7 @@ async function startFakeGo2rtc(): Promise<FakeGo2rtc> {
       res.statusCode = 500
       return void res.end('boom')
     }
-    if (req.method === 'PUT' && name) streams.set(name, u.searchParams.get('src') ?? '')
+    if (req.method === 'PUT' && name && fake.applies) streams.set(name, u.searchParams.get('src') ?? '')
     res.statusCode = 400
     res.end('read-only')
   })
@@ -126,6 +135,45 @@ describe('openStreams', () => {
     expect(fake.seen).toHaveLength(2) // no second PUT: go2rtc would start a second connection to the camera
     expect(again.map((s) => s.cameraId)).toEqual([a1, a2])
     expect(again[0].token).not.toBe(first[0].token)
+  })
+
+  it('never reads the whole go2rtc list to open a stream (it holds every camera password)', async () => {
+    streamsOf(await open(viewer, [a1, a2]))
+    streamsOf(await open(viewer, [a1, a2]))
+    // Only the pruner reads the list, and not more than once a minute.
+    expect(fake.wholeListReads).toBeLessThanOrEqual(1)
+  })
+
+  it('a changed NVR password is registered again with the new password, and fails if go2rtc does not take it', async () => {
+    streamsOf(await open(viewer, [a1]))
+    expect(fake.streams.get(`cam_${a1}_sub`)).toContain(ENCODED_PASSWORD)
+    const { error } = await admin().rpc('nvr_store_credential', { p_store: sA, p_secret: 'N3w:pass/word' })
+    expect(error).toBeNull()
+    try {
+      fake.applies = false // go2rtc answers 400 and does not apply it
+      expect(await open(viewer, [a1])).toEqual({ ok: false, error: 'The video server is not available.' })
+      expect(fake.streams.get(`cam_${a1}_sub`)).toContain(ENCODED_PASSWORD) // still the old one: nothing was pretended
+      fake.applies = true
+      expect(streamsOf(await open(viewer, [a1])).map((s) => s.cameraId)).toEqual([a1])
+      expect(fake.streams.get(`cam_${a1}_sub`)).toBe('rtsp://viewer:N3w%3Apass%2Fword@127.0.0.1:554/Streaming/Channels/102')
+      expect(fake.seen.filter((s) => s.method === 'PUT').map((s) => s.name)).toEqual([`cam_${a1}_sub`, `cam_${a1}_sub`, `cam_${a1}_sub`])
+    } finally {
+      await admin().rpc('nvr_store_credential', { p_store: sA, p_secret: PASSWORD })
+    }
+  })
+
+  it('a viewer with a camera grant only (no store grant) gets only that camera, even from a store they are not granted', async () => {
+    const cameraOnly = await createUser(orgId, 'user')
+    const { error } = await admin().rpc('replace_user_access', { p_user: cameraOnly.id, p_stores: [], p_zones: [], p_cameras: [b1] })
+    expect(error).toBeNull()
+    const res = await open(cameraOnly, [a1, a2, b1])
+    expect(streamsOf(res).map((s) => s.cameraId)).toEqual([b1])
+    expect(fake.seen.map((s) => s.name)).toEqual([`cam_${b1}_sub`])
+    expect(verifyStreamToken(streamsOf(res)[0].token, Date.now(), SECRET)).toMatchObject({ u: cameraOnly.id, c: b1 })
+    // Cameras of a store where someone has individual camera grants: only the granted ones, also for a store grant holder.
+    const mixed = await createUser(orgId, 'user')
+    await admin().rpc('replace_user_access', { p_user: mixed.id, p_stores: [], p_zones: [], p_cameras: [a2] })
+    expect(streamsOf(await open(mixed, [a1, a2])).map((s) => s.cameraId)).toEqual([a2])
   })
 
   it('the answer holds no password and no RTSP address', async () => {

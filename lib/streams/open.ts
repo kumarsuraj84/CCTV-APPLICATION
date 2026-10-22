@@ -102,6 +102,8 @@ export async function openStreams(
       return null
     }
   })
+  // Streams nobody has watched for a long time are removed from go2rtc (at most once a minute; never waits, never fails the request).
+  void deps.go2rtc.prune({ now: now() }).catch(() => {})
   const streams = opened.filter((s): s is OpenedStream => s !== null)
   if (streams.length === 0 && failed > 0) return { ok: false, error: MSG_UNAVAILABLE }
   return { ok: true, streams }
