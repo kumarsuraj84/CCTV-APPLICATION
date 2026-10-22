@@ -26,6 +26,9 @@ export type Dashboard = {
   recentOutagesLimited: boolean
 }
 
+/** A "Live" result older than this many minutes is shown as "Not checked lately". Mirrors monitor_stale_after_minutes() in the database. */
+export const STALE_AFTER_MINUTES = 20
+
 /** The words the screens use. */
 export function statusLabel(s: Status | null | undefined): 'Live' | 'Offline' | 'Not checked yet' {
   return s === 'up' ? 'Live' : s === 'down' ? 'Offline' : 'Not checked yet'

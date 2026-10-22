@@ -325,14 +325,14 @@ isOneToOne: false
                   ]
                 },"worker_state": {
                   Row: {
-                    "check_requested_at": string | null,"id": number,"last_heartbeat": string | null,"progress_done": number,"progress_total": number,"run_finished_at": string | null,"run_started_at": string | null
+                    "check_requested_at": string | null,"id": number,"last_cameras_round_at": string | null,"last_devices_round_at": string | null,"last_heartbeat": string | null,"progress_done": number,"progress_total": number,"run_finished_at": string | null,"run_started_at": string | null
                   }
                   ComputedFields: never
                   Insert: {
-                    "check_requested_at"?: string | null,"id": number,"last_heartbeat"?: string | null,"progress_done"?: number,"progress_total"?: number,"run_finished_at"?: string | null,"run_started_at"?: string | null
+                    "check_requested_at"?: string | null,"id": number,"last_cameras_round_at"?: string | null,"last_devices_round_at"?: string | null,"last_heartbeat"?: string | null,"progress_done"?: number,"progress_total"?: number,"run_finished_at"?: string | null,"run_started_at"?: string | null
                   }
                   Update: {
-                    "check_requested_at"?: string | null,"id"?: number,"last_heartbeat"?: string | null,"progress_done"?: number,"progress_total"?: number,"run_finished_at"?: string | null,"run_started_at"?: string | null
+                    "check_requested_at"?: string | null,"id"?: number,"last_cameras_round_at"?: string | null,"last_devices_round_at"?: string | null,"last_heartbeat"?: string | null,"progress_done"?: number,"progress_total"?: number,"run_finished_at"?: string | null,"run_started_at"?: string | null
                   }
                   Relationships: [
                     
@@ -342,7 +342,7 @@ isOneToOne: false
           Views: {
             "store_status": {
                   Row: {
-                    "cameras_down": number | null,"cameras_live": number | null,"cameras_total": number | null,"cameras_unknown": number | null,"nvr_checked_at": string | null,"nvr_down_since": string | null,"nvr_status": string | null,"org_id": string | null,"store_id": string | null
+                    "cameras_down": number | null,"cameras_live": number | null,"cameras_stale": number | null,"cameras_total": number | null,"cameras_unknown": number | null,"nvr_checked_at": string | null,"nvr_down_since": string | null,"nvr_stale": boolean | null,"nvr_status": string | null,"org_id": string | null,"store_id": string | null
                   }
                   ComputedFields: never
                   Relationships: [
@@ -371,6 +371,15 @@ isOneToOne: false
                            },
 "monitor_apply_results":
 { Args: { "p_org": string,"p_results": Json,"p_threshold"?: number }; Returns: undefined
+                           },
+"monitor_request_check":
+{ Args: Record<PropertyKey, never>; Returns: string
+                           },
+"monitor_stale_after_minutes":
+{ Args: Record<PropertyKey, never>; Returns: number
+                           },
+"monitor_stop_targets":
+{ Args: { "p_ids": (string)[],"p_org": string,"p_type": string }; Returns: undefined
                            },
 "nvr_delete_credential":
 { Args: { "p_store": string }; Returns: undefined

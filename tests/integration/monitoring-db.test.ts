@@ -128,7 +128,9 @@ describe('monitoring in the database', () => {
   })
 
   it('store_status counts what the reader may see', async () => {
-    await apply(orgId, [{ type: 'nvr', id: storeId, ok: true, at: at(30) }])
+    // Results must be recent: a "Live" older than 20 minutes counts as stale, not live.
+    const now = new Date().toISOString()
+    await apply(orgId, [{ type: 'nvr', id: storeId, ok: true, at: now }, { type: 'camera', id: cam1, ok: true, at: now }])
     const m = await manager.client.from('store_status').select('*').eq('store_id', storeId).single()
     expect(m.data).toMatchObject({ cameras_total: 2, cameras_live: 1, cameras_down: 1, cameras_unknown: 0, nvr_status: 'up' })
     const v = await viewer.client.from('store_status').select('*').eq('store_id', storeId).single()
