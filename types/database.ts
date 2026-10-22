@@ -1334,6 +1334,11 @@ isOneToOne: false
 "grant_platform_owner_all":
 { Args: { "p_actor"?: string,"p_org": string,"p_user": string }; Returns: number
                            },
+"group_member_counts":
+{ Args: { "p_cap"?: string }; Returns: {
+              "cameras": number,"group_id": string
+            }[]
+                           },
 "group_rule_members":
 { Args: { "p_group"?: string }; Returns: {
               "camera_id": string,"group_id": string
@@ -1347,6 +1352,9 @@ isOneToOne: false
                            },
 "inventory_affected_people":
 { Args: { "p_id": string,"p_kind": string,"p_org": string }; Returns: (string)[]
+                           },
+"inventory_apply_proposals":
+{ Args: { "p_actor"?: string,"p_items": Json,"p_org": string }; Returns: Json
                            },
 "inventory_archive":
 { Args: { "p_actor"?: string,"p_id": string,"p_kind": string,"p_org": string }; Returns: Json
