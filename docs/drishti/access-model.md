@@ -1,6 +1,6 @@
 # CityKart Drishti — access model (capabilities × scopes × explicit grants)
 
-Status: database layer built in P2-1 (migrations `20261021000008`…`20261021000011`). App-wide enforcement is P2-2, the administrator screen P2-3, revoking open video sessions P2-4, locations/recorders P2-5, MFA enforcement P3. Decisions: D-1, D-2, D-2a, D-6a, D-10a, D-16 (`docs/drishti/DECISIONS.md`).
+Status: database layer built in P2-1 (migrations `20261021000008`…`20261021000011`, review fixes in `20261021000012`). App-wide enforcement is P2-2, the administrator screen P2-3, revoking open video sessions P2-4, locations/recorders P2-5, MFA enforcement P3. Decisions: D-1, D-2, D-2a, D-6a, D-10a, D-16 (`docs/drishti/DECISIONS.md`).
 
 ## The rules
 
@@ -9,9 +9,10 @@ Status: database layer built in P2-1 (migrations `20261021000008`…`20261021000
 3. **Scopes.** `organization` = everything of the organisation. `location` = every camera / asset in that location, including ones added later (until P2-5 a location is a row of `stores`). `camera` = exactly that camera. `asset` = exactly that asset (today a row of `devices`).
 4. **Union, never narrowing.** A person's access for a capability is the union of their live grants. There is no deny and no rule where a narrower grant hides a wider one: adding camera grants to a location grant never takes cameras away (AC-6). To narrow, revoke the location grant and grant cameras.
 5. **A grant counts** only while the person is active, has chosen their password, the grant is not revoked, `valid_from <= now() < valid_until` (no end = open), and — once `mfa_enforced()` is switched on in P3 — the session is `aal2` for capabilities with `requires_mfa`.
-6. **History is append-only.** Grants are never updated or deleted by the app or the service role. Revoking sets `revoked_at/by/reason`; changing dates revokes and adds a new row; deleting the camera, location or asset revokes the grant and keeps the row. A person's `profiles.access_version` goes up with every change.
-7. **The home store** (`profiles.store_id`) is information only and grants nothing (AC-7).
-8. **CCTV never shows IT.** Devices, their status and NVR status need `it.inventory.view` or `it.monitoring.view` (AC-4). CCTV capabilities show camera rows, camera status and the plain location row.
+6. **History is append-only.** Grants are never updated or deleted by the app or the service role. Revoking sets `revoked_at/by/reason`; deleting the camera, location or asset revokes the grant and keeps the row; deleting a person keeps their grants as history (only deleting the organisation removes them). A person's `profiles.access_version` goes up with every change.
+7. **Granting is monotonic.** Granting what a live grant already covers (same capability and scope, a window inside its window) changes nothing. Otherwise the live grant is replaced by one grant over both windows (earliest start, latest end, or no end if either has none). A grant can therefore never shorten, postpone or narrow access; only `revoke_grant` takes access away. The preview applies the same rule.
+8. **The home store** (`profiles.store_id`) is information only and grants nothing (AC-7).
+9. **CCTV never shows IT.** Devices, their status and NVR status need `it.inventory.view` or `it.monitoring.view` (AC-4). CCTV capabilities show camera rows, camera status and the plain location row.
 
 ## Catalogue (`capabilities`, read-only, seeded by migration)
 
@@ -43,9 +44,11 @@ Status: database layer built in P2-1 (migrations `20261021000008`…`20261021000
 
 Signed-in callers (about themselves only): `has_capability(cap)`, `has_capability_for(cap, 'camera'|'location'|'asset', id)` (a location counts only when covered whole), `capability_camera_ids(cap)`, `capability_store_ids(cap)` (locations covered whole), `capability_device_ids(cap)`, `any_cctv_camera_ids()`, `cameras_with_capability(cap, ids[])`, `any_grant_store_ids()`, `it_view_store_ids()`, `it_view_device_ids()`, `cctv_visible_group_ids()`, `mfa_enforced()`.
 
-Server only (service role; the Server Action checks the administrator first and passes its organisation): `grant_access(org, user, grants, actor, reason, expected_version)`, `revoke_grant(org, user, grant_ids, …)`, `replace_user_grants(org, user, capabilities[], scope_kinds[], grants, …)` (makes the live grants for those capabilities and scope kinds exactly the list; others untouched; identical grants kept), `preview_access_change(user, changes, at, sample)` (per capability: added/removed counts and samples, writes nothing), `access_expiring(within)`, `access_effective_camera_ids/device_ids(user, cap, at, ignore_status)`, the migration helpers and `function_privileges()`.
+Server only (service role; the Server Action checks the administrator first and passes its organisation; the acting person `actor` must be an active person of that organisation): `grant_access(org, user, grants, actor, reason, expected_version)`, `revoke_grant(org, user, grant_ids, …)`, `replace_user_grants(org, user, capabilities[], scope_kinds[], grants, …)` (makes the live grants for those capabilities and scope kinds exactly the list; others untouched; a wanted description without dates matches any live grant of that scope and leaves it as it is, so nothing is re-dated), `preview_access_change(org, user, changes, at, sample)` (per capability: added/removed counts and samples, writes nothing; revocations first, then grants joined as above), `access_expiring(org, within)`, `function_privileges()`.
 
-A grant description is `{capability, scope_kind, scope_id?, valid_from?, valid_until?}`. A change for the preview is that plus `op: 'grant'`, or `{op: 'revoke', grant_id}`. A stale `expected_version` fails with SQLSTATE `40001` (lost-update guard).
+Reporting and diagnostics only — never for authorisation: `report_effective_camera_ids/device_ids(user, cap, at, ignore_status)` (treat every session as MFA-verified), `access_session_capabilities(user, claims, mfa_enforced)` (the capabilities that would count for given JWT claims), `access_legacy_*` (the old rules). The migration `access_migrate_legacy(run, users, force)` is for the database owner only and skips anybody who already has a report row unless `force`; tests use `access_migrate_legacy_test`, which refuses people outside organisations made by the test suite.
+
+A grant description is `{capability, scope_kind, scope_id?, valid_from?, valid_until?}`. A change for the preview is that plus `op: 'grant'`, or `{op: 'revoke', grant_id}` (the person's own live grant). A stale `expected_version` fails with SQLSTATE `40001` (lost-update guard).
 
 ## Migration of the old model (D-2, D-2a), run once in `20261021000010`
 
@@ -70,4 +73,4 @@ The migration proves itself and aborts if any check fails: the legacy evaluator 
 3. Check the operation on the server with `has_capability_for` (or `cameras_with_capability`) through the person's own client before any service-role read.
 4. Add a test that a person without it is refused, and update the count in `tests/integration/access-model.test.ts` (catalogue test).
 
-The interim access editor (`/admin/users/<id>/access`) edits only live + playback for whole stores and single cameras (`replace_user_grants`); zones are turned into their current stores. P2-3 replaces it with modes, expiry and the preview.
+The interim access editor (`/admin/users/<id>/access`) edits only live + playback, in effect now, for whole stores and single cameras (`replace_user_grants`); zones are turned into their current stores. Every other live grant (other capabilities, organisation-wide grants such as a migrated manager's, dated or one-sided live/playback grants) is listed read-only under "Other access" with where it came from, the review flag and its dates, and a save keeps it exactly as it is. P2-3 replaces the editor with modes, expiry and the preview.
