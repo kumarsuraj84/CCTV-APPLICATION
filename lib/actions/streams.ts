@@ -6,7 +6,7 @@ import { requireProfile } from '@/lib/auth/profile'
 import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { logger } from '@/lib/observability/logger'
 import { Go2rtcClient } from '@/lib/streams/go2rtc'
-import { MSG_UNAVAILABLE, openStreams, type OpenedStream } from '@/lib/streams/open'
+import { MSG_UNAVAILABLE, openStreams, renewStreams, type OpenedStream, type RenewedToken } from '@/lib/streams/open'
 import { liveRequestLimiter, MSG_TOO_MANY_REQUESTS } from '@/lib/streams/request-limit'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
@@ -30,7 +30,7 @@ async function run(cameraIds: string[], kind: 'sub' | 'main', route: 'openStream
     // openStreams asks the database, as the person, which of these cameras they may watch live (cameras_with_capability('cctv.live')).
     const res = await openStreams({ admin, rls: await createClient(), go2rtc }, { id: p.id, orgId: p.org_id }, Array.isArray(cameraIds) ? cameraIds : [], kind)
     if (!res.ok) return { ok: false, error: res.error }
-    // An opening is recorded; the refresh every 8 minutes is not (it opens nothing new).
+    // An opening is recorded; the wall's renewals (P2-4: every minute, a full one every 8 minutes) are not (they open nothing new).
     if (route === 'openStreamsAction' && res.streams.length > 0) {
       await auditAccess(admin, { orgId: p.org_id, actorId: p.id, action: 'cctv_live_opened', capability: 'cctv.live', cameraIds: res.streams.map((s) => s.cameraId), detail: { kind } })
     }
@@ -47,7 +47,30 @@ export async function openStreamsAction(cameraIds: string[], kind: 'sub' | 'main
   return run(cameraIds, kind, 'openStreamsAction')
 }
 
-/** The same call, used by the wall every 8 minutes to get fresh tokens (they last 10 minutes); cctv.live is checked again each time. */
+/**
+ * The same call without the audit record: the wall's full renewal (every 8 minutes) and its retries for cameras that failed. Tokens
+ * connect within 90 seconds (P2-4); cctv.live is checked again each time.
+ */
 export async function refreshStreamTokensAction(cameraIds: string[], kind: 'sub' | 'main'): Promise<OpenStreamsState> {
   return run(cameraIds, kind, 'refreshStreamTokensAction')
+}
+
+export type RenewTokensState = { ok: true; tokens: RenewedToken[] } | { ok: false; error: string }
+
+/**
+ * P2-4 review m-11: the wall's one-minute renewal — new tokens (and media sessions) for cameras already open, after checking cctv.live
+ * again; no NVR login and no go2rtc request. Counted with the live requests like the other two.
+ */
+export async function renewStreamTokensAction(cameraIds: string[], kind: 'sub' | 'main'): Promise<RenewTokensState> {
+  const p = await requireProfile()
+  if (p.capabilities.failed) return { ok: false, error: MSG_ACCESS_CHECK_FAILED }
+  if (!holds(p.capabilities, 'cctv.live')) return { ok: true, tokens: [] }
+  if (!limiter.allow(p.id)) return { ok: false, error: TOO_MANY }
+  try {
+    const res = await renewStreams({ admin: createAdminClient(), rls: await createClient() }, { id: p.id, orgId: p.org_id }, Array.isArray(cameraIds) ? cameraIds : [], kind)
+    return res.ok ? { ok: true, tokens: res.tokens } : { ok: false, error: res.error }
+  } catch (error) {
+    logger.error({ event: 'open_streams_action_failed', route: 'renewStreamTokensAction', errorName: error instanceof Error ? error.name : typeof error })
+    return { ok: false, error: MSG_UNAVAILABLE }
+  }
 }

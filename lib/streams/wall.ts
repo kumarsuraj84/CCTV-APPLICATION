@@ -7,6 +7,11 @@ export type Layout = (typeof LAYOUTS)[number]
 // P2-4 (D-3): a token can open a socket for 90 seconds only, so new ones are fetched every minute while the wall is shown (a tile that
 // reconnects always holds one that still works). Each renewal checks cctv.live again and makes new media sessions; unused ones expire.
 export const REFRESH_AFTER_MS = 60_000
+// P2-4 review m-11: most renewals only renew the tokens (no NVR login, no go2rtc request); every 8 minutes the wall opens everything
+// again (registers the streams, which also brings back a stream go2rtc dropped as idle). Cameras that failed are always opened in full.
+export const REOPEN_AFTER_MS = 8 * 60_000
+/** Which renewal is due: `full` when the last full opening is REOPEN_AFTER_MS old (or never happened), else `tokens`. */
+export const renewalKind = (nowMs: number, lastFullMs: number): 'full' | 'tokens' => (lastFullMs <= 0 || nowMs - lastFullMs >= REOPEN_AFTER_MS ? 'full' : 'tokens')
 export const RETRY_EVERY_MS = 30_000 // when video is not available, try again this often
 export const QUICK_RETRY_MS = 2_000 // a picture that played and then ended (the gateway ends sessions after 30 minutes) comes back quickly
 

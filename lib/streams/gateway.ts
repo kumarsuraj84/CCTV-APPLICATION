@@ -3,7 +3,7 @@ import http from 'node:http'
 import type { Duplex } from 'node:stream'
 import WebSocket, { WebSocketServer, type RawData } from 'ws'
 import { usableSecret } from '@/lib/secrets'
-import type { RegistryClient } from '@/lib/streams/registry'
+import { REGISTRY_TIMEOUT_MS, type RegistryClient } from '@/lib/streams/registry'
 import { streamName, verifyStreamToken, type StreamClaims } from '@/lib/streams/token'
 
 // The video gateway: the only video endpoint a browser can reach. A browser opens a WebSocket with a signed stream token; the
@@ -55,6 +55,8 @@ export type GatewayOptions = {
   failClosedAfterMs?: number
   /** Run the checks on a timer (default true). Tests turn it off and call validateNow() with a fake clock. */
   autoValidate?: boolean
+  /** The longest one check may take before it counts as failed (default the larger of validateEveryMs and 5 s). */
+  checkDeadlineMs?: number
   /** A session ends after this long (default 30 minutes); the browser asks for a new token and reconnects. */
   maxSessionMs?: number
   /** The clock for token expiry and the rate limit (default Date.now). */
@@ -88,6 +90,8 @@ export const DEFAULT_FAIL_CLOSED_AFTER_MS = 45_000
 export const CLOSE_ACCESS_CHANGED = 4403
 const CLOSE_CANNOT_VERIFY = 1013
 const MSG_ACCESS_CHANGED = 'Access changed'
+/** Asked when no socket is open (review m-2): a session id no session can have (it is answered "not_found"). */
+const PING_SID = '00000000-0000-4000-8000-000000000000'
 const MSG_CANNOT_VERIFY = 'Cannot verify access'
 
 export const DEFAULT_MAX_SESSION_MS = 30 * 60_000
@@ -245,22 +249,32 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
   let registryFailing = false
   let checking: Promise<void> | null = null
 
+  // Review m-3: the gateway's own deadline for one check, whatever the registry client does (a check that never settles is a failure).
+  const checkDeadlineMs = opts.checkDeadlineMs ?? Math.max(validateEveryMs, REGISTRY_TIMEOUT_MS)
+  const withDeadline = <T>(p: Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('The access check took too long.')), checkDeadlineMs)
+      t.unref?.()
+      p.then((v) => (clearTimeout(t), resolve(v)), (e) => (clearTimeout(t), reject(e)))
+    })
+  /** Fail closed: every socket whose last good check is failClosedAfterMs old is closed. */
+  const sweep = () => {
+    const cutoff = now() - failClosedAfterMs
+    for (const s of [...sessions]) if (s.validatedAt <= cutoff) s.end(CLOSE_CANNOT_VERIFY, MSG_CANNOT_VERIFY, 'fail_closed')
+  }
+
   async function check(): Promise<void> {
     const list = [...sessions]
     const askedAt = now()
-    if (list.length === 0) {
-      lastGoodCheck = askedAt
-      return
-    }
     let invalid: Map<string, string>
     try {
-      invalid = await registry.stillValid(list.map((s) => s.sid))
+      // Review m-2: with no socket open the registry is still asked (a session id that cannot exist), so a broken key or an
+      // unreachable database shows on the health page instead of a green "checked 0 seconds ago".
+      invalid = await withDeadline(registry.stillValid(list.length > 0 ? list.map((s) => s.sid) : [PING_SID]))
     } catch {
       registryFailing = true
       log({ event: 'gateway_session', outcome: 'check_failed', sessions: list.length })
-      // Fail closed: a socket that has not been confirmed for failClosedAfterMs is closed.
-      const cutoff = now() - failClosedAfterMs
-      for (const s of list) if (sessions.has(s) && s.validatedAt <= cutoff) s.end(CLOSE_CANNOT_VERIFY, MSG_CANNOT_VERIFY, 'fail_closed')
+      sweep()
       return
     }
     registryFailing = false
@@ -272,9 +286,13 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
       else s.validatedAt = askedAt // the time the question was asked: never later than the answer
     }
   }
-  /** One check at a time; a call while one runs waits for that one. */
+  /** One check at a time; a call while one runs waits for that one, and the fail-closed time is applied on every call. */
   const validateNow = (): Promise<void> => {
-    if (!checking) checking = check().finally(() => (checking = null))
+    if (checking) {
+      sweep() // a check still in flight never keeps a socket open past its fail-closed time
+      return checking
+    }
+    checking = check().finally(() => (checking = null))
     return checking
   }
   const checkTimer = opts.autoValidate === false ? null : setInterval(() => void validateNow().catch(() => {}), validateEveryMs)
@@ -506,6 +524,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     // The token's own session must open in the registry before anything is connected upstream (P2-4).
     registry.open(sid, { user: claims.u, camera: claims.c, kind: kind === 'pb' ? 'playback' : 'live', stream: name }).then(
       (answer) => {
+        registryFailing = false // the registry answered (review m-2)
         if (answer.ok) opened = true
         if (ended) {
           // The browser left (or the gateway is stopping) while the registry was asked: nothing upstream; the session is closed.
@@ -525,6 +544,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
         connectUpstream()
       },
       () => {
+        registryFailing = true // review m-2: a broken key or an unreachable database shows on the health page
         if (ended) return
         pending.delete(session)
         log({ event: 'gateway_session', outcome: 'unverified' })

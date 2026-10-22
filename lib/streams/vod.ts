@@ -11,7 +11,7 @@ import { describeNvrError, MAX_DOWNLOAD_BYTES, MAX_DOWNLOAD_MS, NvrClient, NvrEr
 import { clockOffsetMs, findSegments } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
 import { processSingleton } from '@/lib/process-singleton'
-import { findCamera, MSG_CAMERA_NOT_FOUND, MSG_BAD_START, MSG_NO_LOGIN, MSG_RECORDINGS_UNREACHABLE, parsePlaybackOffset, recorderMessage, recorderOffset, startInBounds } from '@/lib/streams/playback'
+import { findCamera, readRecorderLogin, MSG_CAMERA_NOT_FOUND, MSG_BAD_START, MSG_NO_LOGIN, MSG_RECORDINGS_UNREACHABLE, parsePlaybackOffset, recorderMessage, recorderOffset, startInBounds } from '@/lib/streams/playback'
 import { adminRegistry, createMediaSessions, type RegistryClient } from '@/lib/streams/registry'
 import { MSG_TOO_MANY_REQUESTS, type RequestLimiter } from '@/lib/streams/request-limit'
 import { watchSession, type SessionWatch } from '@/lib/streams/session-watch'
@@ -668,7 +668,8 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
 
   // Fast playback hands over a savable MP4 of a recording, so it needs cctv.export AND cctv.playback for the camera (decision D-6a;
   // P2-2 fix M-3: export alone gets the same refusal as no right at all).
-  const c = await findCamera(deps, query.camera, { password: 'always', capability: ['cctv.export', 'cctv.playback'], orgId: actor.orgId })
+  // P2-4 review m-6: the NVR login is read only after the download's media session exists (fail closed before touching secrets).
+  const c = await findCamera(deps, query.camera, { password: 'later', capability: ['cctv.export', 'cctv.playback'], orgId: actor.orgId })
   if (!c.ok) {
     // A camera the person may not export (or that does not exist) is recorded as a refusal (P2-2, brief item 7).
     if (c.error === MSG_CAMERA_NOT_FOUND) await auditAccess(deps.admin, { orgId: actor.orgId, actorId: actor.id, action: 'cctv_export_denied', capability: 'cctv.export', cameraIds: [query.camera], detail: { reason: 'camera' } })
@@ -679,7 +680,7 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
   const audit = { started: null as Promise<void> | null, exited: false }
   const auditEnded = () => void audit.started?.then(() => auditAccess(deps.admin, { ...exported, action: 'cctv_export_ended' }))
   // P2-5b: the recorder of the camera's active mapping, with its own address, login and clock offset.
-  const { camera, recorder, password } = c
+  const { camera, recorder } = c
   if (signal?.aborted) return new Response(null, { status: 499 })
 
   const limits = deps.conversions ?? conversionLimiter
@@ -702,6 +703,7 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
       }
     } catch {
       logger.error({ event: 'vod_session_failed', location: camera.code })
+      if (sid) void registry.close(sid) // review m-7: made but not opened: closed again
       return fail(503, MSG_ACCESS_CHECK_FAILED)
     }
   }
@@ -713,6 +715,12 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
     watch?.stop()
     if (sid) void registry.close(sid)
   }
+  const login = await readRecorderLogin(deps, { camera, recorder, demo: false })
+  if (!login.ok) {
+    endSession()
+    return cameraFailure(login.error)
+  }
+  const password = login.password
 
   if (query.probe) {
     const peek = limits.peek(actor.id, { ignoreOwn: true })

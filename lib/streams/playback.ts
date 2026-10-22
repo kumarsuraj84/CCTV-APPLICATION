@@ -115,7 +115,8 @@ export type RecordingCapability = 'cctv.playback' | 'cctv.export'
 export async function findCamera(
   deps: PlaybackDeps,
   cameraId: string,
-  o: { password: 'always' | 'unless-demo'; env?: Record<string, string | undefined>; capability: RecordingCapability | readonly RecordingCapability[]; orgId: string },
+  /** `later`: no login is read here (the caller reads it with readRecorderLogin, e.g. after its media session exists; P2-4 review m-6). */
+  o: { password: 'always' | 'unless-demo' | 'later'; env?: Record<string, string | undefined>; capability: RecordingCapability | readonly RecordingCapability[]; orgId: string },
 ): Promise<Result<Found>> {
   if (typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
   const id = cameraId.toLowerCase()
@@ -144,7 +145,13 @@ export async function findCamera(
   if (!recorder.host) return { ok: false, error: MSG_NOT_MAPPED }
 
   const demo = o.password === 'unless-demo' && isDemoRecorder(recorder, o.env ?? process.env)
-  if (demo) return { ok: true, camera, recorder, password: null, demo }
+  if (demo || o.password === 'later') return { ok: true, camera, recorder, password: null, demo }
+  return readRecorderLogin(deps, { camera, recorder, demo })
+}
+
+/** The NVR password of a found camera's recorder (service role), in the same plain words as findCamera. */
+export async function readRecorderLogin(deps: PlaybackDeps, f: Omit<Found, 'password'>): Promise<Result<Found>> {
+  const { camera, recorder, demo } = f
   const read = await readRecorderPassword(deps.admin, recorder.id)
   if (!read.ok) {
     logger.error({ event: 'playback_credential_failed', location: camera.code, recorder: recorder.id, errorCode: read.code })

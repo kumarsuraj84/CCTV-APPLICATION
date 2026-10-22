@@ -8,7 +8,9 @@ const ago = (sec: number | null) => (sec === null ? 'Not yet' : sec < 120 ? `${s
 
 export function GatewayHealthPanel({ gateway, orgOpen }: { gateway: GatewayHealthView; orgOpen: number | null }) {
   const h = gateway.ok ? gateway.health : null
-  const fine = h !== null && h.registry === 'ok'
+  // Review m-2: green only when the registry answered lately (the gateway asks it every interval, also with no video open).
+  const recent = h !== null && h.lastValidationAgeSec !== null && h.lastValidationAgeSec <= h.validateEverySec * 2 + 5
+  const fine = h !== null && h.registry === 'ok' && recent
   return (
     <section className="space-y-3 rounded-xl border bg-card p-4" aria-labelledby="gateway-health-title">
       <div className="flex flex-wrap items-center gap-2">
@@ -23,7 +25,7 @@ export function GatewayHealthPanel({ gateway, orgOpen }: { gateway: GatewayHealt
       ) : (
         <>
           <dl className="grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
-            <dt className="text-muted-foreground">Open videos</dt>
+            <dt className="text-muted-foreground">On this gateway (all organisations)</dt>
             <dd>{h.openSessions}</dd>
             <dt className="text-muted-foreground">In your organisation</dt>
             <dd>{orgOpen === null ? 'Could not be read' : orgOpen}</dd>
@@ -33,11 +35,15 @@ export function GatewayHealthPanel({ gateway, orgOpen }: { gateway: GatewayHealt
           <p className="text-sm text-muted-foreground">
             Open video is checked every {h.validateEverySec} seconds. When someone loses access, their open video stops within a minute.
           </p>
-          {!fine && (
+          {h.registry !== 'ok' ? (
             <p className="text-sm text-destructive">
               The gateway cannot check access right now. Open video is closed {h.failClosedAfterSec} seconds after the last successful check.
             </p>
-          )}
+          ) : !recent ? (
+            <p className="text-sm text-destructive">
+              {h.lastValidationAgeSec === null ? 'The gateway has not checked access yet.' : `The gateway has not checked access for ${h.lastValidationAgeSec} seconds.`}
+            </p>
+          ) : null}
         </>
       )}
     </section>

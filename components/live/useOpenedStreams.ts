@@ -1,9 +1,9 @@
 'use client'
 
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { openStreamsAction, refreshStreamTokensAction } from '@/lib/actions/streams'
+import { openStreamsAction, refreshStreamTokensAction, renewStreamTokensAction } from '@/lib/actions/streams'
 import type { OpenedStream } from '@/lib/streams/open'
-import { REFRESH_AFTER_MS, RETRY_EVERY_MS } from '@/lib/streams/wall'
+import { REFRESH_AFTER_MS, renewalKind, RETRY_EVERY_MS } from '@/lib/streams/wall'
 
 const subscribeVisibility = (cb: () => void) => {
   document.addEventListener('visibilitychange', cb)
@@ -32,19 +32,25 @@ type State = {
   error: string | null
   /** When the tokens were last renewed for the whole list (ms). */
   issuedAt: number
+  /** When the whole list was last opened in full (streams registered), for the 8-minute full renewal (P2-4 review m-11). */
+  fullAt: number
   /** When the last request finished (ms), for the 30 second retry. */
   triedAt: number
   /** A request after the first one failed (the tokens in hand are still good for a while). */
   refreshFailed: boolean
 }
 
-const fresh = (key: string): State => ({ key, phase: 'loading', streams: {}, error: null, issuedAt: 0, triedAt: 0, refreshFailed: false })
+const fresh = (key: string): State => ({ key, phase: 'loading', streams: {}, error: null, issuedAt: 0, fullAt: 0, triedAt: 0, refreshFailed: false })
+
+type Mode = 'open' | 'full' | 'tokens'
 
 /**
- * Opens the streams for `ids` while `active`, and keeps their tokens fresh: renewed after 8 minutes, and the cameras that could not be
- * opened (or the whole list, when nothing opened) are asked for again every 30 seconds. When `active` turns false (the tab is hidden)
- * everything is dropped, so tiles close their sockets; becoming active again asks for new tokens. Only cameras on `ids` are ever asked
- * for, so nothing is renewed for a page nobody is looking at.
+ * Opens the streams for `ids` while `active`, and keeps their tokens fresh (P2-4: a token connects within 90 s): every minute the
+ * tokens alone are renewed (renewStreamTokensAction: cctv.live checked again, new media sessions, no NVR or go2rtc work), every 8
+ * minutes everything is opened again in full, and the cameras that could not be opened (or the whole list, when nothing opened) are
+ * asked for again in full every 30 seconds. When `active` turns false (the tab is hidden) everything is dropped, so tiles close their
+ * sockets; becoming active again asks for new tokens. Only cameras on `ids` are ever asked for, so nothing is renewed for a page nobody
+ * is looking at.
  */
 export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: boolean) {
   const key = `${active ? 'on' : 'off'}|${kind}|${ids.join(',')}`
@@ -53,8 +59,27 @@ export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: bo
   if (state.key !== key) setState(fresh(key))
   const current = state.key === key ? state : fresh(key)
 
-  const run = (which: string[], first: boolean) => {
-    const call = first ? openStreamsAction : refreshStreamTokensAction
+  const failed = (error: string) =>
+    setState((prev) => (prev.key !== key ? prev : { ...prev, phase: Object.keys(prev.streams).length > 0 ? 'ready' : 'error', error, triedAt: Date.now(), refreshFailed: true }))
+
+  const run = (which: string[], mode: Mode) => {
+    if (mode === 'tokens') {
+      renewStreamTokensAction(which, kind)
+        .then((res) => {
+          if (!res.ok) return failed(res.error)
+          setState((prev) => {
+            if (prev.key !== key) return prev
+            // Only the tokens change; a camera that did not come back (no longer allowed, its NVR switched off) is dropped.
+            const streams: Record<string, OpenedStream> = {}
+            for (const t of res.tokens) if (prev.streams[t.cameraId]) streams[t.cameraId] = { ...prev.streams[t.cameraId], token: t.token }
+            const now = Date.now()
+            return { ...prev, phase: 'ready', streams, error: null, triedAt: now, refreshFailed: false, issuedAt: now }
+          })
+        })
+        .catch(() => failed('Could not reach the server.'))
+      return
+    }
+    const call = mode === 'open' ? openStreamsAction : refreshStreamTokensAction
     call(which, kind)
       .then((res) => {
         setState((prev) => {
@@ -66,7 +91,7 @@ export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: bo
           const everyone = which.length === ids.length
           const streams: Record<string, OpenedStream> = everyone ? {} : { ...prev.streams }
           for (const s of res.streams) streams[s.cameraId] = s
-          return { ...prev, phase: 'ready', streams, error: null, triedAt: now, refreshFailed: false, issuedAt: everyone ? now : prev.issuedAt }
+          return { ...prev, phase: 'ready', streams, error: null, triedAt: now, refreshFailed: false, issuedAt: everyone ? now : prev.issuedAt, fullAt: everyone ? now : prev.fullAt }
         })
       })
       .catch(() => {
@@ -80,7 +105,7 @@ export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: bo
     if (!active || ids.length === 0) return
     let timer: ReturnType<typeof setTimeout> | undefined
     if (current.phase === 'loading') {
-      timer = setTimeout(() => run(ids, true), 0)
+      timer = setTimeout(() => run(ids, 'open'), 0)
     } else {
       const missing = ids.filter((id) => !current.streams[id])
       const retryAt = current.phase === 'error' || current.refreshFailed || missing.length > 0 ? current.triedAt + RETRY_EVERY_MS : Infinity
@@ -90,7 +115,10 @@ export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: bo
       timer = setTimeout(() => {
         const renewing = Date.now() >= renewAt - 50
         const everythingFailed = current.phase === 'error'
-        run(renewing || everythingFailed ? ids : missing.length > 0 ? missing : ids, false)
+        // Retries (missing cameras, a failed renewal, nothing open) are full openings; a plain renewal renews the tokens only, except
+        // every 8 minutes (P2-4 review m-11).
+        if (renewing && !everythingFailed && missing.length === 0 && !current.refreshFailed && renewalKind(Date.now(), current.fullAt) === 'tokens') run(ids, 'tokens')
+        else run(renewing || everythingFailed ? ids : missing.length > 0 ? missing : ids, 'full')
       }, Math.max(0, at - Date.now()))
     }
     return () => clearTimeout(timer)

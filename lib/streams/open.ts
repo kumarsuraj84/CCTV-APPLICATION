@@ -35,6 +35,46 @@ export type OpenDeps = {
   now?: () => number
 }
 
+export type RenewedToken = { cameraId: string; token: string }
+
+/**
+ * P2-4 review m-11: the live wall's one-minute renewal. Only what a token needs: cctv.live for each camera (the person's own client),
+ * one media_session_create (the database checks the person, the capability and that the camera can still be streamed — an NVR that
+ * was switched off is left out) and the signed tokens. No route, no NVR login, no go2rtc request: the streams were registered by the
+ * wall's last full opening (openStreams, every 8 minutes and for every camera that failed).
+ */
+export async function renewStreams(
+  deps: Pick<OpenDeps, 'admin' | 'rls' | 'env' | 'now'>,
+  actor: Pick<Actor, 'id' | 'orgId'>,
+  cameraIds: string[],
+  kind: 'sub' | 'main',
+): Promise<Result<{ tokens: RenewedToken[] }>> {
+  const secret = getSecret('stream_token')
+  if (!secret) return { ok: false, error: MSG_NOT_SET_UP }
+  if (kind !== 'sub' && kind !== 'main') return { ok: false, error: MSG_FAILED }
+  if (!Array.isArray(cameraIds) || cameraIds.length === 0) return { ok: false, error: MSG_NONE }
+  if (cameraIds.length > MAX_STREAMS_PER_REQUEST) return { ok: false, error: MSG_TOO_MANY }
+  const wanted = [...new Set(cameraIds.filter((id): id is string => typeof id === 'string' && UUID.test(id)).map((id) => id.toLowerCase()))]
+  if (wanted.length === 0) return { ok: false, error: MSG_NONE }
+  const allowed = await camerasFor(deps.rls, 'cctv.live', wanted)
+  if (!allowed.ok) return { ok: false, error: MSG_FAILED }
+  const mayWatch = wanted.filter((id) => allowed.ids.includes(id))
+  if (mayWatch.length === 0) return { ok: true, tokens: [] }
+  let sids: Map<string, string>
+  try {
+    sids = await createMediaSessions(deps.admin, { orgId: actor.orgId, userId: actor.id, kind: 'live', cameras: mayWatch.map((id) => ({ id, stream: streamName({ c: id, k: kind }) })) })
+  } catch {
+    logger.error({ event: 'renew_streams_sessions_failed' })
+    return { ok: false, error: MSG_FAILED }
+  }
+  const exp = Math.floor((deps.now ?? Date.now)() / 1000) + TOKEN_LIFETIME_SEC
+  const tokens = mayWatch.flatMap((id) => {
+    const sid = sids.get(id)
+    return sid ? [{ cameraId: id, token: signStreamToken({ sid, u: actor.id, c: id, k: kind, exp }, secret) }] : []
+  })
+  return { ok: true, tokens }
+}
+
 export async function openStreams(
   deps: OpenDeps,
   actor: Pick<Actor, 'id' | 'orgId'>,
