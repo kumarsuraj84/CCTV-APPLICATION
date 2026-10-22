@@ -305,7 +305,7 @@ export function LiveWall({ cameras, maxStreams = DEFAULT_MAX_STREAMS_PER_USER, m
             {grid.error} Trying again in a moment.
           </p>
         )}
-        {overLimit.size > 0 && (
+        {visible && !big && overLimit.size > 0 && (
           <p role="status" className="text-sm text-muted-foreground">
             You are watching as many cameras as you may at once ({maxStreams}). The others are paused to save bandwidth.
           </p>
