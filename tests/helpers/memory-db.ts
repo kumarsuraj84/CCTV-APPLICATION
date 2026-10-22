@@ -1,11 +1,12 @@
 import { isNvrKnownDown } from '@/lib/monitor/nvr-state'
-import type { CheckResult, DeviceJob, MonitorDb, NvrJob, StoreJob, WorkerRequest } from '@/lib/monitor/types'
+import type { CheckResult, DeviceJob, MonitorDb, NvrJob, RecorderJob, WorkerRequest } from '@/lib/monitor/types'
 
 /** In-memory MonitorDb: remembers every call so tests can look at what the checks decided. */
 export class MemoryDb implements MonitorDb {
   devices: DeviceJob[] = []
   nvrs: NvrJob[] = []
-  stores: StoreJob[] = []
+  /** P2-5b: one job per recorder (NVR), with only the cameras mapped to it. */
+  recorders: RecorderJob[] = []
   applied: { orgId: string; results: CheckResult[]; threshold: number }[] = []
   ipsSaved: { orgId: string; rows: { cameraId: string; ip: string }[] }[] = []
   heartbeats: Date[] = []
@@ -20,12 +21,12 @@ export class MemoryDb implements MonitorDb {
 
   async loadDevices() { return this.devices }
   async loadNvrs() { return this.nvrs }
-  async loadStoreJobs(ids?: string[], staleBefore?: Date) {
+  async loadRecorderJobs(ids?: string[], staleBefore?: Date) {
     this.staleBefore.push(staleBefore)
     // Like the real data layer: whether the NVR is known to be down is decided here, once.
     return this.pick(ids).map((s) => ({ ...s, knownDown: isNvrKnownDown(s.nvr_status, s.nvr_checked_at, staleBefore) }))
   }
-  private pick(ids?: string[]) { return ids ? this.stores.filter((s) => ids.includes(s.id)) : this.stores }
+  private pick(ids?: string[]) { return ids ? this.recorders.filter((s) => ids.includes(s.id)) : this.recorders }
   async recordGap(from: Date, to: Date) { this.gaps.push({ from, to }) }
   async markRound(kind: 'devices' | 'cameras', at: Date) { this.rounds.push({ kind, at }) }
   async applyResults(orgId: string, results: CheckResult[], threshold: number) { this.applied.push({ orgId, results, threshold }) }

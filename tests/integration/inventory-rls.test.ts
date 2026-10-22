@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
-  adminClient, atAsset, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type GrantScope, type TestUser,
+  adminClient, atAsset, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createRecorder, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type GrantScope, type TestUser,
 } from '../setup/fixtures'
 
 // P2-1 rewrote this file for the capability model (docs/drishti/access-model.md). The old assertions it replaces encoded behaviour the
@@ -12,13 +12,15 @@ import {
 // asset row the person can read is counted — the stores' NVR recorder assets are named in the positive expectations below.
 type Table = 'locations' | 'cameras' | 'assets'
 
+// P2-5b: a store is a location with its NVR (a recorder of its own; the location row holds no NVR data).
 async function addStore(orgId: string, code: string, zone: string): Promise<string> {
   const { data, error } = await adminClient()
     .from('locations')
-    .insert({ org_id: orgId, code, name: `Store ${code}`, zone, nvr_ip: '127.0.0.1', nvr_username: 'viewer' })
+    .insert({ org_id: orgId, code, name: `Store ${code}`, zone })
     .select('id')
     .single()
   if (error || !data) throw new Error(`addStore: ${error?.message}`)
+  await createRecorder(orgId, data.id, { host: '127.0.0.1', username: 'viewer' })
   return data.id
 }
 
@@ -172,8 +174,10 @@ describe('inventory visibility (row-level security, capability model)', () => {
   })
 
   it('nobody writes inventory through the data API', async () => {
-    const insert = await managerWithGrants.client.from('locations').insert({ org_id: orgA, code: 'X', name: 'X', nvr_ip: '127.0.0.1', nvr_username: 'u' })
+    const insert = await managerWithGrants.client.from('locations').insert({ org_id: orgA, code: 'X', name: 'X' })
     expect(insert.error?.code).toBe('42501')
+    const recorder = await managerWithGrants.client.from('recorders').update({ username: 'changed' }).eq('id', n1)
+    expect(recorder.error?.code).toBe('42501')
     const update = await zoneUser.client.from('cameras').update({ name: 'changed' }).eq('id', c11)
     expect(update.error?.code).toBe('42501')
     const del = await managerWithGrants.client.from('assets').delete().eq('id', d1)
@@ -188,7 +192,9 @@ describe('inventory visibility (row-level security, capability model)', () => {
     const others = await admin.client.from('access_grants').select('user_id').eq('capability', 'cctv.playback')
     expect(new Set((others.data ?? []).map((r) => r.user_id)).size).toBe(7)
     await adminClient().from('admin_audit_log').insert({ org_id: orgA, actor_id: admin.id, action: 'test' })
-    expect(((await admin.client.from('admin_audit_log').select('id')).data ?? []).length).toBe(1)
+    // (P2-5b: the fixtures' recorder_save rows are there too: three NVRs were created for orgA.)
+    const rowsSeen = (await admin.client.from('admin_audit_log').select('action')).data ?? []
+    expect(rowsSeen.map((r) => r.action).sort()).toEqual(['recorder_created', 'recorder_created', 'recorder_created', 'test'])
     expect((await zoneUser.client.from('admin_audit_log').select('id')).data).toEqual([])
   })
 
@@ -253,22 +259,27 @@ describe('inventory visibility (row-level security, capability model)', () => {
   it('NVR passwords live in the vault and only the server can read them', async () => {
     const admin = adminClient()
     const secret = `Nvr-${randomUUID()}`
-    expect((await admin.rpc('nvr_store_credential', { p_store: s1, p_secret: secret })).error).toBeNull()
-    expect((await admin.rpc('nvr_read_credential', { p_store: s1 })).data).toBe(secret)
-    // P2-5a: the recorder owns the vault pointer (recorders.secret_id, name recorder:<id>); the legacy location column stays empty.
-    const row = await admin.from('recorders').select('secret_id').eq('id', await primaryRecorderOf(s1)).single()
+    // P2-5b: keyed by recorder only (the location-keyed wrappers are gone); the recorder owns the vault pointer, name recorder:<id>.
+    const rec = await primaryRecorderOf(s1)
+    expect((await admin.rpc('recorder_store_credential', { p_recorder: rec, p_secret: secret })).error).toBeNull()
+    expect((await admin.rpc('recorder_read_credential', { p_recorder: rec })).data).toBe(secret)
+    const row = await admin.from('recorders').select('secret_id').eq('id', rec).single()
     expect(row.data?.secret_id).toBeTruthy()
-    expect((await admin.from('locations').select('nvr_secret_id').eq('id', s1).single()).data?.nvr_secret_id).toBeNull()
+    expect((await admin.rpc('recorder_credential_status', { p_org: orgA, p_recorder: rec })).data).toEqual({ set: true, name: `recorder:${rec}` })
+    // Another recorder of the same location has its own login (none here).
+    const second = await createRecorder(orgA, s1, { host: '127.0.0.9' })
+    expect((await admin.rpc('recorder_read_credential', { p_recorder: second })).data).toBeNull()
 
-    const denied = await managerWithGrants.client.rpc('nvr_read_credential', { p_store: s1 })
+    const denied = await managerWithGrants.client.rpc('recorder_read_credential', { p_recorder: rec })
     expect(denied.error?.code).toBe('42501')
     expect(denied.data).toBeNull()
 
     const changed = `Nvr-${randomUUID()}`
-    await admin.rpc('nvr_store_credential', { p_store: s1, p_secret: changed })
-    expect((await admin.rpc('nvr_read_credential', { p_store: s1 })).data).toBe(changed)
+    await admin.rpc('recorder_store_credential', { p_recorder: rec, p_secret: changed })
+    expect((await admin.rpc('recorder_read_credential', { p_recorder: rec })).data).toBe(changed)
 
-    await admin.rpc('nvr_delete_credential', { p_store: s1 })
-    expect((await admin.rpc('nvr_read_credential', { p_store: s1 })).data).toBeNull()
+    await admin.rpc('recorder_delete_credential', { p_recorder: rec })
+    expect((await admin.rpc('recorder_read_credential', { p_recorder: rec })).data).toBeNull()
+    expect((await admin.rpc('inventory_archive', { p_org: orgA, p_kind: 'recorder', p_id: second })).error).toBeNull()
   })
 })

@@ -1,74 +1,32 @@
-import http from 'node:http'
-import type { AddressInfo } from 'node:net'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { MAX_STREAMS_PER_REQUEST, openStreams, type OpenedStream } from '@/lib/streams/open'
 import { verifyStreamToken } from '@/lib/streams/token'
-import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { startFakeGo2rtc, type FakeGo2rtc, type Seen } from '../helpers/fake-go2rtc'
+import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createLocation, createOrg, createRecorder, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const SECRET = 'integration-test-stream-secret-0123456789'
 const PASSWORD = 'p@ss:w/rd#1!'
 const ENCODED_PASSWORD = 'p%40ss%3Aw%2Frd%231%21'
 const admin = () => adminClient()
 
-type Seen = { method: string; name: string | null; src: string | null }
-type FakeGo2rtc = { client: Go2rtcClient; seen: Seen[]; streams: Map<string, string>; failNames: Set<string>; failAll: boolean; applies: boolean; wholeListReads: number; close: () => Promise<void> }
-
-/** A fake go2rtc on loopback. Like the real one with a read-only config, it answers 400 to a change it has applied. */
-async function startFakeGo2rtc(): Promise<FakeGo2rtc> {
-  const seen: Seen[] = []
-  const streams = new Map<string, string>()
-  const fake = { failNames: new Set<string>(), failAll: false, applies: true, wholeListReads: 0 }
-  const server = http.createServer((req, res) => {
-    const u = new URL(req.url ?? '/', 'http://x')
-    if (req.method === 'GET') {
-      res.setHeader('content-type', 'application/json')
-      const one = u.searchParams.get('src')
-      if (one === null) {
-        fake.wholeListReads++ // the list holds every stream's source: only the pruner may read it
-        return void res.end(JSON.stringify(Object.fromEntries([...streams].map(([k, v]) => [k, { producers: [{ url: v }], consumers: null }]))))
-      }
-      if (!streams.has(one)) {
-        res.statusCode = 404
-        return void res.end('not found')
-      }
-      return void res.end(JSON.stringify({ producers: [{ url: streams.get(one) }], consumers: null }))
-    }
-    const name = u.searchParams.get('name')
-    seen.push({ method: req.method ?? '', name, src: u.searchParams.get('src') })
-    if (fake.failAll || (name && fake.failNames.has(name))) {
-      res.statusCode = 500
-      return void res.end('boom')
-    }
-    if (req.method === 'PUT' && name && fake.applies) streams.set(name, u.searchParams.get('src') ?? '')
-    res.statusCode = 400
-    res.end('read-only')
-  })
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
-  const port = (server.address() as AddressInfo).port
-  return Object.assign(fake, {
-    client: new Go2rtcClient(`http://127.0.0.1:${port}`),
-    seen,
-    streams,
-    close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()) }),
-  })
-}
-
 describe('openStreams', () => {
   let orgId: string, otherOrg: string
   let sA: string, sB: string, sNoPass: string
+  let rA: string, rB: string
   let a1: string, a2: string, aOff: string, b1: string, n1: string, foreign: string
   let viewer: TestUser, nobody: TestUser, manager: TestUser
   let fake: FakeGo2rtc
   const savedSecret = process.env.STREAM_TOKEN_SECRET
+  const recorderOf = new Map<string, string>()
 
+  // P2-5b: a store is a location with ONE recorder (its NVR, on 127.0.0.1) of its own; its cameras are mapped to it.
   async function addStore(org: string, code: string, o: { active?: boolean; port?: number } = {}) {
-    const { data, error } = await admin().from('locations').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', rtsp_port: o.port ?? 554, nvr_username: 'viewer', is_active: o.active ?? true }).select('id').single()
-    if (error || !data) throw new Error(`addStore: ${error?.message}`)
-    return data.id
+    const loc = await createLocation(org, { code, name: `Store ${code}`, isActive: o.active ?? true })
+    recorderOf.set(loc, await createRecorder(org, loc, { host: '127.0.0.1', rtspPort: o.port ?? 554 }))
+    return loc
   }
   async function addCamera(org: string, store: string, channel: number, name: string, active = true) {
-    const { data, error } = await admin().from('cameras').insert({ org_id: org, location_id: store, channel, name, is_active: active }).select('id').single()
+    const { data, error } = await admin().from('cameras').insert({ org_id: org, location_id: store, recorder_id: recorderOf.get(store)!, channel, name, is_active: active }).select('id').single()
     if (error || !data) throw new Error(`addCamera: ${error?.message}`)
     return data.id
   }
@@ -79,7 +37,9 @@ describe('openStreams', () => {
     sA = await addStore(orgId, 'OA')
     sB = await addStore(orgId, 'OB')
     sNoPass = await addStore(orgId, 'ON', { port: 8554 })
-    for (const s of [sA, sB]) await admin().rpc('nvr_store_credential', { p_store: s, p_secret: PASSWORD })
+    rA = recorderOf.get(sA)!
+    rB = recorderOf.get(sB)!
+    for (const r of [rA, rB]) await admin().rpc('recorder_store_credential', { p_recorder: r, p_secret: PASSWORD })
     a1 = await addCamera(orgId, sA, 1, 'Front Door')
     a2 = await addCamera(orgId, sA, 2, 'Back Door')
     aOff = await addCamera(orgId, sA, 3, 'Switched off', false)
@@ -147,7 +107,7 @@ describe('openStreams', () => {
   it('a changed NVR password is registered again with the new password, and fails if go2rtc does not take it', async () => {
     streamsOf(await open(viewer, [a1]))
     expect(fake.streams.get(`cam_${a1}_sub`)).toContain(ENCODED_PASSWORD)
-    const { error } = await admin().rpc('nvr_store_credential', { p_store: sA, p_secret: 'N3w:pass/word' })
+    const { error } = await admin().rpc('recorder_store_credential', { p_recorder: rA, p_secret: 'N3w:pass/word' })
     expect(error).toBeNull()
     try {
       fake.applies = false // go2rtc answers 400 and does not apply it
@@ -158,7 +118,7 @@ describe('openStreams', () => {
       expect(fake.streams.get(`cam_${a1}_sub`)).toBe('rtsp://viewer:N3w%3Apass%2Fword@127.0.0.1:554/Streaming/Channels/102')
       expect(fake.seen.filter((s) => s.method === 'PUT').map((s) => s.name)).toEqual([`cam_${a1}_sub`, `cam_${a1}_sub`, `cam_${a1}_sub`])
     } finally {
-      await admin().rpc('nvr_store_credential', { p_store: sA, p_secret: PASSWORD })
+      await admin().rpc('recorder_store_credential', { p_recorder: rA, p_secret: PASSWORD })
     }
   })
 
@@ -185,7 +145,7 @@ describe('openStreams', () => {
 
   it('the answer holds no password and no RTSP address', async () => {
     const text = JSON.stringify(await open(viewer, [a1, a2]))
-    for (const needle of [PASSWORD, ENCODED_PASSWORD, 'rtsp://', 'viewer:', '127.0.0.1', 'Streaming/Channels', 'nvr_ip', 'password', SECRET]) expect(text, needle).not.toContain(needle)
+    for (const needle of [PASSWORD, ENCODED_PASSWORD, 'rtsp://', 'viewer:', '127.0.0.1', 'Streaming/Channels', '"host"', 'recorder', 'password', SECRET]) expect(text, needle).not.toContain(needle)
     expect(Object.keys(JSON.parse(text).streams[0]).sort()).toEqual(['cameraId', 'channel', 'kind', 'name', 'storeCode', 'token'])
   })
 
@@ -280,7 +240,7 @@ describe('openStreams', () => {
     fake = await startFakeGo2rtc() // so afterEach has something to close
   })
 
-  it('a store with no saved password leaves its cameras out; the rest still open', async () => {
+  it('an NVR with no saved password leaves its cameras out; the rest still open', async () => {
     const res = await open(viewer, [n1, a1])
     expect(streamsOf(res).map((s) => s.cameraId)).toEqual([a1])
     expect(fake.seen.map((s) => s.name)).toEqual([`cam_${a1}_sub`])
@@ -288,7 +248,7 @@ describe('openStreams', () => {
     expect(await open(viewer, [n1])).toEqual({ ok: true, streams: [] })
   })
 
-  it('reads the NVR password once per store, through the service-role RPC only', async () => {
+  it('reads the NVR password once per recorder, through the recorder credential RPC only (P2-5b)', async () => {
     const calls: { name: string; args: unknown }[] = []
     const real = admin()
     const spy = new Proxy(real, {
@@ -299,8 +259,8 @@ describe('openStreams', () => {
       },
     })
     streamsOf(await open(manager, [a1, a2, b1], 'sub', { adminClient: spy }))
-    expect(calls.map((c) => c.name)).toEqual(['nvr_read_credential', 'nvr_read_credential'])
-    expect(calls.map((c) => (c.args as { p_store: string }).p_store).sort()).toEqual([sA, sB].sort())
+    expect(calls.map((c) => c.name)).toEqual(['recorder_read_credential', 'recorder_read_credential'])
+    expect(calls.map((c) => (c.args as { p_recorder: string }).p_recorder).sort()).toEqual([rA, rB].sort())
   })
 
   it('with DEMO_VIDEO=1 and a loopback store the source is the generated test picture and no password is read', async () => {
@@ -332,11 +292,11 @@ describe('openStreams', () => {
 
   it('owner addition: a camera on an NVR with monitoring switched off is refused with a plain message; nothing is registered or read', async () => {
     const sOff = await addStore(orgId, 'OOFF')
-    await admin().rpc('nvr_store_credential', { p_store: sOff, p_secret: PASSWORD })
+    const rec = recorderOf.get(sOff)!
+    await admin().rpc('recorder_store_credential', { p_recorder: rec, p_secret: PASSWORD })
     const off1 = await addCamera(orgId, sOff, 1, 'Real NVR camera')
     const watcher = await createUser(orgId, 'user')
     await grant(orgId, watcher.id, CCTV_VIEW, [atLocation(sOff), atLocation(sA)])
-    const rec = await primaryRecorderOf(sOff)
     expect((await admin().rpc('recorder_set_monitoring', { p_org: orgId, p_recorder: rec, p_enabled: false, p_reason: 'Real NVR: not to be contacted' })).error).toBeNull()
     // Count every credential read the service makes.
     const reads: string[] = []

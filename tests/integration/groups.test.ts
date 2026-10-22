@@ -1,18 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Actor } from '@/lib/admin/types'
 import { addCameras, addCamerasByKeyword, createGroup, deleteGroup, MSG_NAME_TAKEN, removeCamera, renameGroup } from '@/lib/groups/service'
-import { ADMINISTRATOR_SET, adminClient, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant as grantTo, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { ADMINISTRATOR_SET, adminClient, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createSite, createUser, grant as grantTo, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 
+// P2-5b: a store is a location with its NVR (a recorder of its own; the location row holds no NVR data).
 async function addStore(orgId: string, code: string): Promise<string> {
-  const { data, error } = await admin()
-    .from('locations')
-    .insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'viewer' })
-    .select('id')
-    .single()
-  if (error || !data) throw new Error(`addStore: ${error?.message}`)
-  return data.id
+  return (await createSite(orgId, { code, name: `Store ${code}`, host: '127.0.0.1', username: 'viewer' })).locationId
 }
 
 async function addCamera(orgId: string, storeId: string, channel: number, name: string): Promise<string> {
@@ -128,7 +123,7 @@ describe('camera groups', () => {
       expect(await itemIds(manager, wide)).toEqual(sorted([a1, a2, b1, b2]))
     })
     it('the database refuses an item that mixes organisations', async () => {
-      const foreign = await admin().from('locations').insert({ org_id: otherOrg, code: 'FOREIGN', name: 'F', nvr_ip: '127.0.0.1', nvr_username: 'v' }).select('id').single()
+      const foreign = await admin().from('locations').insert({ org_id: otherOrg, code: 'FOREIGN', name: 'F' }).select('id').single()
       const cam = await addCamera(otherOrg, foreign.data!.id, 1, 'Foreign')
       const res = await admin().from('camera_group_items').insert({ org_id: orgId, group_id: wide, camera_id: cam })
       expect(res.error?.code).toBe('23503')

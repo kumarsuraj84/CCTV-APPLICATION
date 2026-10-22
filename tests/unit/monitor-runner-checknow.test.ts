@@ -24,7 +24,7 @@ describe('MonitorRunner honest check-now', () => {
     let calls = 0
     let open: () => void = () => {}
     const gate = new Promise<void>((resolve) => { open = resolve })
-    db.loadStoreJobs = async () => {
+    db.loadRecorderJobs =async () => {
       calls += 1
       if (calls === 1) await gate
       return []
@@ -95,7 +95,7 @@ describe('MonitorRunner honest check-now', () => {
   it('retries only once: a second run that started but failed again is closed so the page is not left waiting', async () => {
     vi.useFakeTimers()
     const db = new MemoryDb()
-    db.loadStoreJobs = async () => { throw new Error('database is down') }
+    db.loadRecorderJobs =async () => { throw new Error('database is down') }
     db.request = { requestedAt: REQUESTED, runStartedAt: null }
     const r = runnerFor(db)
     await r.pollOnce()
@@ -390,7 +390,7 @@ describe('MonitorRunner cycle watchdog', () => {
   it('stops waiting for a stuck scheduled cycle, does not report the run finished, and closes it after the one retry', async () => {
     vi.useFakeTimers()
     const db = new MemoryDb()
-    db.loadStoreJobs = () => new Promise(() => {}) // the scheduled camera cycle never ends
+    db.loadRecorderJobs =() => new Promise(() => {}) // the scheduled camera cycle never ends
     db.request = { requestedAt: REQUESTED, runStartedAt: null }
     const r = runnerFor(db, { cycleWatchdogMs: 1000 })
     void r.runCameras()

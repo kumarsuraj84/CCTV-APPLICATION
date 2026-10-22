@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Database } from '@/types/database'
-import { adminClient, atCamera, atLocation, cleanupOrg, createOrg, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, atLocation, cleanupOrg, createOrg, createSite, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 type Res = { data: unknown; error: { code?: string; message: string } | null }
@@ -15,10 +15,9 @@ const ADMIN_SET = ['admin.users', 'admin.access', 'admin.inventory', 'admin.aler
 const day = 86_400_000
 const iso = (ms: number) => new Date(ms).toISOString()
 
+// P2-5b: a store is a location with its NVR (a recorder of its own; the location row holds no NVR data).
 async function addStore(orgId: string, code: string): Promise<string> {
-  const { data, error } = await admin().from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '192.0.2.10', nvr_username: 'viewer' }).select('id').single()
-  if (error || !data) throw new Error(`addStore: ${error?.message}`)
-  return data.id
+  return (await createSite(orgId, { code, name: `Store ${code}`, host: '192.0.2.10', username: 'viewer' })).locationId
 }
 async function addCamera(orgId: string, storeId: string, channel: number): Promise<string> {
   const { data, error } = await admin().from('cameras').insert({ org_id: orgId, location_id: storeId, channel, name: `Camera ${channel}` }).select('id').single()

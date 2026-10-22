@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { readCapabilities, type ScopeSummary } from '@/lib/auth/capabilities'
-import { adminClient, atAsset, atCamera, atLocation, cleanupOrg, createOrg, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
+import { adminClient, atAsset, atCamera, atLocation, cleanupOrg, createOrg, createSite, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
 
 // P2-2 (WP-2.1b): the request's capability summary. One call (my_access_summary) answers, for the signed-in person only, which
 // capabilities count right now and at which scopes. The database applies every rule of access_grants_of (active person, chosen password,
@@ -19,7 +19,7 @@ describe('my_access_summary / readCapabilities', () => {
   beforeAll(async () => {
     orgId = await createOrg()
     otherOrg = await createOrg()
-    const store = async (org: string, code: string) => (await admin().from('locations').insert({ org_id: org, code, name: code, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const store = async (org: string, code: string) => (await createSite(org, { code, name: code, host: '127.0.0.1', username: 'u' })).locationId
     s1 = await store(orgId, 'S1')
     s2 = await store(orgId, 'S2')
     c1 = (await admin().from('cameras').insert({ org_id: orgId, location_id: s2, channel: 1, name: 'C1' }).select('id').single()).data!.id

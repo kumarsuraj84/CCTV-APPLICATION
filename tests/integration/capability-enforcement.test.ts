@@ -8,7 +8,7 @@ import type { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { openStreams } from '@/lib/streams/open'
 import { listDaySegments, listRecordedDays, openPlayback } from '@/lib/streams/playback'
 import { createConversionLimiter, parseVodQuery, serveVod } from '@/lib/streams/vod'
-import { adminClient, atCamera, atLocation, cleanupOrg, createOrg, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, atLocation, cleanupOrg, createOrg, createSite, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
 import { startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
 
 // P2-2 brief item 8: direct-call negative tests per operation. For each operation, a person holding only a DIFFERENT capability, the
@@ -45,12 +45,12 @@ describe('capability enforcement per operation (P2-2)', () => {
     nvr = await startFakeNvr({ username: NVR_USER, password: NVR_PASSWORD, channels: [{ channel: 1, name: 'Door' }], statuses: { 1: true }, recordings: [{ start: '2026-10-20T09:00:00', end: '2026-10-20T10:00:00' }] })
     orgId = await createOrg()
     otherOrg = await createOrg()
+    // P2-5b: a store is a location with its NVR (a recorder of its own, its login in the vault, keyed by recorder).
     const store = async (org: string, code: string) =>
-      (await admin().from('locations').insert({ org_id: org, code, name: code, nvr_ip: '127.0.0.1', http_port: nvr.port, rtsp_port: 554, nvr_username: NVR_USER }).select('id').single()).data!.id
+      (await createSite(org, { code, name: code, host: '127.0.0.1', httpPort: nvr.port, rtspPort: 554, username: NVR_USER, secret: NVR_PASSWORD })).locationId
     const camera = async (org: string, s: string, ch: number) => (await admin().from('cameras').insert({ org_id: org, location_id: s, channel: ch, name: `cam ${ch}`, camera_ip: '192.0.2.50' }).select('id').single()).data!.id
     s1 = await store(orgId, 'E1')
     s2 = await store(orgId, 'E2')
-    for (const s of [s1, s2]) await admin().rpc('nvr_store_credential', { p_store: s, p_secret: NVR_PASSWORD })
     c11 = await camera(orgId, s1, 1)
     c12 = await camera(orgId, s1, 2)
     c21 = await camera(orgId, s2, 1)

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { getStates } from '@/lib/queries/status'
-import { adminClient, atAsset, atLocation, cleanupOrg, createOrg, createUser, grant, ORG_SCOPE, primaryRecorderOf, type TestUser } from '../setup/fixtures'
+import { adminClient, atAsset, atLocation, cleanupOrg, createOrg, createSite, createUser, grant, ORG_SCOPE, primaryRecorderOf, type TestUser } from '../setup/fixtures'
 
 // P2-2 fix round 1, I-1 (review): the checker's own words (check_state.error) and its method name recorder internals (refused logins,
 // saved addresses and passwords, login methods). They are not readable by signed-in people any more (column privileges); the reasons
@@ -17,11 +17,11 @@ describe('status reasons and column privileges (P2-2 fix round 1)', () => {
 
   beforeAll(async () => {
     orgId = await createOrg()
-    s1 = (await admin().from('locations').insert({ org_id: orgId, code: 'R1', name: 'R1', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    s1 = (await createSite(orgId, { code: 'R1', name: 'R1', host: '127.0.0.1', username: 'u' })).locationId
     cDown = (await admin().from('cameras').insert({ org_id: orgId, location_id: s1, channel: 1, name: 'login refused' }).select('id').single()).data!.id
     cNvr = (await admin().from('cameras').insert({ org_id: orgId, location_id: s1, channel: 2, name: 'nvr down' }).select('id').single()).data!.id
     d1 = (await admin().from('assets').insert({ org_id: orgId, location_id: s1, type: 'server', name: 'D', ip: '192.0.2.9' }).select('id').single()).data!.id
-    // P2-5a: the NVR's status belongs to the location's recorder ('recorder', recorder id; 'nvr' rows were re-keyed).
+    // The NVR's status belongs to the location's recorder ('recorder', recorder id; P2-5b: the 'nvr' kind is gone).
     rec = await primaryRecorderOf(s1)
     const at = new Date().toISOString()
     const rows = [
@@ -65,8 +65,9 @@ describe('status reasons and column privileges (P2-2 fix round 1)', () => {
     expect(by.get(cDown)).toBe('The camera is not responding.')
     expect(by.get(cNvr)).toBe('Recorder not reachable.')
     expect((await cctvOnly.client.rpc('status_reasons', { p_type: 'device', p_ids: [d1] })).data).toEqual([])
-    expect((await cctvOnly.client.rpc('status_reasons', { p_type: 'nvr', p_ids: [s1] })).data).toEqual([])
     expect((await cctvOnly.client.rpc('status_reasons', { p_type: 'recorder', p_ids: [rec] })).data).toEqual([])
+    // P2-5b: the old kind answers nothing for anybody (the location-keyed 'nvr' branch is gone).
+    expect((await itView.client.rpc('status_reasons', { p_type: 'nvr', p_ids: [s1] })).data).toEqual([])
     // Through the app's reader too.
     const states = await getStates(cctvOnly.client, 'camera', [cDown, cNvr])
     expect(states.get(cDown)?.error).toBe('The camera is not responding.')
@@ -78,14 +79,14 @@ describe('status reasons and column privileges (P2-2 fix round 1)', () => {
     const states = await getStates(itView.client, 'camera', [cDown, cNvr])
     expect(states.get(cDown)?.error).toBe('The recorder refused the login.')
     expect(states.get(cNvr)?.error).toBe('The NVR is not reachable.')
-    expect((await getStates(itView.client, 'nvr', [s1])).get(s1)?.error).toBe('Connection timed out to 127.0.0.1:80')
+    expect((await getStates(itView.client, 'recorder', [rec])).get(rec)?.error).toBe('Connection timed out to 127.0.0.1:80')
     expect((await getStates(itView.client, 'device', [d1])).get(d1)?.error).toBe('Connection refused on 192.0.2.9:3389')
   })
 
   it('an asset-only IT grant shows that device\'s reason but not the store\'s camera or NVR internals', async () => {
     expect((await getStates(assetOnly.client, 'device', [d1])).get(d1)?.error).toBe('Connection refused on 192.0.2.9:3389')
     expect((await getStates(assetOnly.client, 'camera', [cDown])).get(cDown)?.error).toBe('The camera is not responding.')
-    expect((await getStates(assetOnly.client, 'nvr', [s1])).size).toBe(0)
+    expect((await getStates(assetOnly.client, 'recorder', [rec])).size).toBe(0)
   })
 
   it('nothing without a grant, and nothing for anonymous callers', async () => {

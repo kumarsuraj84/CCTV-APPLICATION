@@ -5,7 +5,7 @@ import { MonitorRunner } from '@/lib/monitor/runner'
 import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
 import type { Database } from '@/types/database'
 import { createServer, type Socket } from 'node:net'
-import { adminClient, cleanupOrg, createOrg, primaryRecorderOf } from '../setup/fixtures'
+import { adminClient, cleanupOrg, createOrg, createSite } from '../setup/fixtures'
 import { closedPort, startFakeNvr, startFakeRtsp, startFakeTcp, type FakeNvr, type FakeRtsp, type Running } from '../helpers/fake-servers'
 
 const admin = () => adminClient()
@@ -40,11 +40,11 @@ describe('the worker against a fake network', () => {
     tcp = await startFakeTcp()
     const downPort = await closedPort()
     const a = admin()
-    storeId = (await a.from('locations').insert({ org_id: orgId, code: 'RUN', name: 'Run', nvr_ip: '127.0.0.1', rtsp_port: rtsp.port, http_port: nvr.port, nvr_username: 'viewer' }).select('id').single()).data!.id
-    await a.rpc('nvr_store_credential', { p_store: storeId, p_secret: 'secret-pass' })
-    // P2-5a: the store's NVR is its primary recorder; the worker's 'nvr' results are written there (seam D5-7).
-    recorderId = await primaryRecorderOf(storeId)
-    cams = (await a.from('cameras').insert([1, 2, 3].map((n) => ({ org_id: orgId, location_id: storeId, channel: n, name: `Camera ${n}` }))).select('id, channel').order('channel')).data!.map((c) => c.id)
+    // P2-5b: the location's NVR is a recorder with its own address, ports and login; the worker reports ('recorder', its id).
+    const site = await createSite(orgId, { code: 'RUN', name: 'Run', host: '127.0.0.1', rtspPort: rtsp.port, httpPort: nvr.port, secret: 'secret-pass', cameras: 3 })
+    storeId = site.locationId
+    recorderId = site.recorderId
+    cams = site.cameraIds
     devUp = (await a.from('assets').insert({ org_id: orgId, location_id: storeId, type: 'server', name: 'Up', ip: '127.0.0.1', tcp_port: tcp.port }).select('id').single()).data!.id
     devDown = (await a.from('assets').insert({ org_id: orgId, location_id: storeId, type: 'attendance', name: 'Down', ip: '127.0.0.1', tcp_port: downPort }).select('id').single()).data!.id
     runner = new MonitorRunner({ db: new SupabaseMonitorDb(a, { orgId }), probes: realProbes, cfg: { ...loadMonitorConfig({}), nvrTimeoutMs: 2000 }, clock: () => new Date() })
@@ -131,10 +131,9 @@ describe('the worker against a fake network', () => {
     const videoPort = (video.address() as { port: number }).port
     const a = admin()
     try {
-      const loc = (await a.from('locations').insert({ org_id: orgId, code: 'REAL', name: 'Real NVR', nvr_ip: '127.0.0.1', rtsp_port: videoPort, http_port: offNvr.port, nvr_username: 'viewer' }).select('id').single()).data!.id
-      await a.rpc('nvr_store_credential', { p_store: loc, p_secret: 'secret-pass' })
-      const cam = (await a.from('cameras').insert({ org_id: orgId, location_id: loc, channel: 1, name: 'Real camera' }).select('id').single()).data!.id
-      const rec = await primaryRecorderOf(loc)
+      const real = await createSite(orgId, { code: 'REAL', name: 'Real NVR', host: '127.0.0.1', rtspPort: videoPort, httpPort: offNvr.port, secret: 'secret-pass', cameras: 1 })
+      const cam = real.cameraIds[0]
+      const rec = real.recorderId
       expect((await a.rpc('recorder_set_monitoring', { p_org: orgId, p_recorder: rec, p_enabled: false, p_reason: 'Real NVR: read-only, not now' })).error).toBeNull()
       await runner.runFull()
       await runner.runDevices()

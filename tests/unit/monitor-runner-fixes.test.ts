@@ -135,7 +135,7 @@ describe('silence between heartbeats is recorded as a gap (I2)', () => {
 describe('the times of the last scheduled rounds are saved (I4)', () => {
   it('a devices round and a cameras round each save their time when they finish', async () => {
     const { db, time, runner } = setup()
-    db.stores = [{ id: 's1', org_id: 'o', code: 'S1', ip: '127.0.0.1', rtsp_port: 554, http_port: 80, username: 'u', password: 'p', nvr_status: 'up', nvr_checked_at: null, knownDown: false, cameras: [{ id: 'c1', channel: 1, camera_ip: null }] }]
+    db.recorders = [{ id: 's1', org_id: 'o', location_id: 'l1', code: 'S1', name: 'NVR', ip: '127.0.0.1', rtsp_port: 554, http_port: 80, username: 'u', password: 'p', nvr_status: 'up', nvr_checked_at: null, knownDown: false, cameras: [{ id: 'c1', channel: 1, camera_ip: null }] }]
     time.now = T0 + 1000
     await runner.runDevices()
     expect(db.rounds).toEqual([{ kind: 'devices', at: new Date(T0 + 1000) }])
@@ -152,7 +152,7 @@ describe('the times of the last scheduled rounds are saved (I4)', () => {
     await runner.runDevices()
     expect(db.rounds).toEqual([])
     const cams = setup()
-    cams.db.loadStoreJobs = async () => { throw new Error('database is down') }
+    cams.db.loadRecorderJobs =async () => { throw new Error('database is down') }
     await cams.runner.runCameras()
     expect(cams.db.rounds).toEqual([])
   })
@@ -161,7 +161,7 @@ describe('the times of the last scheduled rounds are saved (I4)', () => {
     const { db, runner } = setup()
     let release: () => void = () => {}
     let waiting = false
-    db.loadStoreJobs = () => new Promise((resolve) => { waiting = true; release = () => resolve([]) })
+    db.loadRecorderJobs =() => new Promise((resolve) => { waiting = true; release = () => resolve([]) })
     const first = runner.runCameras()
     await vi.waitFor(() => expect(waiting).toBe(true))
     await runner.runCameras() // returns at once

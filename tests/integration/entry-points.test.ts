@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from '@/types/database'
-import { adminClient, atLocation, cleanupOrg, createOrg, createUser, grant, type TestUser } from '../setup/fixtures'
+import { adminClient, atLocation, cleanupOrg, createOrg, createSite, createUser, grant, type TestUser } from '../setup/fixtures'
 import { startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
 import { resetProcessSingletons } from '../helpers/reset-singletons'
 
@@ -65,12 +65,12 @@ describe('entry points with a real JWT (P2-2 fix round 1)', () => {
     go2rtc = await startFakeGo2rtc()
     process.env.GO2RTC_URL = go2rtc.url
     orgId = await createOrg()
-    const store = async (code: string) => (await admin().from('locations').insert({ org_id: orgId, code, name: code, nvr_ip: '127.0.0.1', http_port: nvr.port, rtsp_port: 554, nvr_username: NVR_USER }).select('id').single()).data!.id
-    sGood = await store('EG')
-    sWrong = await store('EW')
+    // P2-5b: each store is a location with its own NVR (a recorder; its login in the vault, keyed by recorder).
+    const store = async (code: string, secret?: string) =>
+      (await createSite(orgId, { code, name: code, host: '127.0.0.1', httpPort: nvr.port, rtspPort: 554, username: NVR_USER, secret })).locationId
+    sGood = await store('EG', NVR_PASSWORD)
+    sWrong = await store('EW', 'not-the-password')
     sNoLogin = await store('EN')
-    await admin().rpc('nvr_store_credential', { p_store: sGood, p_secret: NVR_PASSWORD })
-    await admin().rpc('nvr_store_credential', { p_store: sWrong, p_secret: 'not-the-password' })
     const cam = async (s: string) => (await admin().from('cameras').insert({ org_id: orgId, location_id: s, channel: 1, name: 'cam' }).select('id').single()).data!.id
     cGood = await cam(sGood)
     cWrong = await cam(sWrong)
@@ -135,7 +135,7 @@ describe('entry points with a real JWT (P2-2 fix round 1)', () => {
     expect(await listRecordedDaysAction(cNoLogin, 2026, 10)).toEqual(neutral)
     as(itPerson)
     expect(await listDaySegmentsAction(cWrong, '2026-10-20')).toEqual({ ok: false, error: 'The NVR refused the user name or password.' })
-    expect(await listRecordedDaysAction(cNoLogin, 2026, 10)).toEqual({ ok: false, error: 'This store has no saved NVR login.' })
+    expect(await listRecordedDaysAction(cNoLogin, 2026, 10)).toEqual({ ok: false, error: 'This NVR has no saved login.' })
   })
 
   it('requestCheckNowAction: it.monitoring.operate on a location asks; others are refused and nothing is written', async () => {
@@ -168,7 +168,7 @@ describe('entry points with a real JWT (P2-2 fix round 1)', () => {
     expect([wrong.status, await wrong.json()]).toEqual([502, { error: 'The recordings of this camera cannot be reached right now.' }])
     as(itPerson)
     const itNoLogin = await GET(url(cNoLogin))
-    expect([itNoLogin.status, await itNoLogin.json()]).toEqual([409, { error: 'This store has no saved NVR login.' }])
+    expect([itNoLogin.status, await itNoLogin.json()]).toEqual([409, { error: 'This NVR has no saved login.' }])
   })
 
   it('the live, playback and export counts are separate: using up live leaves playback and fast playback working', async () => {

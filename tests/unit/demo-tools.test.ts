@@ -7,7 +7,9 @@ import {
   DEMO_ORG_NAME,
   DEMO_ROLES,
   DEMO_SLUG,
+  FAKE_RTSP_2_PORT,
   LOOPBACK,
+  SECOND_NVR_PORT,
   demoEmail,
   demoGrants,
   demoPlan,
@@ -20,15 +22,22 @@ import { findClosedPorts, isPortClosed } from '../../scripts/lib/ports'
 import { closedPort, startFakeNvr, startFakeRtsp, startFakeTcp } from '../helpers/fake-servers'
 
 describe('fake NVR options', () => {
-  it('uses the default port and no flipping when nothing is given', () => {
-    expect(parseFakeNvrArgs([], {})).toEqual({ port: DEFAULT_NVR_PORT, flip: false })
+  it('uses the default ports (two pretend NVRs, P2-5b) and no flipping when nothing is given', () => {
+    expect(parseFakeNvrArgs([], {})).toEqual({ port: DEFAULT_NVR_PORT, secondPort: SECOND_NVR_PORT, flip: false })
   })
 
   it('takes --port in both spellings, --flip, and FAKE_NVR_PORT', () => {
-    expect(parseFakeNvrArgs(['--port=8100', '--flip'], {})).toEqual({ port: 8100, flip: true })
+    expect(parseFakeNvrArgs(['--port=8100', '--flip'], {})).toEqual({ port: 8100, secondPort: SECOND_NVR_PORT, flip: true })
     expect(parseFakeNvrArgs(['--port', '8101'], {}).port).toBe(8101)
     expect(parseFakeNvrArgs([], { FAKE_NVR_PORT: '8102' }).port).toBe(8102)
     expect(parseFakeNvrArgs(['--port=8103'], { FAKE_NVR_PORT: '8102' }).port).toBe(8103)
+  })
+
+  it('takes --second-port for the second pretend NVR, which must differ from the first', () => {
+    expect(parseFakeNvrArgs(['--second-port=8110'], {}).secondPort).toBe(8110)
+    expect(parseFakeNvrArgs(['--second-port', '8111'], {}).secondPort).toBe(8111)
+    expect(() => parseFakeNvrArgs(['--port=8110', '--second-port=8110'], {})).toThrow(/differ/)
+    expect(() => parseFakeNvrArgs(['--second-port=8554'], {})).toThrow()
   })
 
   it('has no way to choose an address: every address option is refused', () => {
@@ -87,27 +96,42 @@ describe('demo data plan', () => {
   })
 
   it('follows a chosen NVR port, and refuses a clashing one', () => {
-    expect(demoPlan(8100).stores.filter((s) => s.code !== 'DEMO2').every((s) => s.httpPort === 8100)).toBe(true)
+    expect(demoPlan(8100).stores.find((s) => s.code === 'DEMO1')!.recorders.map((r) => r.httpPort)).toEqual([8100])
     expect(() => demoPlan(8082)).toThrow()
   })
 
-  it('puts the NVR that is down on DEMO2 only, and the offline device on the footfall counter only', () => {
-    const dead = { nvrHttp: 50_001, nvrRtsp: 50_002, device: 50_003 }
-    const plan = demoPlan(8100, dead)
-    expect(plan.stores.filter((s) => s.httpPort === dead.nvrHttp || s.rtspPort === dead.nvrRtsp).map((s) => s.code)).toEqual(['DEMO2'])
-    const demo2 = plan.stores.find((s) => s.code === 'DEMO2')!
-    expect([demo2.httpPort, demo2.rtspPort]).toEqual([dead.nvrHttp, dead.nvrRtsp])
-    for (const s of plan.stores.filter((x) => x.code !== 'DEMO2')) expect([s.httpPort, s.rtspPort]).toEqual([8100, 8554])
+  // P2-5b (brief): a demo location with TWO pretend NVRs on different loopback ports, one of them down; every other location has one NVR.
+  const dead = { nvrHttp: 50_001, nvrRtsp: 50_002, device: 50_003, nvr2Http: 50_004, nvr2Rtsp: 50_005 }
+  it('DEMO3 has two NVRs on different ports with the same channel numbers: the second pretend NVR (up) and one nobody answers (down)', () => {
+    const plan = demoPlan(8100, dead, 8110)
+    const demo3 = plan.stores.find((s) => s.code === 'DEMO3')!
+    expect(demo3.recorders.map((r) => [r.name, r.httpPort, r.rtspPort])).toEqual([['NVR 1', 8110, FAKE_RTSP_2_PORT], ['NVR 2', dead.nvr2Http, dead.nvr2Rtsp]])
+    expect(demo3.recorders.every((r) => r.cameras > 0)).toBe(true)
+    for (const s of plan.stores.filter((x) => x.code !== 'DEMO3')) expect(s.recorders).toHaveLength(1)
+    // No two NVRs of the demo share an address and port (each is its own box).
+    const all = plan.stores.flatMap((s) => s.recorders.flatMap((r) => [r.httpPort, r.rtspPort]))
+    expect(new Set(all).size).toBe(all.length)
+  })
+
+  it('puts the NVRs that are down on DEMO2 and on DEMO3\'s second NVR only, and the offline device on the footfall counter only', () => {
+    const plan = demoPlan(8100, dead, 8110)
+    const down = plan.stores.flatMap((s) => s.recorders.filter((r) => r.httpPort === dead.nvrHttp || r.httpPort === dead.nvr2Http).map((r) => `${s.code}/${r.name}`))
+    expect(down).toEqual(['DEMO2/NVR 1', 'DEMO3/NVR 2'])
+    expect(plan.stores.find((s) => s.code === 'DEMO2')!.recorders.map((r) => [r.httpPort, r.rtspPort])).toEqual([[dead.nvrHttp, dead.nvrRtsp]])
+    expect(plan.stores.find((s) => s.code === 'DEMO1')!.recorders.map((r) => [r.httpPort, r.rtspPort])).toEqual([[8100, 8554]])
     expect(plan.devices.filter((d) => d.port === dead.device).map((d) => d.name)).toEqual(['Demo footfall counter'])
     // Every other device points at a port the pretend servers open.
     expect(plan.devices.filter((d) => d.port !== dead.device).map((d) => d.port)).toEqual([9101, 9102, 9103])
   })
 
   it('the offline ports must differ from each other and from the ports the pretend servers use', () => {
-    expect(() => demoPlan(8100, { nvrHttp: 50_001, nvrRtsp: 50_001, device: 50_003 })).toThrow()
-    expect(() => demoPlan(8100, { nvrHttp: 8100, nvrRtsp: 50_002, device: 50_003 })).toThrow()
-    expect(() => demoPlan(8100, { nvrHttp: 50_001, nvrRtsp: 8554, device: 50_003 })).toThrow()
-    expect(() => demoPlan(8100, { nvrHttp: 50_001, nvrRtsp: 50_002, device: 9101 })).toThrow()
+    expect(() => demoPlan(8100, { ...dead, nvrRtsp: dead.nvrHttp })).toThrow()
+    expect(() => demoPlan(8100, { ...dead, nvrHttp: 8100 })).toThrow()
+    expect(() => demoPlan(8100, { ...dead, nvrRtsp: 8554 })).toThrow()
+    expect(() => demoPlan(8100, { ...dead, device: 9101 })).toThrow()
+    expect(() => demoPlan(8100, { ...dead, nvr2Http: dead.nvrHttp })).toThrow()
+    expect(() => demoPlan(8100, { ...dead, nvr2Rtsp: FAKE_RTSP_2_PORT })).toThrow()
+    expect(() => demoPlan(8100, dead, 8100)).toThrow()
   })
 })
 

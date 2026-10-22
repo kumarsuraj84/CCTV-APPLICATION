@@ -5,7 +5,7 @@ import { NvrError } from '@/lib/nvr/client'
 import type { Probes } from '@/lib/monitor/types'
 import { startFakeNvr, startFakeRtsp } from '../helpers/fake-servers'
 import { MemoryDb } from '../helpers/memory-db'
-import { cfg, deps, NOW, store } from '../helpers/monitor-fixtures'
+import { cfg, deps, NOW, recorder } from '../helpers/monitor-fixtures'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -19,13 +19,13 @@ describe('a wrong or missing NVR password never makes cameras look down', () => 
   it('sends nothing for a camera whose only answer is a refused login, for ISAPI auth and for forbidden', async () => {
     for (const kind of ['auth', 'forbidden'] as const) {
       const db = new MemoryDb()
-      db.stores = [store()]
+      db.recorders = [recorder()]
       const spy = quietLog()
       await checkCameras(deps(db, { ...refused(kind), rtsp: async () => ({ code: 401 }) }))
       expect(db.results()).toHaveLength(0)
       expect(db.applied).toHaveLength(0)
       expect(loginLines(spy)).toHaveLength(1)
-      expect(loginLines(spy)[0]).toContain('NVR login problem for store S1')
+      expect(loginLines(spy)[0]).toContain('NVR login problem at location S1')
       expect(loginLines(spy)[0]).not.toContain('"pw"')
       spy.mockRestore()
     }
@@ -33,7 +33,7 @@ describe('a wrong or missing NVR password never makes cameras look down', () => 
 
   it('still lets the other answers count: 200 is Live, no answer and an odd answer are failures', async () => {
     const db = new MemoryDb()
-    db.stores = [store()]
+    db.recorders = [recorder()]
     quietLog()
     await checkCameras(deps(db, { ...refused(), rtsp: async (t) => ({ code: [200, 0, 404][t.channel - 1] }) }))
     expect(db.results().map((r) => [r.id, r.ok])).toEqual([['c1', true], ['c2', false], ['c3', false]])
@@ -43,7 +43,7 @@ describe('a wrong or missing NVR password never makes cameras look down', () => 
 
   it('sends nothing, and does not try to log in to the NVR, when the store has no saved password', async () => {
     const db = new MemoryDb()
-    db.stores = [store({ password: '' })]
+    db.recorders = [recorder({ password: '' })]
     const spy = quietLog()
     let asked = 0
     await checkCameras(deps(db, {
@@ -57,7 +57,7 @@ describe('a wrong or missing NVR password never makes cameras look down', () => 
 
   it('with a good login a 401 from RTSP is a normal failure, and nothing is logged about the login', async () => {
     const db = new MemoryDb()
-    db.stores = [store()]
+    db.recorders = [recorder()]
     const spy = quietLog()
     await checkCameras(deps(db, {
       nvr: () => ({ channelStatus: async () => new Map([[1, false], [2, false], [3, false]]), channels: async () => [] }),
@@ -70,7 +70,7 @@ describe('a wrong or missing NVR password never makes cameras look down', () => 
 
   it('an NVR that is up but times out is not a login problem: the RTSP fallback works as before', async () => {
     const db = new MemoryDb()
-    db.stores = [store()]
+    db.recorders = [recorder()]
     const spy = quietLog()
     await checkCameras(deps(db, {
       nvr: () => ({ channelStatus: async () => { throw new NvrError('timeout', 'x') }, channels: async () => { throw new NvrError('timeout', 'x') } }),
@@ -88,7 +88,7 @@ describe('a wrong or missing NVR password never makes cameras look down', () => 
       const rtsp = await startFakeRtsp('needs-auth', 0, { username: 'viewer', password: nvrPassword })
       try {
         const db = new MemoryDb()
-        db.stores = [store({
+        db.recorders = [recorder({
           http_port: nvr.port, rtsp_port: rtsp.port, password: storePassword,
           cameras: Object.keys(statuses).map((n) => ({ id: `c${n}`, channel: Number(n), camera_ip: null })),
         })]
@@ -133,7 +133,7 @@ describe('an NVR state that is out of date is not trusted', () => {
 
   it('a recent "down" marks the cameras down at once', async () => {
     const db = new MemoryDb()
-    db.stores = [store({ nvr_status: 'down', nvr_checked_at: secondsBefore(60) })]
+    db.recorders = [recorder({ nvr_status: 'down', nvr_checked_at: secondsBefore(60) })]
     const { d, counts } = run(db)
     await checkCameras(d)
     expect(counts.nvr).toBe(0)
@@ -143,7 +143,7 @@ describe('an NVR state that is out of date is not trusted', () => {
 
   it('exactly three device intervals old still counts', async () => {
     const db = new MemoryDb()
-    db.stores = [store({ nvr_status: 'down', nvr_checked_at: secondsBefore(3 * cfg.deviceCheckSec) })]
+    db.recorders = [recorder({ nvr_status: 'down', nvr_checked_at: secondsBefore(3 * cfg.deviceCheckSec) })]
     await checkCameras(run(db).d)
     expect(db.results()).toHaveLength(3)
     expect(db.results().every((r) => r.cause === 'nvr_down')).toBe(true)
@@ -152,7 +152,7 @@ describe('an NVR state that is out of date is not trusted', () => {
   it('older than three device intervals, or with no time at all, the cameras are probed normally', async () => {
     for (const checked of [secondsBefore(3 * cfg.deviceCheckSec + 1), secondsBefore(3600), null]) {
       const db = new MemoryDb()
-      db.stores = [store({ nvr_status: 'down', nvr_checked_at: checked })]
+      db.recorders = [recorder({ nvr_status: 'down', nvr_checked_at: checked })]
       const { d, counts } = run(db)
       await checkCameras(d)
       expect(counts.nvr).toBe(1)
@@ -164,7 +164,7 @@ describe('an NVR state that is out of date is not trusted', () => {
 
   it('follows the injected clock', async () => {
     const db = new MemoryDb()
-    db.stores = [store({ nvr_status: 'down', nvr_checked_at: NOW.toISOString() })]
+    db.recorders = [recorder({ nvr_status: 'down', nvr_checked_at: NOW.toISOString() })]
     await checkCameras(run(db, () => new Date(NOW.getTime() + 10 * 60_000)).d)
     expect(db.results()).toHaveLength(3)
     expect(db.results().every((r) => r.ok)).toBe(true)
@@ -173,7 +173,7 @@ describe('an NVR state that is out of date is not trusted', () => {
   it('tells the data layer how old a state may be', async () => {
     const db = new MemoryDb()
     let given: Date | undefined
-    db.loadStoreJobs = async (_ids, staleBefore) => {
+    db.loadRecorderJobs = async (_ids, staleBefore) => {
       given = staleBefore
       return []
     }
@@ -185,7 +185,7 @@ describe('an NVR state that is out of date is not trusted', () => {
 describe('the NVR timeout from the configuration is used', () => {
   it('is handed to the NVR client', async () => {
     const db = new MemoryDb()
-    db.stores = [store()]
+    db.recorders = [recorder()]
     const seen: unknown[] = []
     await checkCameras(deps(db, {
       nvr: (_ep, opts) => {

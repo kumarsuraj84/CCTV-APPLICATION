@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Database } from '@/types/database'
-import { adminClient, atLocation, cleanupOrg, createOrg, createUser, grant, type TestUser } from '../setup/fixtures'
+import { adminClient, atLocation, cleanupOrg, createOrg, createSite, createUser, grant, type TestUser } from '../setup/fixtures'
 
 // P2-3 review M-14: the real access and user Server Actions with the signed-in person's own JWT. Only the Next request plumbing is
 // replaced (no forwarded id, so the session is checked with GoTrue; the cookie client is the test user's own client). Nothing else is
@@ -22,7 +22,7 @@ describe('access entry points with a real JWT (P2-3 fix round 1)', () => {
 
   beforeAll(async () => {
     org = await createOrg()
-    store = (await admin().from('locations').insert({ org_id: org, code: 'EP1', name: 'EP1', nvr_ip: '192.0.2.1', nvr_username: 'v' }).select('id').single()).data!.id
+    store = (await createSite(org, { code: 'EP1', name: 'EP1', host: '192.0.2.1', username: 'v' })).locationId
     managerWithAccess = await createUser(org, 'manager')
     await grant(org, managerWithAccess.id, ['admin.access', 'admin.users', 'cctv.live'])
     plainAdmin = await createUser(org, 'admin')

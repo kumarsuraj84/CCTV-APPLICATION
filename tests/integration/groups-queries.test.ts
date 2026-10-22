@@ -1,14 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createGroup, addCameras } from '@/lib/groups/service'
 import { getVisibleGroup, listStoreCamerasForGroups, listVisibleGroups } from '@/lib/queries/groups'
-import { ADMINISTRATOR_SET, adminClient, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant as grantTo, type TestUser } from '../setup/fixtures'
+import { ADMINISTRATOR_SET, adminClient, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createSite, createUser, grant as grantTo, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 
+// P2-5b: a store is a location with its NVR (a recorder of its own; the location row holds no NVR data).
 async function addStore(orgId: string, code: string, isActive = true): Promise<string> {
-  const { data, error } = await admin().from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'viewer', is_active: isActive }).select('id').single()
-  if (error || !data) throw new Error(`addStore: ${error?.message}`)
-  return data.id
+  return (await createSite(orgId, { code, name: `Store ${code}`, host: '127.0.0.1', username: 'viewer', isActive })).locationId
 }
 async function addCamera(orgId: string, storeId: string, channel: number, name: string, isActive = true): Promise<string> {
   const { data, error } = await admin().from('cameras').insert({ org_id: orgId, location_id: storeId, channel, name, is_active: isActive }).select('id').single()

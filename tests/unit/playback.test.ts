@@ -278,6 +278,17 @@ describe('findSegments against the fake NVR', () => {
     // window is [01:00, next day 01:00) in NVR terms; shown = NVR - 60 min
     expect(iso(neg)[0]).toEqual(['2026-10-20T08:00:00.000Z', '2026-10-20T08:30:00.000Z'])
   })
+  it('P2-5b: a per-recorder offset in seconds asks for [day - offset) and shows NVR time + offset, to the second', async () => {
+    nvr = await startFakeNvr({ recordings: RECORDINGS })
+    const found = await findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetSec: 330 * 60 + 30 })
+    const body = searchPosts(nvr)[0].body
+    expect(body).toContain('<startTime>2026-10-19T18:29:30Z</startTime>')
+    expect(body).toContain('<endTime>2026-10-20T18:29:30Z</endTime>')
+    expect(found.segments[1].start.toISOString()).toBe('2026-10-20T14:30:30.000Z')
+    await expect(findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetSec: 86_401 })).rejects.toThrow()
+    await expect(findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetSec: 1.5 })).rejects.toThrow()
+    await expect(findSegments(client(nvr.port), { channel: 1, day: '2026-10-20', offsetSec: 60, offsetMin: 1 } as never)).rejects.toThrow()
+  })
   it('uses a new search id for each call and the same one for every page of a call', async () => {
     nvr = await startFakeNvr({ recordings: RECORDINGS })
     const c = client(nvr.port)

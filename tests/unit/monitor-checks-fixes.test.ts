@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { checkCameras, checkDevices, checkNvrs, checkStoreCameras, loginBackoffCount } from '@/lib/monitor/checks'
+import { checkCameras, checkDevices, checkNvrs, checkRecorderCameras, loginBackoffCount } from '@/lib/monitor/checks'
 import { loadMonitorConfig } from '@/lib/monitor/config'
 import { NvrError } from '@/lib/nvr/client'
 import { MemoryDb } from '../helpers/memory-db'
-import { deps, NOW, store } from '../helpers/monitor-fixtures'
+import { deps, NOW, recorder } from '../helpers/monitor-fixtures'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -14,7 +14,7 @@ describe('a wrong password cannot be tried again and again through the video por
   it('after the first refused video login, when the NVR web port did not answer, the other cameras are not tried and the back-off starts', async () => {
     const spy = quietLog()
     const db = new MemoryDb()
-    db.stores = [store()]
+    db.recorders = [recorder()]
     const counts = { nvr: 0, rtsp: 0 }
     const d = deps(db, {
       nvr: () => {
@@ -27,7 +27,7 @@ describe('a wrong password cannot be tried again and again through the video por
     expect(counts.rtsp).toBe(1) // not one per camera
     expect(db.results()).toHaveLength(0) // a refused login says nothing about the cameras
     expect(loginBackoffCount(d.db)).toBe(1)
-    expect(lines(spy, 'NVR login problem for store S1')).toHaveLength(1)
+    expect(lines(spy, 'NVR login problem at location S1')).toHaveLength(1)
 
     await checkCameras(d) // still inside the window: the recorder is left alone
     expect(counts.nvr).toBe(1)
@@ -37,7 +37,7 @@ describe('a wrong password cannot be tried again and again through the video por
   it('with a working NVR web login a refused video login is just that camera failing, and every camera is still tried', async () => {
     quietLog()
     const db = new MemoryDb()
-    db.stores = [store()]
+    db.recorders = [recorder()]
     let rtsp = 0
     const d = deps(db, {
       nvr: () => ({ channelStatus: async () => new Map([[1, false], [2, false], [3, false]]), channels: async () => [] }),
@@ -54,7 +54,7 @@ describe('a wrong password cannot be tried again and again through the video por
     const run = async (codes: number[]) => {
       quietLog()
       const db = new MemoryDb()
-      db.stores = [store({ cameras: codes.map((_, i) => ({ id: `c${i + 1}`, channel: i + 1, camera_ip: null })) })]
+      db.recorders = [recorder({ cameras: codes.map((_, i) => ({ id: `c${i + 1}`, channel: i + 1, camera_ip: null })) })]
       const asked: number[] = []
       const d = deps(db, { nvr: webPortDown, rtsp: async (t) => { asked.push(t.channel); return { code: codes[t.channel - 1] } } })
       await checkCameras(d)
@@ -91,7 +91,7 @@ describe('a wrong password cannot be tried again and again through the video por
   it('a first camera that answers normally does not stop the others', async () => {
     quietLog()
     const db = new MemoryDb()
-    db.stores = [store()]
+    db.recorders = [recorder()]
     const d = deps(db, {
       nvr: () => ({ channelStatus: async () => { throw new NvrError('timeout', 'x') }, channels: async () => { throw new NvrError('timeout', 'x') } }),
       rtsp: async (t) => ({ code: t.channel === 1 ? 200 : 0 }),
@@ -108,7 +108,7 @@ describe('"NVR known down" is decided once, by the data layer (minor 3)', () => 
     const db = new MemoryDb()
     let asked = 0
     const d = deps(db, { nvr: () => { asked++; return { channelStatus: async () => new Map(), channels: async () => [] } } })
-    await checkStoreCameras(d, store({ knownDown: true, password: '', nvr_status: 'down' }))
+    await checkRecorderCameras(d, recorder({ knownDown: true, password: '', nvr_status: 'down' }))
     expect(asked).toBe(0)
     expect(db.results().every((r) => !r.ok && r.cause === 'nvr_down')).toBe(true)
     expect(lines(spy, 'no saved password')).toHaveLength(0)
@@ -119,7 +119,7 @@ describe('"NVR known down" is decided once, by the data layer (minor 3)', () => 
     const db = new MemoryDb()
     const d = deps(db, { nvr: () => ({ channelStatus: async () => new Map([[1, true], [2, true], [3, true]]), channels: async () => [] }) })
     // Says "down" a moment ago, but the data layer did not flag it: it is probed like any other store.
-    await checkStoreCameras(d, store({ knownDown: false, nvr_status: 'down', nvr_checked_at: NOW.toISOString() }))
+    await checkRecorderCameras(d, recorder({ knownDown: false, nvr_status: 'down', nvr_checked_at: NOW.toISOString() }))
     expect(db.results().every((r) => r.ok)).toBe(true)
   })
 
@@ -127,11 +127,11 @@ describe('"NVR known down" is decided once, by the data layer (minor 3)', () => 
     quietLog()
     const probesFor = () => ({ nvr: () => ({ channelStatus: async () => new Map([[1, true], [2, true], [3, true]]), channels: async () => [] }) })
     const fresh = new MemoryDb()
-    fresh.stores = [store({ nvr_status: 'down', nvr_checked_at: NOW.toISOString() })]
+    fresh.recorders = [recorder({ nvr_status: 'down', nvr_checked_at: NOW.toISOString() })]
     await checkCameras(deps(fresh, probesFor()))
     expect(fresh.results().every((r) => r.cause === 'nvr_down')).toBe(true)
     const old = new MemoryDb()
-    old.stores = [store({ nvr_status: 'down', nvr_checked_at: new Date(NOW.getTime() - 3600_000).toISOString() })]
+    old.recorders = [recorder({ nvr_status: 'down', nvr_checked_at: new Date(NOW.getTime() - 3600_000).toISOString() })]
     await checkCameras(deps(old, probesFor()))
     expect(old.results().every((r) => r.ok)).toBe(true)
   })
@@ -141,7 +141,7 @@ describe('the camera list is asked for only when it can help (minor 4)', () => {
   const run = async (status: () => Promise<Map<number, boolean>>) => {
     quietLog()
     const db = new MemoryDb()
-    db.stores = [store()]
+    db.recorders = [recorder()]
     let channels = 0
     await checkCameras(deps(db, {
       nvr: () => ({ channelStatus: status, channels: async () => { channels++; return [] } }),
@@ -165,7 +165,7 @@ describe('a camera the recorder does not list (minor 7)', () => {
   const run = async (listed: Map<number, boolean> | 'failed', code = 0) => {
     quietLog()
     const db = new MemoryDb()
-    db.stores = [store()]
+    db.recorders = [recorder()]
     await checkCameras(deps(db, {
       nvr: () => ({
         channelStatus: async () => { if (listed === 'failed') throw new NvrError('timeout', 'x'); return listed },
@@ -203,8 +203,8 @@ describe('the length of each round is logged (minor 4)', () => {
     const spy = quietLog()
     const db = new MemoryDb()
     db.devices = [{ id: 'd1', org_id: 'o', ip: '127.0.0.1', tcp_port: 1 }]
-    db.nvrs = [{ id: 's1', org_id: 'o', ip: '127.0.0.1', rtsp_port: 554 }]
-    db.stores = [store()]
+    db.nvrs = [{ id: 's1', org_id: 'o', location_id: 'l1', ip: '127.0.0.1', rtsp_port: 554 }]
+    db.recorders = [recorder()]
     let t = NOW.getTime()
     const clock = () => new Date((t += 250))
     const d = deps(db, {}, clock)
@@ -218,13 +218,15 @@ describe('the length of each round is logged (minor 4)', () => {
   })
 })
 
-describe('the number of stores checked at once (minor 4)', () => {
-  it('comes from STORE_CONCURRENCY: 10 by default, kept between 1 and 50', () => {
-    expect(loadMonitorConfig({}).storeConcurrency).toBe(10)
-    expect(loadMonitorConfig({ STORE_CONCURRENCY: '25' }).storeConcurrency).toBe(25)
-    expect(loadMonitorConfig({ STORE_CONCURRENCY: '0' }).storeConcurrency).toBe(1)
-    expect(loadMonitorConfig({ STORE_CONCURRENCY: '500' }).storeConcurrency).toBe(50)
-    expect(loadMonitorConfig({ STORE_CONCURRENCY: 'many' }).storeConcurrency).toBe(10)
-    expect(loadMonitorConfig({ STORE_CONCURRENCY: '' }).storeConcurrency).toBe(10)
+describe('the number of NVRs checked at once (minor 4; P2-5b: per recorder)', () => {
+  it('comes from RECORDER_CONCURRENCY (the old STORE_CONCURRENCY is still accepted): 10 by default, kept between 1 and 50', () => {
+    expect(loadMonitorConfig({}).recorderConcurrency).toBe(10)
+    expect(loadMonitorConfig({ STORE_CONCURRENCY: '25' }).recorderConcurrency).toBe(25)
+    expect(loadMonitorConfig({ STORE_CONCURRENCY: '0' }).recorderConcurrency).toBe(1)
+    expect(loadMonitorConfig({ STORE_CONCURRENCY: '500' }).recorderConcurrency).toBe(50)
+    expect(loadMonitorConfig({ STORE_CONCURRENCY: 'many' }).recorderConcurrency).toBe(10)
+    expect(loadMonitorConfig({ STORE_CONCURRENCY: '' }).recorderConcurrency).toBe(10)
+    expect(loadMonitorConfig({ RECORDER_CONCURRENCY: '7', STORE_CONCURRENCY: '25' }).recorderConcurrency).toBe(7)
+    expect(loadMonitorConfig({ RECORDER_CONCURRENCY: '', STORE_CONCURRENCY: '25' }).recorderConcurrency).toBe(25)
   })
 })

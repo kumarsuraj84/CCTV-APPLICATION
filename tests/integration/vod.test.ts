@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { NvrClient } from '@/lib/nvr/client'
 import { createWindowLimiter } from '@/lib/streams/limiter'
 import { buildFfmpegArgs, createConversionLimiter, parseVodQuery, serveVod, type ConversionLimiter, type VodDeps } from '@/lib/streams/vod'
-import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createLocation, createOrg, createRecorder, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const WITH_EXPORT = [...CCTV_VIEW, 'cctv.export']
 import { closedPort, FAKE_DOWNLOAD_BYTES, startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
@@ -54,17 +54,19 @@ describe('fast playback (/api/vod)', () => {
   let hostile: (() => string) | null = null
   let hostileCodec: string | null = null
 
+  // P2-5b: a store is a location with ONE recorder (its NVR) of its own; its cameras are mapped to it and the login is the recorder's.
+  const recorderOf = new Map<string, string>()
   async function addStore(org: string, code: string, o: { port?: number; active?: boolean } = {}) {
-    const { data, error } = await admin().from('locations').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', http_port: o.port ?? nvr.port, rtsp_port: 554, nvr_username: NVR_USER, is_active: o.active ?? true }).select('id').single()
-    if (error || !data) throw new Error(`addStore: ${error?.message}`)
-    return data.id
+    const id = await createLocation(org, { code, name: `Store ${code}`, isActive: o.active ?? true })
+    recorderOf.set(id, await createRecorder(org, id, { host: '127.0.0.1', httpPort: o.port ?? nvr.port, rtspPort: 554, username: NVR_USER }))
+    return id
   }
   async function addCamera(org: string, store: string, channel: number, name: string, active = true) {
-    const { data, error } = await admin().from('cameras').insert({ org_id: org, location_id: store, channel, name, is_active: active }).select('id').single()
+    const { data, error } = await admin().from('cameras').insert({ org_id: org, location_id: store, recorder_id: recorderOf.get(store)!, channel, name, is_active: active }).select('id').single()
     if (error || !data) throw new Error(`addCamera: ${error?.message}`)
     return data.id
   }
-  const savePassword = (store: string, secret: string) => admin().rpc('nvr_store_credential', { p_store: store, p_secret: secret })
+  const savePassword = (store: string, secret: string) => admin().rpc('recorder_store_credential', { p_recorder: recorderOf.get(store)!, p_secret: secret })
 
   beforeAll(async () => {
     nvr = await startFakeNvr({ username: NVR_USER, password: NVR_PASSWORD, recordings: RECORDINGS })
@@ -249,7 +251,7 @@ describe('fast playback (/api/vod)', () => {
       expect(await errorOf(res)).toBe('The recordings of this camera cannot be reached right now.')
       const it = await get(manager, n1)
       expect(it.status).toBe(409)
-      expect(await errorOf(it)).toBe('This store has no saved NVR login.')
+      expect(await errorOf(it)).toBe('This NVR has no saved login.')
       expect(nvr.requests).toHaveLength(0)
     })
 
@@ -690,7 +692,7 @@ describe('fast playback (/api/vod)', () => {
         [viewer, n1, 502, 'The recordings of this camera cannot be reached right now.'],
         [viewer, w1, 502, 'The recordings of this camera cannot be reached right now.'],
         [viewer, a2, 404, 'There is no recording at that time.'],
-        [manager, n1, 409, 'This store has no saved NVR login.'],
+        [manager, n1, 409, 'This NVR has no saved login.'],
         [manager, w1, 502, 'The NVR refused the user name or password.'],
       ]
       for (const [who, camera, status, words] of expected) {

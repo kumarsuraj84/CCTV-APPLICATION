@@ -5,7 +5,7 @@
 // legacy evaluator itself is checked.
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { adminClient, cleanupOrg, createOrg, createUser, primaryRecorderOf, type Role, type TestUser } from '../setup/fixtures'
+import { adminClient, cleanupOrg, createOrg, createRecorder, createUser, primaryRecorderOf, type Role, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 const sorted = (a: readonly string[]) => [...a].sort()
@@ -38,7 +38,12 @@ describe('VA-18: migration of the old access model (AC-6, AC-7, AL-7, D-2a)', ()
   beforeAll(async () => {
     orgId = await createOrg()
     const a = admin()
-    const store = async (code: string, zone: string) => (await a.from('locations').insert({ org_id: orgId, code, name: code, zone, nvr_ip: '192.0.2.1', nvr_username: 'u' }).select('id').single()).data!.id
+    // P2-5b: a store is a location with its NVR (a recorder of its own; the location row holds no NVR data).
+    const store = async (code: string, zone: string) => {
+      const id = (await a.from('locations').insert({ org_id: orgId, code, name: code, zone }).select('id').single()).data!.id
+      await createRecorder(orgId, id, { host: '192.0.2.1', username: 'u' })
+      return id
+    }
     M1 = await store('M1', 'Z')
     M2 = await store('M2', 'Z')
     M3 = await store('M3', 'Y')

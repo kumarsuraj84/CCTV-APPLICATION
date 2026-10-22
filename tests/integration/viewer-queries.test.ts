@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { getVisibleStore, listVisibleDevices, listVisibleStores } from '@/lib/queries/inventory'
 import { getDashboard } from '@/lib/queries/status'
-import { adminClient, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { adminClient, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createRecorder, createSite, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 describe('viewer queries respect access', () => {
   let orgId: string
@@ -13,8 +13,12 @@ describe('viewer queries respect access', () => {
   beforeAll(async () => {
     const admin = adminClient()
     orgId = await createOrg()
-    const mk = async (code: string, zone: string) =>
-      (await admin.from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, city: 'Patna', zone, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    // P2-5b: a store is a location with its NVR (a recorder of its own); cameras added afterwards are mapped to it.
+    const mk = async (code: string, zone: string) => {
+      const id = (await admin.from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, city: 'Patna', zone }).select('id').single()).data!.id
+      await createRecorder(orgId, id, { host: '127.0.0.1', username: 'u' })
+      return id
+    }
     storeA = await mk('AA', 'BR')
     storeB = await mk('BB', 'UP')
     await admin.from('cameras').insert([1, 2].map((n) => ({ org_id: orgId, location_id: storeA, channel: n, name: `C${n}` })))
@@ -50,6 +54,32 @@ describe('viewer queries respect access', () => {
     const asManager = await getVisibleStore(manager.client, storeA)
     expect(asManager?.devices.map((d) => d.name)).toEqual(['A server'])
     expect(asManager?.showsAddresses).toBe(true)
+    // P2-5b (ruling C-1): the IT view shows the location's NVRs and which NVR each camera is on; a viewer sees all the cameras, no NVR.
+    const rec = await primaryRecorderOf(storeA)
+    expect(asManager?.recorders).toEqual([{ id: rec, name: 'NVR', monitored: true }])
+    expect(asManager?.cameras.map((c) => c.recorder_id)).toEqual([rec, rec])
+    expect(ok?.recorders).toEqual([])
+    expect(ok?.cameras.map((c) => c.recorder_id)).toEqual([null, null])
+  })
+
+  it('P2-5b: a location with two NVRs lists both for the IT view, each with its own cameras; the viewer sees every camera', async () => {
+    const admin = adminClient()
+    const two = (await admin.from('locations').insert({ org_id: orgId, code: 'TWO', name: 'Store TWO', city: 'Patna', zone: 'BR' }).select('id').single()).data!.id
+    const r1 = await createRecorder(orgId, two, { host: '127.0.0.1', name: 'Ground floor' })
+    const r2 = await createRecorder(orgId, two, { host: '127.0.0.1', name: 'First floor', httpPort: 8080, rtspPort: 8554 })
+    await admin.from('cameras').insert([
+      { org_id: orgId, location_id: two, recorder_id: r1, channel: 1, name: 'G1' },
+      { org_id: orgId, location_id: two, recorder_id: r2, channel: 1, name: 'F1' },
+    ])
+    const watcher = await createUser(orgId, 'user')
+    await grant(orgId, watcher.id, CCTV_VIEW, atLocation(two))
+    const forIt = await getVisibleStore(manager.client, two)
+    expect(forIt?.recorders.map((r) => r.name)).toEqual(['First floor', 'Ground floor'])
+    expect(new Map(forIt?.cameras.map((c) => [c.name, c.recorder_id]))).toEqual(new Map([['G1', r1], ['F1', r2]]))
+    const forViewer = await getVisibleStore(watcher.client, two)
+    expect(forViewer?.cameras.map((c) => c.name).sort()).toEqual(['F1', 'G1'])
+    expect(forViewer?.recorders).toEqual([])
+    expect(forViewer?.cameras.every((c) => c.recorder_id === null)).toBe(true)
   })
 
   it('lists visible devices and can filter by type', async () => {
@@ -60,7 +90,7 @@ describe('viewer queries respect access', () => {
 
   it('pages through more than 1000 visible devices without repeating or losing rows', async () => {
     const admin = adminClient()
-    const big = (await admin.from('locations').insert({ org_id: orgId, code: 'BIG', name: 'Store BIG', city: 'Patna', zone: 'BR', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const big = (await admin.from('locations').insert({ org_id: orgId, code: 'BIG', name: 'Store BIG', city: 'Patna', zone: 'BR' }).select('id').single()).data!.id
     // Half of the rows share one name, so a sort on name alone has ties across the page boundary.
     const rows = Array.from({ length: 1001 }, (_, i) => ({
       org_id: orgId, location_id: big, type: 'server' as const, name: i < 500 ? 'same name' : `big ${String(i).padStart(4, '0')}`, ip: '127.0.0.1', tcp_port: 1000 + i,
@@ -85,8 +115,7 @@ describe('viewer queries leave out what is switched off, page, and do not hide e
   beforeAll(async () => {
     const admin = adminClient()
     orgId = await createOrg()
-    const mk = async (code: string, active: boolean) =>
-      (await admin.from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u', is_active: active }).select('id').single()).data!.id
+    const mk = async (code: string, active: boolean) => (await createSite(orgId, { code, name: `Store ${code}`, host: '127.0.0.1', username: 'u', isActive: active })).locationId
     live = await mk('LV', true)
     off = await mk('OFF', false)
     await admin.from('cameras').insert([
@@ -113,7 +142,7 @@ describe('viewer queries leave out what is switched off, page, and do not hide e
 
   it('reads more than 1000 cameras of one store', async () => {
     const admin = adminClient()
-    const big = (await admin.from('locations').insert({ org_id: orgId, code: 'BIGC', name: 'Store BIGC', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const big = (await createSite(orgId, { code: 'BIGC', name: 'Store BIGC', host: '127.0.0.1', username: 'u' })).locationId
     const ins = await admin.from('cameras').insert(Array.from({ length: 1001 }, (_, i) => ({ org_id: orgId, location_id: big, channel: i + 1, name: `Cam ${i + 1}` })))
     expect(ins.error).toBeNull()
     const store = await getVisibleStore(manager.client, big)

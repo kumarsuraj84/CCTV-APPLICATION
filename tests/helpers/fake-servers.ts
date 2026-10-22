@@ -30,6 +30,24 @@ export async function startFakeTcp(fixedPort = 0): Promise<Bound> {
   return { port, host: (server.address() as net.AddressInfo).address, close: closer(server, sockets) }
 }
 
+/**
+ * P2-5b: a listener that only COUNTS connections (each is closed at once). Used as an NVR's web and video port to prove that nothing —
+ * worker, live, playback, fast playback or discovery — opens a single socket to a switched-off or unmapped NVR.
+ */
+export async function startCountingTcp(): Promise<Bound & { connections: () => number }> {
+  const sockets = new Set<net.Socket>()
+  let count = 0
+  const server = net.createServer((s) => {
+    count++
+    sockets.add(s)
+    s.on('close', () => sockets.delete(s))
+    s.on('error', () => {})
+    s.destroy()
+  })
+  const port = await new Promise<number>((resolve) => server.listen(0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port)))
+  return { port, host: (server.address() as net.AddressInfo).address, close: closer(server, sockets), connections: () => count }
+}
+
 /** A port nothing listens on: open a server, remember its port, close it. */
 export async function closedPort(): Promise<number> {
   const s = await startFakeTcp()

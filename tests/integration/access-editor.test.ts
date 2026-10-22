@@ -18,16 +18,15 @@ import {
 } from '@/lib/admin/access'
 import { ADMINISTRATOR_SET, endOfDayIst, istDate } from '@/lib/admin/access-rules'
 import type { Actor } from '@/lib/admin/types'
-import { adminClient, atLocation, cleanupOrg, createOrg, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
+import { adminClient, atLocation, cleanupOrg, createOrg, createSite, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 const sorted = (a: readonly string[]) => [...a].sort()
 const day = 86_400_000
 
+// P2-5b: a store is a location with its NVR (a recorder of its own; the location row holds no NVR data).
 async function addStore(orgId: string, code: string): Promise<string> {
-  const { data, error } = await admin().from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '192.0.2.10', nvr_username: 'viewer' }).select('id').single()
-  if (error || !data) throw new Error(`addStore: ${error?.message}`)
-  return data.id
+  return (await createSite(orgId, { code, name: `Store ${code}`, host: '192.0.2.10', username: 'viewer' })).locationId
 }
 async function addCamera(orgId: string, storeId: string, channel: number): Promise<string> {
   const { data, error } = await admin().from('cameras').insert({ org_id: orgId, location_id: storeId, channel, name: `Camera ${channel}` }).select('id').single()

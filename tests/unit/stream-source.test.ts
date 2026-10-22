@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildPlaybackUrl, buildRtspUrl, demoSource, isDemoStore } from '@/lib/streams/source'
+import { buildPlaybackUrl, buildRtspUrl, demoSource, isDemoRecorder } from '@/lib/streams/source'
 
 const base = { host: '192.168.1.10', port: 554, username: 'viewer', password: 'pw', channel: 3, kind: 'sub' as const }
 const pb = { host: '192.168.1.10', port: 554, username: 'viewer', password: 'pw', channel: 3, start: new Date('2026-03-10T10:00:00Z'), end: new Date('2026-03-10T10:30:00Z'), offsetMin: 0 }
@@ -93,6 +93,20 @@ describe('buildPlaybackUrl', () => {
     expect(buildPlaybackUrl({ ...pb, offsetMin: -60 })).toContain('starttime=20260310T110000Z&endtime=20260310T113000Z')
   })
 
+  it('P2-5b: takes a per-recorder offset in seconds (ruling R13 direction: the NVR is asked for shown time minus the offset)', () => {
+    const { offsetMin: _ignored, ...base } = pb
+    void _ignored
+    expect(buildPlaybackUrl({ ...base, offsetSec: 90 })).toContain('starttime=20260310T095830Z&endtime=20260310T102830Z')
+    expect(buildPlaybackUrl({ ...base, offsetSec: -45 })).toContain('starttime=20260310T100045Z&endtime=20260310T103045Z')
+    expect(buildPlaybackUrl({ ...base, offsetSec: 330 * 60 })).toBe(buildPlaybackUrl({ ...pb, offsetMin: 330 }))
+    expect(buildPlaybackUrl({ ...base, offsetSec: 86_400 })).toContain('starttime=20260309T100000Z')
+    expect(() => buildPlaybackUrl({ ...base, offsetSec: 86_401 })).toThrow('The camera address is not valid.')
+    expect(() => buildPlaybackUrl({ ...base, offsetSec: 1.5 })).toThrow('The camera address is not valid.')
+    // Exactly one of the two: both or neither is refused.
+    expect(() => buildPlaybackUrl({ ...base, offsetSec: 60, offsetMin: 1 } as never)).toThrow('The camera address is not valid.')
+    expect(() => buildPlaybackUrl({ ...base } as never)).toThrow('The camera address is not valid.')
+  })
+
   it('encodes credentials and brackets IPv6 like the live URL', () => {
     const url = buildPlaybackUrl({ ...pb, host: '2001:db8::5', password: "p@ss:w/rd#!'()*" })
     expect(url.startsWith("rtsp://viewer:p%40ss%3Aw%2Frd%23%21%27%28%29%2A@[2001:db8::5]:554/Streaming/tracks/301?")).toBe(true)
@@ -159,32 +173,33 @@ describe('demoSource', () => {
   })
 })
 
-describe('isDemoStore', () => {
+// P2-5b: demo video is decided by the RECORDER's address (a location may have a loopback demo NVR next to a real one).
+describe('isDemoRecorder', () => {
   const on = { DEMO_VIDEO: '1', NODE_ENV: 'development' }
   it('is true only for DEMO_VIDEO=1, not production, with a loopback NVR address', () => {
-    expect(isDemoStore({ code: 'S1', nvr_ip: '127.0.0.1' }, on)).toBe(true)
-    expect(isDemoStore({ code: 'S1', nvr_ip: 'localhost' }, on)).toBe(true)
-    expect(isDemoStore({ code: 'S1', nvr_ip: '::1' }, on)).toBe(true)
-    expect(isDemoStore({ code: 'S1', nvr_ip: '127.0.0.1' }, { DEMO_VIDEO: '1' })).toBe(true)
+    expect(isDemoRecorder({ host:'127.0.0.1' }, on)).toBe(true)
+    expect(isDemoRecorder({ host:'localhost' }, on)).toBe(true)
+    expect(isDemoRecorder({ host:'::1' }, on)).toBe(true)
+    expect(isDemoRecorder({ host:'127.0.0.1' }, { DEMO_VIDEO: '1' })).toBe(true)
   })
   it('is false when the flag is not exactly 1', () => {
     for (const v of [undefined, '', '0', 'true', 'yes', ' 1', '1 ']) {
-      expect(isDemoStore({ code: 'S1', nvr_ip: '127.0.0.1' }, { DEMO_VIDEO: v, NODE_ENV: 'development' }), String(v)).toBe(false)
+      expect(isDemoRecorder({ host:'127.0.0.1' }, { DEMO_VIDEO: v, NODE_ENV: 'development' }), String(v)).toBe(false)
     }
   })
   it('is false in production', () => {
-    expect(isDemoStore({ code: 'S1', nvr_ip: '127.0.0.1' }, { DEMO_VIDEO: '1', NODE_ENV: 'production' })).toBe(false)
+    expect(isDemoRecorder({ host:'127.0.0.1' }, { DEMO_VIDEO: '1', NODE_ENV: 'production' })).toBe(false)
   })
   it('is false for any address that is not loopback', () => {
     for (const ip of ['192.168.1.10', '127.0.0.2', '0.0.0.0', '', '10.0.0.1', 'example.com', '127.0.0.1.evil.com', ' 127.0.0.1']) {
-      expect(isDemoStore({ code: 'S1', nvr_ip: ip }, on), ip).toBe(false)
+      expect(isDemoRecorder({ host:ip }, on), ip).toBe(false)
     }
   })
   it('reads process.env when no environment is given', () => {
     const before = { d: process.env.DEMO_VIDEO }
     try {
       delete process.env.DEMO_VIDEO
-      expect(isDemoStore({ code: 'S1', nvr_ip: '127.0.0.1' })).toBe(false)
+      expect(isDemoRecorder({ host:'127.0.0.1' })).toBe(false)
     } finally {
       if (before.d !== undefined) process.env.DEMO_VIDEO = before.d
     }

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
-import { adminClient, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { adminClient, cleanupOrg, createOrg, createSite, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 describe('row security: negative cases', () => {
   let orgId: string
@@ -13,9 +13,9 @@ describe('row security: negative cases', () => {
   beforeAll(async () => {
     orgId = await createOrg()
     const a = adminClient()
-    const { data: s } = await a.from('locations').insert({ org_id: orgId, code: 'NEG', name: 'Neg', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()
-    await a.from('cameras').insert({ org_id: orgId, location_id: s!.id, channel: 1, name: 'C1' })
-    await a.from('assets').insert({ org_id: orgId, location_id: s!.id, type: 'server', name: 'D1', ip: '127.0.0.1', tcp_port: 1 })
+    const s = { id: (await createSite(orgId, { code: 'NEG', name: 'Neg', host: '127.0.0.1', username: 'u' })).locationId }
+    await a.from('cameras').insert({ org_id: orgId, location_id: s.id, channel: 1, name: 'C1' })
+    await a.from('assets').insert({ org_id: orgId, location_id: s.id, type: 'server', name: 'D1', ip: '127.0.0.1', tcp_port: 1 })
     // P2-5a: a region and a cluster above the location, so the hierarchy tables have rows that must stay invisible too.
     const r = (await a.from('regions').insert({ org_id: orgId, code: 'NEGR', name: 'Neg region' }).select('id').single()).data!.id
     const c = (await a.from('clusters').insert({ org_id: orgId, region_id: r, code: 'NEGC', name: 'Neg cluster' }).select('id').single()).data!.id
@@ -79,8 +79,10 @@ describe('row security: negative cases', () => {
       ['revoke_grant', { p_org: orgId, p_user: operator.id, p_grant_ids: [] }],
       ['preview_access_change', { p_org: orgId, p_user: operator.id, p_changes: [] }],
       ['access_migrate_legacy_test', { p_run: crypto.randomUUID(), p_users: [operator.id] }],
-      ['nvr_store_credential', { p_store: crypto.randomUUID(), p_secret: 'x' }],
+      // P2-5b: the location-keyed nvr_* wrappers are gone; the recorder functions (and recorder_save) are the server's only path.
       ['recorder_store_credential', { p_recorder: crypto.randomUUID(), p_secret: 'x' }],
+      ['recorder_read_credential', { p_recorder: crypto.randomUUID() }],
+      ['recorder_save', { p_org: orgId, p_location: crypto.randomUUID(), p_recorder: null, p_host: '127.0.0.1', p_http_port: 80, p_rtsp_port: 554, p_username: 'u' }],
       ['recorder_set_monitoring', { p_org: orgId, p_recorder: crypto.randomUUID(), p_enabled: false, p_reason: 'xyz' }],
       ['inventory_restore', { p_org: orgId, p_kind: 'camera', p_id: crypto.randomUUID() }],
       ['revoke_user_sessions', { p_user: crypto.randomUUID() }],

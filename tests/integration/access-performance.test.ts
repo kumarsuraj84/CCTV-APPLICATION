@@ -6,6 +6,7 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
 import type { Database } from '@/types/database'
 import {
   adminClient, atCamera, atCluster, atLocation, atRecorder, atRegion, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser,
@@ -54,15 +55,17 @@ describe('VA-20: access model performance at 8,100 cameras, 300 locations in 30 
     }))).select('id, code')
     if (c.error) throw new Error(c.error.message)
     clusters = [...c.data].sort((x, y) => x.code.localeCompare(y.code)).map((x) => x.id)
-    // Written the old way (NVR columns on the location): the seam makes each location's primary recorder. They all share one NVR
-    // address (as the old performance data did), so the seam gives every location after the first its own address space (D5-8).
+    // P2-5b: locations hold no NVR data; each gets its first recorder (an nvr asset + recorders row, its own address) explicitly.
     const s = await a.from('locations').insert(Array.from({ length: LOCATIONS }, (_, i) => ({
-      org_id: orgId, code: `P${String(i).padStart(3, '0')}`, name: `Perf ${i}`, zone: `Z${i % 10}`, cluster_id: clusters[i % clusters.length], nvr_ip: '192.0.2.1', nvr_username: 'u',
+      org_id: orgId, code: `P${String(i).padStart(3, '0')}`, name: `Perf ${i}`, zone: `Z${i % 10}`, cluster_id: clusters[i % clusters.length],
     }))).select('id, code')
     if (s.error) throw new Error(s.error.message)
     locations = [...s.data].sort((x, y) => x.code.localeCompare(y.code)).map((x) => x.id)
-    const prim = await a.from('recorders').select('id, location_id').eq('org_id', orgId)
-    for (const p of prim.data ?? []) recordersOf.set(p.location_id, [p.id])
+    const firstAssets = await a.from('assets').insert(locations.map((l, k) => ({ org_id: orgId, location_id: l, type: 'nvr' as const, name: 'NVR', ip: `10.199.${Math.floor(k / 250)}.${(k % 250) + 1}`, tcp_port: 80 }))).select('id, location_id')
+    if (firstAssets.error) throw new Error(firstAssets.error.message)
+    const firstRecs = await a.from('recorders').insert(firstAssets.data.map((x) => ({ id: x.id, org_id: orgId, location_id: x.location_id as string, username: 'u' })))
+    if (firstRecs.error) throw new Error(firstRecs.error.message)
+    for (const p of firstAssets.data) recordersOf.set(p.location_id as string, [p.id])
     // Every fifth location gets a second NVR, every tenth a third.
     const extra = locations.flatMap((l, i) => (i % 10 === 0 ? [l, l] : i % 5 === 0 ? [l] : []))
     const assets = await a.from('assets').insert(extra.map((l, k) => ({ org_id: orgId, location_id: l, type: 'nvr' as const, name: `NVR extra ${k}`, ip: `10.200.${Math.floor(k / 250)}.${(k % 250) + 1}`, tcp_port: 80 }))).select('id, location_id')
@@ -128,6 +131,10 @@ describe('VA-20: access model performance at 8,100 cameras, 300 locations in 30 
     await grant(orgId, viewers.fiftyCameras.id, 'cctv.live', cameras.slice(500, 550).map(atCamera))
     viewers.itOrgWide = await createUser(orgId, 'user') // the IT view only, organisation-wide (recorder figures of every location)
     await grant(orgId, viewers.itOrgWide.id, ['it.inventory.view', 'it.monitoring.view'])
+    // P2-5b: a bulk seed changes the tables faster than autovacuum re-analyses them; the importer does the same at the end of a bulk
+    // import (measured: location_status 1.8 s on stale statistics, 18 ms after).
+    const stats = await a.rpc('inventory_refresh_statistics')
+    if (stats.error) throw new Error(stats.error.message)
   }, 900_000)
   afterAll(() => cleanupOrg(orgId), 900_000)
 
@@ -199,6 +206,43 @@ describe('VA-20: access model performance at 8,100 cameras, 300 locations in 30 
     console.info(JSON.stringify({ event: 'access_perf_status', check_state_rows: cameras.length + recorders, medians_ms: timing }))
     for (const [key, r] of Object.entries(timing)) for (const [k, ms] of Object.entries(r)) expect(ms, `${key} ${k}`).toBeLessThan(BOUND_MS * 2)
   }, 120_000)
+
+  // P2-5b (task item 7, re-measure): the worker's data layer on the recorder model at this size — 390 recorders, 8,100 mapped cameras.
+  it('the worker loads 390 recorder jobs with their 8,100 mapped cameras, and applies results in batches of 200, quickly', async () => {
+    const db = new SupabaseMonitorDb(admin(), { orgId })
+    const t0 = performance.now()
+    const nvrs = await db.loadNvrs()
+    const tNvrs = performance.now() - t0
+    const t1 = performance.now()
+    const jobs = await db.loadRecorderJobs()
+    const tJobs = performance.now() - t1
+    expect(nvrs).toHaveLength([...recordersOf.values()].flat().length)
+    expect(jobs).toHaveLength(nvrs.length)
+    expect(jobs.reduce((n, j) => n + j.cameras.length, 0)).toBe(cameras.length)
+    // Every camera's job is its own recorder's.
+    for (const j of jobs) for (const c of j.cameras) expect(cameraRecorder.get(c.id)).toBe(j.id)
+    // One full camera round's results (every camera, 200 per call as the checks send them), then one NVR round.
+    const at = new Date().toISOString()
+    const batchMs: number[] = []
+    for (let i = 0; i < cameras.length; i += 200) {
+      const s = performance.now()
+      await db.applyResults(orgId, cameras.slice(i, i + 200).map((id, k) => ({ type: 'camera' as const, id, ok: (i + k) % 10 !== 0, at })), 2)
+      batchMs.push(performance.now() - s)
+    }
+    const s = performance.now()
+    const recorders = [...recordersOf.values()].flat()
+    for (let i = 0; i < recorders.length; i += 200) await db.applyResults(orgId, recorders.slice(i, i + 200).map((id) => ({ type: 'recorder' as const, id, ok: true, at })), 2)
+    const nvrRoundMs = performance.now() - s
+    batchMs.sort((a, b) => a - b)
+    const numbers = {
+      loadNvrsMs: Math.round(tNvrs), loadRecorderJobsMs: Math.round(tJobs), applyBatches: batchMs.length,
+      applyBatchMedianMs: Math.round(batchMs[Math.floor(batchMs.length / 2)]), applyBatchMaxMs: Math.round(batchMs.at(-1)!), applyCameraRoundMs: Math.round(batchMs.reduce((x, y) => x + y, 0)),
+      applyNvrRoundMs: Math.round(nvrRoundMs),
+    }
+    console.info(JSON.stringify({ event: 'worker_perf', recorders: recorders.length, cameras: cameras.length, ...numbers }))
+    expect(numbers.loadRecorderJobsMs).toBeLessThan(20_000)
+    expect(numbers.applyBatchMedianMs).toBeLessThan(BOUND_MS * 5)
+  }, 180_000)
 
   it('the batch check equals the expansion for a recorder-scoped and a region-scoped person', async () => {
     for (const key of ['threeRecorders', 'region'] as const) {

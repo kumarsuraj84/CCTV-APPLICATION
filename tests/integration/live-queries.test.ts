@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { getLiveScope } from '@/lib/queries/live'
-import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createSite, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 
@@ -12,10 +12,9 @@ describe('getLiveScope', () => {
   let group: string
   const now = new Date()
 
+  // P2-5b: a store is a location with its NVR (a recorder of its own; the location row holds no NVR data).
   async function store(org: string, code: string, active = true) {
-    const { data, error } = await admin().from('locations').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'v', is_active: active }).select('id').single()
-    if (error || !data) throw new Error(error?.message)
-    return data.id
+    return (await createSite(org, { code, name: `Store ${code}`, host: '127.0.0.1', username: 'v', isActive: active })).locationId
   }
   async function camera(org: string, storeId: string, channel: number, name: string, active = true) {
     const { data, error } = await admin().from('cameras').insert({ org_id: org, location_id: storeId, channel, name, is_active: active }).select('id').single()

@@ -8,7 +8,7 @@ import { applyChange, keepReviewed, listReview, MSG_CONFLICT, previewChange, rev
 import type { Actor } from '@/lib/admin/types'
 import { MSG_LAST_SUPER_ADMIN, updateUser } from '@/lib/admin/users'
 import { MSG_EXPORT_ADMINS_ONLY } from '@/lib/admin/access-rules'
-import { adminClient, atLocation, cleanupOrg, createOrg, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
+import { adminClient, atLocation, cleanupOrg, createOrg, createSite, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 const sorted = (a: readonly string[]) => [...a].sort()
@@ -19,8 +19,9 @@ const OWNER_ONLY = ['it.os.deploy', 'it.credentials.admin', 'it.remote.control',
 const versionOf = async (id: string) => Number((await admin().from('profiles').select('access_version').eq('id', id).single()).data!.access_version)
 const live = async (id: string) => (await admin().from('access_grants').select('id, capability, scope_kind, scope_id, valid_from, valid_until, revoked_at, revoke_reason, reason').eq('user_id', id).is('revoked_at', null)).data ?? []
 const actorOf = (u: TestUser, orgId: string, role: Actor['role']): Actor => ({ id: u.id, orgId, role })
+// P2-5b: a location with its NVR (a recorder of its own; the location row holds no NVR data).
 async function addStore(orgId: string, code: string) {
-  return (await admin().from('locations').insert({ org_id: orgId, code, name: `Location ${code}`, nvr_ip: '192.0.2.10', nvr_username: 'v' }).select('id').single()).data!.id as string
+  return (await createSite(orgId, { code, name: `Location ${code}`, host: '192.0.2.10', username: 'v' })).locationId
 }
 async function addCamera(orgId: string, storeId: string, ch: number) {
   return (await admin().from('cameras').insert({ org_id: orgId, location_id: storeId, channel: ch, name: `Camera ${ch}` }).select('id').single()).data!.id as string

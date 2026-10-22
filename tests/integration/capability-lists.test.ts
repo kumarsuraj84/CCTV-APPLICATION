@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { readCapabilities } from '@/lib/auth/capabilities'
 import { storesForCapability } from '@/lib/queries/access'
 import { listVisibleGroups } from '@/lib/queries/groups'
-import { adminClient, atCamera, atLocation, cleanupOrg, createOrg, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, atLocation, cleanupOrg, createOrg, createSite, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
 
 // P2-2: the index lists of the Live and Playback screens show only stores (and counts) where the person holds that capability, and the
 // live index's camera groups count only cameras the person may watch live. These are display decisions from the request's summary;
@@ -19,7 +19,7 @@ describe('lists per capability', () => {
 
   beforeAll(async () => {
     orgId = await createOrg()
-    const store = async (code: string) => (await admin().from('locations').insert({ org_id: orgId, code, name: code, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const store = async (code: string) => (await createSite(orgId, { code, name: code, host: '127.0.0.1', username: 'u' })).locationId
     const camera = async (s: string, ch: number) => (await admin().from('cameras').insert({ org_id: orgId, location_id: s, channel: ch, name: `cam ${ch}` }).select('id').single()).data!.id
     s1 = await store('P1')
     s2 = await store('P2')

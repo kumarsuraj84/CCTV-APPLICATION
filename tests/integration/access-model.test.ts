@@ -15,6 +15,7 @@ import {
   CCTV_VIEW,
   cleanupOrg,
   createOrg,
+  createRecorder,
   createUser,
   grant,
   ORG_SCOPE,
@@ -30,9 +31,11 @@ const ANON = () => process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 
 type Fn = keyof Database['public']['Functions']
 
+// P2-5b: a store is a location with its NVR (a recorder of its own; the location row holds no NVR data).
 async function addStore(orgId: string, code: string, zone: string | null = null): Promise<string> {
-  const { data, error } = await admin().from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, zone, nvr_ip: '192.0.2.10', nvr_username: 'viewer' }).select('id').single()
+  const { data, error } = await admin().from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, zone }).select('id').single()
   if (error || !data) throw new Error(`addStore: ${error?.message}`)
+  await createRecorder(orgId, data.id, { host: '192.0.2.10', username: 'viewer' })
   return data.id
 }
 async function addCamera(orgId: string, storeId: string, channel: number): Promise<string> {
@@ -139,13 +142,13 @@ describe('capability access model (P2-1)', () => {
       p_results: [
         { type: 'camera', id: c11, ok: true, at },
         { type: 'device', id: d1, ok: true, at },
-        { type: 'nvr', id: L1, ok: true, at },
+        { type: 'recorder', id: n1, ok: true, at },
       ],
     })
     expect(applied.error).toBeNull()
     await admin().from('outages').insert([
       { org_id: orgA, target_type: 'device', target_id: d1, started_at: at, ended_at: at },
-      { org_id: orgA, target_type: 'nvr', target_id: L1, started_at: at, ended_at: at },
+      { org_id: orgA, target_type: 'recorder', target_id: n1, started_at: at, ended_at: at },
       { org_id: orgA, target_type: 'camera', target_id: c11, started_at: at, ended_at: at },
     ])
     expect(await rows(p, 'assets')).toEqual([])
@@ -161,8 +164,8 @@ describe('capability access model (P2-1)', () => {
       expect(await ids(p, 'capability_asset_ids', { p_cap: cap })).toEqual([])
     }
 
-    // The same location with it.monitoring.view shows the devices and their status (and nothing of CCTV). P2-5a: the NVR status is
-    // the location's recorder's ('recorder' rows; the 'nvr' result was written to the primary recorder).
+    // The same location with it.monitoring.view shows the devices and their status (and nothing of CCTV). The NVR status is the
+    // location's recorder's ('recorder' rows; P2-5b: the old 'nvr' kind no longer exists).
     const it_ = await createUser(orgA, 'user')
     await grant(orgA, it_.id, 'it.monitoring.view', atLocation(L1))
     expect(await rows(it_, 'assets')).toEqual(sorted([d1, n1]))
@@ -519,10 +522,15 @@ describe('capability access model (P2-1)', () => {
   it('VA-14 (AC-4, AC-10): NVR addresses and logins and camera addresses are not readable by a CCTV-only person', async () => {
     const p = await createUser(orgA, 'user')
     await grant(orgA, p.id, CCTV_VIEW, atLocation(L1))
-    for (const col of ['nvr_ip', 'rtsp_port', 'http_port', 'nvr_username', 'nvr_secret_id', '*']) {
+    // P2-5b: the location row holds no NVR columns any more (contract migration: "column does not exist"); the NVR's own are on its
+    // recorder, which a CCTV-only person cannot read at all.
+    for (const col of ['nvr_ip', 'rtsp_port', 'http_port', 'nvr_username', 'nvr_secret_id']) {
       const res = await p.client.from('locations').select(col)
-      expect(res.error?.code, col).toBe('42501')
+      expect(res.error?.code, col).toBe('42703')
     }
+    expect((await p.client.from('locations').select('*')).error?.code).toBe('42501')
+    expect((await p.client.from('recorders').select('id, http_port, rtsp_port, username')).data).toEqual([])
+    expect((await p.client.from('recorders').select('secret_id')).error?.code).toBe('42501')
     expect((await p.client.from('cameras').select('camera_ip')).error?.code).toBe('42501')
     expect((await p.client.from('cameras').select('*')).error?.code).toBe('42501')
     // P2-5a: nor which recorder a camera is on (ruling C-1: the recorder is shown to IT users only).
@@ -536,6 +544,8 @@ describe('capability access model (P2-1)', () => {
     const raw = await fetch(`${URL_()}/rest/v1/locations?select=nvr_ip,nvr_username`, { headers: { apikey: ANON(), Authorization: `Bearer ${await token(p)}` } })
     expect(raw.status).toBeGreaterThanOrEqual(400)
     expect(await raw.text()).not.toContain('192.0.2.10')
+    const rawRec = await fetch(`${URL_()}/rest/v1/recorder_endpoints?select=host,username`, { headers: { apikey: ANON(), Authorization: `Bearer ${await token(p)}` } })
+    expect(await rawRec.text()).toBe('[]')
 
     // An IT person for L1 reads the addresses of L1 only (never the vault id). P2-5a: recorder_endpoints replaces store_nvr_endpoints.
     const it_ = await createUser(orgA, 'user')
@@ -712,9 +722,6 @@ describe('capability access model (P2-1)', () => {
       recorder_credential_status: server,
       recorder_primary_of: server,
       recorder_set_monitoring: server,
-      nvr_store_credential: server,
-      nvr_read_credential: server,
-      nvr_delete_credential: server,
       monitor_apply_results: server,
       camera_remap: server,
       inventory_archive: server,
@@ -725,16 +732,10 @@ describe('capability access model (P2-1)', () => {
       inventory_purge_test_org: server,
       inventory_propose_hierarchy: server,
       inventory_effective_snapshot: server,
-      inventory_migrate_org_test: server,
-      inventory_unmigrate_org_test: server,
-      inventory_secret_fingerprint_test: server,
       inventory_stale_name_scan: server,
       network_validate_address: server,
       network_address_conflicts: server,
-      inventory_migrate_org: [],
-      inventory_unmigrate_org: [],
       inventory_require_test_org: [],
-      recorder_ensure_primary: [],
       address_space_global: [],
       asset_sync_endpoints: [],
       inventory_refuse_delete: [],
@@ -751,19 +752,22 @@ describe('capability access model (P2-1)', () => {
       mappings_after_write: [],
       cameras_after_insert: [],
       cameras_before_update: [],
-      locations_legacy_seam: [],
       inventory_hierarchy_moved: [],
       inventory_node_archived: [],
       network_definitions_check: [],
       asset_dependencies_no_cycle: [],
       // P2-5a review fix round 1 (20261021000022).
       it_view_endpoint_asset_ids: people,
-      recorder_seam_of: server,
       inventory_affected_people: [],
       access_bump_versions: [],
       inventory_remap_effects: [],
       locations_parent_check: [],
       assets_space_check: [],
+      // P2-5b (20261021000023/24): one recorder saved by the server; the two stop helpers now with search_path ''.
+      recorder_save: server,
+      inventory_refresh_statistics: server,
+      monitor_stop_targets: server,
+      monitor_stop_target: server,
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)
@@ -776,7 +780,10 @@ describe('capability access model (P2-1)', () => {
       'access_effective_camera_ids', 'access_effective_device_ids',
       // Renamed in P2-5a (D5-5), and the history-erasing delete trigger function that is gone (archive instead).
       'capability_store_ids', 'capability_device_ids', 'any_grant_store_ids', 'it_view_store_ids', 'it_view_device_ids', 'report_effective_device_ids',
-      'access_store_set', 'access_device_set', 'access_stores_for', 'access_devices_for', 'monitor_forget_target', 'monitor_stop_store']) {
+      'access_store_set', 'access_device_set', 'access_stores_for', 'access_devices_for', 'monitor_forget_target', 'monitor_stop_store',
+      // Removed by the P2-5b contract migration (the transitional seam and the one-time migration machinery).
+      'nvr_store_credential', 'nvr_read_credential', 'nvr_delete_credential', 'recorder_seam_of', 'recorder_ensure_primary', 'locations_legacy_seam',
+      'inventory_migrate_org', 'inventory_unmigrate_org', 'inventory_migrate_org_test', 'inventory_unmigrate_org_test', 'inventory_secret_fingerprint_test']) {
       expect(byName.has(old), old).toBe(false)
     }
     // One signature each (no stale overloads left behind by a changed parameter list).
@@ -818,6 +825,8 @@ describe('capability access model (P2-1)', () => {
       ['recorder_set_monitoring', { p_org: orgA, p_recorder: randomUUID(), p_enabled: false, p_reason: 'nope' }],
       ['inventory_purge_test_org', { p_org: orgA }],
       ['report_effective_asset_ids', { p_user: someone.id, p_cap: 'it.inventory.view' }],
+      // P2-5b.
+      ['recorder_save', { p_org: orgA, p_location: L1, p_recorder: null, p_host: '192.0.2.99', p_http_port: 80, p_rtsp_port: 554, p_username: 'x' }],
     ]
     for (const [fn, args] of calls) {
       expect((await anon.rpc(fn, args as never)).error?.code, `anon ${fn}`).toBe('42501')

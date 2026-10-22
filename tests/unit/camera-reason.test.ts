@@ -15,7 +15,7 @@ describe('cameraReason', () => {
     expect(cameraReason('The NVR is not reachable.', { itView: false })).toBe(MSG_RECORDER_NOT_REACHABLE)
     for (const internal of [
       'The recorder refused the login.',
-      'The NVR address saved for this store is not valid.',
+      'The address saved for this NVR is not valid.',
       'The NVR has no saved password.',
       'The NVR does not offer a supported login method.',
       'The recorder does not list this camera.',

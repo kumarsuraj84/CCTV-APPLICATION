@@ -4,7 +4,7 @@ import { realProbes } from '@/lib/monitor/probes'
 import { NvrError, type NvrErrorKind } from '@/lib/nvr/client'
 import { startFakeNvr, startFakeRtsp } from '../helpers/fake-servers'
 import { MemoryDb } from '../helpers/memory-db'
-import { cfg, deps, NOW, store } from '../helpers/monitor-fixtures'
+import { cfg, deps, NOW, recorder } from '../helpers/monitor-fixtures'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -16,7 +16,7 @@ const lines = (spy: ReturnType<typeof quietLog>, text: string) => spy.mock.calls
 /** A fake clock the test moves by hand, and a store whose NVR refuses (or fails) the login. */
 function setup(kind: NvrErrorKind = 'auth', rtspCode = 401) {
   const db = new MemoryDb()
-  db.stores = [store()]
+  db.recorders = [recorder()]
   const time = { now: START }
   const counts = { nvr: 0, rtsp: 0 }
   const d = deps(db, {
@@ -42,7 +42,7 @@ describe('after a refused NVR login the recorder is left alone for a while (back
     expect(counts.nvr).toBe(1)
     expect(counts.rtsp).toBe(1) // one camera, in the first round only: after its refused login the others are not tried
     expect(db.results()).toHaveLength(0)
-    expect(lines(spy, 'NVR login problem for store S1')).toHaveLength(1)
+    expect(lines(spy, 'NVR login problem at location S1')).toHaveLength(1)
   })
 
   it('asks again once the window (15 minutes by default) is over, and starts a new window if it is refused again', async () => {
@@ -56,7 +56,7 @@ describe('after a refused NVR login the recorder is left alone for a while (back
     await round()
     expect(counts.nvr).toBe(2)
     expect(counts.rtsp).toBe(2) // one try per window
-    expect(lines(spy, 'NVR login problem for store S1')).toHaveLength(2)
+    expect(lines(spy, 'NVR login problem at location S1')).toHaveLength(2)
     time.now += sec(300)
     await round()
     expect(counts.nvr).toBe(2)
@@ -96,23 +96,36 @@ describe('after a refused NVR login the recorder is left alone for a while (back
   it('other stores are not held back', async () => {
     quietLog()
     const { db, counts, round } = setup()
-    db.stores = [store(), store({ id: 's2', code: 'S2', username: 'fine', cameras: [{ id: 'c9', channel: 1, camera_ip: null }] })]
+    db.recorders = [recorder(), recorder({ id: 's2', location_id: 'l2', code: 'S2', username: 'fine', cameras: [{ id: 'c9', channel: 1, camera_ip: null }] })]
     await round()
     await round()
     expect(counts.nvr).toBe(3) // s1 and s2, then only s2 again
+  })
+
+  it('P2-5b: the back-off is per recorder: a second NVR of the SAME location with a working login is still asked', async () => {
+    quietLog()
+    const { db, counts, round, d } = setup()
+    db.recorders = [recorder({ id: 'rA', location_id: 'l1' }), recorder({ id: 'rB', location_id: 'l1', ip: '127.0.0.2', username: 'fine', cameras: [{ id: 'c9', channel: 1, camera_ip: null }] })]
+    await round()
+    expect(loginBackoffCount(d.db)).toBe(1) // only rA
+    await round()
+    await round()
+    expect(counts.nvr).toBe(4) // rA and rB, then only rB twice
+    expect(db.results().filter((r) => r.id === 'c9')).toHaveLength(3)
+    expect(db.results().filter((r) => ['c1', 'c2', 'c3'].includes(r.id))).toHaveLength(0)
   })
 
   it('ends early when the saved user name or password changes, but not when something else does', async () => {
     quietLog()
     const { db, counts, round } = setup()
     await round()
-    db.stores = [store({ nvr_checked_at: null, cameras: [{ id: 'c1', channel: 1, camera_ip: '192.0.2.1' }] })]
+    db.recorders = [recorder({ nvr_checked_at: null, cameras: [{ id: 'c1', channel: 1, camera_ip: '192.0.2.1' }] })]
     await round()
     expect(counts.nvr).toBe(1) // unrelated change: still waiting
-    db.stores = [store({ password: 'new-pass' })]
+    db.recorders = [recorder({ password: 'new-pass' })]
     await round()
     expect(counts.nvr).toBe(2)
-    db.stores = [store({ password: 'new-pass', username: 'other' })]
+    db.recorders = [recorder({ password: 'new-pass', username: 'other' })]
     await round()
     expect(counts.nvr).toBe(3)
   })
@@ -122,7 +135,7 @@ describe('after a refused NVR login the recorder is left alone for a while (back
     const { db, time, round, d } = setup()
     await round()
     expect(loginBackoffCount(d.db)).toBe(1)
-    db.stores = [store({ id: 'other', code: 'OT', cameras: [] })]
+    db.recorders = [recorder({ id: 'other', code: 'OT', cameras: [] })]
     time.now = START + sec(901)
     await round()
     expect(loginBackoffCount(d.db)).toBe(0)
@@ -144,7 +157,7 @@ describe('after a refused NVR login the recorder is left alone for a while (back
   it('the log line and the back-off hold no password', async () => {
     const spy = quietLog()
     const { db, round } = setup()
-    db.stores = [store({ password: 'Sup3r-Secret' })]
+    db.recorders = [recorder({ password: 'Sup3r-Secret' })]
     await round()
     expect(lines(spy, 'Sup3r-Secret')).toHaveLength(0)
   })
@@ -155,7 +168,7 @@ describe('after a refused NVR login the recorder is left alone for a while (back
     const rtsp = await startFakeRtsp('needs-auth', 0, { username: 'viewer', password: 'secret-pass' })
     try {
       const db = new MemoryDb()
-      db.stores = [store({ http_port: nvr.port, rtsp_port: rtsp.port, password: 'wrong-pass', cameras: [{ id: 'c1', channel: 1, camera_ip: null }, { id: 'c2', channel: 2, camera_ip: null }] })]
+      db.recorders = [recorder({ http_port: nvr.port, rtsp_port: rtsp.port, password: 'wrong-pass', cameras: [{ id: 'c1', channel: 1, camera_ip: null }, { id: 'c2', channel: 2, camera_ip: null }] })]
       const time = { now: START }
       const d: Deps = { db, probes: realProbes, cfg, clock: () => new Date(time.now) }
       await checkCameras(d)

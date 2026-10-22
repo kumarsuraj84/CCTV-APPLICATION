@@ -3,7 +3,7 @@ import { checkCameras, checkDevices, checkNvrs } from '@/lib/monitor/checks'
 import { NvrError } from '@/lib/nvr/client'
 import type { CheckResult } from '@/lib/monitor/types'
 import { MemoryDb } from '../helpers/memory-db'
-import { deps, NOW, rsp, store } from '../helpers/monitor-fixtures'
+import { deps, NOW, recorder, rsp } from '../helpers/monitor-fixtures'
 
 describe('checkDevices', () => {
   it('uses TCP when a port is set and ping when it is not, and records why a device failed', async () => {
@@ -125,22 +125,26 @@ describe('checkDevices', () => {
 })
 
 describe('checkNvrs', () => {
-  it('checks the NVR video port of every store', async () => {
+  // P2-5b: one check per recorder (NVR), reported as ('recorder', recorder id); the old ('nvr', store id) target is gone.
+  it('checks the video port of every recorder, two recorders of one location separately', async () => {
     const db = new MemoryDb()
-    db.nvrs = [{ id: 's1', org_id: 'o1', ip: '127.0.0.1', rtsp_port: 8554 }, { id: 's2', org_id: 'o1', ip: '127.0.0.2', rtsp_port: 554 }]
+    db.nvrs = [
+      { id: 'r1', org_id: 'o1', location_id: 'l1', ip: '127.0.0.1', rtsp_port: 8554 },
+      { id: 'r2', org_id: 'o1', location_id: 'l1', ip: '127.0.0.2', rtsp_port: 554 },
+    ]
     await checkNvrs(deps(db, { tcp: async (h) => ({ ok: h === '127.0.0.1' }) }))
-    expect(db.results().map((r) => [r.type, r.id, r.ok])).toEqual([['nvr', 's1', true], ['nvr', 's2', false]])
+    expect(db.results().map((r) => [r.type, r.id, r.ok])).toEqual([['recorder', 'r1', true], ['recorder', 'r2', false]])
   })
 
   it('records an NVR address that cannot be used as a failure without probing it', async () => {
     const db = new MemoryDb()
-    db.nvrs = [{ id: 's1', org_id: 'o1', ip: 'a b', rtsp_port: 554 }, { id: 's2', org_id: 'o1', ip: '127.0.0.2', rtsp_port: 0 }]
+    db.nvrs = [{ id: 's1', org_id: 'o1', location_id: 'l1', ip: 'a b', rtsp_port: 554 }, { id: 's2', org_id: 'o1', location_id: 'l1', ip: '127.0.0.2', rtsp_port: 0 }]
     let probed = 0
     await checkNvrs(deps(db, { tcp: async () => { probed++; return { ok: true } } }))
     expect(probed).toBe(0)
-    expect(db.results().map((r) => [r.id, r.ok, r.error])).toEqual([
-      ['s1', false, 'The NVR address saved for this store is not valid.'],
-      ['s2', false, 'The NVR address saved for this store is not valid.'],
+    expect(db.results().map((r) => [r.type, r.id, r.ok, r.error])).toEqual([
+      ['recorder', 's1', false, 'The address saved for this NVR is not valid.'],
+      ['recorder', 's2', false, 'The address saved for this NVR is not valid.'],
     ])
   })
 })
@@ -148,7 +152,7 @@ describe('checkNvrs', () => {
 describe('checkCameras', () => {
   it('trusts the NVR for cameras it says are online and re-checks the others with RTSP', async () => {
     const db = new MemoryDb()
-    db.stores = [store()]
+    db.recorders =[recorder()]
     const rtspCalls: number[] = []
     await checkCameras(deps(db, {
       nvr: () => ({
@@ -165,7 +169,7 @@ describe('checkCameras', () => {
 
   it('does not use RTSP when the NVR says every camera is online', async () => {
     const db = new MemoryDb()
-    db.stores = [store()]
+    db.recorders =[recorder()]
     let rtsp = 0
     await checkCameras(deps(db, {
       nvr: () => ({ channelStatus: async () => new Map([[1, true], [2, true], [3, true]]), channels: async () => [] }),
@@ -178,7 +182,7 @@ describe('checkCameras', () => {
 
   it('falls back to RTSP for every camera when the NVR cannot be asked, and says why', async () => {
     const db = new MemoryDb()
-    db.stores = [store()]
+    db.recorders =[recorder()]
     await checkCameras(deps(db, {
       nvr: () => ({ channelStatus: async () => { throw new NvrError('auth', 'x') }, channels: async () => { throw new NvrError('auth', 'x') } }),
       rtsp: async (t) => rsp(t.channel === 1),
@@ -189,7 +193,7 @@ describe('checkCameras', () => {
 
   it('aims the RTSP check at the NVR itself, on the camera channel, with the store login', async () => {
     const db = new MemoryDb()
-    db.stores = [store({ cameras: [{ id: 'c1', channel: 7, camera_ip: null }] })]
+    db.recorders =[recorder({ cameras: [{ id: 'c1', channel: 7, camera_ip: null }] })]
     const targets: unknown[] = []
     await checkCameras(deps(db, {
       nvr: () => ({ channelStatus: async () => new Map([[7, false]]), channels: async () => [{ channel: 7, name: 'A', ip: '203.0.113.9' }] }),
@@ -200,7 +204,7 @@ describe('checkCameras', () => {
 
   it('tells a camera that refuses the login from one that does not answer, and from an odd answer', async () => {
     const db = new MemoryDb()
-    db.stores = [store()]
+    db.recorders =[recorder()]
     await checkCameras(deps(db, {
       nvr: () => ({ channelStatus: async () => new Map([[1, false], [2, false], [3, false]]), channels: async () => [] }),
       rtsp: async (t) => ({ code: [200, 401, 404][t.channel - 1] }),
@@ -213,7 +217,7 @@ describe('checkCameras', () => {
 
   it('marks every camera down at once, with the NVR as the cause, when the NVR is down, and asks nothing', async () => {
     const db = new MemoryDb()
-    db.stores = [store({ nvr_status: 'down' })]
+    db.recorders =[recorder({ nvr_status: 'down' })]
     let asked = 0
     await checkCameras(deps(db, {
       nvr: () => { asked++; return { channelStatus: async () => new Map(), channels: async () => [] } },
@@ -228,9 +232,9 @@ describe('checkCameras', () => {
 
   it('skips camera addresses that did not change and reports progress per store', async () => {
     const db = new MemoryDb()
-    db.stores = [
-      store({ id: 's1', cameras: [{ id: 'c1', channel: 1, camera_ip: '192.0.2.1' }] }),
-      store({ id: 's2', cameras: [{ id: 'c9', channel: 1, camera_ip: null }] }),
+    db.recorders =[
+      recorder({ id: 's1', cameras: [{ id: 'c1', channel: 1, camera_ip: '192.0.2.1' }] }),
+      recorder({ id: 's2', cameras: [{ id: 'c9', channel: 1, camera_ip: null }] }),
     ]
     const progress: [number, number][] = []
     await checkCameras(deps(db, {
@@ -242,7 +246,7 @@ describe('checkCameras', () => {
 
   it('never saves a camera address that is not a plain IP address', async () => {
     const db = new MemoryDb()
-    db.stores = [store({ cameras: [1, 2, 3, 4].map((n) => ({ id: `c${n}`, channel: n, camera_ip: null })) })]
+    db.recorders =[recorder({ cameras: [1, 2, 3, 4].map((n) => ({ id: `c${n}`, channel: n, camera_ip: null })) })]
     await checkCameras(deps(db, {
       nvr: () => ({
         channelStatus: async () => new Map([[1, true], [2, true], [3, true], [4, true]]),
@@ -259,20 +263,20 @@ describe('checkCameras', () => {
 
   it('an NVR address that cannot be used fails its cameras without probing anything', async () => {
     const db = new MemoryDb()
-    db.stores = [store({ ip: 'bad host' })]
+    db.recorders =[recorder({ ip: 'bad host' })]
     let asked = 0
     await checkCameras(deps(db, {
       nvr: () => { asked++; return { channelStatus: async () => new Map(), channels: async () => [] } },
       rtsp: async () => { asked++; return rsp(true) },
     }))
     expect(asked).toBe(0)
-    expect(db.results().every((r) => !r.ok && r.error === 'The NVR address saved for this store is not valid.')).toBe(true)
+    expect(db.results().every((r) => !r.ok && r.error === 'The address saved for this NVR is not valid.')).toBe(true)
     expect(db.results()).toHaveLength(3)
   })
 
   it('one failing store does not stop the others', async () => {
     const db = new MemoryDb()
-    db.stores = [store({ id: 's1', cameras: [{ id: 'c1', channel: 1, camera_ip: null }] }), store({ id: 's2', cameras: [{ id: 'c2', channel: 1, camera_ip: null }] })]
+    db.recorders =[recorder({ id: 's1', cameras: [{ id: 'c1', channel: 1, camera_ip: null }] }), recorder({ id: 's2', cameras: [{ id: 'c2', channel: 1, camera_ip: null }] })]
     let n = 0
     await checkCameras(deps(db, {
       nvr: () => {
@@ -285,7 +289,7 @@ describe('checkCameras', () => {
 
   it('a camera whose RTSP check throws is left out; its neighbours are still recorded', async () => {
     const db = new MemoryDb()
-    db.stores = [store()]
+    db.recorders =[recorder()]
     await checkCameras(deps(db, {
       nvr: () => ({ channelStatus: async () => new Map([[1, true], [2, false], [3, false]]), channels: async () => [] }),
       rtsp: async (t) => { if (t.channel === 2) throw new Error('boom'); return rsp(true) },
@@ -295,23 +299,23 @@ describe('checkCameras', () => {
 
   it('a failing progress callback does not stop the run', async () => {
     const db = new MemoryDb()
-    db.stores = [store({ id: 's1' }), store({ id: 's2' })]
+    db.recorders =[recorder({ id: 's1' }), recorder({ id: 's2' })]
     await checkCameras(deps(db, { nvr: () => ({ channelStatus: async () => new Map([[1, true], [2, true], [3, true]]), channels: async () => [] }) }), () => {
       throw new Error('callback broke')
     })
     expect(db.results()).toHaveLength(6)
   })
 
-  it('limits the run to the stores asked for', async () => {
+  it('limits the run to the recorders asked for', async () => {
     const db = new MemoryDb()
-    db.stores = [store({ id: 's1' }), store({ id: 's2', cameras: [{ id: 'c9', channel: 1, camera_ip: null }] })]
+    db.recorders =[recorder({ id: 's1' }), recorder({ id: 's2', cameras: [{ id: 'c9', channel: 1, camera_ip: null }] })]
     await expect(checkCameras(deps(db, { nvr: () => ({ channelStatus: async () => new Map([[1, true]]), channels: async () => [] }) }), undefined, ['s2'])).resolves.toBe(1)
     expect(db.results().map((r) => r.id)).toEqual(['c9'])
   })
 
   it('two runs over the same store never overlap, so the older result is always applied first', async () => {
     const db = new MemoryDb()
-    db.stores = [store({ cameras: [{ id: 'c1', channel: 1, camera_ip: null }] })]
+    db.recorders =[recorder({ cameras: [{ id: 'c1', channel: 1, camera_ip: null }] })]
     let inFlight = 0
     let peak = 0
     db.applyResults = async (orgId, results, threshold) => {
@@ -329,9 +333,46 @@ describe('checkCameras', () => {
     expect(times[0]).toBeLessThan(times[1])
   })
 
+  it('P2-5b: two NVRs of one location are two jobs; one known down marks only ITS cameras, with the recorder as the cause', async () => {
+    const db = new MemoryDb()
+    db.recorders = [
+      recorder({ id: 'rA', location_id: 'l1', ip: '127.0.0.1', cameras: [{ id: 'a1', channel: 1, camera_ip: null }, { id: 'a2', channel: 2, camera_ip: null }] }),
+      recorder({ id: 'rB', location_id: 'l1', ip: '127.0.0.2', nvr_status: 'down', password: '', cameras: [{ id: 'b1', channel: 1, camera_ip: null }, { id: 'b2', channel: 2, camera_ip: null }] }),
+    ]
+    const asked: string[] = []
+    await checkCameras(deps(db, {
+      nvr: (ep) => { asked.push(ep.host); return { channelStatus: async () => new Map([[1, true], [2, true]]), channels: async () => [] } },
+      rtsp: async (t) => { asked.push(`rtsp ${t.host}`); return rsp(true) },
+    }))
+    expect(asked).toEqual(['127.0.0.1']) // the down recorder is not asked at all
+    const byId = Object.fromEntries(db.results().map((r) => [r.id, r]))
+    expect(byId.a1).toMatchObject({ ok: true, method: 'isapi' })
+    expect(byId.a2).toMatchObject({ ok: true, method: 'isapi' })
+    expect(byId.a1.cause).toBeUndefined()
+    for (const id of ['b1', 'b2']) expect(byId[id]).toMatchObject({ ok: false, cause: 'nvr_down', method: 'nvr_down', error: 'The NVR is not reachable.' })
+    // The cause results go in their own call with threshold 1; the live recorder's results with the normal threshold.
+    expect(db.applied.find((a) => a.results.some((r) => r.id === 'b1'))?.threshold).toBe(1)
+    expect(db.applied.find((a) => a.results.some((r) => r.id === 'a1'))?.threshold).toBe(2)
+  })
+
+  it('P2-5b: the same channel number on two recorders asks each recorder for its own camera', async () => {
+    const db = new MemoryDb()
+    db.recorders = [
+      recorder({ id: 'rA', ip: '127.0.0.1', rtsp_port: 1554, password: 'pa', cameras: [{ id: 'a1', channel: 1, camera_ip: null }] }),
+      recorder({ id: 'rB', ip: '127.0.0.2', rtsp_port: 2554, password: 'pb', cameras: [{ id: 'b1', channel: 1, camera_ip: null }] }),
+    ]
+    const targets: string[] = []
+    await checkCameras(deps(db, {
+      nvr: () => ({ channelStatus: async () => new Map([[1, false]]), channels: async () => [] }),
+      rtsp: async (t) => { targets.push(`${t.host}:${t.port}:${t.password}:${t.channel}`); return rsp(t.host === '127.0.0.2') },
+    }))
+    expect(targets.sort()).toEqual(['127.0.0.1:1554:pa:1', '127.0.0.2:2554:pb:1'])
+    expect(db.results().map((r) => [r.id, r.ok]).sort()).toEqual([['a1', false], ['b1', true]])
+  })
+
   it('never puts the NVR password into a result or a saved address', async () => {
     const db = new MemoryDb()
-    db.stores = [store({ password: 'S3cret-Pass' })]
+    db.recorders =[recorder({ password: 'S3cret-Pass' })]
     await checkCameras(deps(db, {
       nvr: () => ({ channelStatus: async () => { throw new NvrError('auth', 'login refused with S3cret-Pass') }, channels: async () => [] }),
       rtsp: async () => rsp(false),

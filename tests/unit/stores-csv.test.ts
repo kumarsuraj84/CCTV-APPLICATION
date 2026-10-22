@@ -4,12 +4,12 @@ import { parseStoresCsv } from '@/lib/import/stores-csv'
 const HEADER = 'name,city,zone,ip,port,http_port,user,password,channels'
 
 describe('parseStoresCsv', () => {
-  it('reads the legacy columns and fills defaults', () => {
+  it('reads the legacy columns as a location and its primary recorder with its channels (P2-5b), and fills defaults', () => {
     const { rows, errors } = parseStoresCsv(`${HEADER}\nStore 001 - Patna,Patna,br,192.0.2.10,,,viewer,pw1,16\n`)
     expect(errors).toEqual([])
     expect(rows).toEqual([{
       line: 2, code: 'STORE 001 - PATNA', name: 'Store 001 - Patna', city: 'Patna', zone: 'BR', state: null, address: null,
-      nvr_ip: '192.0.2.10', rtsp_port: 554, http_port: 80, nvr_username: 'viewer', nvr_password: 'pw1', channels: 16,
+      recorder: { host: '192.0.2.10', rtsp_port: 554, http_port: 80, username: 'viewer', password: 'pw1', channels: 16 },
     }])
   })
 

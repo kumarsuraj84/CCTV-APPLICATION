@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
 import {
   adminClient, atCamera, atLocation, atRecorder, cleanupOrg, createAsset, createCamera, createLocation, createOrg, createRecorder, createUser,
-  grant, mapCamera, ORG_SCOPE, primaryRecorderOf, type TestUser,
+  grant, mapCamera, ORG_SCOPE, type TestUser,
 } from '../setup/fixtures'
 
 // P2-5a (brief item 3, decision D-4, ruling C-1, directive "Asset and location model"): locations of any kind with several NVRs,
@@ -153,7 +153,7 @@ describe('locations, recorders and channel mappings (P2-5a)', () => {
     expect(st.error).toBeNull()
     expect(st.data).toMatchObject({ cameras_total: 0, recorders_total: 0, nvr_status: null })
     expect((await viewer.client.from('locations').select('id, kind').eq('id', ho).single()).data).toEqual({ id: ho, kind: 'head_office' })
-    // An old-style 'nvr' result for a location without a recorder is ignored (nothing to check).
+    // An old-style 'nvr' result is ignored (P2-5b: the kind no longer exists).
     await apply(orgId, [{ type: 'nvr', id: ho, ok: false, at: ago(1) }], 1)
     expect((await admin().from('check_state').select('id').eq('org_id', orgId).eq('target_id', ho)).data).toEqual([])
     // A CCTV grant at the head office shows no IT assets.
@@ -169,33 +169,35 @@ describe('locations, recorders and channel mappings (P2-5a)', () => {
     for (const c of [viewer.client, itPerson.client, anon()]) {
       expect((await c.rpc('recorder_read_credential', { p_recorder: recA })).error?.code).toBe('42501')
       expect((await c.rpc('recorder_store_credential', { p_recorder: recA, p_secret: 'x' })).error?.code).toBe('42501')
-      expect((await c.rpc('nvr_read_credential', { p_store: store })).error?.code).toBe('42501')
+      expect((await c.rpc('recorder_delete_credential', { p_recorder: recA })).error?.code).toBe('42501')
     }
     // No secret pointer is readable by signed-in people, even with the IT view.
     expect((await itPerson.client.from('recorders').select('secret_id').limit(1)).error?.code).toBe('42501')
     expect((await itPerson.client.from('recorder_endpoints').select('*').eq('recorder_id', recA).single()).data).toMatchObject({ recorder_id: recA, username: 'viewer' })
   })
 
-  it('the old store-shaped write still works through the seam: one primary recorder, wrappers keyed by location', async () => {
-    const legacy = await createLocation(orgId, { code: 'LEGACY', legacyNvr: { ip: '10.250.0.1', username: 'olduser', rtspPort: 8554, httpPort: 8081, channels: 4 } })
-    const primary = await primaryRecorderOf(legacy)
-    const rec = (await admin().from('recorders').select('location_id, http_port, rtsp_port, username, expected_channels').eq('id', primary).single()).data
-    expect(rec).toEqual({ location_id: legacy, http_port: 8081, rtsp_port: 8554, username: 'olduser', expected_channels: 4 })
-    expect((await admin().from('assets').select('type, ip, tcp_port').eq('id', primary).single()).data).toEqual({ type: 'nvr', ip: '10.250.0.1', tcp_port: 8081 })
-    await admin().from('locations').update({ nvr_username: 'newuser', http_port: 8082 }).eq('id', legacy)
-    expect((await admin().from('recorders').select('username, http_port').eq('id', primary).single()).data).toEqual({ username: 'newuser', http_port: 8082 })
-    expect((await admin().from('recorders').select('id').eq('location_id', legacy)).data).toHaveLength(1)
-    // A camera written the old way (location + channel) is mapped to the primary recorder.
-    const cam = await createCamera(orgId, { locationId: legacy, channel: 2 })
-    expect((await admin().from('cameras').select('recorder_id').eq('id', cam).single()).data).toEqual({ recorder_id: primary })
-    // nvr_store_credential(p_store) is a wrapper over the recorder function.
-    expect((await admin().rpc('nvr_store_credential', { p_store: legacy, p_secret: 'legacy-pass' })).error).toBeNull()
-    expect((await admin().rpc('recorder_read_credential', { p_recorder: primary })).data).toBe('legacy-pass')
-    expect((await admin().rpc('nvr_read_credential', { p_store: legacy })).data).toBe('legacy-pass')
-    // monitor_apply_results('nvr', location) writes the primary recorder's state.
+  // P2-5b replaces "the old store-shaped write still works through the seam": the contract migration removed the seam.
+  it('the seam is gone: no NVR columns on a location, no location-keyed wrappers, no \'nvr\' kind; a camera without a recorder maps only to a sole NVR', async () => {
+    const legacy = await createLocation(orgId, { code: 'LEGACY' })
+    const written = await admin().from('locations').update({ nvr_ip: '10.250.0.1' } as never).eq('id', legacy)
+    expect(written.error?.code).toBe('PGRST204') // the column does not exist any more
+    expect((await admin().from('recorders').select('id').eq('location_id', legacy)).data).toEqual([])
+    for (const [fn, args] of [['nvr_store_credential', { p_store: legacy, p_secret: 'x' }], ['nvr_read_credential', { p_store: legacy }], ['recorder_seam_of', { p_location: legacy }]] as const) {
+      expect((await admin().rpc(fn as never, args as never)).error?.code, fn).toBe('PGRST202')
+    }
+    // The old ('nvr', location) result is ignored, and the kind cannot be stored at all.
+    const only = await createRecorder(orgId, legacy, { host: '10.250.0.1' })
     await apply(orgId, [{ type: 'nvr', id: legacy, ok: true, at: ago(1) }])
-    expect((await admin().from('check_state').select('target_type, status').eq('target_id', primary).single()).data).toEqual({ target_type: 'recorder', status: 'up' })
-    expect((await admin().from('check_state').select('id').eq('target_type', 'nvr').eq('target_id', legacy)).data).toEqual([])
+    expect((await admin().from('check_state').select('id').in('target_id', [legacy, only])).data).toEqual([])
+    expect((await admin().from('check_state').insert({ org_id: orgId, target_type: 'nvr', target_id: legacy })).error?.code).toBe('23514')
+    expect((await admin().from('outages').insert({ org_id: orgId, target_type: 'nvr', target_id: legacy, started_at: ago(1) })).error?.code).toBe('23514')
+    // A camera written the old way (location + channel) is mapped to the location's ONLY NVR; with two NVRs it stays unmapped.
+    const cam = await createCamera(orgId, { locationId: legacy, channel: 2 })
+    expect((await admin().from('cameras').select('recorder_id').eq('id', cam).single()).data).toEqual({ recorder_id: only })
+    await createRecorder(orgId, legacy, { host: '10.250.0.2' })
+    const loose = await createCamera(orgId, { locationId: legacy, channel: 3 })
+    expect((await admin().from('cameras').select('recorder_id').eq('id', loose).single()).data).toEqual({ recorder_id: null })
+    expect((await admin().from('camera_channel_mappings').select('id').eq('camera_id', loose)).data).toEqual([])
   })
 
   it('archive keeps history and grants, removes the camera from active views; delete is refused; restore brings it back', async () => {
@@ -257,7 +259,7 @@ describe('locations, recorders and channel mappings (P2-5a)', () => {
     const row = (await admin().from('recorders').select('monitoring_enabled, monitoring_disabled_reason, monitoring_disabled_by, monitoring_disabled_at').eq('id', rec).single()).data!
     expect(row).toMatchObject({ monitoring_enabled: false, monitoring_disabled_reason: 'Real NVR, do not contact', monitoring_disabled_by: actor.id })
     expect(row.monitoring_disabled_at).not.toBeNull()
-    const audit = (await admin().from('admin_audit_log').select('action, detail').eq('org_id', orgId).eq('entity_id', rec)).data!
+    const audit = (await admin().from('admin_audit_log').select('action, detail').eq('org_id', orgId).eq('entity_id', rec).neq('action', 'recorder_created')).data!
     expect(audit).toEqual([{ action: 'recorder_monitoring_disabled', detail: { reason: 'Real NVR, do not contact', was_enabled: true } }])
     // Switched off: open outages closed, no state, results ignored; the recorder and its cameras show "switched off", not offline.
     for (const [type, id] of [['recorder', rec], ['camera', cam]] as const) {
@@ -391,8 +393,9 @@ describe('P2-5a review fix round 1', () => {
     other = await createOrg()
     region = must(await admin().from('regions').insert({ org_id: orgId, code: 'RVR', name: 'Review region' }).select('id').single()).id
     cluster = must(await admin().from('clusters').insert({ org_id: orgId, region_id: region, code: 'RVC', name: 'Review cluster' }).select('id').single()).id
-    loc = await createLocation(orgId, { code: 'RV1', clusterId: cluster, legacyNvr: { ip: '10.91.0.1' } })
-    seam = await primaryRecorderOf(loc)
+    loc = await createLocation(orgId, { code: 'RV1', clusterId: cluster })
+    // P2-5b: the location's first NVR (it was made through the seam before the contract migration).
+    seam = await createRecorder(orgId, loc, { host: '10.91.0.1' })
     recX = await createRecorder(orgId, loc, { name: 'NVR X', secret: 'pass-X' })
     camX = await createCamera(orgId, { locationId: loc, recorderId: recX, channel: 1 })
     camS = await createCamera(orgId, { locationId: loc, recorderId: seam, channel: 1 })
@@ -448,33 +451,37 @@ describe('P2-5a review fix round 1', () => {
     for (const u of [camOnly, recOnly, assetOnly, locHolder]) expect(ids((await u.client.from('locations').select('id')).data)).toEqual([loc])
   })
 
-  it('M3: the seam keeps writing to the location\'s legacy NVR only; a later recorder never gets its address or password', async () => {
+  // P2-5b replaces "M3: the seam keeps writing to the location's legacy NVR only": the seam is gone (contract migration). Each NVR is
+  // saved on its own (recorder_save); the location's first NVR is its primary for the legacy form and CSV, and no other NVR ever gets its
+  // address or password. DR009 protected the legacy address on the location row, which no longer exists.
+  it('M3 after the contract: every NVR keeps its own address and password; the first is the primary; any NVR without cameras can be archived', async () => {
     const shop = await createLocation(orgId, { code: 'RVSEAM' })
-    const early = await createRecorder(orgId, shop, { host: '10.92.0.7', name: 'Made by people first' })
-    expect((await admin().from('locations').update({ nvr_ip: '10.92.0.8', nvr_username: 'legacy' }).eq('id', shop)).error).toBeNull()
-    const recs = must(await admin().from('recorders').select('id, migrated_from_location_id, username').eq('location_id', shop).order('created_at'))
-    expect(recs).toHaveLength(2)
-    const legacy = recs.find((r) => r.id !== early)!
-    expect(legacy).toMatchObject({ migrated_from_location_id: shop, username: 'legacy' })
-    expect(must(await admin().from('assets').select('ip').eq('id', early).single())).toEqual({ ip: '10.92.0.7' })
-    expect(must(await admin().from('assets').select('ip').eq('id', legacy.id).single())).toEqual({ ip: '10.92.0.8' })
-    expect((await admin().rpc('recorder_primary_of', { p_location: shop })).data).toBe(legacy.id)
-    expect((await admin().rpc('nvr_store_credential', { p_store: shop, p_secret: 'legacy-pass' })).error).toBeNull()
-    expect((await admin().rpc('recorder_read_credential', { p_recorder: legacy.id })).data).toBe('legacy-pass')
-    expect((await admin().rpc('recorder_read_credential', { p_recorder: early })).data).toBeNull()
-    // The legacy NVR cannot be archived while the location still names it (then recorder 2 would inherit its address).
-    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'recorder', p_id: legacy.id })).error?.code).toBe('DR009')
-    expect((await admin().from('locations').update({ nvr_ip: null }).eq('id', shop)).error).toBeNull()
-    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'recorder', p_id: legacy.id })).error).toBeNull()
-    expect(must(await admin().from('assets').select('ip').eq('id', early).single())).toEqual({ ip: '10.92.0.7' })
+    const first = await createRecorder(orgId, shop, { host: '10.92.0.7', name: 'First', secret: 'first-pass' })
+    const later = await createRecorder(orgId, shop, { host: '10.92.0.8', name: 'Later' })
+    expect((await admin().rpc('recorder_primary_of', { p_location: shop })).data).toBe(first)
+    // Changing the primary NVR changes it alone.
+    expect((await admin().rpc('recorder_save', { p_org: orgId, p_location: shop, p_recorder: first, p_host: '10.92.0.9', p_http_port: 8081, p_rtsp_port: 8554, p_username: 'changed' })).error).toBeNull()
+    expect(must(await admin().from('assets').select('ip').eq('id', first).single())).toEqual({ ip: '10.92.0.9' })
+    expect(must(await admin().from('assets').select('ip').eq('id', later).single())).toEqual({ ip: '10.92.0.8' })
+    expect(must(await admin().from('recorders').select('username').eq('id', later).single())).toEqual({ username: 'viewer' })
+    expect((await admin().rpc('recorder_read_credential', { p_recorder: first })).data).toBe('first-pass')
+    expect((await admin().rpc('recorder_read_credential', { p_recorder: later })).data).toBeNull()
+    // recorder_save refuses an NVR of another location and an archived one.
+    const elsewhere = await createLocation(orgId, { code: 'RVSEAM2' })
+    expect((await admin().rpc('recorder_save', { p_org: orgId, p_location: elsewhere, p_recorder: later, p_host: '10.92.0.10', p_http_port: 80, p_rtsp_port: 554, p_username: 'x' })).error?.code).toBe('P0002')
+    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'recorder', p_id: first })).error).toBeNull()
+    expect((await admin().rpc('recorder_primary_of', { p_location: shop })).data).toBe(later)
+    expect((await admin().rpc('recorder_save', { p_org: orgId, p_location: shop, p_recorder: first, p_host: '10.92.0.11', p_http_port: 80, p_rtsp_port: 554, p_username: 'x' })).error?.code).toBe('P0002')
   })
 
-  it('M2/M13: adopting an nvr device forgets its device history; a device without a location is never adopted', async () => {
+  // P2-5b replaces the seam's address-match adoption (gone with the contract migration) by its guard, which stays: an nvr asset that
+  // becomes a recorder stops being monitored as a device; recorder_save never adopts an existing asset by its address.
+  it('M2/M13: an nvr asset that becomes a recorder forgets its device history; recorder_save never adopts a device by address', async () => {
     const shop = await createLocation(orgId, { code: 'RVADOPT' })
     const dev = must(await admin().from('assets').insert({ org_id: orgId, location_id: shop, type: 'nvr', name: 'Old NVR row', ip: '10.93.0.1', tcp_port: 80 }).select('id').single()).id
     await apply(orgId, [{ type: 'device', id: dev, ok: false, at: ago(2) }], 1)
     expect(must(await admin().from('outages').select('ended_at').eq('target_type', 'device').eq('target_id', dev))).toEqual([{ ended_at: null }])
-    expect((await admin().from('locations').update({ nvr_ip: '10.93.0.1', nvr_username: 'u' }).eq('id', shop)).error).toBeNull()
+    expect((await admin().from('recorders').insert({ id: dev, org_id: orgId, location_id: shop, username: 'u' })).error).toBeNull()
     expect((await admin().rpc('recorder_primary_of', { p_location: shop })).data).toBe(dev)
     expect(must(await admin().from('check_state').select('id').eq('target_type', 'device').eq('target_id', dev))).toEqual([])
     const outs = must(await admin().from('outages').select('ended_at').eq('target_type', 'device').eq('target_id', dev))
@@ -485,8 +492,7 @@ describe('P2-5a review fix round 1', () => {
     expect(must(await admin().from('check_state').select('id').eq('target_type', 'device').eq('target_id', dev))).toEqual([])
     const loose = must(await admin().from('assets').insert({ org_id: orgId, location_id: null, type: 'nvr', name: 'NVR without a location', ip: '10.93.0.2', tcp_port: 8080 }).select('id').single()).id
     const shop2 = await createLocation(orgId, { code: 'RVLOOSE' })
-    expect((await admin().from('locations').update({ nvr_ip: '10.93.0.2', nvr_username: 'u' }).eq('id', shop2)).error).toBeNull()
-    const rec2 = (await admin().rpc('recorder_primary_of', { p_location: shop2 })).data as string
+    const rec2 = await createRecorder(orgId, shop2, { host: '10.93.0.2', httpPort: 8080 })
     expect(rec2).not.toBe(loose)
     expect(must(await admin().from('assets').select('location_id, is_recorder').eq('id', loose).single())).toEqual({ location_id: null, is_recorder: false })
   })

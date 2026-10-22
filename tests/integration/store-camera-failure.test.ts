@@ -21,7 +21,8 @@ function failingCameras(): AdminClient {
   }) as AdminClient
 }
 
-const input = { name: 'Camfail', code: 'CF1', city: 'Pune', zone: 'BR', state: 'BR', address: '', ip: '192.0.2.77', rtsp_port: 554, http_port: 80, nvr_username: 'viewer', nvr_password: 'Secret-CF1', channels: 3, is_active: true }
+// P2-5b: the NVR fields describe the location's primary recorder (form field nvr_user).
+const input = { name: 'Camfail', code: 'CF1', city: 'Pune', zone: 'BR', state: 'BR', address: '', ip: '192.0.2.77', rtsp_port: 554, http_port: 80, nvr_user: 'viewer', nvr_password: 'Secret-CF1', channels: 3, is_active: true }
 
 describe('a store is saved but its cameras cannot be created', () => {
   let orgId: string

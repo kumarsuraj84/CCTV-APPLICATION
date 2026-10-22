@@ -121,34 +121,51 @@ export async function createCluster(orgId: string, regionId: string | null, o: {
 
 export type LocationKind = 'store' | 'head_office' | 'dc' | 'warehouse' | 'other'
 /**
- * A location of any kind. Without `legacyNvr` it has no recorder (a head office, a DC). With `legacyNvr` the location is written the
- * old way (nvr_ip, ports, user on the location row): the transitional seam (decision D5-7) makes it the location's primary recorder.
+ * A location of any kind, without any recorder (a head office, a DC; add NVRs with createRecorder, or use createSite). P2-5b: a
+ * location row holds no NVR data any more (the contract migration dropped the legacy columns and the seam).
  */
 export async function createLocation(orgId: string, o: {
   code?: string; name?: string; kind?: LocationKind; clusterId?: string | null; zone?: string | null; state?: string | null; isActive?: boolean
-  legacyNvr?: { ip: string; username?: string; rtspPort?: number; httpPort?: number; channels?: number }
 } = {}): Promise<string> {
   const c = o.code ?? code('L')
-  const nvr = o.legacyNvr
   return must('createLocation', await adminClient().from('locations').insert({
     org_id: orgId, code: c, name: o.name ?? `Location ${c}`, kind: o.kind ?? 'store', cluster_id: o.clusterId ?? null, zone: o.zone ?? null,
     state: o.state ?? null, is_active: o.isActive ?? true,
-    ...(nvr ? { nvr_ip: nvr.ip, nvr_username: nvr.username ?? 'viewer', rtsp_port: nvr.rtspPort ?? 554, http_port: nvr.httpPort ?? 80, expected_channels: nvr.channels ?? 0 } : {}),
   }).select('id').single()).id
 }
 
-/** A recorder (NVR) at a location: an asset of type nvr plus its recorders row (same id). Optionally its login password in the vault. */
+/**
+ * A recorder (NVR) at a location: an asset of type nvr plus its recorders row (same id). Optionally its login password in the vault, a
+ * clock offset (seconds, ruling R13 direction), the number of cameras it should have, and monitoring switched off (with a reason).
+ */
 export async function createRecorder(orgId: string, locationId: string, o: {
   host?: string; httpPort?: number; rtspPort?: number; username?: string; secret?: string; name?: string; addressSpaceId?: string
+  clockOffsetSec?: number | null; expectedChannels?: number; monitoringOff?: string
 } = {}): Promise<string> {
   const admin = adminClient()
   const host = o.host ?? randomHost('10')
-  const asset = must('createRecorder(asset)', await admin.from('assets').insert({
-    org_id: orgId, location_id: locationId, type: 'nvr', name: o.name ?? 'NVR', ip: host, tcp_port: o.httpPort ?? 80, address_space_id: o.addressSpaceId ?? null,
-  }).select('id').single()).id
-  must('createRecorder', await admin.from('recorders').insert({
-    id: asset, org_id: orgId, location_id: locationId, http_port: o.httpPort ?? 80, rtsp_port: o.rtspPort ?? 554, username: o.username ?? 'viewer',
-  }).select('id').single())
+  let asset: string
+  if (o.addressSpaceId) {
+    // A chosen address space: written directly (the tests of address spaces need that).
+    asset = must('createRecorder(asset)', await admin.from('assets').insert({
+      org_id: orgId, location_id: locationId, type: 'nvr', name: o.name ?? 'NVR', ip: host, tcp_port: o.httpPort ?? 80, address_space_id: o.addressSpaceId,
+    }).select('id').single()).id
+    must('createRecorder', await admin.from('recorders').insert({
+      id: asset, org_id: orgId, location_id: locationId, http_port: o.httpPort ?? 80, rtsp_port: o.rtspPort ?? 554, username: o.username ?? 'viewer',
+    }).select('id').single())
+  } else {
+    // The application's own way (P2-5b recorder_save): an address already used elsewhere in the organisation moves the recorder into
+    // its location's own address space (D5-8), so two test locations may point at the same fake NVR on loopback.
+    asset = must('createRecorder', await admin.rpc('recorder_save', {
+      p_org: orgId, p_location: locationId, p_recorder: null as unknown as string, p_host: host, p_http_port: o.httpPort ?? 80, p_rtsp_port: o.rtspPort ?? 554,
+      p_username: o.username ?? 'viewer', p_expected_channels: o.expectedChannels ?? 0, p_name: o.name ?? 'NVR',
+    })) as string
+  }
+  const extra = {
+    ...(o.clockOffsetSec != null ? { clock_offset_sec: o.clockOffsetSec, clock_offset_source: 'manual' } : {}),
+    ...(o.monitoringOff ? { monitoring_enabled: false, monitoring_disabled_reason: o.monitoringOff, monitoring_disabled_at: new Date().toISOString() } : {}),
+  }
+  if (Object.keys(extra).length > 0) must('createRecorder(settings)', await admin.from('recorders').update(extra).eq('id', asset).select('id').single())
   if (o.secret) {
     const { error } = await admin.rpc('recorder_store_credential', { p_recorder: asset, p_secret: o.secret })
     if (error) throw new Error(`createRecorder(secret) failed: ${error.message}`)
@@ -156,11 +173,33 @@ export async function createRecorder(orgId: string, locationId: string, o: {
   return asset
 }
 
-/** A camera at a location, mapped to `recorderId` on `channel` (no recorder: mapped to the location's primary recorder, if any). */
-export async function createCamera(orgId: string, o: { locationId: string; recorderId?: string | null; channel: number; name?: string; isActive?: boolean }): Promise<string> {
+/**
+ * A camera at a location, mapped to `recorderId` on `channel`. Without a recorder the database maps it only when the location has
+ * exactly one NVR (P2-5b); `recorderId: null` with several NVRs leaves it unmapped (never probed, never streamed).
+ */
+export async function createCamera(orgId: string, o: { locationId: string; recorderId?: string | null; channel: number; name?: string; isActive?: boolean; cameraIp?: string | null }): Promise<string> {
   return must('createCamera', await adminClient().from('cameras').insert({
     org_id: orgId, location_id: o.locationId, recorder_id: o.recorderId ?? null, channel: o.channel, name: o.name ?? `Camera ${o.channel}`, is_active: o.isActive ?? true,
+    camera_ip: o.cameraIp ?? null,
   }).select('id').single()).id
+}
+
+/**
+ * The usual test site (P2-5b, replaces the old store row with NVR columns): a location with ONE recorder and `cameras` cameras on
+ * channels 1..n of that recorder. Returns the ids. The recorder's address, ports, login and password are its own.
+ */
+export async function createSite(orgId: string, o: {
+  code?: string; name?: string; isActive?: boolean; clusterId?: string | null; kind?: LocationKind; recorderName?: string
+  host?: string; httpPort?: number; rtspPort?: number; username?: string; secret?: string; cameras?: number; clockOffsetSec?: number | null; monitoringOff?: string
+} = {}): Promise<{ locationId: string; recorderId: string; cameraIds: string[] }> {
+  const locationId = await createLocation(orgId, { code: o.code, name: o.name, isActive: o.isActive, clusterId: o.clusterId, kind: o.kind })
+  const recorderId = await createRecorder(orgId, locationId, {
+    host: o.host, httpPort: o.httpPort, rtspPort: o.rtspPort, username: o.username, secret: o.secret, clockOffsetSec: o.clockOffsetSec, monitoringOff: o.monitoringOff,
+    name: o.recorderName,
+  })
+  const cameraIds: string[] = []
+  for (let ch = 1; ch <= (o.cameras ?? 0); ch++) cameraIds.push(await createCamera(orgId, { locationId, recorderId, channel: ch }))
+  return { locationId, recorderId, cameraIds }
 }
 
 /** Moves a camera to another recorder/channel (closes the active mapping, opens a new one). Returns the new mapping id. */
@@ -178,8 +217,8 @@ export async function createAsset(orgId: string, o: { locationId: string | null;
 }
 
 /**
- * The location's primary recorder: the one carrying the location's legacy NVR columns (seam, `migrated_from_location_id` = the
- * location; review M3), else the first one created. The same rule as `recorder_primary_of` in the database.
+ * The location's primary recorder: the one the 5a data migration made for it (`migrated_from_location_id` = the location), else the
+ * first one created. The same rule as `recorder_primary_of` in the database (the legacy single-NVR form and CSV use it).
  */
 export async function primaryRecorderOf(locationId: string): Promise<string> {
   const { data, error } = await adminClient().rpc('recorder_primary_of', { p_location: locationId })

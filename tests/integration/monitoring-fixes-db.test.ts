@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { STALE_AFTER_MINUTES } from '@/lib/queries/status'
-import { adminClient, cleanupOrg, createOrg, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { adminClient, cleanupOrg, createOrg, createSite, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 
-type R = { type: 'camera' | 'device' | 'nvr' | 'recorder'; id: string; ok: boolean; at: string; method?: string; error?: string; cause?: 'nvr_down' }
+type R = { type: 'camera' | 'device' | 'recorder'; id: string; ok: boolean; at: string; method?: string; error?: string; cause?: 'nvr_down' }
 const apply = (org: string, results: R[], threshold = 2) => admin().rpc('monitor_apply_results', { p_org: org, p_results: results, p_threshold: threshold })
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
 
@@ -13,8 +13,8 @@ describe('monitoring fixes in the database', () => {
   let manager: TestUser
   const gapIds: string[] = []
 
-  const makeStore = async (code: string, extra: Record<string, unknown> = {}) =>
-    (await admin().from('locations').insert({ org_id: orgId, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u', ...extra }).select('id').single()).data!.id
+  // P2-5b: a store is a location with its NVR (a recorder of its own); its cameras are mapped to that recorder.
+  const makeStore = async (code: string) => (await createSite(orgId, { code, name: `Store ${code}`, host: '127.0.0.1', username: 'u' })).locationId
   const makeCamera = async (store: string, channel: number, extra: Record<string, unknown> = {}) =>
     (await admin().from('cameras').insert({ org_id: orgId, location_id: store, channel, name: `C${channel}`, ...extra }).select('id').single()).data!.id
   const makeDevice = async (store: string, port: number) =>
@@ -116,9 +116,9 @@ describe('monitoring fixes in the database', () => {
     it('switching a store off closes its open outages and forgets its status; switched on again it starts as not checked yet', async () => {
       const store = await makeStore('OFF')
       const cam = await makeCamera(store, 1)
-      // P2-5a: the NVR's state and outages belong to the location's recorder (the 'nvr' result is written to the primary recorder).
+      // The NVR's state and outages belong to the location's recorder ('recorder', its id).
       const rec = await primaryRecorderOf(store)
-      await apply(orgId, [{ type: 'nvr', id: store, ok: false, at: ago(30) }], 1)
+      await apply(orgId, [{ type: 'recorder', id: rec, ok: false, at: ago(30) }], 1)
       await apply(orgId, [{ type: 'camera', id: cam, ok: false, at: ago(30), cause: 'nvr_down' }], 1)
       expect((await outagesOf('recorder', rec))[0].ended_at).toBeNull()
 
@@ -131,7 +131,7 @@ describe('monitoring fixes in the database', () => {
       }
       // It is gone from the status view, and a late result from a round that was already running changes nothing.
       expect((await manager.client.from('location_status').select('location_id').eq('location_id', store)).data).toEqual([])
-      await apply(orgId, [{ type: 'nvr', id: store, ok: false, at: new Date().toISOString() }, { type: 'camera', id: cam, ok: true, at: new Date().toISOString() }], 1)
+      await apply(orgId, [{ type: 'recorder', id: rec, ok: false, at: new Date().toISOString() }, { type: 'camera', id: cam, ok: true, at: new Date().toISOString() }], 1)
       expect(await state('recorder', rec)).toBeNull()
       expect(await state('camera', cam)).toBeNull()
 
@@ -173,6 +173,7 @@ describe('monitoring fixes in the database', () => {
 
     it('a camera or NVR last checked more than 20 minutes ago is stale, not live; offline stays offline', async () => {
       const store = await makeStore('STALE')
+      const rec = await primaryRecorderOf(store)
       const fresh = await makeCamera(store, 1)
       const old = await makeCamera(store, 2)
       const down = await makeCamera(store, 3)
@@ -180,7 +181,7 @@ describe('monitoring fixes in the database', () => {
       await apply(orgId, [
         { type: 'camera', id: fresh, ok: true, at: ago(STALE_AFTER_MINUTES - 1) },
         { type: 'camera', id: old, ok: true, at: ago(STALE_AFTER_MINUTES + 1) },
-        { type: 'nvr', id: store, ok: true, at: ago(STALE_AFTER_MINUTES + 1) },
+        { type: 'recorder', id: rec, ok: true, at: ago(STALE_AFTER_MINUTES + 1) },
       ])
       await apply(orgId, [{ type: 'camera', id: down, ok: false, at: ago(STALE_AFTER_MINUTES + 30) }], 1)
       void never
@@ -188,7 +189,7 @@ describe('monitoring fixes in the database', () => {
       expect(v.data).toMatchObject({ cameras_total: 4, cameras_live: 1, cameras_stale: 1, cameras_down: 1, cameras_unknown: 1, nvr_status: 'up', nvr_stale: true })
 
       // A fresh NVR result is not stale.
-      await apply(orgId, [{ type: 'nvr', id: store, ok: true, at: ago(1) }])
+      await apply(orgId, [{ type: 'recorder', id: rec, ok: true, at: ago(1) }])
       const w = await manager.client.from('location_status').select('nvr_stale').eq('location_id', store).single()
       expect(w.data?.nvr_stale).toBe(false)
     })

@@ -6,7 +6,7 @@ import { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { createWindowLimiter } from '@/lib/streams/limiter'
 import { listDaySegments, listRecordedDays, openPlayback } from '@/lib/streams/playback'
 import { verifyStreamToken } from '@/lib/streams/token'
-import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createLocation, createOrg, createRecorder, createUser, grant, primaryRecorderOf, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 import { closedPort, startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
 
 const SECRET = 'integration-test-stream-secret-0123456789'
@@ -85,17 +85,19 @@ describe('playback streams', () => {
   let fake: FakeGo2rtc
   const savedSecret = process.env.STREAM_TOKEN_SECRET
 
+  // P2-5b: a store is a location with ONE recorder (its NVR) of its own; its cameras are mapped to it and the login is the recorder's.
+  const recorderOf = new Map<string, string>()
   async function addStore(org: string, code: string, o: { port?: number; active?: boolean } = {}) {
-    const { data, error } = await admin().from('locations').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', http_port: o.port ?? nvr.port, rtsp_port: 554, nvr_username: NVR_USER, is_active: o.active ?? true }).select('id').single()
-    if (error || !data) throw new Error(`addStore: ${error?.message}`)
-    return data.id
+    const id = await createLocation(org, { code, name: `Store ${code}`, isActive: o.active ?? true })
+    recorderOf.set(id, await createRecorder(org, id, { host: '127.0.0.1', httpPort: o.port ?? nvr.port, rtspPort: 554, username: NVR_USER }))
+    return id
   }
   async function addCamera(org: string, store: string, channel: number, name: string, active = true) {
-    const { data, error } = await admin().from('cameras').insert({ org_id: org, location_id: store, channel, name, is_active: active }).select('id').single()
+    const { data, error } = await admin().from('cameras').insert({ org_id: org, location_id: store, recorder_id: recorderOf.get(store)!, channel, name, is_active: active }).select('id').single()
     if (error || !data) throw new Error(`addCamera: ${error?.message}`)
     return data.id
   }
-  const savePassword = (store: string, secret: string) => admin().rpc('nvr_store_credential', { p_store: store, p_secret: secret })
+  const savePassword = (store: string, secret: string) => admin().rpc('recorder_store_credential', { p_recorder: recorderOf.get(store)!, p_secret: secret })
 
   beforeAll(async () => {
     nvr = await startFakeNvr({ username: NVR_USER, password: NVR_PASSWORD, recordings: RECORDINGS })
@@ -226,7 +228,7 @@ describe('playback streams', () => {
         },
       })
       await listDaySegments({ rls: viewer.client, admin: spy, nvr: nvrClient }, actorOf(viewer), a1, '2026-10-20', 0)
-      expect(calls).toEqual(['nvr_read_credential'])
+      expect(calls).toEqual(['recorder_read_credential']) // P2-5b: keyed by the camera's recorder, never by its location
       calls.length = 0
       await listDaySegments({ rls: viewer.client, admin: spy, nvr: nvrClient }, actorOf(viewer), b1, '2026-10-20', 0)
       expect(calls).toEqual([])
@@ -354,8 +356,8 @@ describe('playback streams', () => {
       expect(await days(viewer, n1)).toEqual(NEUTRAL)
       expect(await segments(viewer, n1, '2026-10-20')).toEqual(NEUTRAL)
       expect(await play(viewer, n1, new Date(SHOWN_NOW - 3_600_000))).toEqual(NEUTRAL)
-      expect(await days(manager, n1)).toEqual({ ok: false, error: 'This store has no saved NVR login.' })
-      expect(await play(manager, n1, new Date(SHOWN_NOW - 3_600_000))).toEqual({ ok: false, error: 'This store has no saved NVR login.' })
+      expect(await days(manager, n1)).toEqual({ ok: false, error: 'This NVR has no saved login.' })
+      expect(await play(manager, n1, new Date(SHOWN_NOW - 3_600_000))).toEqual({ ok: false, error: 'This NVR has no saved login.' })
       expect(nvr.requests).toHaveLength(0)
       expect(fake.seen).toHaveLength(0)
     })
@@ -642,7 +644,7 @@ describe('playback streams', () => {
 
     it('the answer holds no password, no address, no playback address', async () => {
       const text = JSON.stringify(await play(viewer, a1, START, 10, 330))
-      for (const needle of [NVR_PASSWORD, 'rtsp://', '127.0.0.1', 'Streaming', 'starttime', 'nvr_ip', 'password', SECRET]) expect(text, needle).not.toContain(needle)
+      for (const needle of [NVR_PASSWORD, 'rtsp://', '127.0.0.1', 'Streaming', 'starttime', '"host"', 'recorder', 'password', SECRET]) expect(text, needle).not.toContain(needle)
       expect(Object.keys(JSON.parse(text)).sort()).toEqual(['name', 'ok', 'token'])
     })
 
@@ -657,7 +659,7 @@ describe('playback streams', () => {
         },
       })
       okOf(await play(viewer, a1, START, 10, 0, { adminClient: spy }))
-      expect(calls).toEqual([{ name: 'nvr_read_credential', args: { p_store: sA } }])
+      expect(calls).toEqual([{ name: 'recorder_read_credential', args: { p_recorder: recorderOf.get(sA) } }])
     })
 
     it('with DEMO_VIDEO=1 and a loopback store the source is the generated test picture, and no password is read', async () => {

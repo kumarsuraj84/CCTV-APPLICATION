@@ -3,7 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { cleanResults, SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
 import type { Database } from '@/types/database'
-import { adminClient, cleanupOrg, createOrg } from '../setup/fixtures'
+import { adminClient, cleanupOrg, createOrg, createSite } from '../setup/fixtures'
 
 const admin = () => adminClient()
 
@@ -40,40 +40,39 @@ function recording() {
 describe('SupabaseMonitorDb restricted to one organisation (I6)', () => {
   let orgA: string
   let orgB: string
-  let storeA: string
-  let storeB: string
+  let recA: string
+  let recB: string
 
   beforeAll(async () => {
     orgA = await createOrg()
     orgB = await createOrg()
     const a = admin()
-    const mk = async (org: string, code: string) =>
-      (await a.from('locations').insert({ org_id: org, code, name: code, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
-    storeA = await mk(orgA, 'SCA')
-    storeB = await mk(orgB, 'SCB')
-    await a.from('cameras').insert([{ org_id: orgA, location_id: storeA, channel: 1, name: 'A1' }, { org_id: orgB, location_id: storeB, channel: 1, name: 'B1' }])
+    const siteA = await createSite(orgA, { code: 'SCA', host: '127.0.0.1', username: 'u', cameras: 1 })
+    const siteB = await createSite(orgB, { code: 'SCB', host: '127.0.0.1', username: 'u', cameras: 1 })
+    recA = siteA.recorderId
+    recB = siteB.recorderId
     await a.from('assets').insert([
-      { org_id: orgA, location_id: storeA, type: 'server', name: 'DA', ip: '127.0.0.1', tcp_port: 1 },
-      { org_id: orgB, location_id: storeB, type: 'server', name: 'DB', ip: '127.0.0.1', tcp_port: 2 },
+      { org_id: orgA, location_id: siteA.locationId, type: 'server', name: 'DA', ip: '127.0.0.1', tcp_port: 1 },
+      { org_id: orgB, location_id: siteB.locationId, type: 'server', name: 'DB', ip: '127.0.0.1', tcp_port: 2 },
     ])
-    await a.rpc('monitor_apply_results', { p_org: orgB, p_results: [{ type: 'nvr', id: storeB, ok: false, at: new Date().toISOString() }], p_threshold: 1 })
+    await a.rpc('monitor_apply_results', { p_org: orgB, p_results: [{ type: 'recorder', id: recB, ok: false, at: new Date().toISOString() }], p_threshold: 1 })
   })
   afterAll(async () => {
     await cleanupOrg(orgA)
     await cleanupOrg(orgB)
   })
 
-  it('reads only that organisation: devices, NVRs, stores with cameras and the NVR state', async () => {
+  it('reads only that organisation: devices, NVRs, recorder jobs with their mapped cameras and the NVR state', async () => {
     const { client, filters } = recording()
     vi.spyOn(console, 'log').mockImplementation(() => {})
     const db = new SupabaseMonitorDb(client, { orgId: orgA })
     expect((await db.loadDevices()).map((d) => d.org_id)).toEqual([orgA])
     expect((await db.loadNvrs()).map((n) => n.org_id)).toEqual([orgA])
-    const jobs = await db.loadStoreJobs()
-    expect(jobs.map((j) => j.id)).toEqual([storeA])
+    const jobs = await db.loadRecorderJobs()
+    expect(jobs.map((j) => j.id)).toEqual([recA])
     expect(jobs[0].cameras).toHaveLength(1)
-    // Every one of those reads said so in the query itself, including the one that reads the NVR states.
-    for (const table of ['assets', 'locations', 'cameras', 'check_state', 'recorders']) {
+    // Every one of those reads said so in the query itself, including the ones that read the mappings and the NVR states (P2-5b).
+    for (const table of ['assets', 'recorders', 'camera_channel_mappings', 'check_state']) {
       expect(filters.some(([t, col, val]) => t === table && col === 'org_id' && val === orgA)).toBe(true)
     }
     vi.restoreAllMocks()
@@ -83,9 +82,9 @@ describe('SupabaseMonitorDb restricted to one organisation (I6)', () => {
     const db = new SupabaseMonitorDb(admin())
     const orgs = new Set((await db.loadDevices()).map((d) => d.org_id))
     expect(orgs.has(orgA) && orgs.has(orgB)).toBe(true)
-    const jobs = await db.loadStoreJobs([storeA, storeB], new Date(Date.now() - 180_000))
-    expect(jobs.find((j) => j.id === storeB)?.knownDown).toBe(true)
-    expect(jobs.find((j) => j.id === storeA)?.knownDown).toBe(false)
+    const jobs = await db.loadRecorderJobs([recA, recB], new Date(Date.now() - 180_000))
+    expect(jobs.find((j) => j.id === recB)?.knownDown).toBe(true)
+    expect(jobs.find((j) => j.id === recA)?.knownDown).toBe(false)
   })
 })
 
@@ -144,8 +143,7 @@ describe('what is sent to monitor_apply_results (minor 11)', () => {
     const org = await createOrg()
     try {
       const a = admin()
-      const store = (await a.from('locations').insert({ org_id: org, code: 'CL', name: 'CL', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
-      const cam = (await a.from('cameras').insert({ org_id: org, location_id: store, channel: 1, name: 'C1' }).select('id').single()).data!.id
+      const cam = (await createSite(org, { code: 'CL', host: '127.0.0.1', username: 'u', cameras: 1 })).cameraIds[0]
       vi.spyOn(console, 'log').mockImplementation(() => {})
       const at = new Date().toISOString()
       await new SupabaseMonitorDb(admin(), { orgId: org }).applyResults(
