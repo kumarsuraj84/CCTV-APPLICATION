@@ -76,10 +76,13 @@ Settings (`.env.example` lists them): `GO2RTC_URL` (default `http://127.0.0.1:19
 
 - A video socket is accepted only with a valid, unexpired token and an `Origin` that is in `GATEWAY_ALLOWED_ORIGINS`; anything else is closed (code 1008).
 - The go2rtc stream name comes from the signed token only. Nothing the browser sends can choose a stream, and go2rtc's address and error texts never reach a browser.
-- At most 300 sockets at once, 60 connection attempts per address per minute, 4 MB per message; a session lasts at most 30 minutes (the page reconnects with a new token).
+- At most 300 sockets at once (100 per address), 240 connection attempts per address per minute, 4 MB per message; a session lasts at most 30 minutes (the page reconnects with a new token). A token only has to be valid when the connection is made (10 minutes), so deactivating a person takes effect on their next connection, not on a video already running.
+- A browser may only send the player's start requests (`mse`, `mp4`, `mjpeg`) to go2rtc; anything else closes the socket. The player scripts are served with `Access-Control-Allow-Origin` for the listed web app addresses only.
 - The log has outcomes only (no tokens, stream names or people). Stop the gateway with Ctrl+C; it closes all sockets within 5 seconds.
 - Behind a proxy or load balancer the per-address limit sees the proxy's address. Put the gateway where browsers reach it directly, or move the limit to the proxy.
-- Do not publish go2rtc's ports (1984, 8555) on other interfaces: its API can register streams and read camera addresses.
+- go2rtc's API (127.0.0.1:1984) has no password and can run commands (`exec:` sources), so it must never be exposed beyond this machine: do not publish ports 1984 or 8555 on other interfaces and do not put a proxy in front of them.
+- The stream token travels in the query string of the WebSocket address, so any reverse proxy or load balancer in front of the gateway must not log query strings.
+- The go2rtc config file is mounted read-only on purpose: camera addresses and passwords are sent to go2rtc at run time and are never written into it. The image is pinned by digest in `deploy/docker-compose.dev.yml`; the container logs are rotated (3 x 10 MB).
 
 ## Safety rules
 

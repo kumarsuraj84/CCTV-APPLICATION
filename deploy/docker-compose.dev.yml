@@ -1,14 +1,23 @@
 name: cctv-hub-media
 services:
   go2rtc:
-    image: alexxit/go2rtc:1.9.9
+    # Pinned by digest so a changed tag can never change what runs (1.9.9, pulled 2026-10-22).
+    image: alexxit/go2rtc:1.9.9@sha256:7d31dcb73633310e80497c431f4534c81ed55ec0708db3262bc56918e654bba5
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     # Nothing here is reachable from another machine. The browser's only video endpoint is the gateway (npm run gateway, port 3213).
     ports:
       - "127.0.0.1:1984:1984"
       - "127.0.0.1:8555:8555/tcp"
       - "127.0.0.1:8555:8555/udp"
     volumes:
+      # Read-only on purpose: camera addresses and passwords are sent to go2rtc at run time and are never written into this file.
       - ./go2rtc.yaml:/config/go2rtc.yaml:ro

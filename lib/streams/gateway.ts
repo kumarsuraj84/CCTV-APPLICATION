@@ -12,7 +12,7 @@ import { streamName, verifyStreamToken, type StreamClaims } from '@/lib/streams/
 
 export type GatewayEvent = {
   event: 'gateway_session'
-  outcome: 'started' | 'ended' | 'denied_origin' | 'denied_token' | 'rate_limited' | 'full' | 'upstream_failed' | 'stalled'
+  outcome: 'started' | 'ended' | 'denied_origin' | 'denied_token' | 'denied_message' | 'rate_limited' | 'full' | 'upstream_failed' | 'backpressure' | 'stalled'
   /** First 8 hex characters of the SHA-256 of the camera id; never the id, the stream name, the person or the token. */
   camera?: string
   kind?: StreamClaims['k']
@@ -29,8 +29,12 @@ export type GatewayOptions = {
   now?: () => number
   /** Open browser sockets allowed at once (default 300); more are closed with 1013. */
   maxSockets?: number
-  /** Upgrade attempts per address per minute (default 60); more are closed with 1013 (HTTP script requests get a 429). */
+  /** Open browser sockets allowed at once from one address (default 100); more are closed with 1013. */
+  maxSocketsPerIp?: number
+  /** Upgrade attempts per address per minute (default 240); more are closed with 1013 (HTTP script requests get a 429). */
   maxUpgradesPerMinute?: number
+  /** How long a request may take to arrive before the connection is dropped (default 10 s; headers and body). */
+  requestTimeoutMs?: number
   /** When the receiving side has this many bytes waiting, the sending side is paused (default 1 MB). */
   backpressureBytes?: number
   /** If the receiving side stays that far behind for this long, the session is cut (default 10 s). */
@@ -43,7 +47,13 @@ export type GatewayServer = http.Server & { shutdown(timeoutMs?: number): Promis
 
 export const DEFAULT_MAX_SESSION_MS = 30 * 60_000
 export const DEFAULT_MAX_SOCKETS = 300
-export const DEFAULT_MAX_UPGRADES_PER_MINUTE = 60
+export const DEFAULT_MAX_SOCKETS_PER_IP = 100
+export const DEFAULT_MAX_UPGRADES_PER_MINUTE = 240
+export const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
+export const MAX_HTTP_CONNECTIONS = 1000
+/** The only messages a browser may send to go2rtc: the player's request to start a stream, as JSON text. */
+export const BROWSER_MESSAGE_TYPES: readonly string[] = ['mse', 'mp4', 'mjpeg']
+const MAX_BROWSER_TEXT = 4096
 /** Largest message accepted from a browser. */
 export const MAX_BROWSER_PAYLOAD = 4 * 1024 * 1024
 /** Largest message accepted from go2rtc (a video fragment can be bigger than anything a browser sends). */
@@ -60,6 +70,17 @@ const MAX_HELD_MESSAGES = 32
 const MAX_HELD_BYTES = 64 * 1024
 /** A refused socket is given this long to take the close message before it is cut. */
 const REFUSED_LINGER_MS = 2000
+/** True for a text message like {"type":"mse","value":"..."}: JSON object whose type is on the allow-list. Anything else is refused. */
+function allowedBrowserMessage(data: Buffer, isBinary: boolean): boolean {
+  if (isBinary || data.length === 0 || data.length > MAX_BROWSER_TEXT) return false
+  try {
+    const o: unknown = JSON.parse(data.toString('utf8'))
+    return typeof o === 'object' && o !== null && !Array.isArray(o) && typeof (o as { type?: unknown }).type === 'string' && BROWSER_MESSAGE_TYPES.includes((o as { type: string }).type)
+  } catch {
+    return false
+  }
+}
+
 const GENERIC_STREAM_ERROR = 'The video is not available.'
 
 const shortHash = (id: string) => createHash('sha256').update(id).digest('hex').slice(0, 8)
@@ -154,6 +175,9 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
   const perMinute = opts.maxUpgradesPerMinute ?? DEFAULT_MAX_UPGRADES_PER_MINUTE
   const upgradeLimiter = new WindowLimiter(perMinute, 60_000, now)
   const scriptLimiter = new WindowLimiter(perMinute, 60_000, now)
+  const maxPerIp = opts.maxSocketsPerIp ?? DEFAULT_MAX_SOCKETS_PER_IP
+  const socketsPerIp = new Map<string, number>()
+  const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
 
   const origin = upstreamBase.origin
   const wsOrigin = origin.replace(/^http/, 'ws')
@@ -196,40 +220,49 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     return Buffer.concat(chunks)
   }
 
-  async function serveScript(res: http.ServerResponse, upstreamPath: string) {
+  /** The player scripts are loaded cross-origin by the web app: answer with that exact origin when it is on the list, never with *. */
+  function scriptCors(req: http.IncomingMessage): Record<string, string> {
+    const given = req.headersDistinct.origin
+    const o = given && given.length === 1 ? normalizeOrigin(given[0], true) : null
+    return o !== null && allowed.has(o) ? { 'Access-Control-Allow-Origin': o, Vary: 'Origin' } : { Vary: 'Origin' }
+  }
+
+  async function serveScript(req: http.IncomingMessage, res: http.ServerResponse, upstreamPath: string) {
+    const cors = scriptCors(req)
     try {
       // Nothing from the browser's request goes along: not its headers, not its query, only a fixed path.
       const r = await fetch(`${origin}${upstreamPath}`, { redirect: 'manual', signal: AbortSignal.timeout(SCRIPT_TIMEOUT_MS) })
       const body = r.ok ? await readCapped(r) : (await r.body?.cancel().catch(() => {}), null)
-      if (!body) return sendText(res, 502, 'The video server is not available.')
+      if (!body) return sendText(res, 502, 'The video server is not available.', cors)
       res.writeHead(200, {
         'Content-Type': 'text/javascript',
         'Content-Length': body.length,
         'Cache-Control': 'public, max-age=300',
         'X-Content-Type-Options': 'nosniff',
+        ...cors,
       })
       res.end(body)
     } catch {
-      sendText(res, 502, 'The video server is not available.')
+      sendText(res, 502, 'The video server is not available.', cors)
     }
   }
 
-  const server = http.createServer((req, res) => {
+  const server = http.createServer({ connectionsCheckingInterval: 2000, keepAliveTimeout: 5000, headersTimeout: requestTimeoutMs, requestTimeout: requestTimeoutMs }, (req, res) => {
     const path = pathOf(req.url)
     const known = path === '/g/health' || path === WS_PATH || (path !== null && Object.hasOwn(SCRIPT_PATHS, path))
     if (!known) return sendText(res, 404, 'Not found')
     if (path === WS_PATH) return sendText(res, 426, 'This address is for video connections only.', { Upgrade: 'websocket', Connection: 'Upgrade' })
+    // Anything but GET is 405, including a CORS preflight: the player scripts are simple GETs and need none.
     if (req.method !== 'GET') return sendText(res, 405, 'Method not allowed', { Allow: 'GET' })
     if (path === '/g/health') return sendText(res, 200, 'ok')
     if (!scriptLimiter.allow(clientAddress(req.socket))) {
       log({ event: 'gateway_session', outcome: 'rate_limited' })
-      return sendText(res, 429, 'Too many requests. Try again in a minute.', { 'Retry-After': '60' })
+      return sendText(res, 429, 'Too many requests. Try again in a minute.', { 'Retry-After': '60', ...scriptCors(req) })
     }
-    void serveScript(res, SCRIPT_PATHS[path as string])
+    void serveScript(req, res, SCRIPT_PATHS[path as string])
   }) as GatewayServer
-  // Slow or half-finished requests are dropped; this does not affect an upgraded video socket.
-  server.headersTimeout = 10_000
-  server.requestTimeout = 15_000
+  // Slow or half-finished requests are dropped (checked every 2 s); this does not affect an upgraded video socket.
+  server.maxConnections = MAX_HTTP_CONNECTIONS
 
   // ── WebSocket ──────────────────────────────────────────────────────────────
   function refuseRaw(socket: Duplex, status: number, text: string) {
@@ -257,11 +290,23 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     if (closing) return refuseRaw(socket, 503, 'Service unavailable')
     if (pathOf(req.url) !== WS_PATH) return refuseRaw(socket, 404, 'Not found')
     const limited = !upgradeLimiter.allow(clientAddress(socket))
+    const ip = clientAddress(socket)
     wss.handleUpgrade(req, socket, head, (ws) => {
       ws.on('error', () => {})
+      const mine = (socketsPerIp.get(ip) ?? 0) + 1
+      socketsPerIp.set(ip, mine)
+      ws.on('close', () => {
+        const left = (socketsPerIp.get(ip) ?? 1) - 1
+        if (left <= 0) socketsPerIp.delete(ip)
+        else socketsPerIp.set(ip, left)
+      })
       if (limited) {
         log({ event: 'gateway_session', outcome: 'rate_limited' })
         return closeSocket(ws, 1013, 'Too many attempts. Try again in a minute.')
+      }
+      if (mine > maxPerIp) {
+        log({ event: 'gateway_session', outcome: 'full' })
+        return closeSocket(ws, 1013, 'Too many open videos from this address.')
       }
       if (wss.clients.size > maxSockets) {
         log({ event: 'gateway_session', outcome: 'full' })
@@ -309,6 +354,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
 
     let ended = false
     let upstreamOpen = false
+    let reportedBackpressure = false
     let held: { data: Buffer; isBinary: boolean }[] = []
     let heldBytes = 0
     const stops: (() => void)[] = []
@@ -354,6 +400,10 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
         dst.send(isBinary ? data : clean(data), { binary: isBinary }, () => {})
         if (paused || dst.bufferedAmount <= highWater) return
         paused = true
+        if (!reportedBackpressure) {
+          reportedBackpressure = true
+          log({ event: 'gateway_session', outcome: 'backpressure', camera, kind })
+        }
         src.pause()
         stall = setTimeout(() => end(1013, 'Too slow', 'stalled'), stallMs)
         poll = setInterval(() => {
@@ -369,6 +419,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     client.on('message', (raw: RawData, isBinary: boolean) => {
       if (ended) return
       const data = toBuffer(raw)
+      if (!allowedBrowserMessage(data, isBinary)) return end(1008, 'Not allowed', 'denied_message')
       if (upstreamOpen) return toUpstream(data, isBinary)
       held.push({ data, isBinary })
       heldBytes += data.length

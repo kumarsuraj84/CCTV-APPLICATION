@@ -2,7 +2,7 @@ import http from 'node:http'
 import net, { type AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import WebSocket, { WebSocketServer } from 'ws'
-import { createGateway, type GatewayEvent, type GatewayOptions, type GatewayServer } from '@/lib/streams/gateway'
+import { BROWSER_MESSAGE_TYPES, createGateway, DEFAULT_MAX_SOCKETS, DEFAULT_MAX_SOCKETS_PER_IP, DEFAULT_MAX_UPGRADES_PER_MINUTE, type GatewayEvent, type GatewayOptions, type GatewayServer } from '@/lib/streams/gateway'
 import { signStreamToken, streamName, type StreamClaims } from '@/lib/streams/token'
 
 // Everything runs on loopback: a fake go2rtc (http + WebSocket), the gateway on port 0 and a ws client. Never a real camera.
@@ -52,13 +52,24 @@ async function startFakeGo2rtc(): Promise<FakeGo2rtc> {
     socket.on('message', (data, isBinary) => {
       const text = isBinary ? '' : data.toString()
       conn.received.push({ text: !isBinary, data: isBinary ? `${(data as Buffer).length}` : text })
-      if (text === 'send-error') {
+      let cmd = ''
+      try {
+        cmd = String((JSON.parse(text) as { value?: unknown }).value ?? '')
+      } catch {
+        // not a command
+      }
+      if (cmd === 'send-error') {
         socket.send(JSON.stringify({ type: 'error', value: 'streams: dial tcp rtsp://admin:hunter2@10.9.8.7:554/ch1: i/o timeout' }))
-      } else if (text === 'flood') {
+      } else if (cmd === 'flood') {
         const chunk = Buffer.alloc(64 * 1024, 7)
         for (let i = 0; i < 400; i++) socket.send(chunk, { binary: true })
-      } else if (text === 'bye') {
+      } else if (cmd.startsWith('burst:')) {
+        const chunk = Buffer.alloc(64 * 1024, 7)
+        for (let i = 0; i < Number(cmd.slice(6)); i++) socket.send(chunk, { binary: true })
+      } else if (cmd === 'bye') {
         socket.close(1000)
+      } else if (cmd === 'drop') {
+        socket.terminate()
       } else socket.send(data, { binary: isBinary })
     })
   })
@@ -103,8 +114,11 @@ const tokenFor = (clock: { t: number }, over: Partial<StreamClaims> = {}, secret
 
 type Outcome = { code: number; reason: string } | { error: string }
 
-function open(url: string, origin: string | null = APP) {
-  const ws = new WebSocket(url, { origin: origin ?? undefined, headers: origin === null ? {} : undefined })
+/** What a player sends: a JSON text message of an allowed type. The fake go2rtc reads `value` as a command. */
+const msg = (value: string, type = 'mse') => JSON.stringify({ type, value })
+
+function open(url: string, origin: string | null = APP, headers: Record<string, string> = {}) {
+  const ws = new WebSocket(url, { origin: origin ?? undefined, headers })
   const opened = new Promise<boolean>((resolve) => {
     ws.on('open', () => resolve(true))
     ws.on('error', () => resolve(false))
@@ -146,25 +160,35 @@ async function get(port: number, path: string, headers: http.OutgoingHttpHeaders
   })
 }
 
-/** A WebSocket handshake written by hand (so headers can be repeated); returns what the gateway sent in the next 600 ms. */
-function rawUpgrade(port: number, path: string, headerLines: string[]): Promise<Buffer> {
+/** A hand-written request (so headers can be repeated or left unfinished): resolves with what came back once `done` says it is enough, or when the gateway closes the connection. */
+function rawRequest(port: number, text: string, done: (received: Buffer) => boolean = () => false, maxMs = 20_000): Promise<{ received: Buffer; closedByGateway: boolean }> {
   return new Promise((resolve, reject) => {
     const socket = net.connect(port, '127.0.0.1')
     const chunks: Buffer[] = []
-    socket.on('data', (d) => chunks.push(d))
-    socket.on('error', reject)
-    socket.on('connect', () => {
-      socket.write(
-        [`GET ${path} HTTP/1.1`, `Host: 127.0.0.1:${port}`, 'Connection: Upgrade', 'Upgrade: websocket', 'Sec-WebSocket-Version: 13', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==', ...headerLines, '', ''].join('\r\n'),
-      )
-    })
-    setTimeout(() => {
+    let finished = false
+    const finish = (closedByGateway: boolean) => {
+      if (finished) return
+      finished = true
+      clearTimeout(limit)
       socket.destroy()
-      resolve(Buffer.concat(chunks))
-    }, 600)
+      resolve({ received: Buffer.concat(chunks), closedByGateway })
+    }
+    const limit = setTimeout(() => (finished ? undefined : (finished = true, socket.destroy(), reject(new Error('Timed out waiting for the gateway')))), maxMs)
+    socket.on('data', (d) => {
+      chunks.push(d)
+      if (done(Buffer.concat(chunks))) finish(false)
+    })
+    socket.on('close', () => finish(true))
+    socket.on('error', () => finish(true))
+    socket.on('connect', () => socket.write(text))
   })
 }
 
+/** A WebSocket handshake written by hand (so headers can be repeated); resolves when `done` is satisfied. */
+async function rawUpgrade(port: number, path: string, headerLines: string[], done: (b: Buffer) => boolean): Promise<Buffer> {
+  const text = [`GET ${path} HTTP/1.1`, `Host: 127.0.0.1:${port}`, 'Connection: Upgrade', 'Upgrade: websocket', 'Sec-WebSocket-Version: 13', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==', ...headerLines, '', ''].join('\r\n')
+  return (await rawRequest(port, text, done)).received
+}
 const noUpstream =(fake: FakeGo2rtc) => expect(fake.connections).toHaveLength(0)
 
 describe('gateway: plain HTTP', () => {
@@ -234,6 +258,79 @@ describe('gateway: plain HTTP', () => {
   })
 })
 
+describe('gateway: scripts for the web app (CORS)', () => {
+  it('names the caller as allowed origin only when it is on the list; never * and never credentials', async () => {
+    const fake = await startFakeGo2rtc()
+    const { port } = await startGateway(fake.url, { allowedOrigins: [APP, 'https://cams.example.com/'] })
+    for (const p of ['/g/video-stream.js', '/g/video-rtc.js']) {
+      const same = await get(port, p, { Origin: APP })
+      expect(same.status).toBe(200)
+      expect(same.headers['access-control-allow-origin']).toBe(APP)
+      expect(same.headers.vary).toBe('Origin')
+      expect(same.headers['access-control-allow-credentials']).toBeUndefined()
+      // Spelled differently, same origin: the answer is the normalised spelling the browser compares with.
+      const other = await get(port, p, { Origin: 'HTTPS://Cams.Example.com:443' })
+      expect(other.headers['access-control-allow-origin']).toBe('https://cams.example.com')
+      // No Origin (same-origin or not a browser): no CORS header, but still Vary.
+      const none = await get(port, p)
+      expect(none.status).toBe(200)
+      expect(none.headers['access-control-allow-origin']).toBeUndefined()
+      expect(none.headers.vary).toBe('Origin')
+      // A foreign or malformed Origin gets the script but no permission.
+      for (const o of ['http://evil.test', 'null', '*', APP + '/x', 'http://app.test:9999']) {
+        const r = await get(port, p, { Origin: o })
+        expect(r.status, o).toBe(200)
+        expect(r.headers['access-control-allow-origin'], o).toBeUndefined()
+        expect(r.headers.vary).toBe('Origin')
+      }
+    }
+  })
+
+  it('also names the allowed origin on a 502 and a 429, so the browser shows the real status', async () => {
+    const fake = await startFakeGo2rtc()
+    const { port } = await startGateway(fake.url, { maxUpgradesPerMinute: 3 })
+    fake.setBigScript(true)
+    const bad = await get(port, '/g/video-rtc.js', { Origin: APP })
+    expect(bad.status).toBe(502)
+    expect(bad.headers['access-control-allow-origin']).toBe(APP)
+    expect(bad.headers.vary).toBe('Origin')
+    await get(port, '/g/video-rtc.js', { Origin: APP })
+    await get(port, '/g/video-rtc.js', { Origin: APP })
+    const limited = await get(port, '/g/video-rtc.js', { Origin: APP })
+    expect(limited.status).toBe(429)
+    expect(limited.headers['access-control-allow-origin']).toBe(APP)
+    const foreign = await get(port, '/g/video-rtc.js', { Origin: 'http://evil.test' })
+    expect(foreign.status).toBe(429)
+    expect(foreign.headers['access-control-allow-origin']).toBeUndefined()
+  })
+
+  it('answers a preflight (OPTIONS) with 405 on every path, with no permission headers', async () => {
+    const fake = await startFakeGo2rtc()
+    const { port } = await startGateway(fake.url)
+    for (const p of ['/g/video-stream.js', '/g/video-rtc.js', '/g/health']) {
+      const r = await get(port, p, { Origin: APP, 'Access-Control-Request-Method': 'GET' }, 'OPTIONS')
+      expect(r.status, p).toBe(405)
+      expect(r.headers['access-control-allow-origin']).toBeUndefined()
+      expect(r.headers.allow).toBe('GET')
+    }
+    expect(fake.requests).toHaveLength(0)
+  })
+})
+
+describe('gateway: slow and unfinished requests', () => {
+  it('drops a connection that never finishes its request headers', async () => {
+    const fake = await startFakeGo2rtc()
+    const { port } = await startGateway(fake.url, { requestTimeoutMs: 500 })
+    const started = Date.now()
+    // The request line and one header, never the blank line that ends the headers.
+    const r = await rawRequest(port, 'GET /g/health HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow: ', undefined, 15_000)
+    expect(r.closedByGateway).toBe(true)
+    expect(Date.now() - started).toBeLessThan(8000)
+    // A normal request still works afterwards.
+    expect((await get(port, '/g/health')).status).toBe(200)
+  })
+})
+
 describe('gateway: who may connect', () => {
   it('closes with 1008 before any upstream connection: bad, expired, foreign, missing and oversize tokens', async () => {
     const fake = await startFakeGo2rtc()
@@ -266,14 +363,14 @@ describe('gateway: who may connect', () => {
     }
     // Two Origin headers are ambiguous and refused even when one of them is right.
     const target = new URL(url)
-    const reply = await rawUpgrade(port, target.pathname + target.search, [`Origin: ${APP}`, `Origin: ${APP}`])
+    const reply = await rawUpgrade(port, target.pathname + target.search, [`Origin: ${APP}`, `Origin: ${APP}`], (b) => b.includes('\r\n\r\n') && b.length >= b.indexOf('\r\n\r\n') + 8)
     expect(reply.subarray(0, 12).toString()).toBe('HTTP/1.1 101')
     const frame = reply.subarray(reply.indexOf('\r\n\r\n') + 4)
     expect(frame[0]).toBe(0x88) // a close frame
     expect(frame.readUInt16BE(2)).toBe(1008)
     noUpstream(fake)
     // The same request with one Origin header is accepted.
-    const single = await rawUpgrade(port, target.pathname + target.search, [`Origin: ${APP}`])
+    const single = await rawUpgrade(port, target.pathname + target.search, [`Origin: ${APP}`], (b) => b.includes('\r\n\r\n'))
     expect(single.subarray(0, 12).toString()).toBe('HTTP/1.1 101')
     await waitFor(() => fake.connections.length === 1)
     fake.connections[0].socket.terminate()
@@ -354,30 +451,27 @@ describe('gateway: a valid session', () => {
     const c = open(wsUrl(port, tokenFor(clock)))
     await c.opened
     const text = nextMessage(c.ws)
-    c.ws.send('{"type":"mse"}')
+    c.ws.send(msg('hello'))
     const t = await text
     expect(t.isBinary).toBe(false)
-    expect(t.data.toString()).toBe('{"type":"mse"}')
-    const bin = nextMessage(c.ws)
+    expect(t.data.toString()).toBe(msg('hello'))
+    // Binary frames (the video itself) flow from go2rtc to the browser, also when nobody asked at that moment.
     const payload = Buffer.from([0, 1, 2, 254, 255])
-    c.ws.send(payload)
+    const bin = nextMessage(c.ws)
+    fake.connections[0].socket.send(payload, { binary: true })
     const b = await bin
     expect(b.isBinary).toBe(true)
     expect(b.data.equals(payload)).toBe(true)
-    // A message from go2rtc that nobody asked for also reaches the browser.
-    const pushed = nextMessage(c.ws)
-    fake.connections[0].socket.send(Buffer.from('fragment'), { binary: true })
-    expect((await pushed).data.toString()).toBe('fragment')
   })
 
   it('keeps what the browser sends while go2rtc is still being reached', async () => {
     const fake = await startFakeGo2rtc()
     const { port, clock } = await startGateway(fake.url)
     const c = open(wsUrl(port, tokenFor(clock)))
-    c.ws.on('open', () => c.ws.send('first-and-immediate'))
+    c.ws.on('open', () => c.ws.send(msg('first-and-immediate')))
     await c.opened
     await waitFor(() => fake.connections.length === 1 && fake.connections[0].received.length === 1)
-    expect(fake.connections[0].received[0]).toEqual({ text: true, data: 'first-and-immediate' })
+    expect(fake.connections[0].received[0]).toEqual({ text: true, data: msg('first-and-immediate') })
   })
 
   it('closes upstream when the browser closes, and the browser when upstream closes', async () => {
@@ -393,7 +487,7 @@ describe('gateway: a valid session', () => {
     const b = open(wsUrl(port, tokenFor(clock)))
     await b.opened
     await waitFor(() => fake.connections.length === 2)
-    b.ws.send('bye') // the fake closes its side
+    b.ws.send(msg('bye')) // the fake closes its side
     expect(await b.closed).toMatchObject({ code: 1000 })
   })
 
@@ -426,11 +520,76 @@ describe('gateway: a valid session', () => {
     const { port, clock } = await startGateway(fake.url)
     const c = open(wsUrl(port, tokenFor(clock)))
     await c.opened
-    const msg = nextMessage(c.ws)
-    c.ws.send('send-error')
-    const m = await msg
+    const reply = nextMessage(c.ws)
+    c.ws.send(msg('send-error'))
+    const m = await reply
     expect(JSON.parse(m.data.toString())).toEqual({ type: 'error', value: 'The video is not available.' })
     expect(m.data.toString()).not.toMatch(/hunter2|10\.9\.8\.7|rtsp/)
+  })
+
+  it('forwards only mse, mp4 and mjpeg requests from the browser', async () => {
+    expect(BROWSER_MESSAGE_TYPES).toEqual(['mse', 'mp4', 'mjpeg'])
+    const fake = await startFakeGo2rtc()
+    const { port, clock, events } = await startGateway(fake.url)
+    const c = open(wsUrl(port, tokenFor(clock)))
+    await c.opened
+    await waitFor(() => fake.connections.length === 1)
+    for (const type of ['mse', 'mp4', 'mjpeg']) c.ws.send(msg('codecs', type))
+    await waitFor(() => fake.connections[0].received.length === 3)
+    expect(fake.connections[0].received.map((m) => JSON.parse(m.data).type)).toEqual(['mse', 'mp4', 'mjpeg'])
+    expect(c.ws.readyState).toBe(WebSocket.OPEN)
+    expect(events.some((e) => e.outcome === 'denied_message')).toBe(false)
+  })
+
+  it('closes with 1008 on anything else: other types, non-JSON, binary, big text', async () => {
+    const fake = await startFakeGo2rtc()
+    const { port, clock, events } = await startGateway(fake.url)
+    const bad: (string | Buffer)[] = [
+      JSON.stringify({ type: 'webrtc/offer', value: 'v=0' }),
+      JSON.stringify({ type: 'webrtc/candidate', value: 'candidate:1' }),
+      JSON.stringify({ type: 'hls' }),
+      JSON.stringify({ type: 'MSE' }),
+      JSON.stringify({ type: ['mse'] }),
+      JSON.stringify({ value: 'no type' }),
+      JSON.stringify(['mse']),
+      JSON.stringify('mse'),
+      'mse',
+      'not json at all',
+      '',
+      msg('x'.repeat(5000)),
+      Buffer.from(msg('binary form of an allowed message')),
+      Buffer.from([1, 2, 3]),
+    ]
+    for (const m of bad) {
+      const c = open(wsUrl(port, tokenFor(clock)))
+      await c.opened
+      await waitFor(() => fake.connections.length > 0)
+      c.ws.send(m)
+      expect(await c.closed, String(m).slice(0, 40)).toEqual({ code: 1008, reason: 'Not allowed' })
+      await waitFor(() => fake.connections.every((x) => x.closed))
+      expect(fake.connections.every((x) => x.received.length === 0)).toBe(true)
+      fake.connections.length = 0
+    }
+    expect(events.filter((e) => e.outcome === 'denied_message')).toHaveLength(bad.length)
+  })
+
+  it('also refuses a bad message that arrives before go2rtc is reached', async () => {
+    const fake = await startFakeGo2rtc()
+    const { port, clock } = await startGateway(fake.url)
+    const c = open(wsUrl(port, tokenFor(clock)))
+    c.ws.on('open', () => c.ws.send(JSON.stringify({ type: 'webrtc/offer', value: 'v=0' })))
+    expect(await c.closed).toEqual({ code: 1008, reason: 'Not allowed' })
+    await new Promise((r) => setTimeout(r, 200))
+    expect(fake.connections.every((x) => x.received.length === 0)).toBe(true)
+  })
+
+  it('closes the browser with 1011 when go2rtc drops the connection abnormally', async () => {
+    const fake = await startFakeGo2rtc()
+    const { port, clock } = await startGateway(fake.url)
+    const c = open(wsUrl(port, tokenFor(clock)))
+    await c.opened
+    c.ws.send(msg('drop')) // the fake cuts the TCP connection without a close message
+    expect(await c.closed).toEqual({ code: 1011, reason: 'The video is not available.' })
   })
 
   it('refuses a browser message above 4 MB (close 1009)', async () => {
@@ -484,6 +643,55 @@ describe('gateway: limits', () => {
     await later.closed
   })
 
+  it('has the agreed defaults', () => {
+    expect(DEFAULT_MAX_SOCKETS).toBe(300)
+    expect(DEFAULT_MAX_SOCKETS_PER_IP).toBe(100)
+    expect(DEFAULT_MAX_UPGRADES_PER_MINUTE).toBe(240)
+  })
+
+  it('refuses sockets beyond maxSocketsPerIp with 1013 and takes them again when some close', async () => {
+    const fake = await startFakeGo2rtc()
+    const { port, clock } = await startGateway(fake.url, { maxSocketsPerIp: 2, maxSockets: 50 })
+    const two = [open(wsUrl(port, tokenFor(clock))), open(wsUrl(port, tokenFor(clock)))]
+    await Promise.all(two.map((c) => c.opened))
+    await waitFor(() => fake.connections.length === 2)
+    expect(await open(wsUrl(port, tokenFor(clock))).closed).toEqual({ code: 1013, reason: 'Too many open videos from this address.' })
+    expect(fake.connections).toHaveLength(2)
+    two[1].ws.close()
+    await waitFor(() => fake.connections[1].closed)
+    const again = open(wsUrl(port, tokenFor(clock)))
+    expect(await again.opened).toBe(true)
+    await waitFor(() => fake.connections.length === 3)
+  })
+
+  it('does not let X-Forwarded-For change the rate-limit bucket', async () => {
+    const fake = await startFakeGo2rtc()
+    const { port } = await startGateway(fake.url, { maxUpgradesPerMinute: 2 })
+    expect(await open(wsUrl(port, 'bad'), APP, { 'X-Forwarded-For': '10.0.0.1' }).closed).toMatchObject({ code: 1008 })
+    expect(await open(wsUrl(port, 'bad'), APP, { 'X-Forwarded-For': '10.0.0.2', 'X-Real-IP': '10.0.0.3', Forwarded: 'for=10.0.0.4' }).closed).toMatchObject({ code: 1008 })
+    expect(await open(wsUrl(port, 'bad'), APP, { 'X-Forwarded-For': '10.0.0.5' }).closed).toMatchObject({ code: 1013 })
+  })
+
+  it('pauses the sender while the receiver is behind and carries on without a cut when it catches up', async () => {
+    const fake = await startFakeGo2rtc()
+    const { port, clock, events } = await startGateway(fake.url, { backpressureBytes: 100_000, backpressureStallMs: 20_000 })
+    const c = open(wsUrl(port, tokenFor(clock)))
+    let received = 0
+    c.ws.on('message', () => received++)
+    await c.opened
+    await waitFor(() => fake.connections.length === 1)
+    const socket = (c.ws as unknown as { _socket: { pause(): void; resume(): void } })._socket
+    socket.pause() // the browser stops reading for a moment
+    c.ws.send(msg('burst:150'))
+    await waitFor(() => events.some((e) => e.outcome === 'backpressure'), 8000, 'the gateway to pause the sender')
+    expect(received).toBeLessThan(150)
+    socket.resume()
+    await waitFor(() => received === 150, 10_000, 'all 150 fragments')
+    expect(c.ws.readyState).toBe(WebSocket.OPEN)
+    expect(events.some((e) => e.outcome === 'stalled')).toBe(false)
+    expect(fake.connections[0].closed).toBe(false)
+  })
+
   it('answers 429 in plain text when the scripts are asked for too often, but never limits health', async () => {
     const fake = await startFakeGo2rtc()
     const { port, clock } = await startGateway(fake.url, { maxUpgradesPerMinute: 2 })
@@ -507,7 +715,7 @@ describe('gateway: limits', () => {
     await waitFor(() => fake.connections.length === 1)
     // The browser stops reading from its socket, then go2rtc floods it with 25 MB.
     ;(c.ws as unknown as { _socket: { pause(): void } })._socket.pause()
-    c.ws.send('flood')
+    c.ws.send(msg('flood'))
     await waitFor(() => fake.connections[0].closed, 8000, 'the gateway to cut the stalled session')
     await waitFor(() => events.some((e) => e.outcome === 'stalled'))
   })
