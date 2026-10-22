@@ -3,9 +3,10 @@
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
-import { mergeCamerasAction, remapCameraAction, type AdminActionState } from '@/lib/actions/admin/locations'
+import { remapCameraAction, type AdminActionState } from '@/lib/actions/admin/locations'
 import { formatDateTime } from '@/lib/time'
 import { Outcome, SelectField, TextField } from './fields'
+import { MergeButton } from './MergeConfirm'
 
 export type MappingCamera = {
   id: string; name: string; channel: number | null; recorderId: string | null
@@ -31,7 +32,6 @@ function CameraRow({ camera, recorders, candidates }: { camera: MappingCamera; r
   const [recorder, setRecorder] = useState(camera.recorderId ?? recorders[0]?.id ?? '')
   const [channel, setChannel] = useState(camera.channel ? String(camera.channel) : '')
   const [duplicate, setDuplicate] = useState('')
-  const [confirmMerge, setConfirmMerge] = useState(false)
   const [state, setState] = useState<AdminActionState | null>(null)
   const [busy, start] = useTransition()
   const p = `map-${camera.id}`
@@ -57,22 +57,14 @@ function CameraRow({ camera, recorders, candidates }: { camera: MappingCamera; r
         </Button>
       </div>
       {candidates.length > 0 && (
-        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-          <SelectField id={`${p}-dup`} name="duplicate" label="Merge a duplicate into this camera" value={duplicate} onChange={(e) => { setDuplicate(e.target.value); setConfirmMerge(false) }}
+        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+          <SelectField id={`${p}-dup`} name="duplicate" label="Merge a duplicate into this camera" value={duplicate} onChange={(e) => setDuplicate(e.target.value)}
             help="For a camera that was moved to another NVR and was found there again as a new camera.">
             <option value="">Choose the duplicate</option>
             {candidates.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
           </SelectField>
-          <Button type="button" variant="outline" className="h-10" disabled={busy || !duplicate} onClick={() => setConfirmMerge(true)}>Merge…</Button>
-        </div>
-      )}
-      {confirmMerge && duplicate && (
-        <div role="group" aria-label="Confirm the merge" className="space-y-2 rounded-md border border-destructive/40 bg-destructive-soft/30 p-3 text-sm">
-          <p>“{camera.name}” keeps its identity, access, groups and history and takes over the duplicate’s NVR channel. The duplicate is archived; access given to the duplicate only ends.</p>
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="destructive" disabled={busy} onClick={() => start(async () => { done(await mergeCamerasAction({ keepId: camera.id, duplicateId: duplicate })); setConfirmMerge(false) })}>Yes, merge</Button>
-            <Button type="button" variant="ghost" onClick={() => setConfirmMerge(false)}>Cancel</Button>
-          </div>
+          {/* Review I-5 / M-3: the confirmation names both cameras, the duplicate's NVR and channel, and who loses access. */}
+          <div className="sm:pt-6"><MergeButton keepId={camera.id} duplicateId={duplicate} label="Merge…" onDone={done} disabled={!duplicate} /></div>
         </div>
       )}
       <details>

@@ -30,7 +30,7 @@ export function GroupRules({ groupId, rules, places }: {
     <section aria-labelledby="group-rules-title" className="space-y-4 rounded-xl border bg-card p-4">
       <div>
         <h2 id="group-rules-title" className="font-medium">Rules (cameras added automatically)</h2>
-        <p className="text-sm text-muted-foreground">Cameras added to the place later join the group by themselves. Each person still sees only the cameras they may see.</p>
+        <p className="text-sm text-muted-foreground">Cameras added to the place later join the group by themselves. Each person still sees only the cameras they may see. NVRs are offered only to people with the IT view of them.</p>
       </div>
       {rules.length === 0 ? <p className="text-sm text-muted-foreground">No rules yet.</p> : (
         <ul className="divide-y rounded-lg border text-sm">

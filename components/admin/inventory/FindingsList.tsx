@@ -3,10 +3,11 @@
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
-import { dismissFindingAction, linkFindingAction, mergeCamerasAction, type AdminActionState } from '@/lib/actions/admin/locations'
+import { dismissFindingAction, linkFindingAction, type AdminActionState } from '@/lib/actions/admin/locations'
 import type { Finding } from '@/lib/inventory/findings'
 import { formatDateTime } from '@/lib/time'
-import { Outcome, SelectField, TextField } from './fields'
+import { Outcome, TextField } from './fields'
+import { CameraSearch, MergeButton } from './MergeConfirm'
 
 const KIND: Record<Finding['kind'], string> = { possible_move: 'May have moved', missing: 'No longer listed', channel_taken: 'Channel in use', unplaced: 'Not placed' }
 
@@ -19,13 +20,13 @@ function sentence(f: Finding): string {
     case 'channel_taken':
       return `The restored camera “${f.cameraName}” was on channel ${f.channel}, which another camera uses now.`
     case 'unplaced':
-      return `The restored camera “${f.cameraName}” (last on channel ${f.channel}) could not be matched to anything the NVR lists.`
+      return `The restored camera “${f.cameraName}” (last on channel ${f.channel}, which the NVR no longer lists) could not be matched to anything the NVR lists. If the NVR shows it as a new camera now, merge that one into it; or link it to a channel in the mapping editor of its NVR.`
   }
 }
 
 /**
  * The reconciliation list (P2-5c-1 brief item 3): what camera discovery could not place, with the action that fits each item. Nothing
- * here is decided automatically: a camera never gets a second identity without a person choosing so.
+ * here is decided automatically, and nothing happens on one click (review I-5): linking and merging each ask first, naming the cameras.
  */
 export function FindingsList({ findings, mergeCandidates }: { findings: Finding[]; mergeCandidates: Record<string, { id: string; label: string }[]> }) {
   if (findings.length === 0) return <p className="text-sm text-muted-foreground">Nothing to reconcile. Discovery placed every camera it found.</p>
@@ -36,13 +37,14 @@ function FindingRow({ f, candidates }: { f: Finding; candidates: { id: string; l
   const router = useRouter()
   const [note, setNote] = useState('')
   const [dup, setDup] = useState('')
+  const [confirmLink, setConfirmLink] = useState(false)
   const [state, setState] = useState<AdminActionState | null>(null)
   const [busy, start] = useTransition()
-  const run = (fn: () => Promise<AdminActionState>) => start(async () => {
-    const res = await fn()
+  const done = (res: AdminActionState) => {
     setState(res)
     if (res.ok) router.refresh()
-  })
+  }
+  const run = (fn: () => Promise<AdminActionState>) => start(async () => done(await fn()))
   const p = `finding-${f.id}`
   return (
     <li className="space-y-2 rounded-md border bg-card p-3">
@@ -53,25 +55,27 @@ function FindingRow({ f, candidates }: { f: Finding; candidates: { id: string; l
         <span className="text-muted-foreground">· found {formatDateTime(f.foundAt)}</span>
       </div>
       <p className="text-sm">{sentence(f)}</p>
-      <div className="flex flex-wrap items-end gap-2">
-        {(f.kind === 'possible_move' || f.kind === 'unplaced') && (
-          <Button type="button" disabled={busy} onClick={() => run(() => linkFindingAction(f.id))}>
-            {f.kind === 'possible_move' ? `Yes, it is “${f.cameraName}”: link it to channel ${f.channel}` : `Link it to channel ${f.channel} again`}
-          </Button>
-        )}
-        {f.kind === 'channel_taken' && f.otherCameraId && (
-          <Button type="button" variant="outline" disabled={busy} onClick={() => run(() => mergeCamerasAction({ keepId: f.cameraId, duplicateId: f.otherCameraId! }))}>
-            Keep the restored camera (merge the other one into it)
-          </Button>
-        )}
-      </div>
-      {f.kind === 'missing' && candidates.length > 0 && (
-        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-          <SelectField id={`${p}-dup`} name="duplicate" label="The new camera it became" value={dup} onChange={(e) => setDup(e.target.value)}>
-            <option value="">Choose a camera</option>
-            {candidates.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
-          </SelectField>
-          <Button type="button" variant="outline" className="h-10" disabled={busy || !dup} onClick={() => run(() => mergeCamerasAction({ keepId: f.cameraId, duplicateId: dup }))}>Merge into “{f.cameraName}”</Button>
+      {f.kind === 'possible_move' && (
+        <div className="space-y-2">
+          <Button type="button" disabled={busy} onClick={() => setConfirmLink(true)}>{`Link it to channel ${f.channel}…`}</Button>
+          {confirmLink && (
+            <div role="group" aria-label="Confirm the link" className="space-y-2 rounded-md border bg-muted/40 p-3 text-sm">
+              <p>“{f.cameraName}” keeps its identity, access, groups and history and shows channel {f.channel} of {f.recorderName} from now on.</p>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" disabled={busy} onClick={() => { setConfirmLink(false); run(() => linkFindingAction(f.id)) }}>Yes, link it</Button>
+                <Button type="button" variant="ghost" onClick={() => setConfirmLink(false)}>Cancel</Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {f.kind === 'channel_taken' && f.otherCameraId && (
+        <MergeButton keepId={f.cameraId} duplicateId={f.otherCameraId} label="Keep the restored camera…" onDone={done} />
+      )}
+      {(f.kind === 'missing' || f.kind === 'unplaced') && (
+        <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+          <CameraSearch id={`${p}-dup`} label="The new camera it became" value={dup} onChange={setDup} initial={candidates} />
+          <MergeButton keepId={f.cameraId} duplicateId={dup} label={`Merge into “${f.cameraName}”…`} onDone={done} disabled={!dup} />
         </div>
       )}
       <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">

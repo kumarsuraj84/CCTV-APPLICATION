@@ -5,6 +5,7 @@ import { normalizeZone } from '@/lib/import/regions'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { ensurePlaceholderCameras } from '@/lib/inventory/cameras'
 import { storeSchema } from '@/lib/inventory/schemas'
+import { addressChanged, MSG_PASSWORD_AGAIN } from '@/lib/inventory/recorder-admin'
 
 // The "Manage stores" form (P2-5b): a location plus its PRIMARY recorder (NVR) and that recorder's cameras. The location row holds no NVR
 // data any more; the NVR is a recorder of its own (address, ports, login name, expected cameras; the password only in the vault). A
@@ -130,6 +131,12 @@ export async function updateStore(admin: AdminClient, actor: Actor, storeId: str
     return { ok: false, error: sanitizeError(e, { route: 'updateStore.recorder', fallback: 'Could not save the NVR.' }) }
   }
   if (!current && !v.nvr_password) return { ok: false, error: 'Enter the NVR password.' }
+  // P2-5c-1 review I-4: the saved password is used only for the address and web port it was saved for; a changed address needs it again.
+  if (current && !v.nvr_password) {
+    const { data: saved } = await admin.from('recorders').select('http_port, assets!recorders_asset_fk!inner(ip)').eq('id', current).eq('org_id', actor.orgId).maybeSingle()
+    const s = saved as unknown as { http_port: number; assets: { ip: string | null } } | null
+    if (!s || addressChanged(s.assets.ip, s.http_port, v.ip, v.http_port)) return { ok: false, error: MSG_PASSWORD_AGAIN }
+  }
   // The NVR first (review M-6): a refused NVR (a duplicate address, DR010) leaves the store's own fields as they were.
   let recorderId: string
   let warning: string | undefined

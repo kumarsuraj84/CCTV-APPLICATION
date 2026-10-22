@@ -72,8 +72,9 @@ export default async function GroupPage({ params, searchParams }: { params: Prom
 /** The places a rule may name, from what the person can see (regions, clusters, locations with live view, NVRs with the IT view). */
 async function rulePlaces(supabase: Awaited<ReturnType<typeof createClient>>, stores: { id: string; code: string; name: string }[]) {
   const [regions, clusters, recorders] = await Promise.all([
-    supabase.from('regions').select('id, code, name').order('code'),
-    supabase.from('clusters').select('id, code, name').order('code'),
+    // Review M-9: archived regions and clusters are never offered (a rule on them would match nothing).
+    supabase.from('regions').select('id, code, name').is('archived_at', null).order('code'),
+    supabase.from('clusters').select('id, code, name').is('archived_at', null).order('code'),
     supabase.from('recorders').select('id, location_id').order('location_id'),
   ])
   const recIds = (recorders.data ?? []).map((r) => r.id)

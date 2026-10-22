@@ -29,7 +29,7 @@ export function RecorderForm({ locationId, recorder }: { locationId: string; rec
     <form action={action} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" autoComplete="off">
       <input type="hidden" name="id" value={recorder?.id ?? ''} />
       <TextField id={`${p}-name`} name="name" label="NVR name" required maxLength={200} defaultValue={v('name', recorder?.name)} placeholder="For example Ground floor" />
-      <TextField id={`${p}-host`} name="host" label="NVR address" required defaultValue={v('host', recorder?.host)} placeholder="192.168.1.100" help="IP address or host name." />
+      <TextField id={`${p}-host`} name="host" label="NVR address" required defaultValue={v('host', recorder?.host)} placeholder="192.168.1.100" help={recorder ? 'IP address or host name. Changing it (or the web port) needs the password again.' : 'IP address or host name.'} />
       <TextField id={`${p}-http`} name="http_port" label="Web port" inputMode="numeric" defaultValue={v('http_port', recorder?.http_port ?? 80)} />
       <TextField id={`${p}-rtsp`} name="rtsp_port" label="Video port (RTSP)" inputMode="numeric" defaultValue={v('rtsp_port', recorder?.rtsp_port ?? 554)} />
       <TextField id={`${p}-user`} name="username" label="NVR user name" required defaultValue={v('username', recorder?.username)} autoComplete="off" help="A read-only (viewer) user is safest." />
@@ -37,7 +37,7 @@ export function RecorderForm({ locationId, recorder }: { locationId: string; rec
         <label htmlFor={`${p}-password`} className="block text-sm font-medium">NVR password{!recorder && <span aria-hidden="true" className="text-destructive"> *</span>}</label>
         <PasswordInput id={`${p}-password`} name="password" autoComplete="new-password" required={!recorder} aria-describedby={`${p}-password-help`} className="h-10" />
         <p id={`${p}-password-help`} className="text-xs text-muted-foreground">
-          {recorder ? (recorder.password_saved ? 'A password is saved. Leave empty to keep it.' : 'No password is saved yet.') : 'Kept in the vault; it is never shown again.'}
+          {recorder ? (recorder.password_saved ? 'A password is saved. Leave empty to keep it (only while the address and web port stay the same).' : 'No password is saved yet.') : 'Kept in the vault; it is never shown again.'}
         </p>
       </div>
       <TextField id={`${p}-channels`} name="expected_channels" label="Number of cameras" inputMode="numeric" defaultValue={v('expected_channels', recorder?.expected_channels ?? 0)} help="Channels 1 to this number get a camera until “Find cameras” names them." />

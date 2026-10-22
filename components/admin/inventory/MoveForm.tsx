@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { moveNodeAction, previewMoveAction, type AdminActionState, type PreviewMoveState } from '@/lib/actions/admin/locations'
+import { MSG_OPEN_VIDEO } from '@/lib/inventory/forms'
 import { Outcome, SelectField } from './fields'
 
 const RIGHT: Record<string, string> = { 'cctv.live': 'live video', 'cctv.playback': 'recordings', 'cctv.export': 'export' }
@@ -11,7 +12,8 @@ const RIGHT: Record<string, string> = { 'cctv.live': 'live video', 'cctv.playbac
 /**
  * Moves a location to another cluster, or a cluster to another region (ruling C-1), in two steps: "Check the effect on access" shows
  * who would gain or lose cameras (the database's preview), and only then "Move" saves exactly that move. The change takes effect at
- * once for everybody with a cluster or region grant there; their open video is re-checked by the session registry (P2-4) once built.
+ * once for everybody with a cluster or region grant there. Video already open is NOT cut off yet (review I-1): the session registry
+ * (P2-4) will re-check open sessions; when it lands, change MSG_OPEN_VIDEO (lib/inventory/forms.ts) and its unit test.
  */
 export function MoveForm({ kind, id, current, options }: { kind: 'location' | 'cluster'; id: string; current: string | null; options: { id: string; label: string }[] }) {
   const router = useRouter()
@@ -46,7 +48,7 @@ export function MoveForm({ kind, id, current, options }: { kind: 'location' | 'c
         <Button type="button" variant="outline" className="h-10" disabled={busy || to === (current ?? '')} onClick={check}>{busy && !checked ? 'Checking…' : 'Check the effect on access'}</Button>
       </div>
       <p className="text-xs text-muted-foreground">
-        Access follows the new place at once: people with a {kind === 'location' ? 'cluster or region' : 'region'} grant there gain these cameras, people with one at the old place lose them. Their open video is checked again.
+        Access follows the new place at once: people with a {kind === 'location' ? 'cluster or region' : 'region'} grant there gain these cameras, people with one at the old place lose them. {MSG_OPEN_VIDEO}
       </p>
       {preview && preview.to === to && !preview.state.ok && <Outcome state={{ error: preview.state.error }} />}
       {checked && (

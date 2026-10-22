@@ -16,6 +16,7 @@ export type Finding = {
 }
 
 const MSG_NOT_FOUND = 'This item is no longer on the list. Reload the page.'
+export const MSG_UNPLACED_LINK = 'The NVR no longer lists this camera’s old channel. Merge it with the camera the NVR shows now, link it to a channel in the mapping editor, or take it off the list.'
 
 /** The open findings of the organisation (or of one NVR), newest first. Service role; the caller has checked the administrator. */
 export async function listFindings(admin: AdminClient, orgId: string, o: { recorderId?: string; locationId?: string } = {}): Promise<Finding[]> {
@@ -79,8 +80,8 @@ export async function dismissFinding(clients: InventoryClients, actor: Actor, fi
 }
 
 /**
- * Settles a "possible move" or an "unplaced" camera the way the list suggests: the existing camera is put on the channel the NVR lists
- * (possible move: that channel; unplaced: its last channel). Its id, grants, groups and history stay.
+ * Settles a "possible move" the way the list suggests: the existing camera is put on the channel the NVR lists. Its id, grants, groups
+ * and history stay. An "unplaced" camera is never linked from here (review I-2).
  */
 export async function linkFinding(clients: InventoryClients, actor: Actor, findingId: string): Promise<Result<object>> {
   const may = await inventoryAdmin(clients.rls, actor)
@@ -94,7 +95,10 @@ export async function linkFinding(clients: InventoryClients, actor: Actor, findi
     return { ok: false, error: sanitizeError(e, { route: 'findings.link', fallback: 'Could not read the list.' }) }
   }
   if (!f) return { ok: false, error: MSG_NOT_FOUND }
-  if ((f.kind !== 'possible_move' && f.kind !== 'unplaced') || f.channel === null) return { ok: false, error: 'This item cannot be linked; merge or dismiss it instead.' }
+  // Review I-2: an "unplaced" camera's channel is its LAST one, which the NVR no longer lists (otherwise discovery would have put it
+  // back): linking it there would make a camera that is checked and always offline. Merge, link it in the mapping editor, or dismiss.
+  if (f.kind === 'unplaced') return { ok: false, error: MSG_UNPLACED_LINK }
+  if (f.kind !== 'possible_move' || f.channel === null) return { ok: false, error: 'This item cannot be linked; merge or dismiss it instead.' }
   const moved = await remapCamera(clients, actor, { cameraId: f.camera_id, recorderId: f.recorder_id, channel: f.channel })
   if (!moved.ok) return moved
   return settle(clients.admin, actor, id, 'linked', null)

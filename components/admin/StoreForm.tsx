@@ -39,7 +39,7 @@ export function StoreForm({ store }: { store?: StoreFormValues }) {
       <Field id="rtsp_port" label="Video port" type="number" defaultValue={v('rtsp_port', rec?.rtsp_port ?? 554)} />
       <Field id="http_port" label="Web port" type="number" defaultValue={v('http_port', rec?.http_port ?? 80)} />
       <Field id="nvr_user" label="NVR user name" defaultValue={v('nvr_user', rec?.username)} required />
-      <Field id="nvr_password" label={store?.id ? 'NVR password (leave empty to keep it)' : 'NVR password'} type="password" autoComplete="new-password" required={!store?.id} />
+      <Field id="nvr_password" label={store?.id ? 'NVR password (leave empty to keep it; needed again if the NVR address or web port changes)' : 'NVR password'} type="password" autoComplete="new-password" required={!store?.id} />
       <Field id="channels" label="Number of cameras" type="number" defaultValue={v('channels', rec?.expected_channels ?? 0)} />
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" name="is_active" defaultChecked={state.values ? state.values.is_active === 'on' : (store?.is_active ?? true)} /> Active

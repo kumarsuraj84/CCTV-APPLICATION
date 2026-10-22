@@ -164,15 +164,109 @@ export async function hierarchyProposals(clients: InventoryClients, actor: Actor
 export type ProposalChoice = { locationId: string; clusterCode: string | null; regionCode: string | null }
 
 /**
- * Applies the rows the administrator ticked: the region (by code) and the cluster (by code, in that region) are found or created, and
- * the location is moved into the cluster with the same effects as any move (immediate, access versions, audit). Untouched rows stay.
+ * Applies the rows the administrator ticked (after previewProposals): the region (by code) and the cluster (by code; a new one in the
+ * proposed region) are found or created, and the location is moved into the cluster with the same effects as any move (immediate,
+ * access versions, audit) — all in one database transaction (inventory_apply_proposals). Untouched rows stay.
  */
 export async function applyProposals(clients: InventoryClients, actor: Actor, items: ProposalChoice[]): Promise<Result<{ moved: number; regionsCreated: number; clustersCreated: number }>> {
   const may = await inventoryAdmin(clients.rls, actor)
   if (!may.ok) return may
+  const parsed = cleanChoices(items)
+  if (!parsed.ok) return parsed
+  const { clean } = parsed
+  const admin = clients.admin
+  // Review M-1: one transaction in the database (all or nothing), with the same effects as any move.
+  const { data, error } = await admin.rpc('inventory_apply_proposals', {
+    p_org: actor.orgId, p_items: clean.map((c) => ({ location_id: c.locationId, cluster_code: c.cluster, region_code: c.region })), p_actor: actor.id,
+  })
+  if (error) {
+    if (error.code === 'P0002') return { ok: false, error: 'Location not found.' }
+    return { ok: false, error: sanitizeError(error, { route: 'applyProposals', fallback: 'Could not apply the proposals. Nothing was changed.' }) }
+  }
+  const r = data as { moved: number; regions_created: number; clusters_created: number }
+  return { ok: true, moved: Number(r.moved), regionsCreated: Number(r.regions_created), clustersCreated: Number(r.clusters_created) }
+}
+
+export type ProposalPreview = {
+  /** People whose CCTV access changes, per person and right: cameras of the ticked locations now → after. */
+  affected: number
+  people: MovePreview['people']
+  newClusters: string[]
+  newRegions: string[]
+  /** An existing cluster sits in another region than the one proposed: it keeps its own region (nothing is moved between regions). */
+  regionMismatches: { clusterCode: string; proposedRegion: string | null; actualRegion: string | null }[]
+}
+
+/**
+ * Before applying ticked proposals (review M-1): who gains or loses which cameras (existing clusters: preview_hierarchy_change; a new
+ * cluster in an existing region: that region's CCTV grant holders gain the location), which clusters and regions would be created, and
+ * where an existing cluster is in another region than proposed. Writes nothing.
+ */
+export async function previewProposals(clients: InventoryClients, actor: Actor, items: ProposalChoice[]): Promise<Result<ProposalPreview>> {
+  const may = await inventoryAdmin(clients.rls, actor)
+  if (!may.ok) return may
+  const parsed = cleanChoices(items)
+  if (!parsed.ok) return parsed
+  const admin = clients.admin
+  const ids = parsed.clean.map((c) => c.locationId)
+  const { data: locs } = await admin.from('locations').select('id').eq('org_id', actor.orgId).is('archived_at', null).in('id', ids)
+  if ((locs ?? []).length !== new Set(ids).size) return { ok: false, error: 'Location not found.' }
+  const [{ data: clusters }, { data: regions }] = await Promise.all([
+    admin.from('clusters').select('id, code, region_id').eq('org_id', actor.orgId).is('archived_at', null),
+    admin.from('regions').select('id, code').eq('org_id', actor.orgId).is('archived_at', null),
+  ])
+  const clusterByCode = new Map((clusters ?? []).map((c) => [c.code, c]))
+  const regionByCode = new Map((regions ?? []).map((r) => [r.code, r]))
+  const regionCode = new Map((regions ?? []).map((r) => [r.id, r.code]))
+  const totals = new Map<string, { userId: string; capability: string; before: number; after: number }>()
+  const add = (userId: string, capability: string, before: number, after: number) => {
+    const k = `${userId}|${capability}`
+    const t = totals.get(k) ?? { userId, capability, before: 0, after: 0 }
+    t.before += before
+    t.after += after
+    totals.set(k, t)
+  }
+  const newClusters = new Set<string>()
+  const newRegions = new Set<string>()
+  const mismatches = new Map<string, ProposalPreview['regionMismatches'][number]>()
+  for (const c of parsed.clean) {
+    const existing = clusterByCode.get(c.cluster)
+    if (c.region && !regionByCode.has(c.region)) newRegions.add(c.region)
+    if (existing) {
+      const actual = existing.region_id ? regionCode.get(existing.region_id) ?? null : null
+      if (c.region && actual !== c.region) mismatches.set(c.cluster, { clusterCode: c.cluster, proposedRegion: c.region, actualRegion: actual })
+      const { data, error } = await admin.rpc('preview_hierarchy_change', { p_org: actor.orgId, p_kind: 'location', p_id: c.locationId, p_new_parent: existing.id })
+      if (error) return { ok: false, error: sanitizeError(error, { route: 'previewProposals', fallback: 'Could not work out the effect on access.' }) }
+      for (const p of (data as { people: { user_id: string; capability: string; before: number; after: number }[] }).people ?? []) add(p.user_id, p.capability, Number(p.before), Number(p.after))
+      continue
+    }
+    newClusters.add(c.cluster)
+    const region = c.region ? regionByCode.get(c.region) : undefined
+    if (!region) continue
+    // A new cluster in an existing region: that region's CCTV grant holders gain the whole location.
+    const { data: holders } = await admin.from('access_grants').select('user_id, capability').eq('org_id', actor.orgId).eq('scope_kind', 'region').eq('scope_id', region.id)
+      .in('capability', ['cctv.live', 'cctv.playback', 'cctv.export']).is('revoked_at', null)
+    const { data: cams } = await admin.from('cameras').select('id').eq('org_id', actor.orgId).eq('location_id', c.locationId).is('archived_at', null)
+    const camIds = new Set((cams ?? []).map((x) => x.id))
+    for (const h of new Map((holders ?? []).map((x) => [`${x.user_id}|${x.capability}`, x])).values()) {
+      const { data: seen } = await admin.rpc('report_effective_camera_ids', { p_user: h.user_id, p_cap: h.capability })
+      const before = ((seen as string[] | null) ?? []).filter((id) => camIds.has(id)).length
+      add(h.user_id, h.capability, before, camIds.size)
+    }
+  }
+  const people = [...totals.values()].filter((t) => t.before !== t.after)
+  const { data: names } = people.length ? await admin.from('profiles').select('id, full_name, email').eq('org_id', actor.orgId).in('id', [...new Set(people.map((p) => p.userId))]) : { data: [] }
+  const name = new Map((names ?? []).map((p) => [p.id, p.full_name || p.email]))
+  return {
+    ok: true, affected: new Set(people.map((p) => p.userId)).size,
+    people: people.map((p) => ({ userId: p.userId, name: name.get(p.userId) ?? 'Unknown person', capability: p.capability, before: p.before, after: p.after })),
+    newClusters: [...newClusters], newRegions: [...newRegions], regionMismatches: [...mismatches.values()],
+  }
+}
+
+function cleanChoices(items: ProposalChoice[]): { ok: true; clean: { locationId: string; cluster: string; region: string | null }[] } | { ok: false; error: string } {
   if (!Array.isArray(items) || items.length === 0) return { ok: false, error: 'Tick at least one location to apply.' }
   if (items.length > 1000) return { ok: false, error: 'Apply at most 1000 locations at a time.' }
-  const admin = clients.admin
   const clean: { locationId: string; cluster: string; region: string | null }[] = []
   for (const i of items) {
     const locationId = cleanId(i?.locationId)
@@ -182,43 +276,5 @@ export async function applyProposals(clients: InventoryClients, actor: Actor, it
     if (!cluster || (i?.regionCode && !region)) return { ok: false, error: MSG_CODE }
     clean.push({ locationId, cluster, region })
   }
-  const ids = clean.map((c) => c.locationId)
-  const { data: locs, error: locErr } = await admin.from('locations').select('id').eq('org_id', actor.orgId).is('archived_at', null).in('id', ids)
-  if (locErr) return { ok: false, error: sanitizeError(locErr, { route: 'applyProposals', fallback: 'Could not read the locations.' }) }
-  if ((locs ?? []).length !== new Set(ids).size) return { ok: false, error: 'Location not found.' }
-  let regionsCreated = 0
-  let clustersCreated = 0
-  const regionIds = new Map<string, string>()
-  const clusterIds = new Map<string, string>()
-  try {
-    for (const code of [...new Set(clean.map((c) => c.region).filter((x): x is string => !!x))]) {
-      const { data: found } = await admin.from('regions').select('id').eq('org_id', actor.orgId).eq('code', code).is('archived_at', null).maybeSingle()
-      if (found) regionIds.set(code, found.id)
-      else {
-        const { data, error } = await admin.from('regions').insert({ org_id: actor.orgId, code, name: code }).select('id').single()
-        if (error || !data) throw error ?? new Error('region not saved')
-        regionIds.set(code, data.id)
-        regionsCreated++
-      }
-    }
-    for (const c of clean) {
-      if (clusterIds.has(c.cluster)) continue
-      const { data: found } = await admin.from('clusters').select('id').eq('org_id', actor.orgId).eq('code', c.cluster).is('archived_at', null).maybeSingle()
-      if (found) clusterIds.set(c.cluster, found.id)
-      else {
-        const { data, error } = await admin.from('clusters').insert({ org_id: actor.orgId, code: c.cluster, name: c.cluster, region_id: c.region ? regionIds.get(c.region)! : null }).select('id').single()
-        if (error || !data) throw error ?? new Error('cluster not saved')
-        clusterIds.set(c.cluster, data.id)
-        clustersCreated++
-      }
-    }
-    for (const c of clean) {
-      const { error } = await admin.rpc('inventory_move_location', { p_org: actor.orgId, p_location: c.locationId, p_cluster: clusterIds.get(c.cluster)!, p_actor: actor.id })
-      if (error) throw error
-    }
-  } catch (e) {
-    return { ok: false, error: sanitizeError(e, { route: 'applyProposals', fallback: 'Could not apply all of the proposals. Reload the page to see what was applied.' }) }
-  }
-  await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'hierarchy_proposals_applied', entityType: 'organization', entityId: actor.orgId, detail: { moved: clean.length, regions_created: regionsCreated, clusters_created: clustersCreated } })
-  return { ok: true, moved: clean.length, regionsCreated, clustersCreated }
+  return { ok: true, clean }
 }

@@ -1,5 +1,5 @@
 import type { AdminClient } from '@/lib/admin/types'
-import { mappingHistory } from '@/lib/inventory/mapping'
+import { mappingHistories } from '@/lib/inventory/mapping'
 import { isMonitored } from '@/lib/inventory/recorders'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 
@@ -100,11 +100,12 @@ export async function recorderDetail(admin: AdminClient, orgId: string, location
   const recorders = ((allRecs.data ?? []) as unknown as { id: string; assets: { name: string } }[]).map((r) => ({ id: r.id, name: r.assets.name }))
   const name = new Map(recorders.map((r) => [r.id, r.name]))
   const mine = cams.filter((c) => c.recorder_id === recorderId)
-  const history = await Promise.all(mine.map((c) => mappingHistory(admin, orgId, c.id)))
+  // Review M-6: the history of every camera of this NVR in one read.
+  const history = await mappingHistories(admin, orgId, mine.map((c) => c.id))
   return {
     recorder: toSummary(rec, mine.length),
     recorders,
-    cameras: mine.map((c, i) => ({ id: c.id, name: c.name, channel: c.channel, recorderId: c.recorder_id, history: history[i] })),
+    cameras: mine.map((c) => ({ id: c.id, name: c.name, channel: c.channel, recorderId: c.recorder_id, history: history.get(c.id) ?? [] })),
     unmapped: cams.filter((c) => !c.recorder_id).map((c) => ({ id: c.id, name: c.name, channel: null as number | null, recorderId: null as string | null, history: [] })),
     mergeCandidates: cams.map((c) => ({ id: c.id, label: `${c.name} (${c.recorder_id ? `${name.get(c.recorder_id) ?? 'NVR'}, channel ${c.channel}` : 'not linked'})` })),
   }

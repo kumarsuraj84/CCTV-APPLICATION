@@ -32,15 +32,20 @@ async function assetRow(admin: AdminClient, orgId: string, id: string | null) {
   return data
 }
 
-export async function saveAsset(clients: InventoryClients, actor: Actor, input: AssetInput): Promise<Result<{ assetId: string }>> {
+/** Review M-8: moving an asset changes who sees it through location-scoped IT and Wi-Fi grants; the save says so. */
+export const MSG_ASSET_MOVED = 'The asset moved to another location: people with IT or Wi-Fi rights for the old location no longer see it, and those for the new location do.'
+
+export async function saveAsset(clients: InventoryClients, actor: Actor, input: AssetInput): Promise<Result<{ assetId: string; warning?: string }>> {
   const may = await inventoryAdmin(clients.rls, actor)
   if (!may.ok) return may
   const admin = clients.admin
   const id = input?.id ? cleanId(input.id) : null
+  let previousLocation: string | null | undefined
   if (input?.id) {
     const row = await assetRow(admin, actor.orgId, id)
     if (!row) return { ok: false, error: MSG_ASSET_NOT_FOUND }
     if (row.is_recorder) return { ok: false, error: MSG_IS_NVR }
+    previousLocation = row.location_id
   }
   // The asset type of an NVR (not a monitoring target kind): NVRs are recorders of a location, added on its page.
   if (String(input?.type) === NVR_ASSET_TYPE) return { ok: false, error: 'Add an NVR on its location’s page, not here.' }
@@ -93,7 +98,8 @@ export async function saveAsset(clients: InventoryClients, actor: Actor, input: 
   if (!res.data?.length) return { ok: false, error: MSG_ASSET_NOT_FOUND }
   const assetId = res.data[0].id
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: id ? 'asset_updated' : 'asset_created', entityType: 'asset', entityId: assetId, detail: { type: input.type } })
-  return { ok: true, assetId }
+  const moved = previousLocation !== undefined && (previousLocation ?? null) !== locationId
+  return moved ? { ok: true, assetId, warning: MSG_ASSET_MOVED } : { ok: true, assetId }
 }
 
 /** child depends on parent (network, power or recording). A loop — also through other assets — is refused. */

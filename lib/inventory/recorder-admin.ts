@@ -1,16 +1,14 @@
-import { createHash } from 'node:crypto'
 import { addAudit } from '@/lib/admin/audit'
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { cleanId, inventoryAdmin, type InventoryClients } from '@/lib/inventory/admin-gate'
 import { ensurePlaceholderCameras } from '@/lib/inventory/cameras'
 import { isHostOrIp, optionalText, parseClockOffset, parseWhole } from '@/lib/inventory/forms'
 import { isMonitored, MSG_MONITORING_OFF, readRecorderPassword } from '@/lib/inventory/recorders'
-import { loadMonitorConfig } from '@/lib/monitor/config'
+import { inLoginBackoff, loginFingerprint, MSG_LOGIN_BACKOFF, noteLoginResult } from '@/lib/monitor/login-backoff'
 import { realProbes } from '@/lib/monitor/probes'
 import type { Probes } from '@/lib/monitor/types'
 import { describeNvrError, NvrError } from '@/lib/nvr/client'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
-import { processSingleton } from '@/lib/process-singleton'
 
 // The NVRs (recorders) of a location (P2-5c-1 brief item 2). A location has 1..n NVRs (a head office may have none). Each NVR has its
 // own address, ports, login name, number of cameras and clock offset; its password is WRITE-ONLY: it goes to the vault through
@@ -23,7 +21,14 @@ export const MSG_NVR_NOT_FOUND = 'NVR not found.'
 export const MSG_NEED_PASSWORD = 'Enter the NVR password.'
 export const MSG_ADDRESS_TAKEN_HERE = 'Another NVR of this location already has this address.'
 export const MSG_ADDRESS_SHARED_ELSEWHERE = 'This NVR address is also used by an NVR of another location. Check that it is right.'
-export const MSG_TEST_BACKOFF = 'The NVR refused this login a short while ago. To protect its account it is not asked again for a while; check the saved user name and password.'
+/** The shared login back-off (review I-3): the same words for the connection test and discovery. */
+export const MSG_TEST_BACKOFF = MSG_LOGIN_BACKOFF
+/** Review I-4: the saved password is used only for the address and web port it was saved for. */
+export const MSG_PASSWORD_AGAIN = 'The address or web port changed: enter the NVR password again (the saved one is only used for the address it was saved for).'
+
+/** Whether a saved NVR address (host, web port) differs from the one being saved (host compared without case and spaces). */
+export const addressChanged = (savedHost: string | null, savedPort: number, host: string, port: number): boolean =>
+  (savedHost ?? '').trim().toLowerCase() !== host.trim().toLowerCase() || savedPort !== port
 
 export type RecorderInput = {
   id?: string | null; name: string; host: string; httpPort: number | string; rtspPort: number | string; username: string
@@ -64,9 +69,13 @@ export async function saveRecorder(clients: InventoryClients, actor: Actor, loca
   if (input?.id) {
     current = cleanId(input.id)
     const { data } = current
-      ? await admin.from('recorders').select('id, assets!recorders_asset_fk!inner(archived_at)').eq('id', current).eq('org_id', actor.orgId).eq('location_id', loc).is('assets.archived_at', null).maybeSingle()
+      ? await admin.from('recorders').select('id, http_port, assets!recorders_asset_fk!inner(archived_at, ip)').eq('id', current).eq('org_id', actor.orgId).eq('location_id', loc).is('assets.archived_at', null).maybeSingle()
       : { data: null }
     if (!data) return { ok: false, error: MSG_NVR_NOT_FOUND }
+    // Review I-4: the saved password belongs to the address it was saved for. A new address or web port without the password would
+    // send that password (a Digest answer to it) to whatever answers there: refused before anything changes.
+    const saved = data as unknown as { http_port: number; assets: { ip: string | null } }
+    if (!password && addressChanged(saved.assets.ip, saved.http_port, host, httpPort)) return { ok: false, error: MSG_PASSWORD_AGAIN }
   } else if (!password) return { ok: false, error: MSG_NEED_PASSWORD }
 
   const { data: saved, error: saveError } = await admin.rpc('recorder_save', {
@@ -128,12 +137,8 @@ export async function setRecorderMonitoring(clients: InventoryClients, actor: Ac
   return { ok: true }
 }
 
-// The connection test's own back-off (per NVR and saved login, in memory, like the worker's): after a refused login this NVR is not
-// asked again from this screen until the window is over or its saved login changes. Holds a hash of the login, never the password.
-type Backoff = { until: number; login: string }
-const backoffs = processSingleton('inventory.nvrTestBackoff', () => new Map<string, Backoff>())
-const fingerprint = (host: string, port: number, username: string, password: string) => createHash('sha256').update(`${host}|${port}|${username}:${password}`).digest('hex')
-
+// After a refused login this NVR is not asked again until the window is over or its saved login changes — the web server's ONE
+// back-off (lib/monitor/login-backoff.ts), shared with "Find cameras" and "find cameras for all" (review I-3).
 type TestDeps = { nvr: Probes['nvr']; now?: () => number; backoffSec?: number }
 
 /** Asks the NVR once, read-only, whether the saved login works and how many cameras it reports. */
@@ -158,11 +163,9 @@ export async function testRecorderConnection(clients: InventoryClients, actor: A
   if (!read.password) return { ok: false, error: 'This NVR has no password saved yet.' }
   const host = row.assets.ip
   const username = row.username ?? ''
-  const login = fingerprint(host, row.http_port, username, read.password)
+  const login = loginFingerprint(host, row.http_port, username, read.password)
   const now = (deps.now ?? Date.now)()
-  const held = backoffs.get(id)
-  if (held && held.until > now && held.login === login) return { ok: false, error: MSG_TEST_BACKOFF }
-  if (held) backoffs.delete(id)
+  if (inLoginBackoff(id, login, now)) return { ok: false, error: MSG_LOGIN_BACKOFF }
   let outcome: string
   try {
     const status = await deps.nvr({ host, port: row.http_port, username, password: read.password }, { timeoutMs: 8000 }).channelStatus()
@@ -172,9 +175,7 @@ export async function testRecorderConnection(clients: InventoryClients, actor: A
     return { ok: true, channels: n, message: `The NVR answered and accepted the login. It reports ${n} ${n === 1 ? 'camera' : 'cameras'}.` }
   } catch (e) {
     outcome = e instanceof NvrError ? e.kind : 'failed'
-    if (e instanceof NvrError && (e.kind === 'auth' || e.kind === 'forbidden')) {
-      backoffs.set(id, { until: now + (deps.backoffSec ?? loadMonitorConfig().nvrLoginBackoffSec) * 1000, login })
-    }
+    noteLoginResult(id, login, e, now, deps.backoffSec)
     await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'recorder_connection_tested', entityType: 'recorder', entityId: id, detail: { outcome } })
     return { ok: false, error: describeNvrError(e) }
   }

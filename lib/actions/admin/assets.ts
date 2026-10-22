@@ -30,7 +30,7 @@ export async function saveAssetAction(_prev: AdminActionState, f: FormData): Pro
     managementMode: text(f, 'management_mode'), notes: text(f, 'notes'), enabled: f.get('enabled') === 'on', addressSpaceId: text(f, 'address_space_id') || null,
   })
   refresh()
-  return res.ok ? { ok: true, id: res.assetId, message: 'Asset saved.' } : { error: res.error, values: submittedValues(f, FIELDS, ['enabled']) }
+  return res.ok ? { ok: true, id: res.assetId, message: 'Asset saved.', ...(res.warning ? { warning: res.warning } : {}) } : { error: res.error, values: submittedValues(f, FIELDS, ['enabled']) }
 }
 
 export async function addDependencyAction(input: { childId: string; parentId: string; kind: string }): Promise<AdminActionState> {

@@ -3,13 +3,17 @@
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
-import { applyProposalsAction, type AdminActionState } from '@/lib/actions/admin/locations'
+import { applyProposalsAction, previewProposalsAction, type AdminActionState, type PreviewProposalsState } from '@/lib/actions/admin/locations'
 import type { ProposalRow } from '@/lib/inventory/hierarchy'
+import { MSG_OPEN_VIDEO } from '@/lib/inventory/forms'
 import { Outcome } from './fields'
+
+const RIGHT: Record<string, string> = { 'cctv.live': 'live video', 'cctv.playback': 'recordings', 'cctv.export': 'export' }
 
 /**
  * Zone → cluster, state → region proposals (P2-5c-1 brief item 7). Each row suggests codes from the location's zone and state; the
- * administrator can change the codes and ticks the rows to apply. Nothing is applied silently: unticked rows stay without a cluster.
+ * administrator can change the codes and ticks the rows to apply. Nothing is applied silently: "Check the effect" first shows who
+ * gains or loses access and where an existing cluster is in another region (review M-1); "Apply" then does it in one transaction.
  */
 export function ProposalTool({ rows }: { rows: ProposalRow[] }) {
   const router = useRouter()
@@ -17,17 +21,22 @@ export function ProposalTool({ rows }: { rows: ProposalRow[] }) {
   const [codes, setCodes] = useState<Record<string, { cluster: string; region: string }>>(
     Object.fromEntries(rows.map((r) => [r.locationId, { cluster: r.proposedClusterCode ?? '', region: r.proposedRegionCode ?? '' }])),
   )
+  const [preview, setPreview] = useState<{ key: string; state: PreviewProposalsState } | null>(null)
   const [state, setState] = useState<AdminActionState | null>(null)
   const [busy, start] = useTransition()
   const toggle = (id: string) => setPicked((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
   const usable = rows.filter((r) => codes[r.locationId]?.cluster.trim())
+  const items = rows.filter((r) => picked.has(r.locationId)).map((r) => ({ locationId: r.locationId, clusterCode: codes[r.locationId].cluster.trim(), regionCode: codes[r.locationId].region.trim() || null }))
+  const key = JSON.stringify(items)
+  const checked = preview && preview.key === key && preview.state.ok ? preview.state : null
+  const check = () => start(async () => { setState(null); setPreview({ key, state: await previewProposalsAction(items) }) })
   const apply = () =>
     start(async () => {
-      const items = rows.filter((r) => picked.has(r.locationId)).map((r) => ({ locationId: r.locationId, clusterCode: codes[r.locationId].cluster.trim(), regionCode: codes[r.locationId].region.trim() || null }))
       const res = await applyProposalsAction(items)
       setState(res)
       if (res.ok) {
         setPicked(new Set())
+        setPreview(null)
         router.refresh()
       }
     })
@@ -38,7 +47,7 @@ export function ProposalTool({ rows }: { rows: ProposalRow[] }) {
         <Button type="button" variant="outline" onClick={() => setPicked(new Set(usable.map((r) => r.locationId)))}>Tick every row with a cluster code</Button>
         {picked.size > 0 && <Button type="button" variant="ghost" onClick={() => setPicked(new Set())}>Clear</Button>}
       </div>
-      <div className="overflow-x-auto rounded-md border bg-card">
+      <div className="relative overflow-x-auto rounded-md border bg-card">
         <table className="w-full min-w-[640px] text-sm">
           <caption className="sr-only">Suggested clusters and regions per location</caption>
           <thead className="text-left text-xs text-muted-foreground">
@@ -57,8 +66,26 @@ export function ProposalTool({ rows }: { rows: ProposalRow[] }) {
           </tbody>
         </table>
       </div>
-      <p className="text-xs text-muted-foreground">A cluster or region that does not exist yet is created with its code as its name (rename it afterwards). Moving a location into a cluster gives access to everybody with a grant at that cluster or its region.</p>
-      <Button type="button" disabled={busy || picked.size === 0} onClick={apply}>{busy ? 'Applying…' : `Apply to ${picked.size} ticked ${picked.size === 1 ? 'location' : 'locations'}`}</Button>
+      <p className="text-xs text-muted-foreground">A cluster or region that does not exist yet is created with its code as its name (rename it afterwards). An existing cluster keeps its own region.</p>
+      <Button type="button" variant="outline" disabled={busy || picked.size === 0} onClick={check}>{busy && !checked ? 'Checking…' : `Check the effect of ${picked.size} ticked ${picked.size === 1 ? 'row' : 'rows'}`}</Button>
+      {preview && preview.key === key && !preview.state.ok && <Outcome state={{ error: preview.state.error }} />}
+      {checked && (
+        <div role="status" className="space-y-2 rounded-md border bg-muted/40 p-3 text-sm">
+          <p className="font-medium">{checked.affected === 0 ? 'Nobody’s access changes through a cluster or region grant.' : `${checked.affected} ${checked.affected === 1 ? 'person gains or loses' : 'people gain or lose'} access:`}</p>
+          {checked.people.length > 0 && (
+            <ul className="list-disc space-y-0.5 pl-5">
+              {checked.people.map((p, i) => <li key={i}>{p.name}: {RIGHT[p.capability] ?? p.capability}, {p.before} → {p.after} cameras</li>)}
+            </ul>
+          )}
+          {checked.newClusters.length > 0 && <p>New clusters: {checked.newClusters.join(', ')}.</p>}
+          {checked.newRegions.length > 0 && <p>New regions: {checked.newRegions.join(', ')}.</p>}
+          {checked.regionMismatches.map((m) => (
+            <p key={m.clusterCode} className="text-warning-strong">Cluster {m.clusterCode} already exists in {m.actualRegion ? `region ${m.actualRegion}` : 'no region'}, not {m.proposedRegion}: it stays where it is.</p>
+          ))}
+          <p>{MSG_OPEN_VIDEO}</p>
+          <Button type="button" disabled={busy} onClick={apply}>{busy ? 'Applying…' : 'Apply'}</Button>
+        </div>
+      )}
       <Outcome state={state} />
     </div>
   )

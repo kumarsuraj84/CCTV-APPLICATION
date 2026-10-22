@@ -25,6 +25,28 @@ export const DEPENDENCY_LABELS: Record<(typeof DEPENDENCY_KINDS)[number], string
 export const ENDPOINT_PURPOSES = ['snmp', 'other'] as const
 export const ENDPOINT_PURPOSE_LABELS: Record<string, string> = { management: 'Management', rtsp: 'Video (RTSP)', snmp: 'SNMP', other: 'Other' }
 
+/**
+ * Review I-1: what a move does to video that is ALREADY open. True until the session registry (P2-4) re-checks open sessions; when
+ * P2-4 lands, change this sentence (and its unit test) to say that open video stops within a minute.
+ */
+export const MSG_OPEN_VIDEO = 'Video that is already open is not cut off yet: it keeps playing until the person closes it.'
+
+/** "PTN1 - Patna" stays as it is; "Head office, Patna" gets its code in front (review M-12: no "PTN1 · PTN1 - Patna"). */
+export const locationTitle = (code: string, name: string): string => (name.toUpperCase().startsWith(code.toUpperCase()) ? name : `${code} · ${name}`)
+
+export type MergePreview = { keepName: string; duplicateName: string; duplicatePlace: string; peopleLosing: number }
+/** The confirmation of a merge, naming both cameras, the duplicate's place and who loses access (review I-5 / M-3). */
+export function mergeSentence(p: MergePreview): string {
+  const linked = p.duplicatePlace.includes(', channel ')
+  const first = linked
+    ? `“${p.keepName}” keeps its identity, access, groups and history and takes over the NVR channel of “${p.duplicateName}” (${p.duplicatePlace}), which is archived.`
+    : `“${p.keepName}” keeps its identity, access, groups and history; “${p.duplicateName}” (${p.duplicatePlace}) is archived.`
+  const second = p.peopleLosing === 0
+    ? `Nobody loses access through a grant on “${p.duplicateName}”.`
+    : `${p.peopleLosing} ${p.peopleLosing === 1 ? 'person has' : 'people have'} access to “${p.duplicateName}” only through a grant on it; that access ends.`
+  return `${first} ${second}`
+}
+
 /** A region, cluster or location code: letters, numbers and dashes, upper case, 1 to 50, starting with a letter or number. */
 export function normaliseCode(v: unknown): string | null {
   const t = typeof v === 'string' ? v.trim().toUpperCase() : ''

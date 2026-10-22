@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
-import { coversCamera, type Capabilities, type Capability } from '@/lib/auth/capabilities'
+import type { Capabilities, Capability } from '@/lib/auth/capabilities'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 
 type Client = SupabaseClient<Database>
@@ -21,35 +21,14 @@ export type GroupListItem = { id: string; name: string; created_by: string | nul
 export async function listVisibleGroups(supabase: Client, only?: { capabilities: Capabilities; capability: Capability }): Promise<GroupListItem[]> {
   const groups = await fetchAll((from, to) => supabase.from('camera_groups').select('id, name, created_by').order('name').order('id').range(from, to))
   if (groups.length === 0) return []
-  const items = (await fetchAll((from, to) =>
-    supabase
-      .from('camera_group_items')
-      .select('group_id, camera_id, cameras!inner(store_id:location_id, is_active, stores:locations!inner(is_active))')
-      .eq('cameras.is_active', true)
-      .eq('cameras.stores.is_active', true)
-      .order('group_id')
-      .order('camera_id')
-      .range(from, to),
-  )) as unknown as { group_id: string; camera_id: string; cameras: { store_id: string } }[]
-  // P2-5c-1: the members dynamic rules add (only cameras the reader may see, of groups the reader may see), counted once per camera.
-  const dynamic = await ruleMembers(supabase, null)
-  const extra = await camerasOf(supabase, [...new Set(dynamic.map((d) => d.camera_id))])
-  const members = new Map<string, Map<string, string>>()
-  const add = (group: string, camera: string, location: string) => {
-    const m = members.get(group) ?? new Map<string, string>()
-    m.set(camera, location)
-    members.set(group, m)
-  }
-  for (const i of items) add(i.group_id, i.camera_id, i.cameras.store_id)
-  for (const d of dynamic) {
-    const cam = extra.get(d.camera_id)
-    if (cam) add(d.group_id, d.camera_id, cam.store_id)
-  }
+  // P2-5c-1 review I-7: the counts come from the database in one call (static and dynamic members, counted once, working cameras the
+  // reader may see — and with `only`, may use with that capability, the cameras_with_capability rules), never member rows in the page.
   const counts = new Map<string, number>()
-  for (const [group, cams] of members) {
-    let n = 0
-    for (const [id, location_id] of cams) if (!only || coversCamera(only.capabilities, only.capability, { id, location_id })) n++
-    counts.set(group, n)
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase.rpc('group_member_counts', only ? { p_cap: only.capability } : {}).order('group_id').range(from, from + 999)
+    if (error) throw new Error('Could not count the cameras of the groups.')
+    for (const r of (data ?? []) as { group_id: string; cameras: number }[]) counts.set(r.group_id, Number(r.cameras))
+    if ((data ?? []).length < 1000) break
   }
   return groups.map((g) => ({ id: g.id, name: g.name, created_by: g.created_by, camera_count: counts.get(g.id) ?? 0 }))
 }
@@ -58,7 +37,8 @@ export async function listVisibleGroups(supabase: Client, only?: { capabilities:
 async function ruleMembers(supabase: Client, groupId: string | null): Promise<{ group_id: string; camera_id: string }[]> {
   const out: { group_id: string; camera_id: string }[] = []
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await supabase.rpc('group_rule_members', groupId ? { p_group: groupId } : {}).range(from, from + 999)
+    // Review M-5: a stable order, so pages never repeat or skip rows.
+    const { data, error } = await supabase.rpc('group_rule_members', groupId ? { p_group: groupId } : {}).order('group_id').order('camera_id').range(from, from + 999)
     if (error) {
       if (error.code === MALFORMED_ID) return []
       throw new Error('Could not read the group.')

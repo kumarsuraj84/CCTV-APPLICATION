@@ -9,9 +9,12 @@ import { revalidatePath } from 'next/cache'
 import { requireAdministration } from '@/lib/auth/profile'
 import { archiveInventory, restoreInventory, type ArchiveKind } from '@/lib/inventory/archive'
 import { dismissFinding, linkFinding } from '@/lib/inventory/findings'
-import { applyProposals, moveNode, previewMove, saveCluster, saveRegion, type MoveInput, type MovePreview, type ProposalChoice } from '@/lib/inventory/hierarchy'
+import { mergeSentence, MSG_OPEN_VIDEO, type MergePreview } from '@/lib/inventory/forms'
+import {
+  applyProposals, moveNode, previewMove, previewProposals, saveCluster, saveRegion, type MoveInput, type MovePreview, type ProposalChoice, type ProposalPreview,
+} from '@/lib/inventory/hierarchy'
 import { saveLocation, saveNetworkDefinition } from '@/lib/inventory/locations'
-import { mergeCameras, remapCamera } from '@/lib/inventory/mapping'
+import { mergeCameras, previewMerge, remapCamera, searchCameras } from '@/lib/inventory/mapping'
 import { saveRecorder, setRecorderMonitoring, testRecorderConnection } from '@/lib/inventory/recorder-admin'
 import { discoverRecorderCameras } from '@/lib/monitor/discovery'
 import { discoverySummary } from '@/lib/monitor/discovery-summary'
@@ -68,7 +71,15 @@ export async function moveNodeAction(input: MoveInput): Promise<AdminActionState
   const { clients, actor } = await ctx()
   const res = await moveNode(clients, actor, input)
   refresh()
-  return done(res, () => ({ ok: true, message: 'Moved. Access follows the new place at once.' }))
+  // Review I-1 / M-13: the true statement about video already open (P2-4, the session registry, is not built yet).
+  return done(res, () => ({ ok: true, message: `Moved. Access follows the new place at once. ${MSG_OPEN_VIDEO}` }))
+}
+
+export type PreviewProposalsState = ({ ok: true } & ProposalPreview) | { ok: false; error: string }
+export async function previewProposalsAction(items: ProposalChoice[]): Promise<PreviewProposalsState> {
+  const { clients, actor } = await ctx()
+  if (await limited('preview', actor.id, 30)) return { ok: false, error: MSG_SLOW_DOWN }
+  return previewProposals(clients, actor, Array.isArray(items) ? items : [])
 }
 
 export async function applyProposalsAction(items: ProposalChoice[]): Promise<AdminActionState> {
@@ -152,6 +163,22 @@ export async function remapCameraAction(input: { cameraId: string; recorderId: s
   const res = await remapCamera(clients, actor, { cameraId: String(input?.cameraId ?? ''), recorderId: String(input?.recorderId ?? ''), channel: input?.channel ?? '' })
   refresh()
   return done(res, () => ({ ok: true, message: 'The camera now shows that NVR channel. Its access, groups and history stay.' }))
+}
+
+export type MergePreviewState = ({ ok: true } & MergePreview & { sentence: string }) | { ok: false; error: string }
+/** What a merge would do, named, before the person confirms it (review I-5). */
+export async function previewMergeAction(input: { keepId: string; duplicateId: string }): Promise<MergePreviewState> {
+  const { clients, actor } = await ctx()
+  const res = await previewMerge(clients, actor, { keepId: String(input?.keepId ?? ''), duplicateId: String(input?.duplicateId ?? '') })
+  return res.ok ? { ...res, sentence: mergeSentence(res) } : res
+}
+
+export type SearchCamerasState = { ok: true; cameras: { id: string; label: string }[] } | { ok: false; error: string }
+/** Cameras of the whole organisation by name, for a merge across locations (review M-2). */
+export async function searchCamerasAction(query: string): Promise<SearchCamerasState> {
+  const { clients, actor } = await ctx()
+  if (await limited('search', actor.id, 60)) return { ok: false, error: MSG_SLOW_DOWN }
+  return searchCameras(clients, actor, String(query ?? ''))
 }
 
 export async function mergeCamerasAction(input: { keepId: string; duplicateId: string }): Promise<AdminActionState> {

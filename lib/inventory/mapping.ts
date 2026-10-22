@@ -1,6 +1,6 @@
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { cleanId, inventoryAdmin, type InventoryClients } from '@/lib/inventory/admin-gate'
-import { parseChannel } from '@/lib/inventory/forms'
+import { parseChannel, type MergePreview } from '@/lib/inventory/forms'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { dropLiveStreams } from '@/lib/streams/go2rtc'
 import { fetchAll } from '@/lib/supabase/fetch-all'
@@ -82,6 +82,7 @@ export async function mergeCameras(clients: InventoryClients, actor: Actor, inpu
   if (error) {
     if (error.code === 'P0002') return { ok: false, error: MSG_CAMERA_NOT_FOUND }
     if (error.code === 'DR011') return { ok: false, error: 'Restore the camera to keep first.' }
+    if (error.code === 'DR012') return { ok: false, error: 'A camera of another location can only be merged into this one when it shows an NVR channel. Link it to its channel first.' }
     if (error.code === '22023') return { ok: false, error: 'Choose two different cameras.' }
     if (error.code === '23505' || error.code === '23P01') return { ok: false, error: 'The NVR channel is in use by another camera. Reload the page and try again.' }
     return { ok: false, error: sanitizeError(error, { route: 'mergeCameras', fallback: 'Could not merge the cameras.' }) }
@@ -89,4 +90,69 @@ export async function mergeCameras(clients: InventoryClients, actor: Actor, inpu
   const r = data as { recorder_id: string | null; channel: number | null; groups_copied: number; duplicate_camera_grants: number }
   if (clients.go2rtc) await dropLiveStreams(clients.go2rtc, [keep, dup])
   return { ok: true, recorderId: r.recorder_id, channel: r.channel, groupsCopied: Number(r.groups_copied), duplicateCameraGrants: Number(r.duplicate_camera_grants) }
+}
+/** The history of several cameras in one read (review M-6), each newest first; the same rows as mappingHistory. */
+export async function mappingHistories(admin: AdminClient, orgId: string, cameraIds: string[]): Promise<Map<string, MappingRow[]>> {
+  const ids = [...new Set(cameraIds.map((x) => cleanId(x)).filter((x): x is string => !!x))]
+  const out = new Map<string, MappingRow[]>(ids.map((id) => [id, []]))
+  const rows: { id: string; camera_id: string; recorder_id: string; channel: number; valid_from: string; valid_to: string | null }[] = []
+  for (let i = 0; i < ids.length; i += 200) {
+    rows.push(...(await fetchAll((from, to) =>
+      admin.from('camera_channel_mappings').select('id, camera_id, recorder_id, channel, valid_from, valid_to').eq('org_id', orgId).in('camera_id', ids.slice(i, i + 200))
+        .order('valid_from', { ascending: false }).order('id').range(from, to))))
+  }
+  const names = await recorderNames(admin, orgId, rows.map((r) => r.recorder_id))
+  for (const r of rows) out.get(r.camera_id)?.push({ recorderId: r.recorder_id, recorderName: names.get(r.recorder_id) ?? 'NVR', channel: r.channel, validFrom: r.valid_from, validTo: r.valid_to })
+  return out
+}
+
+/** Where a camera is, in words: "JCL · First floor, channel 2", or "JCL · not linked". */
+async function placeOf(admin: AdminClient, orgId: string, cam: { location_id: string; recorder_id: string | null; channel: number }): Promise<string> {
+  const { data: loc } = await admin.from('locations').select('code').eq('id', cam.location_id).eq('org_id', orgId).maybeSingle()
+  if (!cam.recorder_id) return `${loc?.code ?? ''} · not linked`
+  const names = await recorderNames(admin, orgId, [cam.recorder_id])
+  return `${loc?.code ?? ''} · ${names.get(cam.recorder_id) ?? 'NVR'}, channel ${cam.channel}`
+}
+
+/**
+ * What a merge would do, before it is done (review I-5): both names, the duplicate's place, and how many people have access to the
+ * duplicate through a grant on it alone (that access ends with it). Writes nothing.
+ */
+export async function previewMerge(clients: InventoryClients, actor: Actor, input: { keepId: string; duplicateId: string }): Promise<Result<MergePreview>> {
+  const keep = cleanId(input?.keepId)
+  const dup = cleanId(input?.duplicateId)
+  if (keep && dup && keep === dup) return { ok: false, error: 'Choose two different cameras.' }
+  const may = await inventoryAdmin(clients.rls, actor)
+  if (!may.ok) return may
+  if (!keep || !dup) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
+  const { data: cams, error } = await clients.admin.from('cameras').select('id, name, location_id, recorder_id, channel, archived_at').eq('org_id', actor.orgId).in('id', [keep, dup])
+  if (error) return { ok: false, error: sanitizeError(error, { route: 'previewMerge', fallback: 'Could not read the cameras.' }) }
+  const k = (cams ?? []).find((x) => x.id === keep)
+  const d = (cams ?? []).find((x) => x.id === dup)
+  if (!k || !d || d.archived_at) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
+  if (k.archived_at) return { ok: false, error: 'Restore the camera to keep first.' }
+  const now = new Date().toISOString()
+  const { data: grants, error: gErr } = await clients.admin.from('access_grants').select('user_id').eq('org_id', actor.orgId).eq('scope_kind', 'camera').eq('scope_id', dup)
+    .is('revoked_at', null).or(`valid_until.is.null,valid_until.gt.${now}`)
+  if (gErr) return { ok: false, error: sanitizeError(gErr, { route: 'previewMerge', fallback: 'Could not count the people.' }) }
+  return { ok: true, keepName: k.name, duplicateName: d.name, duplicatePlace: await placeOf(clients.admin, actor.orgId, d), peopleLosing: new Set((grants ?? []).map((g) => g.user_id)).size }
+}
+
+/** Cameras of the whole organisation whose name or location code contains the words (review M-2: merge across locations). At most 20. */
+export async function searchCameras(clients: InventoryClients, actor: Actor, query: string): Promise<Result<{ cameras: { id: string; label: string }[] }>> {
+  const may = await inventoryAdmin(clients.rls, actor)
+  if (!may.ok) return may
+  const q = typeof query === 'string' ? query.trim() : ''
+  if (q.length < 2) return { ok: false, error: 'Type at least two letters.' }
+  if (q.length > 100) return { ok: false, error: 'Use 100 characters or fewer.' }
+  const pattern = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
+  const { data, error } = await clients.admin.from('cameras').select('id, name, channel, recorder_id, location_id, locations!cameras_location_fk!inner(code)')
+    .eq('org_id', actor.orgId).is('archived_at', null).ilike('name', pattern).order('name').order('id').limit(20)
+  if (error) return { ok: false, error: sanitizeError(error, { route: 'searchCameras', fallback: 'Could not look for cameras.' }) }
+  const rows = (data ?? []) as unknown as { id: string; name: string; channel: number; recorder_id: string | null; locations: { code: string } }[]
+  const names = await recorderNames(clients.admin, actor.orgId, rows.map((r) => r.recorder_id).filter((x): x is string => !!x))
+  return {
+    ok: true,
+    cameras: rows.map((r) => ({ id: r.id, label: `${r.name} (${r.locations.code} · ${r.recorder_id ? `${names.get(r.recorder_id) ?? 'NVR'}, channel ${r.channel}` : 'not linked'})` })),
+  }
 }
