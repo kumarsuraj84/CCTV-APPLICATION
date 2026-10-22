@@ -1445,6 +1445,9 @@ isOneToOne: false
 "preview_hierarchy_change":
 { Args: { "p_id": string,"p_kind": string,"p_new_parent": string,"p_org": string }; Returns: Json
                            },
+"preview_hierarchy_proposals":
+{ Args: { "p_items": Json,"p_org": string }; Returns: Json
+                           },
 "privilege_violations":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },
