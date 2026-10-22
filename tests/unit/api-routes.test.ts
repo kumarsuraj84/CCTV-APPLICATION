@@ -85,6 +85,30 @@ describe('health and version routes', () => {
     expect(text).not.toMatch(/ECONNREFUSED|hunter2|10\.1\.2\.3/)
   })
 
+  it('health logs why it is degraded, with secrets masked, at most once a minute', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      admin.create = () => {
+        throw new Error('connect failed password=hunter2 Bearer abc.def-ghi')
+      }
+      await health()
+      testClock += 3000 // past the 2 second cache: the database is asked again, but the log stays quiet
+      vi.setSystemTime(testClock)
+      await health()
+      expect(admin.calls).toBe(2)
+      expect(log).toHaveBeenCalledTimes(1)
+      const line = String(log.mock.calls[0][0])
+      expect(line).toContain('health_degraded')
+      expect(line).not.toMatch(/hunter2|abc.def-ghi/)
+      testClock += 61_000
+      vi.setSystemTime(testClock)
+      await health()
+      expect(log).toHaveBeenCalledTimes(2)
+    } finally {
+      log.mockRestore()
+    }
+  })
+
   it('version reports the build id', async () => {
     process.env.NEXT_PUBLIC_BUILD_ID = 'abc123'
     expect(await (await version()).json()).toEqual({ build: 'abc123' })

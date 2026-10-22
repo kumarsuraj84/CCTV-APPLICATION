@@ -46,7 +46,7 @@ describe('MonitorRunner', () => {
     expect(db.started).toHaveLength(0)
   })
 
-  it('reports progress per store and always marks the run finished, even when a step fails', async () => {
+  it('reports progress per store, and a run that cannot read or start is not reported finished', async () => {
     const db = new MemoryDb()
     db.stores = [{ id: 's1', org_id: 'o', code: 'S1', ip: '127.0.0.1', rtsp_port: 554, http_port: 80, username: 'u', password: 'p', nvr_status: 'up', nvr_checked_at: null, cameras: [{ id: 'c1', channel: 1, camera_ip: null }] }]
     await runnerFor(db).runFull()
@@ -59,11 +59,11 @@ describe('MonitorRunner', () => {
     await runnerFor(unreadable).runFull()
     expect(unreadable.finished).toHaveLength(0)
 
-    // A step that does throw (here the run being marked as started) still ends with the run marked finished.
+    // A run that cannot even be started fails out loud and is not reported finished; the next poll tries again as the request is still unanswered.
     const broken = new MemoryDb()
     broken.markRunStarted = async () => { throw new Error('database is down') }
     await expect(runnerFor(broken).runFull()).rejects.toThrow('database is down')
-    expect(broken.finished).toHaveLength(1)
+    expect(broken.finished).toHaveLength(0)
   })
 
   it('does not start a second run while one is in progress', async () => {

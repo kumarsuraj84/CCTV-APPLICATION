@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logger } from '@/lib/observability/logger'
+import { maskSecrets } from '@/lib/observability/mask'
 import type { Database } from '@/types/database'
 
 export type WorkerHealth = { ok: boolean; heartbeatAgeSec: number | null }
@@ -55,12 +56,22 @@ export type PublicHealth = { status: 'ok' | 'degraded'; db: boolean; worker: Wor
 export async function readPublicHealth(makeAdmin: () => Admin): Promise<PublicHealth> {
   try {
     const worker = await getWorkerHealth(makeAdmin())
-    if (!worker.ok) logger.warn({ event: 'health_degraded', reason: 'The worker heartbeat is missing or too old.', heartbeatAgeSec: worker.heartbeatAgeSec })
+    if (!worker.ok) logDegraded({ reason: 'The worker heartbeat is missing or too old.', heartbeatAgeSec: worker.heartbeatAgeSec })
     return { status: worker.ok ? 'ok' : 'degraded', db: true, worker }
   } catch (e) {
-    logger.warn({ event: 'health_degraded', reason: 'The database could not be read.', error: e })
+    logDegraded({ reason: 'The database could not be read.', detail: maskSecrets(e instanceof Error ? e.message : String(e)) })
     return { status: 'degraded', db: false, worker: { ok: false, heartbeatAgeSec: null } }
   }
+}
+
+/** A problem that lasts would otherwise be logged on every request; once a minute is enough. */
+const DEGRADED_LOG_EVERY_MS = 60_000
+let lastDegradedLog = Number.NEGATIVE_INFINITY
+function logDegraded(fields: Record<string, unknown>): void {
+  const now = Date.now()
+  if (now - lastDegradedLog < DEGRADED_LOG_EVERY_MS) return
+  lastDegradedLog = now
+  logger.warn({ event: 'health_degraded', ...fields })
 }
 
 /** Remembers the answer of load() for ttlMs, and shares one call among requests that arrive meanwhile. A failed load is not remembered. */

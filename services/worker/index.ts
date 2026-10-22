@@ -24,7 +24,7 @@ async function main() {
     process.on(signal, () => {
       if (stopping) {
         logger.warn({ event: 'worker_forced_stop', signal })
-        process.exit(0)
+        process.exit(130) // a second request to stop: leave at once; 130 is the usual code for being stopped by Ctrl+C
       }
       stopping = true
       stop.abort() // ends the wait at start-up, if that is where the worker is

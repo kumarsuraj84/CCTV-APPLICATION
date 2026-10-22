@@ -11,7 +11,7 @@ const probes: Probes = {
   rtsp: async () => ({ code: 200 }),
   nvr: () => ({ channelStatus: async () => new Map([[1, true]]), channels: async () => [] }),
 }
-const runnerFor = (db: MemoryDb) => new MonitorRunner({ db, probes, cfg: loadMonitorConfig({}), clock: () => NOW })
+const runnerFor = (db: MemoryDb, opts?: { cycleWatchdogMs?: number }) => new MonitorRunner({ db, probes, cfg: loadMonitorConfig({}), clock: () => NOW }, opts)
 
 const REQUESTED = new Date('2026-05-01T07:59:00Z')
 const pause = (ms = 20) => new Promise<void>((resolve) => setTimeout(resolve, ms))
@@ -67,7 +67,8 @@ describe('MonitorRunner honest check-now', () => {
     expect(db.finished).toHaveLength(1)
   })
 
-  it('does not report a run finished when the database could not be read; it tries once more on the next poll', async () => {
+  it('does not report a run finished when the database could not be read; it tries once more, not sooner than one poll interval later', async () => {
+    vi.useFakeTimers()
     const db = new MemoryDb()
     let broken = true
     db.loadDevices = async () => {
@@ -80,23 +81,30 @@ describe('MonitorRunner honest check-now', () => {
     expect(db.started).toHaveLength(1)
     expect(db.finished).toHaveLength(0)
     broken = false
+    await r.pollOnce() // straight away: too soon
+    expect(db.started).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(5000)
     await r.pollOnce()
     expect(db.started).toHaveLength(2)
     expect(db.finished).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(5000)
     await r.pollOnce()
     expect(db.started).toHaveLength(2) // no third run
   })
 
-  it('retries only once: a second failed run is closed so the page is not left waiting', async () => {
+  it('retries only once: a second run that started but failed again is closed so the page is not left waiting', async () => {
+    vi.useFakeTimers()
     const db = new MemoryDb()
     db.loadStoreJobs = async () => { throw new Error('database is down') }
     db.request = { requestedAt: REQUESTED, runStartedAt: null }
     const r = runnerFor(db)
     await r.pollOnce()
     expect(db.finished).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(5000)
     await r.pollOnce()
     expect(db.started).toHaveLength(2)
     expect(db.finished).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(5000)
     await r.pollOnce()
     expect(db.started).toHaveLength(2)
   })
@@ -152,6 +160,7 @@ describe('MonitorRunner schedule', () => {
     expect(gaps[0]).toBe(0)
     expect(gaps[1]).toBeGreaterThanOrEqual(70_000) // no extra wait, apart from the timer tick
     expect(gaps[1]).toBeLessThan(70_010)
+    expect(gaps[2]).toBeGreaterThanOrEqual(140_000)
     expect(gaps[2]).toBeLessThan(140_020)
   })
 
@@ -262,5 +271,149 @@ describe('MonitorRunner start-up callbacks', () => {
     await vi.advanceTimersByTimeAsync(6000)
     expect(ready).toHaveBeenCalledTimes(1)
     r.stop()
+  })
+})
+
+describe('MonitorRunner runs that the database failure leaves open', () => {
+  it('(a) a retry that cannot even start is attempted again once the database is back, and then finishes', async () => {
+    vi.useFakeTimers()
+    const db = new MemoryDb()
+    let devicesDown = true
+    let startDown = false
+    let startAttempts = 0
+    db.loadDevices = async () => {
+      if (devicesDown) throw new Error('database is down')
+      return []
+    }
+    const originalStart = db.markRunStarted.bind(db)
+    db.markRunStarted = async (at, total) => {
+      startAttempts += 1
+      if (startDown) throw new Error('database is down')
+      await originalStart(at, total)
+    }
+    db.request = { requestedAt: REQUESTED, runStartedAt: null }
+    const r = runnerFor(db)
+    await r.pollOnce() // first attempt: started, but the read failed, so it stays open
+    expect(db.started).toHaveLength(1)
+    expect(db.finished).toHaveLength(0)
+
+    startDown = true
+    await vi.advanceTimersByTimeAsync(5000)
+    await expect(r.pollOnce()).rejects.toThrow('database is down') // the retry cannot start
+    expect(db.started).toHaveLength(1)
+    expect(db.finished).toHaveLength(0)
+    const attempts = startAttempts
+    await r.pollOnce() // straight after the failed try: too soon, no hot loop
+    expect(startAttempts).toBe(attempts)
+
+    startDown = false
+    devicesDown = false
+    await vi.advanceTimersByTimeAsync(5000)
+    await r.pollOnce() // the database is back: the retry runs and finishes
+    expect(db.started).toHaveLength(2)
+    expect(db.finished).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(5000)
+    await r.pollOnce()
+    expect(db.started).toHaveLength(2)
+    expect(db.finished).toHaveLength(1)
+  })
+
+  it('(b) a run whose final write failed is closed by a later poll, exactly once', async () => {
+    vi.useFakeTimers()
+    const db = new MemoryDb()
+    let fail = true
+    const original = db.markRunFinished.bind(db)
+    db.markRunFinished = async (at) => {
+      if (fail) throw new Error('write failed')
+      await original(at)
+    }
+    db.request = { requestedAt: REQUESTED, runStartedAt: null }
+    const r = runnerFor(db)
+    await expect(r.pollOnce()).rejects.toThrow('write failed')
+    expect(db.started).toHaveLength(1)
+    expect(db.finished).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(5000)
+    await r.pollOnce() // still failing: logged, not closed, and no new run either
+    expect(db.finished).toHaveLength(0)
+    expect(db.started).toHaveLength(1)
+    fail = false
+    await vi.advanceTimersByTimeAsync(5000)
+    await r.pollOnce()
+    expect(db.finished).toHaveLength(1)
+    expect(db.started).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(5000)
+    await r.pollOnce()
+    expect(db.finished).toHaveLength(1)
+    expect(db.started).toHaveLength(1)
+  })
+
+  it('(c) closing a run left open by a crash is retried when the first try fails', async () => {
+    vi.useFakeTimers()
+    const db = new MemoryDb()
+    db.request = { requestedAt: REQUESTED, runStartedAt: new Date('2026-05-01T07:59:30Z'), runFinishedAt: null }
+    let calls = 0
+    const original = db.markRunFinished.bind(db)
+    db.markRunFinished = async (at) => {
+      if (++calls === 1) throw new Error('write failed')
+      await original(at)
+    }
+    const r = runnerFor(db)
+    await expect(r.start()).resolves.toBeUndefined() // a failed close does not stop the worker
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(db.finished).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(db.finished).toHaveLength(1)
+    r.stop()
+  })
+
+  it('only retries closing on poll ticks, never in a tight loop', async () => {
+    vi.useFakeTimers()
+    const db = new MemoryDb()
+    let calls = 0
+    db.request = { requestedAt: REQUESTED, runStartedAt: new Date('2026-05-01T07:59:30Z'), runFinishedAt: null }
+    db.markRunFinished = async () => {
+      calls += 1
+      throw new Error('write failed')
+    }
+    const r = runnerFor(db)
+    await r.start()
+    await vi.advanceTimersByTimeAsync(20_000)
+    r.stop()
+    expect(calls).toBeLessThanOrEqual(6) // start + about one per 5 s poll
+  })
+})
+
+describe('MonitorRunner cycle watchdog', () => {
+  it('stops waiting for a stuck scheduled cycle, does not report the run finished, and closes it after the one retry', async () => {
+    vi.useFakeTimers()
+    const db = new MemoryDb()
+    db.loadStoreJobs = () => new Promise(() => {}) // the scheduled camera cycle never ends
+    db.request = { requestedAt: REQUESTED, runStartedAt: null }
+    const r = runnerFor(db, { cycleWatchdogMs: 1000 })
+    void r.runCameras()
+    await vi.advanceTimersByTimeAsync(10)
+    const first = r.pollOnce()
+    await vi.advanceTimersByTimeAsync(1500)
+    await first
+    expect(db.started).toHaveLength(1)
+    expect(db.finished).toHaveLength(0) // never reported finished without checking
+
+    await vi.advanceTimersByTimeAsync(5000)
+    const second = r.pollOnce()
+    await vi.advanceTimersByTimeAsync(1500)
+    await second
+    expect(db.started).toHaveLength(2)
+    expect(db.finished).toHaveLength(1) // the one retry is over: closed, not left running for ever
+  })
+
+  it('also bounds a fresh cycle that itself never ends', async () => {
+    vi.useFakeTimers()
+    const db = new MemoryDb()
+    db.loadDevices = () => new Promise(() => {})
+    const r = runnerFor(db, { cycleWatchdogMs: 1000 })
+    const full = r.runFull()
+    await vi.advanceTimersByTimeAsync(1500)
+    await full
+    expect(db.finished).toHaveLength(0)
   })
 })
