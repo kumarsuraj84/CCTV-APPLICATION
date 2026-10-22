@@ -26,6 +26,9 @@ import { DayTimeline } from './DayTimeline'
 import { FastPlayer } from './FastPlayer'
 import { PlaybackPlayer } from './PlaybackPlayer'
 
+/** Fast playback (2x, 4x, 8x): offered ('available'), wanted but ffmpeg is not set up here ('not-set-up': the screen says so), or not for this person ('hidden': only 1x, no word about it). */
+export type FastPlayback = 'available' | 'not-set-up' | 'hidden'
+
 export type PlaybackCamera = { id: string; name: string; storeCode: string }
 
 type Segments = { start: string; end: string }[]
@@ -39,7 +42,7 @@ const COULD_NOT_REACH = 'Could not reach the server.'
  * Playback for one camera: a month to pick the day from, the day's recordings on a 24 hour bar, a start time (click or drag on the bar, or
  * type HH:MM), a length, and the picture. Times are the clock people see (India time, 24 hour).
  */
-export function PlaybackView({ camera, today, initialDay, fastPlayback = false }: { camera: PlaybackCamera; today: string; initialDay: string; /** ffmpeg runs on the server, so 2x, 4x and 8x can be offered. */ fastPlayback?: boolean }) {
+export function PlaybackView({ camera, today, initialDay, fastPlayback = 'hidden' }: { camera: PlaybackCamera; today: string; initialDay: string; fastPlayback?: FastPlayback }) {
   const startDay = clampDay(parseDay(initialDay) ? initialDay : today, today)
   const first = parseDay(startDay)!
   const [day, setDay] = useState(startDay)
@@ -129,7 +132,8 @@ export function PlaybackView({ camera, today, initialDay, fastPlayback = false }
   }
 
   // Without ffmpeg on the server only 1x is offered, whatever was chosen before.
-  const playSpeed: Speed = fastPlayback ? speed : 1
+  const fast = fastPlayback === 'available'
+  const playSpeed: Speed = fast ? speed : 1
 
   const start = async (iso: string, minutes: number, text: string, at: Speed = playSpeed) => {
     setPlayError(null)
@@ -182,7 +186,7 @@ export function PlaybackView({ camera, today, initialDay, fastPlayback = false }
 
   const playLabel = playSpeed === 1 ? `Play ${length} minutes` : `Play ${fastMinutes(length)} minutes at ${speedLabel(playSpeed)}`
   // Under the speed: why only 1x is offered, or that fast playback is shorter than the longest normal playback.
-  const fastHelp = !fastPlayback ? 'Fast playback is not set up on this server.' : playSpeed !== 1 && length > MAX_FAST_MINUTES ? `Fast playback shows at most ${MAX_FAST_MINUTES} minutes.` : null
+  const fastHelp = fastPlayback === 'not-set-up' ? 'Fast playback is not set up on this server.' : fastPlayback === 'hidden' ? null : playSpeed !== 1 && length > MAX_FAST_MINUTES ? `Fast playback shows at most ${MAX_FAST_MINUTES} minutes.` : null
 
   const summary = !loaded
     ? 'Loading the recordings…'
@@ -263,7 +267,7 @@ export function PlaybackView({ camera, today, initialDay, fastPlayback = false }
                 aria-describedby={fastHelp === null ? undefined : `${ids}-speed-help`}
                 className="h-8 rounded-lg border border-input bg-transparent px-2 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm dark:bg-input/30"
               >
-                {(fastPlayback ? SPEEDS : SPEEDS.filter((s) => s === 1)).map((s) => <option key={s} value={s}>{speedLabel(s)}</option>)}
+                {(fast ? SPEEDS : SPEEDS.filter((s) => s === 1)).map((s) => <option key={s} value={s}>{speedLabel(s)}</option>)}
               </select>
             </div>
             <Button ref={playButton} type="button" onClick={play} disabled={busy || (minute === null && draft === null)}>

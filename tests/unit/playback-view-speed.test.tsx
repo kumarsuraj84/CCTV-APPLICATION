@@ -12,12 +12,12 @@ import { FastPlayer } from '@/components/live/FastPlayer'
 import { PlaybackView } from '@/components/live/PlaybackView'
 
 const camera = { id: '0b7f0a52-1f0c-4a52-9c63-2f2f0c7bd111', name: 'Front Door', storeCode: 'PA' }
-const view = (fastPlayback?: boolean) => renderToStaticMarkup(<PlaybackView camera={camera} today="2026-10-22" initialDay="2026-10-22" fastPlayback={fastPlayback} />)
+const view = (fastPlayback?: 'available' | 'not-set-up' | 'hidden') => renderToStaticMarkup(<PlaybackView camera={camera} today="2026-10-22" initialDay="2026-10-22" fastPlayback={fastPlayback} />)
 const speedSelect = (html: string) => /<select[^>]*id="[^"]*-speed"[^>]*>([\s\S]*?)<\/select>/.exec(html)
 
 describe('the speed choice on the Playback screen', () => {
   it('offers only 1x, and says why, when ffmpeg is not set up on the server', () => {
-    const html = view(false)
+    const html = view('not-set-up')
     const select = speedSelect(html)
     expect(select).not.toBeNull()
     expect([...select![1].matchAll(/<option[^>]*>([^<]*)</g)].map((m) => m[1])).toEqual(['1x'])
@@ -28,12 +28,17 @@ describe('the speed choice on the Playback screen', () => {
     expect(html).toContain(`id="${describedBy![1]}"`)
   })
 
-  it('is the same when the setting is not given at all (the safe default)', () => {
-    expect(view(undefined)).toContain('Fast playback is not set up on this server.')
+  it('offers only 1x and says nothing about ffmpeg to somebody who may not use fast playback (the default)', () => {
+    for (const html of [view('hidden'), view(undefined)]) {
+      const select = speedSelect(html)!
+      expect([...select[1].matchAll(/<option[^>]*>([^<]*)</g)].map((m) => m[1])).toEqual(['1x'])
+      expect(html).not.toMatch(/ffmpeg|Fast playback/i)
+      expect(select[0]).not.toContain('aria-describedby')
+    }
   })
 
   it('offers 1x, 2x, 4x and 8x, with a label, when ffmpeg works', () => {
-    const html = view(true)
+    const html = view('available')
     const select = speedSelect(html)!
     expect([...select[1].matchAll(/<option[^>]*>([^<]*)</g)].map((m) => m[1])).toEqual(['1x', '2x', '4x', '8x'])
     expect(html).toMatch(/<label[^>]*for="[^"]*-speed"[^>]*>Speed<\/label>/)
@@ -42,7 +47,7 @@ describe('the speed choice on the Playback screen', () => {
   })
 
   it('keeps the select at the readable mobile size like the length select', () => {
-    const html = view(true)
+    const html = view('available')
     expect(speedSelect(html)![0]).toContain('text-base')
   })
 })

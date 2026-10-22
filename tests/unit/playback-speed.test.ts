@@ -45,3 +45,27 @@ describe('explainVodFailure', () => {
     expect(await explainVodFailure('/api/vod?x=1', (async () => { throw new TypeError('network') }) as unknown as typeof fetch)).toBeNull()
   })
 })
+
+describe('the interim rule for fast playback', () => {
+  it('allows administrators and platform owners only', async () => {
+    const { canUseFastPlaybackInterim } = await import('@/lib/streams/speed')
+    expect(canUseFastPlaybackInterim('admin')).toBe(true)
+    expect(canUseFastPlaybackInterim('platform_owner')).toBe(true)
+    for (const role of ['user', 'agent', 'manager'] as const) expect(canUseFastPlaybackInterim(role)).toBe(false)
+  })
+})
+
+describe('probeVod', () => {
+  const answer = (status: number, body: unknown) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch
+  it('reports the video format the server read, only when it is one of the two known names', async () => {
+    const { probeVod } = await import('@/lib/streams/speed')
+    expect(await probeVod('/api/vod?x=1', answer(200, { ok: true, codec: 'h265' }))).toEqual({ error: null, codec: 'h265' })
+    expect(await probeVod('/api/vod?x=1', answer(200, { ok: true, codec: 'h264' }))).toEqual({ error: null, codec: 'h264' })
+    expect(await probeVod('/api/vod?x=1', answer(200, { ok: true, codec: '<script>' }))).toEqual({ error: null, codec: null })
+    expect(await probeVod('/api/vod?x=1', answer(500, { error: 'ffmpeg is not installed on the server' }))).toEqual({ error: 'ffmpeg is not installed on the server', codec: null })
+  })
+  it('has the words for a browser that cannot play the format', async () => {
+    const { MSG_BROWSER_CANNOT_PLAY } = await import('@/lib/streams/speed')
+    expect(MSG_BROWSER_CANNOT_PLAY).toBe("This browser cannot play this camera's recording format.")
+  })
+})

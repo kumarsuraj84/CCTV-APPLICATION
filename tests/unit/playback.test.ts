@@ -548,3 +548,16 @@ describe('recordedDays against the fake NVR', () => {
     await huge.close()
   })
 })
+
+describe('the video format of a recording (codecType)', () => {
+  const item = (codec: string | null) =>
+    `<CMSearchResult><responseStatusStrg>OK</responseStatusStrg><matchList><searchMatchItem><timeSpan><startTime>2026-10-22T09:00:00Z</startTime><endTime>2026-10-22T10:00:00Z</endTime></timeSpan><mediaSegmentDescriptor>${codec === null ? '' : `<codecType>${codec}</codecType>`}<playbackURI>rtsp://h/p?starttime=1&amp;endtime=2</playbackURI></mediaSegmentDescriptor></searchMatchItem></matchList></CMSearchResult>`
+  it('is kept when it is a short plain name, and only then', () => {
+    expect(parseSearchResult(item('H.265')).segments[0].codec).toBe('H.265')
+    expect(parseSearchResult(item('H.264-BP')).segments[0].codec).toBe('H.264-BP')
+    expect(parseSearchResult(item(null)).segments[0]).not.toHaveProperty('codec')
+    expect(parseSearchResult(item('x'.repeat(33))).segments[0]).not.toHaveProperty('codec')
+    expect(parseSearchResult(item('H.265;rm -rf /')).segments[0]).not.toHaveProperty('codec')
+    expect(parseSearchResult(item('&lt;script&gt;')).segments[0]).not.toHaveProperty('codec')
+  })
+})

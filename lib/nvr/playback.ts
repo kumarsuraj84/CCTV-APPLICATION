@@ -9,8 +9,9 @@ import { ascii, elements, firstElement, text } from '@/lib/nvr/isapi'
 /**
  * One recording. `uri` is the NVR's own playback address for it (needed by the download); it is optional because some firmware leaves it out.
  * It may contain credentials on some firmware: keep it on the server. Never log it and never return it to a browser.
+ * `codec` is the NVR's own name for the video format (for example `H.264-BP`) when it gives a short plain one; it is only ever tested against a pattern.
  */
-export type Segment = { start: Date; end: Date; uri?: string }
+export type Segment = { start: Date; end: Date; uri?: string; codec?: string }
 
 const BAD_INPUT = 'Invalid playback request.'
 const MAX_CHANNEL = 4096
@@ -89,9 +90,20 @@ function sortedUnique(list: Segment[]): Segment[] {
     const key = `${s.start.getTime()}|${s.end.getTime()}`
     const first = seen.get(key)
     if (!first) seen.set(key, s)
-    else if (first.uri === undefined && s.uri !== undefined) first.uri = s.uri
+    else {
+      if (first.uri === undefined && s.uri !== undefined) first.uri = s.uri
+      if (first.codec === undefined && s.codec !== undefined) first.codec = s.codec
+    }
   }
   return [...seen.values()].sort((a, b) => a.start.getTime() - b.start.getTime() || a.end.getTime() - b.end.getTime())
+}
+
+const CODEC = /^[A-Za-z0-9._ +-]{1,32}$/
+
+/** The NVR's name for the video format of one item, or undefined when it is missing or not a short plain name. */
+function codecName(block: string): string | undefined {
+  const raw = text(firstElement(block, 'codecType'))
+  return raw !== null && CODEC.test(raw) ? raw : undefined
 }
 
 /** The playback address of one item, or undefined when it is missing or not an rtsp/http(s) address of at most 512 characters without whitespace or control characters. */
@@ -110,7 +122,8 @@ function parsePage(xml: string): Page {
     const end = span === null ? null : parseStamp(text(firstElement(span, 'endTime')))
     if (start === null || end === null || end <= start) continue
     const uri = playbackUri(block)
-    found.push(uri === undefined ? { start: new Date(start), end: new Date(end) } : { start: new Date(start), end: new Date(end), uri })
+    const codec = codecName(block)
+    found.push({ start: new Date(start), end: new Date(end), ...(uri === undefined ? {} : { uri }), ...(codec === undefined ? {} : { codec }) })
   }
   const status = text(firstElement(xml, 'responseStatusStrg'))
   return { segments: sortedUnique(found), more: status !== null && status.toUpperCase() === 'MORE', count: items.length, skipped: items.length - found.length, valid: ascii(xml).includes('<cmsearchresult') }

@@ -1,6 +1,7 @@
 import { getCurrentProfile } from '@/lib/auth/profile'
 import { logger } from '@/lib/observability/logger'
 import { streamRequestLimiter } from '@/lib/streams/request-limit'
+import { canUseFastPlaybackInterim, MSG_FAST_NOT_FOR_YOU } from '@/lib/streams/speed'
 import { MSG_VOD_BAD_REQUEST, parseVodQuery, serveVod } from '@/lib/streams/vod'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
@@ -13,7 +14,7 @@ import { createClient } from '@/lib/supabase/server'
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs' // child processes
 
-const HEADERS = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }
+const HEADERS = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin' }
 const error = (status: number, message: string, extra: Record<string, string> = {}) => Response.json({ error: message }, { status, headers: { ...HEADERS, ...extra } })
 
 export async function GET(request: Request) {
@@ -21,6 +22,8 @@ export async function GET(request: Request) {
     const profile = await getCurrentProfile()
     if (!profile) return error(401, 'Please sign in.')
     if (profile.must_reset_password) return error(403, 'Choose your own password first.')
+    // Interim: administrators only, until the capability model replaces this one rule (it also covers ?probe=1). Nothing else is read or asked first.
+    if (!canUseFastPlaybackInterim(profile.role)) return error(403, MSG_FAST_NOT_FOR_YOU)
 
     const parsed = parseVodQuery(new URL(request.url).searchParams)
     if (!parsed.ok) return error(parsed.error === 'Camera not found.' ? 404 : 400, parsed.error)

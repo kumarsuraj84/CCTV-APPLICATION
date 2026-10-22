@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { explainVodFailure, speedLabel, type Speed } from '@/lib/streams/speed'
+import { MSG_BROWSER_CANNOT_PLAY, probeVod, speedLabel, type Speed } from '@/lib/streams/speed'
 
 /** Give up on a video that has shown no picture after this long (the server itself gives up on its side after 30 seconds). */
 const START_TIMEOUT_MS = 45_000
@@ -55,14 +55,17 @@ export function FastPlayer({
     const fail = () => {
       if (cancelled || ended) return
       ended = true
+      // MEDIA_ERR_SRC_NOT_SUPPORTED (4): the address did not give a video this browser can play. It is also what a JSON error looks like, so
+      // the server is asked first; only when it has no complaint is it the browser's format support.
+      const unsupported = v.error?.code === 4
       clearTimeout(watchdog)
       setPlayed(seconds())
       setState('failed')
       v.pause()
       v.removeAttribute('src')
       v.load() // lets go of the connection to the server
-      void explainVodFailure(src).then((why) => {
-        if (!cancelled) setMessage(why ?? FALLBACK_FAILURE)
+      void probeVod(src).then(({ error }) => {
+        if (!cancelled) setMessage(error ?? (unsupported ? MSG_BROWSER_CANNOT_PLAY : FALLBACK_FAILURE))
       })
     }
     const onPlaying = () => {

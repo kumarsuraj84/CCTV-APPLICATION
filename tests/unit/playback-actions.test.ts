@@ -1,3 +1,4 @@
+import { resetProcessSingletons } from '../helpers/reset-singletons'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const requireProfile = vi.fn()
@@ -23,6 +24,7 @@ const CAM = '0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a'
 describe('playback actions', () => {
   beforeEach(() => {
     vi.resetModules()
+    resetProcessSingletons()
     vi.clearAllMocks()
     vi.unstubAllEnvs()
     vi.spyOn(console, 'error').mockImplementation(() => {})

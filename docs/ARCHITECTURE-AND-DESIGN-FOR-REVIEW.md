@@ -202,9 +202,9 @@ Key properties: the stream name is derived from the signed token only (the brows
 
 go2rtc behaviour discovered against the real container and designed around: with a read-only config mount, `PUT/DELETE /api/streams` answer HTTP 400 yet apply the change, so the client **confirms via `GET /api/streams?src=<name>`** instead of trusting status codes; registering an already-registered identical source is skipped (no second RTSP producer per camera); idle `cam_*`/`pb_*` streams are pruned with strict name patterns and never while they have consumers. Demo video (no real camera) uses `ffmpeg:virtual?video=testsrc…` only when `DEMO_VIDEO=1`, non-production and loopback store.
 
-### 6.4 Recorded playback (IN PROGRESS: search/calendar BUILT, screen being built)
+### 6.4 Recorded playback (BUILT: search/calendar and the playback screen; fast playback BUILT but never verified end-to-end)
 
-NVR recording search over ISAPI (`POST /ISAPI/ContentMgmt/search`, daily calendar via `dailyDistribution`) through the same hardened Digest client; paging guards (≤50 pages, ≤5000 segments, repeated-MORE protection) and an explicit `truncated`/`skipped` result; a `PLAYBACK_OFFSET_MIN` setting handles NVR clocks (requested NVR time = shown time − offset; displayed time = NVR time + offset; default 0). A playback token has kind `pb` with start/end claims; the stream is `pb_<camera>_<startEpoch>` registered with an RTSP `tracks/<ch>01?starttime=…&endtime=…` URL. Optional fast playback (2×/4×/8×) via NVR download piped through ffmpeg is PLANNED (ffmpeg is not installed on the dev host; must degrade gracefully).
+NVR recording search over ISAPI (`POST /ISAPI/ContentMgmt/search`, daily calendar via `dailyDistribution`) through the same hardened Digest client; paging guards (≤50 pages, ≤5000 segments, repeated-MORE protection) and an explicit `truncated`/`skipped` result; a `PLAYBACK_OFFSET_MIN` setting handles NVR clocks (requested NVR time = shown time − offset; displayed time = NVR time + offset; default 0). A playback token has kind `pb` with start/end claims; the stream is `pb_<camera>_<startEpoch>` registered with an RTSP `tracks/<ch>01?starttime=…&endtime=…` URL. The playback screen is BUILT: a month calendar, the day's recordings on a 24-hour bar, a start time (click, drag, keys or typed), a length, and the picture (the `pb` stream through the gateway; two people asking for the same moment get separate streams, the start is moved on by one second). Optional fast playback (2×/4×/8×) is BUILT (`GET /api/vod`: the NVR's download piped through ffmpeg without re-encoding into a fragmented MP4 for a plain `<video>`; ffmpeg limited to the pipe protocol and the MPEG-PS/TS, MP4, H.264/H.265 formats; 1 conversion per person, 8 in all; a new one ends the person's previous one; killed when the page closes, after 30 minutes or after 60 s of NVR silence) but has **never been verified end-to-end**: ffmpeg is not installed on the dev host, so the real-ffmpeg test is skipped here, and no real NVR download or browser playback has been tried. Interim access rule: only `admin` and `platform_owner` may use the route and are offered 2×/4×/8× (one function, `canUseFastPlaybackInterim`, to be replaced when the capability model lands); without ffmpeg an administrator sees only 1× with "Fast playback is not set up on this server."
 
 ---
 
@@ -274,7 +274,7 @@ Admin action "Find cameras" reads the NVR channel list (ISAPI, fallback endpoint
 |---|---|---|
 | 1 Foundation | project, auth, roles, grants, users admin, stores/cameras/devices, CSV import, RLS tests | BUILT, reviewed (branch `feat/plan-1-foundation`) |
 | 2 Monitoring | NVR/RTSP/TCP/ICMP checks, state machine, uptime, worker, discovery, check-now, status UI, demo tools | BUILT, reviewed incl. final whole-branch review (branch `feat/plan-2-monitoring`) |
-| 3 Live feeds | camera groups (BUILT), stream tokens + go2rtc client (BUILT), gateway + Docker go2rtc (BUILT), live wall (BUILT), NVR recording search (BUILT), playback screen (IN PROGRESS), fast playback/clips (PLANNED, optional), wire-up/demo (PLANNED) | in progress (branch `feat/plan-3-live-feeds`) |
+| 3 Live feeds | camera groups (BUILT), stream tokens + go2rtc client (BUILT), gateway + Docker go2rtc (BUILT), live wall (BUILT), NVR recording search (BUILT), playback screen (BUILT), fast playback (BUILT, optional, interim admin-only, never verified end-to-end), wire-up/demo (PLANNED) | in progress (branch `feat/plan-3-live-feeds`) |
 | 4 Alerts, reports, backup, hardening | rules/events/engine with e-mail, Teams, webhook; fixed reports with Excel export; NVR backup jobs; hash-chained `system_log`; CSP, column grants, rate limits, deployment material | PLANNED |
 | 5 Remote screen | VNC through the gateway (hub performs the VNC login with the vault password; view-only filter; noVNC), RDP file download, per-user remote access, session log | PLANNED |
 | 6 Agent + fleet | PowerShell agent, health ingest and rules, enrolment, signed command queue (offline PCs run commands when they return), script library, packages, local admin password rotation, diagnostics (printers/network/mapped drives), fleet dashboard | PLANNED |
@@ -350,7 +350,7 @@ Please evaluate and challenge:
 
 ```
 app/(auth)/…            login, forgot/reset password, change password
-app/(app)/…             home, stores, stores/[id], devices, groups, live, playback (in progress),
+app/(app)/…             home, stores, stores/[id], devices, groups, live, playback,
                         admin/(users, users/[id]/access, stores, devices, import, monitoring)
 app/api/                health, version
 components/             layout (shell, nav, icons), admin, groups, live (wall, tile, player hook), monitor (status badge, check-now, find-cameras)

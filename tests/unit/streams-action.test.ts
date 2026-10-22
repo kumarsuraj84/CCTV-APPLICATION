@@ -1,3 +1,4 @@
+import { resetProcessSingletons } from '../helpers/reset-singletons'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createWindowLimiter } from '@/lib/streams/limiter'
 
@@ -56,6 +57,7 @@ const person = (id: string) => ({ id, org_id: 'o1', role: 'user', email: 'a@b.c'
 describe('stream actions', () => {
   beforeEach(() => {
     vi.resetModules()
+    resetProcessSingletons()
     vi.clearAllMocks()
     vi.spyOn(console, 'error').mockImplementation(() => {})
     openStreams.mockResolvedValue({ ok: true, streams: [] })

@@ -1,17 +1,22 @@
 import { EventEmitter } from 'node:events'
+import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   buildDownloadBody,
   buildFfmpegArgs,
+  classifyFfmpegFailure,
   clipPlaybackUri,
   createConversionLimiter,
   createFfmpegCheck,
+  createSpawn,
   defaultSpawn,
+  FORMAT_WHITELIST,
   parseVodQuery,
   resolveFfmpeg,
   sanitizeStderr,
   startConversion,
+  videoFamily,
   type SpawnFn,
 } from '@/lib/streams/vod'
 import { fakeSpawn, isAlive } from '../helpers/fake-spawn'
@@ -49,32 +54,130 @@ async function readAll(body: ReadableStream<Uint8Array>): Promise<number> {
 }
 
 describe('ffmpeg arguments', () => {
-  it('are exactly the ones the brief names: input from standard input, no sound, picture copied, fragmented MP4 to standard output', () => {
-    expect(buildFfmpegArgs()).toEqual(['-loglevel', 'error', '-i', 'pipe:0', '-an', '-c:v', 'copy', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-flush_packets', '1', '-f', 'mp4', 'pipe:1'])
+  const BASE = [
+    '-nostdin',
+    '-loglevel', 'error',
+    '-protocol_whitelist', 'pipe',
+    '-format_whitelist', 'mpeg,mpegts,mov,mp4,h264,hevc',
+    '-i', 'pipe:0',
+    '-an',
+    '-c:v', 'copy',
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+    '-flush_packets', '1',
+    '-f', 'mp4',
+    'pipe:1',
+  ]
+  it('are exactly: no keyboard, only pipe input, only the listed formats, input from standard input, no sound, picture copied, fragmented MP4 to standard output', () => {
+    expect(buildFfmpegArgs()).toEqual(BASE)
+  })
+  it('limit the protocol and the formats BEFORE the input (they are input options)', () => {
+    const args = buildFfmpegArgs()
+    const input = args.indexOf('-i')
+    expect(args.slice(args.indexOf('-protocol_whitelist'), args.indexOf('-protocol_whitelist') + 2)).toEqual(['-protocol_whitelist', 'pipe'])
+    expect(args.indexOf('-protocol_whitelist')).toBeLessThan(input)
+    expect(args.indexOf('-format_whitelist')).toBeLessThan(input)
+    expect(args[args.indexOf('-format_whitelist') + 1]).toBe(FORMAT_WHITELIST)
+    expect(args[input + 1]).toBe('pipe:0')
+  })
+  it('allow only the formats Hikvision NVRs send (MPEG-PS, MPEG-TS, MP4, bare H.264 / H.265) and nothing that can name other files', () => {
+    expect(FORMAT_WHITELIST.split(',')).toEqual(['mpeg', 'mpegts', 'mov', 'mp4', 'h264', 'hevc'])
+    for (const never of ['concat', 'hls', 'applehttp', 'dash', 'sdp', 'rtsp', 'image2', 'lavfi', 'avfoundation']) expect(FORMAT_WHITELIST.split(',')).not.toContain(never)
+  })
+  it('add the hvc1 tag for H.265 only, right after the copy', () => {
+    const args = buildFfmpegArgs({ hevc: true })
+    expect(args).toEqual([...BASE.slice(0, 12), '-tag:v', 'hvc1', ...BASE.slice(12)])
+    expect(buildFfmpegArgs({ hevc: false })).toEqual(BASE)
+    expect(buildFfmpegArgs({})).toEqual(BASE)
   })
   it('come back fresh each time, so one caller cannot change what the next one runs', () => {
     buildFfmpegArgs().push('-evil')
-    expect(buildFfmpegArgs()).toHaveLength(14)
+    expect(buildFfmpegArgs()).toEqual(BASE)
+  })
+  it('read the video family from the NVR name', () => {
+    expect(['H.264-BP', 'H.264', 'AVC', 'h264'].map(videoFamily)).toEqual(['h264', 'h264', 'h264', 'h264'])
+    expect(['H.265', 'HEVC', 'hevc', 'H.265+'].map(videoFamily)).toEqual(['h265', 'h265', 'h265', 'h265'])
+    expect([undefined, '', 'MPEG4', 'MJPEG', 'x'].map(videoFamily)).toEqual([null, null, null, null, null])
   })
 })
 
-describe('the FFMPEG setting', () => {
-  it('defaults to ffmpeg when it is not set or blank', () => {
-    expect(resolveFfmpeg({})).toBe('ffmpeg')
-    expect(resolveFfmpeg({ FFMPEG: '' })).toBe('ffmpeg')
-    expect(resolveFfmpeg({ FFMPEG: '   ' })).toBe('ffmpeg')
+describe('the FFMPEG setting and where ffmpeg is looked for', () => {
+  const POSIX = { platform: 'linux' as const }
+  const WIN = { platform: 'win32' as const }
+  it('takes a full path, trimmed', () => {
+    expect(resolveFfmpeg({ FFMPEG: ' /usr/local/bin/ffmpeg ' }, POSIX)).toEqual({ ok: true, path: '/usr/local/bin/ffmpeg' })
+    expect(resolveFfmpeg({ FFMPEG: ' C:\\Tools\\ffmpeg\\bin\\ffmpeg.exe\r\n' }, WIN)).toEqual({ ok: true, path: 'C:\\Tools\\ffmpeg\\bin\\ffmpeg.exe' })
+    expect(resolveFfmpeg({ FFMPEG: '\\\\server\\share\\ffmpeg.exe' }, WIN)).toEqual({ ok: true, path: '\\\\server\\share\\ffmpeg.exe' })
   })
-  it('takes a name or a path, trimmed', () => {
-    expect(resolveFfmpeg({ FFMPEG: ' C:\\Tools\\ffmpeg\\bin\\ffmpeg.exe ' })).toBe('C:\\Tools\\ffmpeg\\bin\\ffmpeg.exe')
-    expect(resolveFfmpeg({ FFMPEG: '/usr/local/bin/ffmpeg' })).toBe('/usr/local/bin/ffmpeg')
-    expect(resolveFfmpeg({ FFMPEG: 'ffmpeg\r\n' })).toBe('ffmpeg') // the line ending of an env file
+  it('refuses a name or a relative path with a plain message, and then looks nowhere else', () => {
+    const asked: string[] = []
+    const lookup = { ...POSIX, exists: (f: string) => (asked.push(f), true) }
+    for (const bad of ['ffmpeg', './ffmpeg', '../bin/ffmpeg', 'bin/ffmpeg', '~/ffmpeg', 'ffmpeg.exe']) {
+      expect(resolveFfmpeg({ FFMPEG: bad, PATH: '/usr/bin' }, lookup), bad).toEqual({ ok: false, error: 'FFMPEG must be the full path of the ffmpeg program.' })
+    }
+    for (const bad of ['ffmpeg.exe', '.\\ffmpeg.exe', 'bin\\ffmpeg.exe', '\\ffmpeg.exe', 'C:ffmpeg.exe', '\\Windows\\ffmpeg.exe']) {
+      expect(resolveFfmpeg({ FFMPEG: bad }, WIN), bad).toEqual({ ok: false, error: 'FFMPEG must be the full path of the ffmpeg program.' })
+    }
+    expect(asked).toEqual([])
   })
   it('refuses a value with a line break, a NUL or any control character, and one that is far too long', () => {
-    for (const bad of ['ffmpeg\n-i x', 'ffmpeg\r-i', 'ff\u0000mpeg', 'ffmpeg\u0007', 'ffmpeg\u007f', 'a\nb', `/${'x'.repeat(1030)}`]) expect(resolveFfmpeg({ FFMPEG: bad }), JSON.stringify(bad).slice(0, 30)).toBeNull()
+    for (const bad of ['/bin/ffmpeg\n-i x', '/bin/ffmpeg\r-i', '/bin/ff\u0000mpeg', '/bin/ffmpeg\u0007', '/bin/ffmpeg\u007f', `/${'x'.repeat(1030)}`]) {
+      expect(resolveFfmpeg({ FFMPEG: bad }, POSIX), JSON.stringify(bad).slice(0, 30)).toMatchObject({ ok: false, error: 'FFMPEG must be the full path of the ffmpeg program.' })
+    }
   })
-  it('is run without a shell and with the arguments as a list', () => {
-    const src = defaultSpawn.toString()
-    expect(src).toContain('shell: false')
+  it('finds the default `ffmpeg` only in full-path entries of PATH, in order', () => {
+    const exists = (f: string) => ['/opt/x/ffmpeg', '/usr/bin/ffmpeg'].includes(f)
+    expect(resolveFfmpeg({ PATH: '/bin:/usr/bin:/opt/x' }, { ...POSIX, exists })).toEqual({ ok: true, path: '/usr/bin/ffmpeg' })
+    expect(resolveFfmpeg({ PATH: '/opt/x:/usr/bin' }, { ...POSIX, exists })).toEqual({ ok: true, path: '/opt/x/ffmpeg' })
+    expect(resolveFfmpeg({ FFMPEG: '', PATH: '/usr/bin' }, { ...POSIX, exists })).toEqual({ ok: true, path: '/usr/bin/ffmpeg' })
+  })
+  it('skips empty, "." and relative entries (and so the current folder), also when ffmpeg is there', () => {
+    const asked: string[] = []
+    const exists = (f: string) => (asked.push(f), true)
+    expect(resolveFfmpeg({ PATH: ':.::bin:./bin:../x:~/bin' }, { ...POSIX, exists })).toEqual({ ok: false, error: 'ffmpeg is not installed on the server' })
+    expect(asked).toEqual([])
+    expect(resolveFfmpeg({ PATH: '.;;bin;..\\x;\\tools;C:tools;' }, { ...WIN, exists })).toEqual({ ok: false, error: 'ffmpeg is not installed on the server' })
+    expect(asked).toEqual([])
+    expect(resolveFfmpeg({ PATH: '.:/usr/bin' }, { ...POSIX, exists })).toEqual({ ok: true, path: '/usr/bin/ffmpeg' })
+    expect(asked).toEqual(['/usr/bin/ffmpeg'])
+  })
+  it('on Windows looks for ffmpeg.exe (never a .cmd shim), strips quotes around an entry, and reads the Path spelling', () => {
+    const seen: string[] = []
+    const exists = (f: string) => (seen.push(f), f === 'C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe')
+    expect(resolveFfmpeg({ Path: 'C:\\Windows;"C:\\Program Files\\ffmpeg\\bin"' }, { ...WIN, exists })).toEqual({ ok: true, path: 'C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe' })
+    expect(seen).toEqual(['C:\\Windows\\ffmpeg.exe', 'C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe'])
+  })
+  it('says "not installed" when PATH is missing or has no ffmpeg', () => {
+    const none = { ...POSIX, exists: () => false }
+    expect(resolveFfmpeg({}, none)).toEqual({ ok: false, error: 'ffmpeg is not installed on the server' })
+    expect(resolveFfmpeg({ PATH: '/usr/bin:/bin' }, none)).toEqual({ ok: false, error: 'ffmpeg is not installed on the server' })
+  })
+  it('really checks the file system by default: a folder or a missing file is not a program', () => {
+    const here = path.resolve(__dirname)
+    expect(resolveFfmpeg({ PATH: here }).ok).toBe(false) // there is no ffmpeg in the tests folder
+  })
+})
+
+describe('how the program is started', () => {
+  it('without a shell, with the arguments as a list, three pipes and no console window', () => {
+    const impl = vi.fn(() => ({}) as never)
+    createSpawn(impl as never)('/opt/ffmpeg', ['-i', 'pipe:0'])
+    expect(impl).toHaveBeenCalledTimes(1)
+    expect(impl).toHaveBeenCalledWith('/opt/ffmpeg', ['-i', 'pipe:0'], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+  })
+})
+
+describe('what ffmpeg says when it does not understand the recording', () => {
+  it('is a format problem for the usual words, anything else is a plain failure', () => {
+    for (const s of [
+      '[in#0] Error opening input: Invalid data found when processing input',
+      'Unsupported codec with id 98314 for input stream 0',
+      'Could not find codec parameters for stream 0',
+      'moov atom not found',
+      'Format mpegts not on whitelist \'mpeg,mov\'',
+      'Unknown decoder \'xyz\'',
+      'Codec not currently supported in container',
+    ]) expect(classifyFfmpegFailure(s), s).toBe('format')
+    for (const s of ['', 'Conversion failed!', 'Broken pipe', 'Out of memory']) expect(classifyFfmpegFailure(s), s).toBe('failed')
   })
 })
 
@@ -91,8 +194,8 @@ describe('the download request', () => {
   it('puts the address, escaped, inside downloadRequest/playbackURI and nowhere else', () => {
     const body = buildDownloadBody('rtsp://10.0.0.5/Streaming/tracks/101?starttime=20261022T100000Z&endtime=20261022T101000Z&name=a"b<c>\'d')
     expect(body).toContain('<downloadRequest')
-    expect(body).toContain('<playbackURI>rtsp://10.0.0.5/Streaming/tracks/101?starttime=20261022T100000Z&#38;endtime=20261022T101000Z&#38;name=a&#34;b&#60;c&#62;&#39;d</playbackURI>')
-    expect(body).not.toMatch(/&(?!#)/)
+    expect(body).toContain('<playbackURI>rtsp://10.0.0.5/Streaming/tracks/101?starttime=20261022T100000Z&amp;endtime=20261022T101000Z&amp;name=a&quot;b&lt;c&gt;&apos;d</playbackURI>')
+    expect(body).not.toMatch(/&(?!amp;|lt;|gt;|quot;|apos;)/)
     expect(body).not.toContain('<c>')
   })
   it('accepts rtsp, http and https addresses of at most 512 characters', () => {
@@ -115,11 +218,13 @@ describe('the download request', () => {
       'rtsp://10.0.0.5/Streaming/tracks/101?starttime=20261022T093005Z&endtime=20261022T094005Z&name=0001&size=123',
     )
   })
-  it('leaves an address without both times as it is', () => {
+  it('refuses (null) an address without both times: it would download a whole file of unknown size', () => {
     const a = new Date(Date.UTC(2026, 9, 22, 9))
     const b = new Date(Date.UTC(2026, 9, 22, 10))
-    expect(clipPlaybackUri('rtsp://h/p?name=1', a, b)).toBe('rtsp://h/p?name=1')
-    expect(clipPlaybackUri('rtsp://h/p?starttime=20261022T090000Z', a, b)).toBe('rtsp://h/p?starttime=20261022T090000Z')
+    expect(clipPlaybackUri('rtsp://h/p?name=1', a, b)).toBeNull()
+    expect(clipPlaybackUri('rtsp://h/p?starttime=20261022T090000Z', a, b)).toBeNull()
+    expect(clipPlaybackUri('rtsp://h/p?endtime=20261022T090000Z', a, b)).toBeNull()
+    expect(clipPlaybackUri('rtsp://h/p', a, b)).toBeNull()
   })
   it('does not let a value with special replacement characters change the result', () => {
     const out = clipPlaybackUri('rtsp://h/p?starttime=$&&name=$1&endtime=$2', new Date(Date.UTC(2026, 0, 2, 3, 4, 5)), new Date(Date.UTC(2026, 0, 2, 3, 5, 5)))
@@ -165,6 +270,58 @@ describe('the limits on running conversions', () => {
     if (a.ok) a.release()
     expect(l.running).toBe(0)
     expect(l.peek('b')).toEqual({ ok: true })
+  })
+  describe('a person who starts something new', () => {
+    it('asks their running conversion to end, waits until its place is back, and then there is room', async () => {
+      const l = createConversionLimiter()
+      const stopped = vi.fn()
+      const old = l.acquire('a', stopped)
+      if (!old.ok) throw new Error('expected a place')
+      const other = l.acquire('b', vi.fn())
+      expect(l.acquire('a')).toEqual({ ok: false, reason: 'person' })
+      const pending = l.supersede('a', 5000)
+      expect(stopped).toHaveBeenCalledTimes(1)
+      let settled: boolean | null = null
+      void pending.then((v) => (settled = v))
+      await new Promise((r) => setTimeout(r, 30))
+      expect(settled).toBeNull() // not before the place is given back
+      old.release()
+      expect(await pending).toBe(true)
+      expect(l.acquire('a').ok).toBe(true)
+      expect(other.ok && l.running).toBe(2) // somebody else's is untouched
+    })
+    it('does not wait longer than asked when the old one will not end', async () => {
+      const l = createConversionLimiter()
+      l.acquire('a', () => {})
+      const t0 = Date.now()
+      expect(await l.supersede('a', 100)).toBe(false)
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(90)
+      expect(l.acquire('a')).toEqual({ ok: false, reason: 'person' })
+    })
+    it('is at once true when there is nothing running, and a stop that throws does not matter', async () => {
+      const l = createConversionLimiter()
+      expect(await l.supersede('nobody', 1000)).toBe(true)
+      const s = l.acquire('a', () => {
+        throw new Error('x')
+      })
+      const done = l.supersede('a', 1000)
+      if (s.ok) s.release()
+      expect(await done).toBe(true)
+    })
+    it('can be asked by two callers at once', async () => {
+      const l = createConversionLimiter()
+      const s = l.acquire('a', () => {})
+      const both = Promise.all([l.supersede('a', 1000), l.supersede('a', 1000)])
+      if (s.ok) s.release()
+      expect(await both).toEqual([true, true])
+    })
+  })
+  it('peek can leave a person\'s own running conversion out of the count', () => {
+    const l = createConversionLimiter(1, 1)
+    l.acquire('a')
+    expect(l.peek('a')).toEqual({ ok: false, reason: 'person' })
+    expect(l.peek('a', { ignoreOwn: true })).toEqual({ ok: true })
+    expect(l.peek('b', { ignoreOwn: true })).toEqual({ ok: false, reason: 'total' })
   })
   it('allows more per person when asked to', () => {
     const l = createConversionLimiter(2, 8)
@@ -271,12 +428,12 @@ describe('the conversion', () => {
     await vi.waitFor(() => expect(exits).toBe(1))
   })
 
-  it('answers "failed" when ffmpeg ends before any output, logs one short line without the address, and gives the place back', async () => {
+  it('answers "format" when ffmpeg ends before any output saying the data is invalid, logs one short line without the address, and gives the place back', async () => {
     const src = counting(10_000)
     const spawn = fakeSpawn('fail')
     const aborted = vi.fn()
     const r = await run(src, spawn, { abortSource: aborted })
-    expect(r).toEqual({ ok: false, reason: 'failed' })
+    expect(r).toEqual({ ok: false, reason: 'format' })
     await vi.waitFor(() => expect(exits).toBe(1))
     expect(aborted).toHaveBeenCalled()
     expect(isAlive(spawn.children[0].pid)).toBe(false)
@@ -286,6 +443,69 @@ describe('the conversion', () => {
     expect(line).not.toContain('hunter2')
     expect(line).not.toContain('10.0.0.5')
     expect(line!.length).toBeLessThan(600)
+  })
+
+  it('answers "failed" when ffmpeg ends before any output without a word about the format', async () => {
+    const src = counting(10_000)
+    const spawn = fakeSpawn('crash')
+    expect(await run(src, spawn)).toEqual({ ok: false, reason: 'failed' })
+    await vi.waitFor(() => expect(exits).toBe(1))
+  })
+
+  it('ends a conversion whose NVR stops sending (no data for the idle time), kills the program and gives the place back', async () => {
+    let sent = 0
+    const source = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (sent++ === 0) c.enqueue(new Uint8Array(1000).fill(1))
+        else return new Promise(() => {}) // the NVR goes quiet
+      },
+    })
+    const spawn = fakeSpawn('copy')
+    const aborted = vi.fn()
+    const r = await startConversion({ spawn, ffmpeg: 'x', source, abortSource: aborted, onExit, idleMs: 400, killGraceMs: 200 })
+    if (!r.ok) throw new Error('expected output')
+    const t0 = Date.now()
+    await expect(readAll(r.body)).rejects.toThrow()
+    expect(Date.now() - t0).toBeLessThan(3000)
+    await vi.waitFor(() => expect(exits).toBe(1), { timeout: 5000 })
+    expect(aborted).toHaveBeenCalled()
+    expect(isAlive(spawn.children[0].pid)).toBe(false)
+  })
+
+  it('does not count the viewer being slow as the NVR being quiet', async () => {
+    const src = counting(500 * 1024 * 1024)
+    const spawn = fakeSpawn('copy')
+    const r = await run(src, spawn, { idleMs: 300 })
+    if (!r.ok) throw new Error('expected output')
+    const reader = r.body.getReader()
+    await reader.read()
+    await new Promise((res) => setTimeout(res, 1200)) // four times the idle time with nobody reading
+    expect(isAlive(spawn.children[0].pid)).toBe(true)
+    expect(exits).toBe(0)
+    await reader.read() // and it still delivers
+    await reader.cancel()
+    await vi.waitFor(() => expect(exits).toBe(1), { timeout: 5000 })
+  })
+
+  it('a failure in the set-up after the program has started ends it, kills the program and gives the place back', async () => {
+    const src = counting(1000)
+    const spawn = fakeSpawn('copy')
+    const aborted = vi.fn()
+    const r = await startConversion({
+      spawn,
+      ffmpeg: 'x',
+      source: src.stream,
+      abortSource: aborted,
+      onExit,
+      killGraceMs: 200,
+      toNodeStream: () => {
+        throw new Error('cannot make the stream')
+      },
+    })
+    expect(r).toEqual({ ok: false, reason: 'failed' })
+    await vi.waitFor(() => expect(exits).toBe(1), { timeout: 5000 })
+    expect(aborted).toHaveBeenCalled()
+    expect(isAlive(spawn.children[0].pid)).toBe(false)
   })
 
   it('ends the video with an error when ffmpeg fails after it has started', async () => {
@@ -464,17 +684,21 @@ describe('the check that ffmpeg runs', () => {
     return Object.assign(spawn, { calls })
   }
 
+  const lookup = { platform: 'linux' as const, exists: () => true }
+  const E = { PATH: '/usr/bin' }
+  const make = (o: Parameters<typeof createFfmpegCheck>[0] = {}) => createFfmpegCheck({ lookup, ...o })
+
   it('is true when `<program> -version` ends with 0, false when it fails, does not exist or hangs', async () => {
-    expect(await createFfmpegCheck({ spawn: spawnReturning(0) })({})).toBe(true)
-    expect(await createFfmpegCheck({ spawn: spawnReturning(1) })({})).toBe(false)
-    expect(await createFfmpegCheck({ spawn: spawnReturning('error') })({})).toBe(false)
-    expect(await createFfmpegCheck({ spawn: spawnReturning('hang'), timeoutMs: 50 })({})).toBe(false)
-    expect(await createFfmpegCheck({ spawn: () => { throw new Error('boom') } })({})).toBe(false)
+    expect(await make({ spawn: spawnReturning(0) })(E)).toBe(true)
+    expect(await make({ spawn: spawnReturning(1) })(E)).toBe(false)
+    expect(await make({ spawn: spawnReturning('error') })(E)).toBe(false)
+    expect(await make({ spawn: spawnReturning('hang'), timeoutMs: 50 })(E)).toBe(false)
+    expect(await make({ spawn: () => { throw new Error('boom') } })(E)).toBe(false)
   })
 
   it('runs the program from the setting with only -version, and says false at once for a setting that is refused', async () => {
     const spawn = spawnReturning(0)
-    const check = createFfmpegCheck({ spawn })
+    const check = make({ spawn })
     expect(await check({ FFMPEG: '/opt/ffmpeg' })).toBe(true)
     expect(spawn.calls).toEqual([{ command: '/opt/ffmpeg', args: ['-version'] }])
     expect(await check({ FFMPEG: 'x\ny' })).toBe(false)
@@ -484,29 +708,35 @@ describe('the check that ffmpeg runs', () => {
   it('remembers the answer for 60 seconds per program, then asks again', async () => {
     let t = 1_000_000
     const spawn = spawnReturning(0)
-    const check = createFfmpegCheck({ spawn, now: () => t })
-    expect(await check({})).toBe(true)
-    expect(await check({})).toBe(true)
+    const check = make({ spawn, now: () => t })
+    expect(await check(E)).toBe(true)
+    expect(await check(E)).toBe(true)
     expect(spawn.calls).toHaveLength(1)
-    expect(await check({ FFMPEG: 'other' })).toBe(true)
+    expect(await check({ FFMPEG: '/opt/other' })).toBe(true)
     expect(spawn.calls).toHaveLength(2)
     t += 59_000
-    await check({})
+    await check(E)
     expect(spawn.calls).toHaveLength(2)
     t += 2_000
-    await check({})
+    await check(E)
     expect(spawn.calls).toHaveLength(3)
   })
 
   it('shares one running check between callers who ask at the same time', async () => {
     const spawn = spawnReturning(0)
-    const check = createFfmpegCheck({ spawn })
-    const all = await Promise.all([check({}), check({}), check({})])
+    const check = make({ spawn })
+    const all = await Promise.all([check(E), check(E), check(E)])
     expect(all).toEqual([true, true, true])
     expect(spawn.calls).toHaveLength(1)
   })
 
+  it('is false when ffmpeg is nowhere on PATH', async () => {
+    const spawn = spawnReturning(0)
+    expect(await createFfmpegCheck({ spawn, lookup: { platform: 'linux', exists: () => false } })(E)).toBe(false)
+    expect(spawn.calls).toHaveLength(0)
+  })
+
   it('finds out for real that a program that is not there does not run', async () => {
-    expect(await createFfmpegCheck({})({ FFMPEG: 'definitely-not-an-installed-program-xyz' })).toBe(false)
+    expect(await createFfmpegCheck()({ FFMPEG: path.resolve('definitely-not-an-installed-program-xyz') })).toBe(false)
   })
 })

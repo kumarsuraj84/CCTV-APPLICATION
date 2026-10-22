@@ -4,7 +4,7 @@ import type { SpawnFn } from '@/lib/streams/vod'
 
 const SCRIPT = path.resolve(__dirname, 'fake-ffmpeg.mjs')
 
-export type FakeFfmpegMode = 'copy' | 'fail' | 'fail-late' | 'hang' | 'linger'
+export type FakeFfmpegMode = 'copy' | 'fail' | 'crash' | 'fail-late' | 'hang' | 'linger'
 
 /** A spawn that starts the stand-in for ffmpeg (a real node process, see fake-ffmpeg.mjs) whatever program and arguments are asked for. */
 export function fakeSpawn(mode: FakeFfmpegMode = 'copy'): SpawnFn & { children: ChildProcessWithoutNullStreams[]; calls: { command: string; args: string[] }[] } {

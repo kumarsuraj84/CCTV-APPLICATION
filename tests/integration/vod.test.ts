@@ -23,6 +23,7 @@ const RECORDINGS = [
   { start: '2026-10-22T09:00:00', end: '2026-10-22T10:00:00', channel: 1 },
 ]
 const START = '2026-10-22T09:20:00Z' // inside the second recording when the offset is 0
+const FFMPEG_PATH = path.resolve('/opt/fake/ffmpeg') // the stand-in is started whatever program is asked for
 const ID = '0b7f0a52-1f0c-4a52-9c63-2f2f0c7bd111'
 
 const ffmpegWorks = (() => {
@@ -49,6 +50,7 @@ describe('fast playback (/api/vod)', () => {
   let viewer: TestUser, nobody: TestUser, manager: TestUser, u1: TestUser, u2: TestUser, u3: TestUser
   let nvr: FakeNvr, nvrXml: FakeNvr, nvrEnd: FakeNvr, nvrHostile: FakeNvr
   let hostile: (() => string) | null = null
+  let hostileCodec: string | null = null
 
   async function addStore(org: string, code: string, o: { port?: number; active?: boolean } = {}) {
     const { data, error } = await admin().from('stores').insert({ org_id: org, code, name: `Store ${code}`, nvr_ip: '127.0.0.1', http_port: o.port ?? nvr.port, rtsp_port: 554, nvr_username: NVR_USER, is_active: o.active ?? true }).select('id').single()
@@ -70,7 +72,7 @@ describe('fast playback (/api/vod)', () => {
       username: NVR_USER,
       password: NVR_PASSWORD,
       searchAnswer: () =>
-        `<?xml version="1.0"?><CMSearchResult><responseStatusStrg>OK</responseStatusStrg><matchList><searchMatchItem><timeSpan><startTime>2026-10-22T09:00:00Z</startTime><endTime>2026-10-22T10:00:00Z</endTime></timeSpan><mediaSegmentDescriptor>${hostile ? `<playbackURI>${hostile()}</playbackURI>` : ''}</mediaSegmentDescriptor></searchMatchItem></matchList></CMSearchResult>`,
+        `<?xml version="1.0"?><CMSearchResult><responseStatusStrg>OK</responseStatusStrg><matchList><searchMatchItem><timeSpan><startTime>2026-10-22T09:00:00Z</startTime><endTime>2026-10-22T10:00:00Z</endTime></timeSpan><mediaSegmentDescriptor>${hostileCodec ? `<codecType>${hostileCodec}</codecType>` : ''}${hostile ? `<playbackURI>${hostile()}</playbackURI>` : ''}</mediaSegmentDescriptor></searchMatchItem></matchList></CMSearchResult>`,
     })
     orgId = await createOrg()
     otherOrg = await createOrg()
@@ -116,6 +118,7 @@ describe('fast playback (/api/vod)', () => {
   beforeEach(() => {
     limits = createConversionLimiter()
     hostile = null
+    hostileCodec = null
     for (const n of [nvr, nvrXml, nvrEnd, nvrHostile]) {
       n.requests.length = 0
       n.posts.length = 0
@@ -135,9 +138,9 @@ describe('fast playback (/api/vod)', () => {
     spawn: fakeSpawn('copy'),
     conversions: limits,
     now: () => NOW,
-    env: {},
     timing: { killGraceMs: 300 },
     ...extra,
+    env: { FFMPEG: FFMPEG_PATH, ...extra.env },
   })
   const query = (camera: string, start = START, minutes = 10, more = '') => {
     const p = parseVodQuery(new URLSearchParams(`camera=${camera}&start=${start}&minutes=${minutes}${more}`))
@@ -156,8 +159,9 @@ describe('fast playback (/api/vod)', () => {
       expect(res.headers.get('content-type')).toBe('video/mp4')
       expect(res.headers.get('cache-control')).toBe('no-store')
       expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+      expect(res.headers.get('cross-origin-resource-policy')).toBe('same-origin')
       expect(await readAll(res)).toEqual(FAKE_DOWNLOAD_BYTES) // the fake "ffmpeg" copies its input
-      expect(spawn.calls).toEqual([{ command: 'ffmpeg', args: buildFfmpegArgs() }])
+      expect(spawn.calls).toEqual([{ command: FFMPEG_PATH, args: buildFfmpegArgs() }])
       await waitFor(() => limits.running === 0)
     })
 
@@ -166,13 +170,13 @@ describe('fast playback (/api/vod)', () => {
       expect(nvr.downloadBodies).toHaveLength(1)
       const body = nvr.downloadBodies[0]
       expect(body).toContain('<downloadRequest')
-      expect(body).toContain('rtsp://127.0.0.1/Streaming/tracks/101?starttime=20261022T092000Z&#38;endtime=20261022T093000Z</playbackURI>')
+      expect(body).toContain('rtsp://127.0.0.1/Streaming/tracks/101?starttime=20261022T092000Z&amp;endtime=20261022T093000Z</playbackURI>')
       expect(nvr.posts.map((p) => p.path)).toEqual(['/ISAPI/ContentMgmt/search', '/ISAPI/ContentMgmt/download'])
     })
 
     it('ends the clip where the recording ends', async () => {
       await readAll(await get(viewer, a1, { start: '2026-10-22T09:55:00Z', minutes: 10 }))
-      expect(nvr.downloadBodies[0]).toContain('starttime=20261022T095500Z&#38;endtime=20261022T100000Z')
+      expect(nvr.downloadBodies[0]).toContain('starttime=20261022T095500Z&amp;endtime=20261022T100000Z')
     })
 
     it('treats the start as a shown time: the NVR is asked for the start minus the offset (ruling R13)', async () => {
@@ -180,7 +184,7 @@ describe('fast playback (/api/vod)', () => {
       const res = await get(viewer, a1, { start: '2026-10-22T14:40:00Z', minutes: 10, deps: { env: { PLAYBACK_OFFSET_MIN: '330' } } })
       expect(res.status).toBe(200)
       await readAll(res)
-      expect(nvr.downloadBodies[0]).toContain('starttime=20261022T091000Z&#38;endtime=20261022T092000Z')
+      expect(nvr.downloadBodies[0]).toContain('starttime=20261022T091000Z&amp;endtime=20261022T092000Z')
       // and the search was made for the NVR's own day
       expect(nvr.posts[0].body).toContain('<startTime>2026-10-21T18:30:00Z</startTime>')
     })
@@ -263,13 +267,14 @@ describe('fast playback (/api/vod)', () => {
         expect(JSON.parse(text)).toEqual({ error: words })
         expect(text).not.toMatch(/secret-pass|not-the-password|127\.0\.0\.1|ISAPI|rtsp:/)
         expect(res.headers.get('cache-control')).toBe('no-store')
+        expect(res.headers.get('cross-origin-resource-policy')).toBe('same-origin')
       }
       expect(nvrXml.downloadBodies).toHaveLength(1) // the document was the answer to a real download request
     })
 
     it('a missing ffmpeg is a plain 500 "ffmpeg is not installed on the server", before the NVR is asked for the download', async () => {
       const res = await serveVod(
-        { rls: viewer.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: { FFMPEG: 'definitely-not-an-installed-program-xyz' } },
+        { rls: viewer.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: { FFMPEG: path.resolve('definitely-not-an-installed-program-xyz') } },
         { id: viewer.id },
         query(a1),
       )
@@ -293,17 +298,55 @@ describe('fast playback (/api/vod)', () => {
       expect(limits.running).toBe(0)
     })
 
-    it('a setting that is not a plain program name is refused as "not installed" and nothing is run', async () => {
-      const res = await serveVod({ rls: viewer.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: { FFMPEG: 'ffmpeg\n-i evil' } }, { id: viewer.id }, query(a1))
-      expect(res.status).toBe(500)
-      expect(await errorOf(res)).toBe('ffmpeg is not installed on the server')
+    it('a FFMPEG setting that is not a full path on one line is refused with a plain message and nothing is run or asked of the NVR', async () => {
+      const spawn = fakeSpawn('copy')
+      for (const bad of ['ffmpeg', './ffmpeg', '../ffmpeg', 'bin/ffmpeg', '/opt/ffmpeg\n-i evil']) {
+        const res = await serveVod({ rls: viewer.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: { FFMPEG: bad }, spawn }, { id: viewer.id }, query(a1))
+        expect(res.status, bad).toBe(500)
+        expect(await errorOf(res)).toBe('FFMPEG must be the full path of the ffmpeg program.')
+      }
+      expect(spawn.calls).toHaveLength(0)
+      expect(nvr.downloadBodies).toEqual([])
     })
 
-    it('ffmpeg failing before any video is a 502, the NVR transfer is ended and nothing is left running', async () => {
+    it('with no FFMPEG setting ffmpeg is only looked for on PATH entries that are full paths: a relative entry or "." is never used', async () => {
+      const spawn = fakeSpawn('copy')
+      const seen: string[] = []
+      const lookup = { exists: (f: string) => (seen.push(f), false) }
+      const tools = path.resolve('/opt/tools')
+      const found = path.join(tools, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+      const res = await serveVod(
+        { rls: viewer.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: { PATH: ['.', '', 'bin', tools].join(path.delimiter) }, spawn, lookup },
+        { id: viewer.id },
+        query(a1),
+      )
+      expect(res.status).toBe(500)
+      expect(await errorOf(res)).toBe('ffmpeg is not installed on the server')
+      expect(seen).toEqual([found])
+      expect(spawn.calls).toHaveLength(0)
+      // and when it is there, it is that full path that is started
+      const ok = await serveVod(
+        { rls: viewer.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: { PATH: ['.', tools].join(path.delimiter) }, spawn, lookup: { exists: () => true } },
+        { id: viewer.id },
+        query(a1),
+      )
+      expect(ok.status).toBe(200)
+      await readAll(ok)
+      expect(spawn.calls[0].command).toBe(found)
+    })
+
+    it('ffmpeg not understanding the recording is a 502 with the plain format message, any other failure before video is a 502 too; the NVR transfer is ended and nothing is left running', async () => {
+      const crash = fakeSpawn('crash')
+      const other = await get(viewer, e1, { deps: { spawn: crash } })
+      expect(other.status).toBe(502)
+      expect(await errorOf(other)).toBe('The recording could not be converted for fast playback.')
+      await waitFor(() => limits.running === 0)
+      await waitFor(() => nvrEnd.downloadsEnded.count === 1)
+      nvrEnd.downloadsEnded.count = 0
       const spawn = fakeSpawn('fail')
       const res = await get(viewer, e1, { deps: { spawn } })
       expect(res.status).toBe(502)
-      expect(await errorOf(res)).toBe('The recording could not be converted for fast playback.')
+      expect(await errorOf(res)).toBe("This recording's format is not supported for fast playback.")
       await waitFor(() => nvrEnd.downloadsEnded.count === 1)
       await waitFor(() => limits.running === 0)
       expect(isAlive(spawn.children[0].pid)).toBe(false)
@@ -320,22 +363,46 @@ describe('fast playback (/api/vod)', () => {
   })
 
   describe('limits', () => {
-    it('one running conversion per person: the second is 429 until the first has ended', async () => {
-      const first = await get(u1, e1)
+    it('a person who starts a new playback has their previous one ended first (killed, NVR transfer ended), and the new one goes ahead', async () => {
+      const spawnA = fakeSpawn('copy')
+      const first = await get(u1, e1, { deps: { spawn: spawnA } })
       expect(first.status).toBe(200)
+      const firstReader = first.body!.getReader()
+      await firstReader.read()
       expect(limits.running).toBe(1)
-      const second = await get(u1, e1)
-      expect(second.status).toBe(429)
-      expect(await errorOf(second)).toBe('You already have a fast playback running. Stop it first, then try again.')
-      expect(nvrEnd.downloadBodies).toHaveLength(1) // the refused one asked the NVR for nothing
-      const other = await get(u2, e1) // somebody else is not held up
+      const other = await get(u2, e1) // somebody else is not touched
       expect(other.status).toBe(200)
-      await first.body!.cancel()
-      await waitFor(() => limits.running === 1)
-      const again = await get(u1, e1)
-      expect(again.status).toBe(200)
-      await again.body!.cancel()
-      await other.body!.cancel()
+      const otherReader = other.body!.getReader()
+      await otherReader.read()
+
+      const spawnB = fakeSpawn('copy')
+      const second = await get(u1, e1, { deps: { spawn: spawnB } })
+      expect(second.status).toBe(200)
+      // the previous video was cut short, its process is gone
+      await expect(
+        (async () => {
+          for (;;) if ((await firstReader.read()).done) return
+        })(),
+      ).rejects.toThrow()
+      expect(isAlive(spawnA.children[0].pid)).toBe(false)
+      await waitFor(() => nvrEnd.downloadsEnded.count >= 1)
+      expect(limits.running).toBe(2) // the new one and the other person's
+      expect(isAlive(spawnB.children[0].pid)).toBe(true)
+      expect((await otherReader.read()).done).toBe(false) // still flowing
+
+      await second.body!.cancel()
+      await otherReader.cancel()
+    })
+
+    it('the new playback is refused (429) only when the previous one cannot be ended in time, and then the NVR is not asked', async () => {
+      const stuck = limits.acquire(u1.id, () => {}) // a conversion that ignores the request to stop
+      expect(stuck.ok).toBe(true)
+      const res = await get(u1, e1, { deps: { timing: { killGraceMs: 300, supersedeMs: 250 } } })
+      expect(res.status).toBe(429)
+      expect(await errorOf(res)).toBe('You already have a fast playback running. Stop it first, then try again.')
+      expect(nvrEnd.downloadBodies).toHaveLength(0)
+      if (stuck.ok) stuck.release()
+      expect(limits.running).toBe(0)
     })
 
     it('eight in all: the ninth person is 429 until one ends', async () => {
@@ -463,7 +530,7 @@ describe('fast playback (/api/vod)', () => {
       const body = nvrHostile.downloadBodies[0]
       expect(body).not.toContain('<evil')
       expect(body.match(/<\/playbackURI>/g)).toHaveLength(1)
-      expect(body).toContain('&#60;/playbackURI&#62;&#60;evil/&#62;')
+      expect(body).toContain('&lt;/playbackURI&gt;&lt;evil/&gt;')
       expect(body.match(/<playbackURI>/g)).toHaveLength(1)
     })
 
@@ -485,6 +552,31 @@ describe('fast playback (/api/vod)', () => {
       expect(nvrHostile.downloadBodies).toEqual([])
     })
 
+    it('an address without starttime or endtime is refused (it would download a whole file), and nothing is asked of the NVR', async () => {
+      for (const bad of ['rtsp://h/p?name=1', 'rtsp://h/p?starttime=20261022T090000Z', 'rtsp://h/p?endtime=20261022T100000Z']) {
+        search(bad)
+        const res = await get(u1, h1)
+        expect(res.status, bad).toBe(404)
+        expect(await errorOf(res)).toBe('This recording cannot be played at a faster speed.')
+      }
+      expect(nvrHostile.downloadBodies).toEqual([])
+      expect(limits.running).toBe(0)
+    })
+
+    it('tags the picture hvc1 for H.265 recordings only', async () => {
+      const wanted = 'rtsp://h/p?starttime=20261022T090000Z&amp;endtime=20261022T100000Z'
+      search(wanted)
+      for (const [codec, tagged] of [['H.265', true], ['HEVC', true], ['H.264-BP', false], [null, false]] as const) {
+        hostileCodec = codec
+        const spawn = fakeSpawn('copy')
+        const res = await get(u1, h1, { deps: { spawn } })
+        expect(res.status, String(codec)).toBe(200)
+        await readAll(res)
+        expect(spawn.calls[0].args, String(codec)).toEqual(buildFfmpegArgs({ hevc: tagged }))
+        expect(spawn.calls[0].args.includes('hvc1'), String(codec)).toBe(tagged)
+      }
+    })
+
     it('a recording with no playback address at all cannot be fast-played', async () => {
       hostile = null
       const res = await get(u1, h1)
@@ -494,11 +586,16 @@ describe('fast playback (/api/vod)', () => {
   })
 
   describe('the probe (?probe=1)', () => {
+    const search265 = () => {
+      hostile = () => 'rtsp://h/p?starttime=20261022T090000Z&amp;endtime=20261022T100000Z'
+      hostileCodec = 'H.265'
+    }
     it('does every check, then says ok without starting ffmpeg or downloading', async () => {
       const spawn = fakeSpawn('copy')
       const res = await get(viewer, a1, { more: '&probe=1', deps: { spawn } })
       expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ ok: true })
+      expect(await res.json()).toEqual({ ok: true, codec: 'h264' }) // the fake NVR calls its recordings H.264-BP
+      expect(res.headers.get('cross-origin-resource-policy')).toBe('same-origin')
       expect(spawn.calls).toHaveLength(0)
       expect(nvr.downloadBodies).toEqual([])
       expect(limits.running).toBe(0)
@@ -518,16 +615,34 @@ describe('fast playback (/api/vod)', () => {
       }
     })
 
-    it('says 500 when ffmpeg is not there, and 429 when the person already has a conversion running', async () => {
+    it('reports the video format of an H.265 recording', async () => {
+      search265()
+      const res = await get(u1, h1, { more: '&probe=1' })
+      expect(await res.json()).toEqual({ ok: true, codec: 'h265' })
+    })
+
+    it('ignores the person\'s own running conversion (they are about to end it), but not a full server', async () => {
+      const running = await get(u1, e1)
+      const own = await get(u1, e1, { more: '&probe=1' })
+      expect(own.status).toBe(200)
+      expect(await own.json()).toMatchObject({ ok: true })
+      expect(limits.running).toBe(1) // and it took nothing
+      await running.body!.cancel()
+      await waitFor(() => limits.running === 0)
+
+      limits = createConversionLimiter(1, 1)
+      const first = await get(u1, e1)
+      const full = await get(u2, e1, { more: '&probe=1' })
+      expect(full.status).toBe(429)
+      expect(await errorOf(full)).toBe('The server is busy with other fast playbacks. Try again in a moment.')
+      await first.body!.cancel()
+    })
+
+    it('says 500 when ffmpeg is not there', async () => {
       const missing = await get(viewer, a1, { more: '&probe=1', deps: { ffmpegAvailable: async () => false } })
       expect(missing.status).toBe(500)
       expect(await errorOf(missing)).toBe('ffmpeg is not installed on the server')
 
-      const running = await get(u1, e1)
-      const busy = await get(u1, e1, { more: '&probe=1' })
-      expect(busy.status).toBe(429)
-      expect(await errorOf(busy)).toBe('You already have a fast playback running. Stop it first, then try again.')
-      await running.body!.cancel()
     })
   })
 
@@ -552,7 +667,7 @@ describe('fast playback (/api/vod)', () => {
         const cam = await addCamera(orgId, store, 1, 'Real ffmpeg')
         const { error } = await admin().rpc('replace_user_access', { p_user: u1.id, p_stores: [store], p_zones: [], p_cameras: [] })
         expect(error).toBeNull()
-        const res = await serveVod({ rls: u1.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: {} }, { id: u1.id }, query(cam))
+        const res = await serveVod({ rls: u1.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: { PATH: process.env.PATH } }, { id: u1.id }, query(cam))
         expect(res.status).toBe(200)
         expect(res.headers.get('content-type')).toBe('video/mp4')
         const bytes = await readAll(res)

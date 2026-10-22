@@ -10,6 +10,7 @@ import { requireProfile } from '@/lib/auth/profile'
 import { listVisibleStores } from '@/lib/queries/inventory'
 import { getLiveScope } from '@/lib/queries/live'
 import { parseDay, shownToday } from '@/lib/streams/timeline'
+import { canUseFastPlaybackInterim } from '@/lib/streams/speed'
 import { fastPlaybackAvailable } from '@/lib/streams/vod'
 import { createClient } from '@/lib/supabase/server'
 import { cn } from '@/lib/utils'
@@ -24,7 +25,7 @@ export default async function PlaybackPage({ searchParams }: { searchParams: Pro
   const sp = await searchParams
   const storeId = one(sp.store)
   const cameraId = one(sp.camera)
-  await requireProfile()
+  const profile = await requireProfile()
   const supabase = await createClient()
   const today = shownToday(new Date().getTime())
 
@@ -34,7 +35,8 @@ export default async function PlaybackPage({ searchParams }: { searchParams: Pro
     if (!scope || !camera) notFound()
     const day = one(sp.day)
     // Fast playback (2x, 4x, 8x) needs ffmpeg on the server; the answer is remembered for a minute.
-    const fastPlayback = await fastPlaybackAvailable()
+    // Interim: only administrators are offered it; everybody else sees 1x and nothing about ffmpeg.
+    const fastPlayback = !canUseFastPlaybackInterim(profile.role) ? 'hidden' : (await fastPlaybackAvailable()) ? 'available' : 'not-set-up'
     return (
       <div className="space-y-4">
         <PageHeader

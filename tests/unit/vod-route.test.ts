@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  profile: null as null | { id: string; must_reset_password: boolean },
+  profile: null as null | { id: string; role: string; must_reset_password: boolean },
   profileCalls: 0,
   clients: 0,
   admins: 0,
@@ -36,7 +36,7 @@ const request = (qs: string, init?: RequestInit) => new Request(`http://localhos
 const VALID = `camera=${ID}&start=2026-10-22T09:20:00Z&minutes=10`
 
 beforeEach(() => {
-  mocks.profile = { id: 'user-1', must_reset_password: false }
+  mocks.profile = { id: 'user-1', role: 'admin', must_reset_password: false }
   mocks.profileCalls = 0
   mocks.clients = 0
   mocks.admins = 0
@@ -57,10 +57,34 @@ describe('GET /api/vod', () => {
   })
 
   it('refuses somebody who must still choose their own password (403)', async () => {
-    mocks.profile = { id: 'user-1', must_reset_password: true }
+    mocks.profile = { id: 'user-1', role: 'admin', must_reset_password: true }
     const res = await GET(request(VALID))
     expect(res.status).toBe(403)
     expect(mocks.serve).not.toHaveBeenCalled()
+  })
+
+  it('is for administrators and platform owners only for now: a viewer, an operator and a manager get 403 and nothing else happens', async () => {
+    for (const role of ['user', 'agent', 'manager']) {
+      for (const qs of [VALID, `${VALID}&probe=1`, 'camera=nope', '']) {
+        mocks.profile = { id: 'user-1', role, must_reset_password: false }
+        const res = await GET(request(qs))
+        expect(res.status, `${role} ${qs}`).toBe(403)
+        expect(await res.json()).toEqual({ error: 'Fast playback is not available for your account yet.' })
+        expect(res.headers.get('cache-control')).toBe('no-store')
+      }
+    }
+    expect(mocks.clients + mocks.admins).toBe(0) // no database client, so no camera lookup, no NVR login, no NVR request
+    expect(mocks.serve).not.toHaveBeenCalled()
+  })
+
+  it('lets an administrator and a platform owner through, probe too', async () => {
+    for (const role of ['admin', 'platform_owner']) {
+      for (const qs of [VALID, `${VALID}&probe=1`]) {
+        mocks.profile = { id: 'user-1', role, must_reset_password: false }
+        expect((await GET(request(qs))).status, `${role} ${qs}`).toBe(200)
+      }
+    }
+    expect(mocks.serve).toHaveBeenCalledTimes(4)
   })
 
   it('checks the input before anything else: a bad camera is 404, other bad input is 400, and the database is not touched', async () => {
