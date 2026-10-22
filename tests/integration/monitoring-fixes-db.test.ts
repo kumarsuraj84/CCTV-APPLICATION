@@ -1,12 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { STALE_AFTER_MINUTES } from '@/lib/queries/status'
 import { adminClient, cleanupOrg, createOrg, createSite, createUser, grant, primaryRecorderOf, READ_EVERYTHING, withRecorders, type TestUser } from '../setup/fixtures'
+import { fenced } from '../setup/lease'
 
 const admin = () => adminClient()
 
 type R = { type: 'camera' | 'device' | 'recorder'; id: string; ok: boolean; at: string; method?: string; error?: string; cause?: 'nvr_down' }
-// P2-6: camera results name their recorder (required), as the worker sends them.
-const apply = async (org: string, results: R[], threshold = 2) => admin().rpc('monitor_apply_results', { p_org: org, p_results: await withRecorders(results), p_threshold: threshold })
+// P2-6: camera results name their recorder (required), as the worker sends them. P2-7: with a lease and its fencing token.
+const apply = async (org: string, results: R[], threshold = 2) =>
+  admin().rpc('monitor_apply_results', { ...(await fenced()), p_org: org, p_results: await withRecorders(results), p_threshold: threshold })
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
 
 describe('monitoring fixes in the database', () => {

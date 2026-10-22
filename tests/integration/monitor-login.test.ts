@@ -5,6 +5,7 @@ import { realProbes } from '@/lib/monitor/probes'
 import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
 import { startFakeNvr, startFakeRtsp, type FakeNvr, type FakeRtsp } from '../helpers/fake-servers'
 import { adminClient, cleanupOrg, createOrg, createSite } from '../setup/fixtures'
+import { testFence } from '../setup/lease'
 
 const admin = () => adminClient()
 
@@ -31,7 +32,8 @@ describe('a wrong NVR password in the database', () => {
     downRecorder = down.recorderId
     wrongCams = wrong.cameraIds
     downCams = down.cameraIds
-    deps = { db: new SupabaseMonitorDb(admin(), { orgId }), probes: realProbes, cfg: loadMonitorConfig({}), clock: () => new Date() }
+    // P2-7: the writes carry this file's test lease.
+    deps = { db: new SupabaseMonitorDb(admin(), { orgId, fence: await testFence() }), probes: realProbes, cfg: loadMonitorConfig({}), clock: () => new Date() }
   })
 
   afterAll(async () => {

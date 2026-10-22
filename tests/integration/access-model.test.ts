@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Actor } from '@/lib/admin/types'
 import { createGroup, MSG_NAME_TAKEN } from '@/lib/groups/service'
 import type { Database } from '@/types/database'
+import { fenced } from '../setup/lease'
 import {
   adminClient,
   atCamera,
@@ -139,6 +140,9 @@ describe('capability access model (P2-1)', () => {
     await grant(orgA, p.id, CCTV_VIEW, atLocation(L1))
     const at = new Date().toISOString()
     const applied = await admin().rpc('monitor_apply_results', {
+      // P2-7: every worker write carries a lease and its fencing token (a test lease here); the threshold is no longer optional.
+      ...(await fenced()),
+      p_threshold: 2,
       p_org: orgA,
       // P2-6: camera results name their recorder (required), as the worker sends them.
       p_results: await withRecorders([
@@ -833,6 +837,21 @@ describe('capability access model (P2-1)', () => {
       security_unlocked_organizations: web,
       service_role_grants: server,
       auth_users_role_check: [],
+      // P2-7 (20261021000036, D-8): the worker lease and every worker write fenced with its token; the fence itself is internal; the
+      // test helpers (names "test:" only) for the service role only.
+      worker_acquire_lease: worker,
+      worker_renew_lease: worker,
+      worker_release_lease: worker,
+      worker_fence: [],
+      monitor_heartbeat: worker,
+      monitor_record_gap: worker,
+      monitor_mark_round: worker,
+      monitor_run_started: worker,
+      monitor_run_progress: worker,
+      monitor_run_finished: worker,
+      monitor_save_camera_ips: worker,
+      worker_lease_set_until_test: server,
+      worker_lease_forget_test: server,
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)
@@ -855,7 +874,9 @@ describe('capability access model (P2-1)', () => {
     }
     // One signature each (no stale overloads left behind by a changed parameter list).
     for (const name of ['preview_access_change', 'access_expiring', 'access_migrate_legacy', 'replace_user_grants', 'grant_access', 'revoke_grant',
-      'access_camera_set', 'access_asset_set', 'my_access_summary', 'access_grant_summary']) {
+      'access_camera_set', 'access_asset_set', 'my_access_summary', 'access_grant_summary',
+      // P2-7: the unfenced 3-argument monitor_apply_results is gone.
+      'monitor_apply_results']) {
       expect((data ?? []).filter((f) => f.name === name), name).toHaveLength(1)
     }
     // Minor 8, the sweep: no function of schema public is callable by anon or PUBLIC, and signed-in people only the allow-list.

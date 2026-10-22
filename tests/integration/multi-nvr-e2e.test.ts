@@ -19,6 +19,7 @@ import { fakeSpawn } from '../helpers/fake-spawn'
 import {
   ADMINISTRATOR_SET, adminClient, atLocation, CCTV_VIEW, cleanupOrg, createCamera, createLocation, createOrg, createRecorder, createUser, grant, type TestUser,
 } from '../setup/fixtures'
+import { testFence } from '../setup/lease'
 
 const admin = () => adminClient()
 const SECRET = 'integration-test-stream-secret-0123456789'
@@ -92,7 +93,8 @@ describe('a location with several NVRs, end to end', () => {
     await grant(orgId, viewer.id, CCTV_VIEW, atLocation(loc))
     await grant(orgId, it_.id, ['it.monitoring.view', 'cctv.live'], atLocation(loc))
     await grant(orgId, administrator.id, ADMINISTRATOR_SET)
-    runner = new MonitorRunner({ db: new SupabaseMonitorDb(admin(), { orgId }), probes: realProbes, cfg: { ...loadMonitorConfig({}), nvrTimeoutMs: 1500, tcpTimeoutMs: 1500 }, clock: () => new Date() })
+    // P2-7: the runner's writes carry this file's test lease.
+    runner = new MonitorRunner({ db: new SupabaseMonitorDb(admin(), { orgId, fence: await testFence() }), probes: realProbes, cfg: { ...loadMonitorConfig({}), nvrTimeoutMs: 1500, tcpTimeoutMs: 1500 }, clock: () => new Date() })
   })
 
   afterAll(async () => {

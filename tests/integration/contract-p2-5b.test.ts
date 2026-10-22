@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { adminClient, cleanupOrg, createOrg, createSite } from '../setup/fixtures'
+import { fenced } from '../setup/lease'
 
 const admin = () => adminClient()
 
@@ -71,7 +72,8 @@ describe('P2-5b contract: no legacy store shape left', () => {
 
   it('the target kind \'nvr\' can no longer be stored, and monitor_apply_results ignores it', async () => {
     expect((await admin().from('check_state').insert({ org_id: orgId, target_type: 'nvr', target_id: loc })).error?.code).toBe('23514')
-    expect((await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: [{ type: 'nvr', id: loc, ok: false, at: new Date().toISOString() }], p_threshold: 1 })).error).toBeNull()
+    // P2-7: every worker write carries a lease and its fencing token (this file's test lease).
+    expect((await admin().rpc('monitor_apply_results', { ...(await fenced()), p_org: orgId, p_results: [{ type: 'nvr', id: loc, ok: false, at: new Date().toISOString() }], p_threshold: 1 })).error).toBeNull()
     expect((await admin().from('check_state').select('id').eq('target_id', loc)).data).toEqual([])
   })
 

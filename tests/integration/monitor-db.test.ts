@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
 import type { Database } from '@/types/database'
 import { adminClient, cleanupOrg, createCamera, createLocation, createOrg, createRecorder, createSite } from '../setup/fixtures'
+import { testFence } from '../setup/lease'
 
 const admin = () => adminClient()
 
@@ -47,7 +48,8 @@ describe('SupabaseMonitorDb (per recorder)', () => {
 
   beforeAll(async () => {
     orgId = await createOrg()
-    db = new SupabaseMonitorDb(admin(), { orgId })
+    // P2-7: the data layer writes with this file's test lease (every write carries its fencing token).
+    db = new SupabaseMonitorDb(admin(), { orgId, fence: await testFence() })
     const a = admin()
     const site = await createSite(orgId, { code: 'DB1', host: '127.0.0.1', rtspPort: 8554, httpPort: 8081, secret: 'secret-pass', cameras: 2 })
     storeId = site.locationId
@@ -181,7 +183,7 @@ describe('SupabaseMonitorDb (per recorder)', () => {
     expect((await admin().from('cameras').select('camera_ip').eq('id', camIds[0]).single()).data?.camera_ip).toBe('192.0.2.77')
     // A database that refuses the call is an error the caller sees (here a client whose call fails).
     const refusing = { rpc: async () => ({ data: null, error: { message: 'boom' } }) } as unknown as SupabaseClient<Database>
-    await expect(new SupabaseMonitorDb(refusing).applyResults(orgId, [{ type: 'camera', id: camIds[0], recorder: recorderId, ok: true, at: new Date().toISOString() }], 2)).rejects.toThrow('monitor_apply_results failed')
+    await expect(new SupabaseMonitorDb(refusing, { fence: await testFence() }).applyResults(orgId, [{ type: 'camera', id: camIds[0], recorder: recorderId, ok: true, at: new Date().toISOString() }], 2)).rejects.toThrow('monitor_apply_results failed')
   })
 
   it('sends the function only complete results, once per target, the last one winning; the old \'nvr\' kind is never sent', async () => {
@@ -196,7 +198,7 @@ describe('SupabaseMonitorDb (per recorder)', () => {
         return typeof value === 'function' ? value.bind(target) : value
       },
     }) as SupabaseClient<Database>
-    await new SupabaseMonitorDb(spying, { orgId }).applyResults(
+    await new SupabaseMonitorDb(spying, { orgId, fence: await testFence() }).applyResults(
       orgId,
       [
         { type: 'camera', id: camIds[1], recorder: recorderId, ok: false, at: at(0), error: 'first' },

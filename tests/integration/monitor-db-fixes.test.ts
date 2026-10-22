@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { cleanResults, SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
 import type { Database } from '@/types/database'
 import { adminClient, cleanupOrg, createOrg, createSite } from '../setup/fixtures'
+import { fenced, testFence } from '../setup/lease'
 
 const admin = () => adminClient()
 
@@ -55,7 +56,7 @@ describe('SupabaseMonitorDb restricted to one organisation (I6)', () => {
       { org_id: orgA, location_id: siteA.locationId, type: 'server', name: 'DA', ip: '127.0.0.1', tcp_port: 1 },
       { org_id: orgB, location_id: siteB.locationId, type: 'server', name: 'DB', ip: '127.0.0.1', tcp_port: 2 },
     ])
-    await a.rpc('monitor_apply_results', { p_org: orgB, p_results: [{ type: 'recorder', id: recB, ok: false, at: new Date().toISOString() }], p_threshold: 1 })
+    await a.rpc('monitor_apply_results', { ...(await fenced()), p_org: orgB, p_results: [{ type: 'recorder', id: recB, ok: false, at: new Date().toISOString() }], p_threshold: 1 })
   })
   afterAll(async () => {
     await cleanupOrg(orgA)
@@ -102,7 +103,7 @@ describe('SupabaseMonitorDb gaps and round times', () => {
   it('recordGap saves the period', async () => {
     const from = new Date('2020-02-01T10:00:00Z')
     const to = new Date('2020-02-01T10:10:00Z')
-    await new SupabaseMonitorDb(admin()).recordGap(from, to)
+    await new SupabaseMonitorDb(admin(), { fence: await testFence() }).recordGap(from, to)
     const { data } = await admin().from('monitor_gaps').select('id, started_at, ended_at').eq('started_at', from.toISOString())
     data?.forEach((g) => gapIds.push(g.id))
     expect(data).toHaveLength(1)
@@ -110,12 +111,13 @@ describe('SupabaseMonitorDb gaps and round times', () => {
   })
 
   it('recordGap fails out loud when it cannot save', async () => {
-    const refusing = { from: () => ({ insert: async () => ({ error: { message: 'boom' } }) }) } as unknown as SupabaseClient<Database>
-    await expect(new SupabaseMonitorDb(refusing).recordGap(new Date(), new Date())).rejects.toThrow('recording the gap failed')
+    // P2-7: the gap is written through the fenced function monitor_record_gap (no direct insert any more).
+    const refusing = { rpc: async () => ({ data: null, error: { message: 'boom' } }) } as unknown as SupabaseClient<Database>
+    await expect(new SupabaseMonitorDb(refusing, { fence: await testFence() }).recordGap(new Date(), new Date())).rejects.toThrow('recording the gap failed')
   })
 
   it('markRound saves the time of the devices round and of the cameras round separately', async () => {
-    const db = new SupabaseMonitorDb(admin())
+    const db = new SupabaseMonitorDb(admin(), { fence: await testFence() })
     const t1 = new Date('2026-06-01T10:00:00Z')
     const t2 = new Date('2026-06-01T10:05:00Z')
     await db.markRound('devices', t1)
@@ -149,7 +151,7 @@ describe('what is sent to monitor_apply_results (minor 11)', () => {
       const cam = site.cameraIds[0]
       vi.spyOn(console, 'log').mockImplementation(() => {})
       const at = new Date().toISOString()
-      await new SupabaseMonitorDb(admin(), { orgId: org }).applyResults(
+      await new SupabaseMonitorDb(admin(), { orgId: org, fence: await testFence() }).applyResults(
         org,
         [{ type: 'camera', id: 'not-a-uuid', recorder: site.recorderId, ok: false, at }, { type: 'camera', id: cam, recorder: site.recorderId, ok: true, at }],
         2,

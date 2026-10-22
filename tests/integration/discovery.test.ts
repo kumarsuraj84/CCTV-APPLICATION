@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Actor } from '@/lib/admin/types'
 import { discoverRecorderCameras, discoverStoreCameras } from '@/lib/monitor/discovery'
 import { adminClient, atCamera, cleanupOrg, createCamera, createLocation, createOrg, createRecorder, createSite, createUser, grant, READ_EVERYTHING, withRecorders, type TestUser } from '../setup/fixtures'
+import { fenced } from '../setup/lease'
 import { startFakeGo2rtc } from '../helpers/fake-go2rtc'
 import { closedPort, startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
 
@@ -220,7 +221,7 @@ describe('finding cameras: identities across channels and NVRs (review round 1)'
     const keep = await createCamera(orgId, { locationId: loc, recorderId: rec, channel: 1, name: 'Front', cameraIp: '192.0.2.51' })
     const viewer = await createUser(orgId, 'user')
     await grant(orgId, viewer.id, ['cctv.live'], atCamera(cam))
-    await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: await withRecorders([{ type: 'camera', id: cam, ok: true, at: new Date().toISOString() }]), p_threshold: 1 })
+    await admin().rpc('monitor_apply_results', { ...(await fenced()), p_org: orgId, p_results: await withRecorders([{ type: 'camera', id: cam, ok: true, at: new Date().toISOString() }]), p_threshold: 1 })
     const history = (await admin().from('check_state').select('id').eq('target_id', cam).single()).data!.id
     const go2rtc = await startFakeGo2rtc()
     try {

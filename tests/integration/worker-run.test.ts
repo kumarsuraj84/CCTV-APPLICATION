@@ -6,6 +6,7 @@ import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
 import type { Database } from '@/types/database'
 import { createServer, type Socket } from 'node:net'
 import { adminClient, cleanupOrg, createOrg, createSite } from '../setup/fixtures'
+import { testFence } from '../setup/lease'
 import { closedPort, startFakeNvr, startFakeRtsp, startFakeTcp, type FakeNvr, type FakeRtsp, type Running } from '../helpers/fake-servers'
 
 const admin = () => adminClient()
@@ -47,7 +48,8 @@ describe('the worker against a fake network', () => {
     cams = site.cameraIds
     devUp = (await a.from('assets').insert({ org_id: orgId, location_id: storeId, type: 'server', name: 'Up', ip: '127.0.0.1', tcp_port: tcp.port }).select('id').single()).data!.id
     devDown = (await a.from('assets').insert({ org_id: orgId, location_id: storeId, type: 'attendance', name: 'Down', ip: '127.0.0.1', tcp_port: downPort }).select('id').single()).data!.id
-    runner = new MonitorRunner({ db: new SupabaseMonitorDb(a, { orgId }), probes: realProbes, cfg: { ...loadMonitorConfig({}), nvrTimeoutMs: 2000 }, clock: () => new Date() })
+    // P2-7: the runner's writes carry this file's test lease.
+    runner = new MonitorRunner({ db: new SupabaseMonitorDb(a, { orgId, fence: await testFence() }), probes: realProbes, cfg: { ...loadMonitorConfig({}), nvrTimeoutMs: 2000 }, clock: () => new Date() })
   })
 
   afterAll(async () => {

@@ -5,6 +5,7 @@ import {
   adminClient, atCamera, atLocation, atRecorder, cleanupOrg, createAsset, createCamera, createLocation, createOrg, createRecorder, createUser,
   grant, mapCamera, ORG_SCOPE, withRecorders, type TestUser,
 } from '../setup/fixtures'
+import { fenced } from '../setup/lease'
 
 // P2-5a (brief item 3, decision D-4, ruling C-1, directive "Asset and location model"): locations of any kind with several NVRs,
 // recorders as explicit records with their own address and vault login, cameras with a stable identity and explicit recorder/channel
@@ -15,8 +16,8 @@ const admin = () => adminClient()
 const anon = () => createClient<Database>(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { auth: { persistSession: false } })
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
 const apply = async (orgId: string, results: object[], threshold = 2) => {
-  // P2-6: camera results name their recorder (required), as the worker sends them.
-  const { error } = await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: (await withRecorders(results as { type: string; id: string }[])) as never, p_threshold: threshold })
+  // P2-6: camera results name their recorder (required), as the worker sends them. P2-7: with a lease and its fencing token.
+  const { error } = await admin().rpc('monitor_apply_results', { ...(await fenced()), p_org: orgId, p_results: (await withRecorders(results as { type: string; id: string }[])) as never, p_threshold: threshold })
   if (error) throw new Error(error.message)
 }
 const ids = (rows: { id: string }[] | null) => (rows ?? []).map((r) => r.id).sort()

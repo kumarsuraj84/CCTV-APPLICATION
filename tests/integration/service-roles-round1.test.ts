@@ -20,6 +20,8 @@ const SELECT_WEB = [
   'camera_channel_mappings', 'camera_endpoints', 'camera_group_items', 'camera_group_rules', 'camera_groups', 'cameras', 'capabilities',
   'check_state', 'clusters', 'device_capabilities', 'discovery_findings', 'location_status', 'locations', 'media_sessions', 'monitor_gaps',
   'network_definitions', 'organizations', 'outages', 'profiles', 'recorder_status', 'recorders', 'regions', 'worker_state',
+  // P2-7 (20261021000036): the web app reads the worker lease (holder, token, age) for the worker status; nobody writes it directly.
+  'worker_leases',
 ]
 const INSERT_WEB = [
   'admin_audit_log', 'asset_dependencies', 'asset_endpoints', 'assets', 'camera_group_items', 'camera_group_rules', 'camera_groups', 'cameras',
@@ -43,9 +45,9 @@ function expectedGrants(): string[] {
   add('media_service', 'SELECT', ['assets', 'camera_channel_mappings', 'cameras', 'locations', 'recorders'])
   add('media_service', 'INSERT', ['admin_audit_log'])
   add('monitor_worker', 'SELECT', ['assets', 'camera_channel_mappings', 'cameras', 'check_state', 'locations', 'recorders', 'worker_state'])
-  add('monitor_worker', 'INSERT', ['monitor_gaps'])
-  add('monitor_worker', 'UPDATE', ['cameras(camera_ip)'])
-  add('monitor_worker', 'UPDATE', ['last_heartbeat', 'last_devices_round_at', 'last_cameras_round_at', 'run_started_at', 'run_finished_at', 'progress_done', 'progress_total'].map((c) => `worker_state(${c})`))
+  // P2-7 (D-8, 20261021000036): the worker's direct writes of P2-6 (monitor_gaps INSERT, cameras.camera_ip and its worker_state
+  // columns UPDATE) are revoked on purpose: every worker write is now a fenced function that checks the lease token in the same
+  // transaction. The worker holds no table or column write at all.
   for (const role of ['app_web', 'media_service', 'monitor_worker', 'video_gateway']) add(role, 'USAGE', ['schema:public'])
   return lines.sort()
 }

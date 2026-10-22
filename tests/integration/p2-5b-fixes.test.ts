@@ -10,6 +10,7 @@ import type { Database } from '@/types/database'
 import {
   adminClient, atLocation, cleanupOrg, createCamera, createLocation, createOrg, createRecorder, createUser, grant, mapCamera, withRecorders, type TestUser,
 } from '../setup/fixtures'
+import { fenced } from '../setup/lease'
 
 const admin = () => adminClient()
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
@@ -176,7 +177,8 @@ describe('P2-5b review round 1', () => {
     const r2 = await createRecorder(orgId, loc, { name: 'Two', host: '192.0.2.201' })
     const cam = await createCamera(orgId, { locationId: loc, recorderId: r1, channel: 1 })
     await mapCamera(orgId, cam, r2, 1)
-    const apply = (recorder: string) => admin().rpc('monitor_apply_results', {
+    const apply = async (recorder: string) => admin().rpc('monitor_apply_results', {
+      ...(await fenced()), // P2-7: a lease and its fencing token
       p_org: orgId, p_results: [{ type: 'camera', id: cam, recorder, ok: false, at: ago(1), method: 'nvr_down', cause: 'nvr_down' }], p_threshold: 1,
     })
     expect((await apply(r1)).error).toBeNull()
@@ -192,12 +194,13 @@ describe('P2-5b review round 1', () => {
     const rec = await createRecorder(orgId, loc, { host: '192.0.2.202' })
     const cam = await createCamera(orgId, { locationId: loc, recorderId: rec, channel: 1 })
     const result = { type: 'camera', id: cam, ok: false, at: ago(1) }
-    expect((await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: [result], p_threshold: 1 })).error).toBeNull()
-    expect((await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: [{ ...result, recorder: null }], p_threshold: 1 })).error).toBeNull()
-    expect((await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: [{ ...result, recorder: 42 }], p_threshold: 1 })).error).toBeNull()
+    const lease = await fenced() // P2-7: a lease and its fencing token
+    expect((await admin().rpc('monitor_apply_results', { ...lease, p_org: orgId, p_results: [result], p_threshold: 1 })).error).toBeNull()
+    expect((await admin().rpc('monitor_apply_results', { ...lease, p_org: orgId, p_results: [{ ...result, recorder: null }], p_threshold: 1 })).error).toBeNull()
+    expect((await admin().rpc('monitor_apply_results', { ...lease, p_org: orgId, p_results: [{ ...result, recorder: 42 }], p_threshold: 1 })).error).toBeNull()
     expect((await admin().from('check_state').select('id').eq('target_id', cam)).data).toEqual([])
     expect((await admin().from('outages').select('id').eq('target_id', cam)).data).toEqual([])
-    expect((await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: [{ ...result, recorder: rec.toUpperCase() }], p_threshold: 1 })).error).toBeNull()
+    expect((await admin().rpc('monitor_apply_results', { ...lease, p_org: orgId, p_results: [{ ...result, recorder: rec.toUpperCase() }], p_threshold: 1 })).error).toBeNull()
     expect((await admin().from('check_state').select('status').eq('target_id', cam).single()).data?.status).toBe('down')
   })
 
@@ -206,7 +209,7 @@ describe('P2-5b review round 1', () => {
     const loc = await createLocation(orgId, { code: 'DIS' })
     const rec = await createRecorder(orgId, loc, { host: '192.0.2.210' })
     const cam = await createCamera(orgId, { locationId: loc, recorderId: rec, channel: 1 })
-    await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: await withRecorders([{ type: 'camera', id: cam, ok: false, at: ago(5) }]), p_threshold: 1 })
+    await admin().rpc('monitor_apply_results', { ...(await fenced()), p_org: orgId, p_results: await withRecorders([{ type: 'camera', id: cam, ok: false, at: ago(5) }]), p_threshold: 1 })
     expect((await admin().from('outages').select('id').eq('target_id', cam).is('ended_at', null)).data).toHaveLength(1)
     expect((await admin().from('assets').update({ enabled: false }).eq('id', rec)).error).toBeNull()
     expect((await admin().from('outages').select('id').eq('target_id', cam).is('ended_at', null)).data).toEqual([])
@@ -224,7 +227,7 @@ describe('P2-5b review round 1', () => {
     expect((await admin().from('assets').update({ location_id: to }).eq('id', busy)).error?.code).toBe('DR006')
     expect((await admin().from('recorders').select('location_id').eq('id', busy).single()).data?.location_id).toBe(from)
     const empty = await createRecorder(orgId, from, { name: 'Empty', host: '192.0.2.221' })
-    await admin().rpc('monitor_apply_results', { p_org: orgId, p_results: [{ type: 'recorder', id: empty, ok: true, at: ago(1) }], p_threshold: 1 })
+    await admin().rpc('monitor_apply_results', { ...(await fenced()), p_org: orgId, p_results: [{ type: 'recorder', id: empty, ok: true, at: ago(1) }], p_threshold: 1 })
     const itFrom = await createUser(orgId, 'user')
     const itTo = await createUser(orgId, 'user')
     await grant(orgId, itFrom.id, 'it.monitoring.view', atLocation(from))

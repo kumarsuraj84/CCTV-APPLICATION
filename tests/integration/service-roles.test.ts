@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createRestRegistry } from '@/lib/streams/registry'
 import type { Database } from '@/types/database'
 import { adminClient, cleanupOrg, createCamera, createOrg, createSite, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
+import { takeTestLease } from '../setup/lease'
 import { rest, serviceClient, serviceKey } from '../setup/service-keys'
 
 // P2-6 (D-14, D-14a; spike in docs/drishti/adr-service-roles.md): every server process has its own database role, chosen by the `role`
@@ -100,7 +101,9 @@ describe('per-service database roles (P2-6, D-14)', () => {
         ['recorder_read_credential', { p_recorder: recorderId }],
         ['recorder_credential_read', { p_recorder: recorderId, p_purpose: 'live' }],
         ['media_session_create', { p_org: orgId, p_user: viewer.id, p_kind: 'live', p_cameras: [cameraId], p_streams: [`cam_${cameraId}_sub`] }],
-        ['monitor_apply_results', { p_org: orgId, p_results: [] }],
+        // P2-7: the fenced signature (lease and token are required arguments).
+        ['monitor_apply_results', { p_org: orgId, p_results: [], p_threshold: 2, p_lease: 'monitor', p_fencing_token: 1 }],
+        ['worker_acquire_lease', { p_name: 'monitor', p_holder: randomUUID() }],
         ['rate_limit_hit', { p_key: 'x', p_limit: 1, p_window_sec: 60 }],
         ['privilege_violations', {}],
         ['grant_access', { p_org: orgId, p_user: viewer.id, p_grants: [] }],
@@ -125,7 +128,10 @@ describe('per-service database roles (P2-6, D-14)', () => {
       expect(code(await web.from('worker_state').update({ last_heartbeat: new Date().toISOString() }).eq('id', -1))).toBe('42501')
       expect(code(await web.from('monitor_gaps').insert({ started_at: new Date().toISOString(), ended_at: new Date().toISOString() }))).toBe('42501')
       for (const [fn, args] of [
-        ['monitor_apply_results', { p_org: orgId, p_results: [] }],
+        // P2-7: the fenced signature; the web app may neither write results nor take the worker's lease.
+        ['monitor_apply_results', { p_org: orgId, p_results: [], p_threshold: 2, p_lease: 'monitor', p_fencing_token: 1 }],
+        ['worker_acquire_lease', { p_name: 'monitor', p_holder: randomUUID() }],
+        ['monitor_heartbeat', { p_lease: 'monitor', p_fencing_token: 1, p_at: new Date().toISOString() }],
         ['media_session_open', { p_sid: randomUUID(), p_user: viewer.id, p_camera: cameraId, p_kind: 'live', p_stream: 'x' }],
         ['media_session_create', { p_org: orgId, p_user: viewer.id, p_kind: 'live', p_cameras: [cameraId], p_streams: ['x'] }],
         ['inventory_purge_test_org', { p_org: orgId }],
@@ -189,19 +195,23 @@ describe('per-service database roles (P2-6, D-14)', () => {
   })
 
   describe('monitor_worker', () => {
-    it('reads an NVR login for monitoring only and applies results', async () => {
+    it('reads an NVR login for monitoring only and applies results (with its lease, P2-7)', async () => {
       const worker = serviceClient('monitor_worker')
       expect((await call(worker, 'recorder_credential_read', { p_recorder: recorderId, p_purpose: 'monitoring' })).data).toBe(secret)
       expect(code(await call(worker, 'recorder_credential_read', { p_recorder: recorderId, p_purpose: 'live' }))).toBe('42501')
-      expect((await call(worker, 'monitor_apply_results', { p_org: orgId, p_results: [], p_threshold: 2 })).error).toBeNull()
+      const lease = await takeTestLease(undefined, undefined, 60, worker)
+      expect((await call(worker, 'monitor_apply_results', { p_org: orgId, p_results: [], p_threshold: 2, p_lease: lease.name, p_fencing_token: lease.token })).error).toBeNull()
+      // Without a valid token the same call is refused by the fence.
+      expect(code(await call(worker, 'monitor_apply_results', { p_org: orgId, p_results: [], p_threshold: 2, p_lease: lease.name, p_fencing_token: lease.token + 1 }))).toBe('WL001')
     })
 
-    it('writes only its own columns of worker_state and only the address of a camera', async () => {
+    it('writes no table directly any more (P2-7: worker_state, gaps and camera addresses only through its fenced functions)', async () => {
       const worker = serviceClient('monitor_worker')
       // Filters that match no row: the privilege is checked, the owner's worker state is never touched.
-      expect((await worker.from('worker_state').update({ last_heartbeat: new Date().toISOString() }).eq('id', -1)).error).toBeNull()
+      // P2-6 let the worker update its own worker_state columns and cameras.camera_ip directly; P2-7 (D-8) revokes both, deliberately.
+      expect(code(await worker.from('worker_state').update({ last_heartbeat: new Date().toISOString() }).eq('id', -1))).toBe('42501')
       expect(code(await worker.from('worker_state').update({ check_requested_at: new Date().toISOString() }).eq('id', -1))).toBe('42501')
-      expect((await worker.from('cameras').update({ camera_ip: '10.66.1.21' }).eq('id', randomUUID())).error).toBeNull()
+      expect(code(await worker.from('cameras').update({ camera_ip: '10.66.1.21' }).eq('id', randomUUID()))).toBe('42501')
       expect(code(await worker.from('cameras').update({ name: 'x' }).eq('id', randomUUID()))).toBe('42501')
       expect(code(await worker.from('profiles').select('id').limit(1))).toBe('42501')
       expect(code(await call(worker, 'recorder_store_credential', { p_recorder: recorderId, p_secret: 'x' }))).toBe('42501')

@@ -11,6 +11,7 @@ import type { Database } from '@/types/database'
 import {
   adminClient, atCamera, atCluster, atLocation, atRecorder, atRegion, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser,
 } from '../setup/fixtures'
+import { testFence } from '../setup/lease'
 
 const REGIONS = 3
 const CLUSTERS_PER_REGION = 10
@@ -209,7 +210,8 @@ describe('VA-20: access model performance at 8,100 cameras, 300 locations in 30 
 
   // P2-5b (task item 7, re-measure): the worker's data layer on the recorder model at this size — 390 recorders, 8,100 mapped cameras.
   it('the worker loads 390 recorder jobs with their 8,100 mapped cameras, and applies results in batches of 200, quickly', async () => {
-    const db = new SupabaseMonitorDb(admin(), { orgId })
+    // P2-7: the writes carry this file's test lease (each batch also runs the fence check).
+    const db = new SupabaseMonitorDb(admin(), { orgId, fence: await testFence() })
     const t0 = performance.now()
     const nvrs = await db.loadNvrs()
     const tNvrs = performance.now() - t0
