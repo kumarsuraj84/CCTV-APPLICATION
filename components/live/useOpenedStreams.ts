@@ -10,9 +10,18 @@ const subscribeVisibility = (cb: () => void) => {
   return () => document.removeEventListener('visibilitychange', cb)
 }
 
-/** False while the browser tab is hidden or the window is minimised. */
+/** Coming back to the tab is acted on only after this long, so quickly switching tabs back and forth does not ask for new streams each time. */
+export const VISIBLE_DEBOUNCE_MS = 500
+
+/** False while the browser tab is hidden or the window is minimised (at once); true again 500 ms after it comes back. */
 export function useTabVisible(): boolean {
-  return useSyncExternalStore(subscribeVisibility, () => document.visibilityState === 'visible', () => true)
+  const now = useSyncExternalStore(subscribeVisibility, () => document.visibilityState === 'visible', () => true)
+  const [settled, setSettled] = useState(true)
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(now), now ? VISIBLE_DEBOUNCE_MS : 0)
+    return () => clearTimeout(timer)
+  }, [now])
+  return now && settled
 }
 
 type Phase = 'loading' | 'ready' | 'error'
@@ -52,9 +61,11 @@ export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: bo
           if (prev.key !== key) return prev // the list changed while asking
           const now = Date.now()
           if (!res.ok) return { ...prev, phase: Object.keys(prev.streams).length > 0 ? 'ready' : 'error', error: res.error, triedAt: now, refreshFailed: true }
-          const streams = { ...prev.streams }
-          for (const s of res.streams) streams[s.cameraId] = s
+          // A renewal of the whole list replaces what was held: a camera that did not come back (it failed, or the person may no longer
+          // see it) loses its old token and is asked for again. Asking only for the missing ones adds to what is held.
           const everyone = which.length === ids.length
+          const streams: Record<string, OpenedStream> = everyone ? {} : { ...prev.streams }
+          for (const s of res.streams) streams[s.cameraId] = s
           return { ...prev, phase: 'ready', streams, error: null, triedAt: now, refreshFailed: false, issuedAt: everyone ? now : prev.issuedAt }
         })
       })

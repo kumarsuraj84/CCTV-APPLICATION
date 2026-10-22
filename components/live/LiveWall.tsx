@@ -57,27 +57,38 @@ export function LiveWall({ cameras }: { cameras: TileCamera[] }) {
     trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     setEnlarged(id)
   }, [])
-  const closeLarge = useCallback(() => {
-    setEnlarged(null)
-    trigger.current?.focus()
-  }, [])
+  const closeLarge = useCallback(() => setEnlarged(null), [])
 
-  const closeButton = useRef<HTMLButtonElement>(null)
+  // While the large view is open: the dialog takes the focus, Escape closes it, the page behind does not scroll (and is inert, below).
+  // When it closes the focus goes back to the picture that opened it (after the wall is no longer inert).
+  const dialog = useRef<HTMLDivElement>(null)
+  const isOpen = !!big
   useEffect(() => {
-    if (!big) return
-    closeButton.current?.focus()
+    if (!isOpen) {
+      trigger.current?.focus()
+      trigger.current = null
+      return
+    }
+    dialog.current?.focus()
+    const scrollLock = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') closeLarge()
     }
     document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [big, closeLarge])
+    return () => {
+      document.body.style.overflow = scrollLock
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [isOpen, closeLarge])
 
   const loading = grid.phase === 'loading' && page.length > 0
   const to = Math.min(first + perPage(layout), cameras.length)
 
   return (
-    <div className="min-w-0 space-y-3">
+    <div className="min-w-0">
+      {/* inert while the large view is open: nothing behind it can be reached with the keyboard or a screen reader */}
+      <div inert={isOpen} className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground" aria-live="polite">
           {cameras.length === 0 ? 'No cameras' : `Showing ${first + 1}–${to} of ${cameras.length} ${cameras.length === 1 ? 'camera' : 'cameras'}`}
@@ -131,13 +142,15 @@ export function LiveWall({ cameras }: { cameras: TileCamera[] }) {
         </ul>
       )}
 
+      </div>
+
       {big && (
-        <div role="dialog" aria-modal="true" aria-label={`${big.storeCode}, ${big.name}`} className="fixed inset-0 z-50 flex flex-col gap-2 bg-black/90 p-3 sm:p-6">
+        <div ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`${big.storeCode}, ${big.name}`} className="fixed inset-0 z-50 flex flex-col gap-2 bg-black/90 p-3 outline-none sm:p-6">
           <div className="flex items-center justify-between gap-2 text-white">
             <p className="min-w-0 truncate text-sm">
               <span className="font-mono font-semibold">{big.storeCode}</span> · {big.name}
             </p>
-            <Button ref={closeButton} type="button" variant="secondary" onClick={closeLarge}>
+            <Button type="button" variant="secondary" onClick={closeLarge}>
               <X aria-hidden="true" /> Close
             </Button>
           </div>
