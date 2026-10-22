@@ -18,6 +18,17 @@ const nextConfig: NextConfig = {
     proxyClientMaxBodySize: '30mb',
     staleTimes: { dynamic: 30, static: 180 },
   },
+  // T-1 (ruling T-1): "Store" became "Location". The old addresses keep working: bookmarks, e-mailed links and the browser history are sent to the
+  // new page with a permanent redirect; the id and the query string are kept (Next.js passes the query on to the destination).
+  async redirects() {
+    return [
+      // The old edit link of the "Manage stores" page opens that location on its administration page (only a real id is put into the path).
+      { source: '/admin/stores', has: [{ type: 'query' as const, key: 'edit', value: '(?<editId>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})' }], destination: '/admin/locations/:editId', permanent: true },
+      { source: '/admin/stores', destination: '/admin/locations', permanent: true },
+      { source: '/stores', destination: '/locations', permanent: true },
+      { source: '/stores/:id', destination: '/locations/:id', permanent: true },
+    ]
+  },
   async headers() {
     return [{
       source: '/:path*',

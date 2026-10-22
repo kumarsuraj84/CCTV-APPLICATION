@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // P2-2 (brief item 5): every admin action asks for an administrative role AND its admin.* capability through requireAdministration,
@@ -94,7 +95,6 @@ describe('admin actions', () => {
     const users = await import('@/lib/actions/admin/users')
     const access = await import('@/lib/actions/admin/access')
     const inv = await import('@/lib/actions/admin/inventory')
-    const mon = await import('@/lib/actions/admin/monitoring')
     const cases: [string, () => Promise<unknown>][] = [
       ['admin.users', () => users.createUserAction({}, fd())],
       ['admin.users', () => users.setActiveAction('x', true)],
@@ -106,13 +106,9 @@ describe('admin actions', () => {
       ['admin.access', () => access.applyAccessAction('x', { changes: [], expectedVersion: 0, token: '' })],
       ['admin.access', () => access.keepReviewedAction({ grantIds: [] })],
       ['admin.access', () => access.selfConfirmReviewAction({ grantIds: [], reason: '' })],
-      ['admin.inventory', () => inv.saveStoreAction({}, fd())],
-      ['admin.inventory', () => inv.deleteStoreAction('x')],
       ['admin.inventory', () => inv.saveDeviceAction({}, fd())],
       ['admin.inventory', () => inv.deleteDeviceAction('x')],
-      ['admin.inventory', () => inv.importStoresAction({}, fd())],
       ['admin.inventory', () => inv.importDevicesAction({}, fd())],
-      ['admin.inventory', () => mon.discoverCamerasAction('x')],
       ...p25c().map((call): [string, () => Promise<unknown>] => ['admin.inventory', call]),
     ]
     for (const [cap, call] of cases) {
@@ -122,16 +118,25 @@ describe('admin actions', () => {
     }
   })
 
+  // T-1 carry-over (P2-5c re-review N2): the old "Manage stores" page is gone, so its actions are too. importStoresAction posted through the old
+  // lenient CSV reader and echoed cell values; no screen used it. The Import page uses the strict reader (lib/actions/admin/import-locations.ts).
+  it('no longer offers the actions of the retired "Manage stores" page', async () => {
+    const inv = (await import('@/lib/actions/admin/inventory')) as Record<string, unknown>
+    for (const name of ['saveStoreAction', 'deleteStoreAction', 'importStoresAction']) expect(inv[name], name).toBeUndefined()
+    // …and so is the per-location "Find cameras" action and its button (each NVR has its own on its page; "Find cameras for all locations" has a page).
+    expect(existsSync('lib/actions/admin/monitoring.ts')).toBe(false)
+    expect(existsSync('components/monitor/FindCamerasButton.tsx')).toBe(false)
+  })
+
   it('make no client and change nothing when the gate refuses', async () => {
     m.refuse = true
     const users = await import('@/lib/actions/admin/users')
     const access = await import('@/lib/actions/admin/access')
     const inv = await import('@/lib/actions/admin/inventory')
-    const mon = await import('@/lib/actions/admin/monitoring')
     for (const call of [
       () => users.createUserAction({}, fd()), () => users.setActiveAction('x', true, { revokeAll: { grantIds: [], reason: 'x', expectedVersion: 0 } }),
       () => access.previewAccessAction('x', { changes: [], expectedVersion: 0 }), () => access.applyAccessAction('x', { changes: [], expectedVersion: 0, token: '' }),
-      () => access.keepReviewedAction({ grantIds: [] }), () => inv.saveStoreAction({}, fd()), () => mon.discoverCamerasAction('x'),
+      () => access.keepReviewedAction({ grantIds: [] }), () => inv.saveDeviceAction({}, fd()), () => inv.importDevicesAction({}, fd()),
       ...p25c(),
     ]) {
       await expect(call()).rejects.toThrow('REDIRECT:/home')

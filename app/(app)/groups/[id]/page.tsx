@@ -12,26 +12,29 @@ import { requireCapability } from '@/lib/auth/profile'
 import { LIVE_WALL_ENABLED, liveWallHref } from '@/lib/groups/live-wall'
 import { storesForCapability } from '@/lib/queries/access'
 import { getVisibleGroup, listStoreCamerasForGroups } from '@/lib/queries/groups'
+import { pickLocationParam } from '@/lib/queries/location-param'
 import { camerasFor } from '@/lib/auth/resource'
 import { createClient } from '@/lib/supabase/server'
 import { cn } from '@/lib/utils'
 
 export const metadata = { title: 'Camera group' }
 
-export default async function GroupPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ store?: string }> }) {
+export default async function GroupPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ location?: string | string[]; store?: string | string[] }> }) {
   const { id } = await params
-  const { store } = await searchParams
+  const sp = await searchParams
   const profile = await requireCapability(CCTV_CAPABILITIES)
   const supabase = await createClient()
   const group = await getVisibleGroup(supabase, id)
   if (!group) notFound()
 
   // P2-2: changing the group needs the role AND cctv.live; only cameras the person may watch live can be added (the action checks each
-  // one again in the database), so the store list and the choices hold only those. The live wall needs a camera they may watch live.
+  // one again in the database), so the location list and the choices hold only those. The live wall needs a camera they may watch live.
   const live = holds(profile.capabilities, 'cctv.live')
   const canManage = hasGroupEditingAuthority(profile.role) && live
   const stores = canManage ? await storesForCapability(supabase, profile.capabilities, 'cctv.live') : []
-  const selectedStoreId = canManage && typeof store === 'string' && store !== '' ? store : null
+  // ?location=<id> (the form says this); the older ?store=<id> still works.
+  const chosen = pickLocationParam(sp)
+  const selectedStoreId = canManage && chosen !== '' ? chosen : null
   const visibleChoices = selectedStoreId ? await listStoreCamerasForGroups(supabase, selectedStoreId, group.id) : null
   let choices = visibleChoices
   if (visibleChoices) {

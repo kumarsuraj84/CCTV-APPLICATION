@@ -42,6 +42,6 @@ export async function applyLocationImportAction(f: FormData): Promise<ImportAppl
     { admin: createAdminClient(), rls: await createClient(), go2rtc: localGo2rtc() }, { id: p.id, orgId: p.org_id, role: p.role }, text,
     { skipBadRows: on(f, 'skip_bad_rows'), keepNames: on(f, 'keep_names'), archive: on(f, 'archive'), fingerprint: String(f.get('fingerprint') ?? '') },
   )
-  if (res.ok) for (const path of ['/admin/locations', '/admin/regions', '/admin/reconciliation', '/admin/stores', '/stores']) revalidatePath(path, 'layout')
+  if (res.ok) for (const path of ['/admin/locations', '/admin/regions', '/admin/reconciliation', '/admin/assets', '/locations']) revalidatePath(path, 'layout')
   return res
 }

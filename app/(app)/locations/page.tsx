@@ -12,11 +12,11 @@ import { listStoreStatus } from '@/lib/queries/status'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 
-export const metadata = { title: 'Stores' }
+export const metadata = { title: 'Locations' }
 
-export default async function StoresPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
+export default async function LocationsPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const { q } = await searchParams
-  // P2-2: any CCTV, IT or Wi-Fi grant shows locations. The NVR column is IT information (AC-4): only with the IT view of that store.
+  // P2-2: any CCTV, IT or Wi-Fi grant shows locations. The NVR column is IT information (AC-4): only with the IT view of that location.
   const profile = await requireProfile()
   if (!holdsAnyLocationGrant(profile.capabilities)) redirect('/home')
   const itAnywhere = holdsItView(profile.capabilities)
@@ -26,17 +26,17 @@ export default async function StoresPage({ searchParams }: { searchParams: Promi
     <div className="space-y-4">
       {/* Only while monitoring runs: with the checker stopped nothing new will appear. */}
       {monitoring.running && <AutoRefresh busy={false} />}
-      <PageHeader title="Stores" description="The stores you can see." />
+      <PageHeader title="Locations" description="The locations you can see." />
       <MonitoringBanner monitoring={monitoring} />
       <form className="flex gap-2">
-        <input name="q" aria-label="Search stores" defaultValue={q ?? ''} placeholder="Search by name, code or city" className="h-8 w-full max-w-sm rounded-lg border bg-background px-2 text-sm" />
+        <input name="q" aria-label="Search locations" defaultValue={q ?? ''} placeholder="Search by name, code or city" className="h-8 w-full max-w-sm rounded-lg border bg-background px-2 text-sm" />
         <button type="submit" className="rounded-lg border px-3 text-sm">Search</button>
       </form>
       <div className="overflow-x-auto rounded-xl border bg-card">
         <table className="w-full text-sm">
           <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
             <tr>
-              <th className="px-3 py-2">Code</th><th className="px-3 py-2">Store</th><th className="px-3 py-2">City</th><th className="px-3 py-2">Zone</th>
+              <th className="px-3 py-2">Code</th><th className="px-3 py-2">Location</th><th className="px-3 py-2">City</th><th className="px-3 py-2">Zone</th>
               {itAnywhere && <th className="px-3 py-2">NVR</th>}<th className="px-3 py-2">Cameras live</th><th className="px-3 py-2 text-right">Cameras</th>
             </tr>
           </thead>
@@ -48,7 +48,7 @@ export default async function StoresPage({ searchParams }: { searchParams: Promi
               const allStale = !!status && total > 0 && status.cameras_stale === total
               return (
                 <tr key={s.id} className="border-t hover:bg-muted/50">
-                  <td className="px-3 py-2 font-mono"><Link href={`/stores/${s.id}`} className="underline">{s.code}</Link></td>
+                  <td className="px-3 py-2 font-mono"><Link href={`/locations/${s.id}`} className="underline">{s.code}</Link></td>
                   <td className="px-3 py-2">{s.name}</td>
                   <td className="px-3 py-2">{s.city ?? '—'}</td>
                   <td className="px-3 py-2">{s.zone ?? '—'}</td>
@@ -75,7 +75,7 @@ export default async function StoresPage({ searchParams }: { searchParams: Promi
               )
             })}
             {stores.length === 0 && (
-              <tr><td colSpan={itAnywhere ? 7 : 6} className="px-3 py-6 text-center text-muted-foreground">No stores to show.</td></tr>
+              <tr><td colSpan={itAnywhere ? 7 : 6} className="px-3 py-6 text-center text-muted-foreground">No locations to show.</td></tr>
             )}
           </tbody>
         </table>

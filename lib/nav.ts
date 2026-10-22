@@ -16,7 +16,7 @@ export type NavNeed = { anyOf?: Capability[]; anyLocationGrant?: true; admin?: A
 export type NavItem = {
   href: string
   label: string
-  icon: 'home' | 'store' | 'server' | 'users' | 'upload' | 'building' | 'activity' | 'grid' | 'video' | 'history' | 'network' | 'boxes'
+  icon: 'home' | 'location' | 'server' | 'users' | 'upload' | 'building' | 'activity' | 'grid' | 'video' | 'history' | 'network' | 'boxes'
   group: 'Monitoring' | 'Admin'
   needs?: NavNeed
   mobile?: true
@@ -27,7 +27,7 @@ export type NavViewer = { role: Role; capabilities: Capabilities }
 // One list for the sidebar and the mobile bar. Hiding a link is not a security control: every page and action checks again.
 export const NAV: NavItem[] = [
   { href: '/home', label: 'Home', icon: 'home', group: 'Monitoring', mobile: true },
-  { href: '/stores', label: 'Stores', icon: 'store', group: 'Monitoring', needs: { anyLocationGrant: true }, mobile: true },
+  { href: '/locations', label: 'Locations', icon: 'location', group: 'Monitoring', needs: { anyLocationGrant: true }, mobile: true },
   { href: '/devices', label: 'Devices', icon: 'server', group: 'Monitoring', needs: { anyOf: [...IT_VIEW] }, mobile: true },
   { href: '/live', label: 'Live', icon: 'video', group: 'Monitoring', needs: { anyOf: ['cctv.live'] }, mobile: true },
   { href: '/playback', label: 'Playback', icon: 'history', group: 'Monitoring', needs: { anyOf: ['cctv.playback'] } },
@@ -38,11 +38,11 @@ export const NAV: NavItem[] = [
   // P2-3 review: the review of migrated grants (the editor itself is opened from Users). No count here: the items are static data.
   { href: '/admin/access-review', label: 'Access review', icon: 'users', group: 'Admin', needs: { admin: 'admin.access' } },
   { href: '/admin/monitoring', label: 'Monitoring', icon: 'activity', group: 'Admin', needs: { admin: 'admin.inventory' } },
-  // P2-5c-1: the hierarchy, NVRs, mapping editor and reconciliation; the asset inventory. ("Manage stores" stays until T-1 redirects it.)
+  // P2-5c-1: the hierarchy, NVRs, mapping editor and reconciliation; the asset inventory. T-1: the old "Manage stores" page is gone;
+  // /admin/stores redirects to /admin/locations.
   { href: '/admin/locations', label: 'Locations and NVRs', icon: 'building', group: 'Admin', needs: { admin: 'admin.inventory' } },
   { href: '/admin/regions', label: 'Regions and clusters', icon: 'network', group: 'Admin', needs: { admin: 'admin.inventory' } },
   { href: '/admin/assets', label: 'Assets', icon: 'boxes', group: 'Admin', needs: { admin: 'admin.inventory' } },
-  { href: '/admin/stores', label: 'Manage stores', icon: 'building', group: 'Admin', needs: { admin: 'admin.inventory' } },
   { href: '/admin/devices', label: 'Manage devices', icon: 'server', group: 'Admin', needs: { admin: 'admin.inventory' } },
   { href: '/admin/import', label: 'Import', icon: 'upload', group: 'Admin', needs: { admin: 'admin.inventory' } },
 ]

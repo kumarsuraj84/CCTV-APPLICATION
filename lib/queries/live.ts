@@ -55,12 +55,12 @@ export async function getLiveScope(
     const { data: store, error } = await supabase.from('locations').select('id, code, name').eq('id', q.store).eq('is_active', true).maybeSingle()
     if (error) {
       if (error.code === MALFORMED_ID) return null
-      throw new Error('Could not read the store.')
+      throw new Error('Could not read the location.')
     }
     if (!store) return null
     const rows = await fetchAll((from, to) => supabase.from('cameras').select('id, name, channel').eq('location_id', store.id).eq('is_active', true).order('channel').order('id').range(from, to))
     const cameras = await narrow(supabase, rows.map((c) => ({ id: c.id, name: c.name, channel: c.channel, storeCode: store.code })), cap, now)
-    return { kind: 'store', title: `${store.code} · ${store.name}`, description: `Store · ${countText(cameras.length)}`, cameras }
+    return { kind: 'store', title: `${store.code} · ${store.name}`, description: `Location · ${countText(cameras.length)}`, cameras }
   }
   if (q.camera) {
     const { data, error } = await supabase

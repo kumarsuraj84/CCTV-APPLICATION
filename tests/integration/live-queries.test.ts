@@ -59,7 +59,7 @@ describe('getLiveScope', () => {
 
   it('a store: its working cameras in channel order, with the status each one has', async () => {
     const scope = await getLiveScope(manager.client, { store: sA }, 'cctv.live', now)
-    expect(scope).toMatchObject({ kind: 'store', title: 'LA · Store LA' })
+    expect(scope).toMatchObject({ kind: 'store', title: 'LA · Store LA', description: expect.stringMatching(/^Location · /) })
     expect(scope!.cameras.map((c) => [c.name, c.channel, c.storeCode, c.status, c.stale])).toEqual([
       ['First', 1, 'LA', 'down', false],
       ['Second', 2, 'LA', 'up', false],

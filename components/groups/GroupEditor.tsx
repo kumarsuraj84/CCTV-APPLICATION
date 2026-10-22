@@ -13,10 +13,10 @@ export type GroupEditorProps = {
   cameras: GroupCamera[]
   /** Operators and administrators change the group; everybody else only looks. */
   canManage: boolean
-  /** Stores the person can see, for the "Add cameras" area. */
+  /** Locations the person can see, for the "Add cameras" area. */
   stores: { id: string; code: string; name: string }[]
   selectedStoreId: string | null
-  /** The cameras of the chosen store, or null when no store is chosen (or it cannot be used). */
+  /** The cameras of the chosen location, or null when no location is chosen (or it cannot be used). */
   choices: StoreCameraChoice[] | null
   /** P2-2 fix M-1: cameras the person may take out (they may watch them live). Without it, every camera shows Remove. */
   removableIds?: string[]
@@ -96,9 +96,9 @@ export function GroupEditor({ groupId, cameras, canManage, stores, selectedStore
           <div className="space-y-3">
             <form method="get" className="flex flex-col gap-2 sm:flex-row sm:items-end">
               <div className="min-w-0 flex-1 space-y-1.5 sm:max-w-sm">
-                <Label htmlFor="store-pick">Store</Label>
-                <select id="store-pick" name="store" defaultValue={selectedStoreId ?? ''} className="h-8 w-full rounded-lg border bg-background px-2 text-sm">
-                  <option value="">Choose a store</option>
+                <Label htmlFor="location-pick">Location</Label>
+                <select id="location-pick" name="location" defaultValue={selectedStoreId ?? ''} className="h-8 w-full rounded-lg border bg-background px-2 text-sm">
+                  <option value="">Choose a location</option>
                   {stores.map((s) => (
                     <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
                   ))}
@@ -107,11 +107,11 @@ export function GroupEditor({ groupId, cameras, canManage, stores, selectedStore
               <Button type="submit" variant="outline">Show cameras</Button>
             </form>
 
-            {selectedStoreId && choices === null && <p className="text-sm text-muted-foreground">That store is not available. Choose another one.</p>}
-            {choices !== null && choices.length === 0 && <p className="text-sm text-muted-foreground">This store has no cameras to add.</p>}
+            {selectedStoreId && choices === null && <p className="text-sm text-muted-foreground">That location is not available. Choose another one.</p>}
+            {choices !== null && choices.length === 0 && <p className="text-sm text-muted-foreground">This location has no cameras to add.</p>}
             {choices !== null && choices.length > 0 && (
               <fieldset className="space-y-2">
-                <legend className="text-sm font-medium">Cameras in this store</legend>
+                <legend className="text-sm font-medium">Cameras in this location</legend>
                 <ul className="divide-y rounded-lg border text-sm">
                   {choices.map((c) => (
                     <li key={c.id}>
@@ -137,7 +137,7 @@ export function GroupEditor({ groupId, cameras, canManage, stores, selectedStore
                   )}
                   {picked.size > 0 && <Button variant="ghost" disabled={pending} onClick={() => setPicked(new Set())}>Clear</Button>}
                 </div>
-                {free.length === 0 && <p className="text-sm text-muted-foreground">All the cameras of this store are already in the group.</p>}
+                {free.length === 0 && <p className="text-sm text-muted-foreground">All the cameras of this location are already in the group.</p>}
               </fieldset>
             )}
           </div>
@@ -150,7 +150,7 @@ export function GroupEditor({ groupId, cameras, canManage, stores, selectedStore
             }}
           >
             <Label htmlFor="word">Add by name</Label>
-            <p id="word-hint" className="text-sm text-muted-foreground">Adds every camera you can see, in any store, whose name contains this word (up to 500 at a time). Capitals do not matter.</p>
+            <p id="word-hint" className="text-sm text-muted-foreground">Adds every camera you can see, in any location, whose name contains this word (up to 500 at a time). Capitals do not matter.</p>
             <div className="flex flex-col gap-2 sm:flex-row">
               <Input id="word" value={word} maxLength={100} onChange={(e) => setWord(e.target.value)} autoComplete="off" aria-describedby="word-hint" placeholder="For example: door" className="sm:max-w-sm" />
               <Button type="submit" variant="outline" disabled={pending || word.trim() === ''}>Add matching cameras</Button>

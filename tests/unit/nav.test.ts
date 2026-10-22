@@ -18,49 +18,52 @@ describe('navigation by capability', () => {
     for (const role of ROLES) expect(hrefs(role, NONE), role).toEqual(['/home'])
   })
 
-  it('cctv.live shows Live, Stores and Groups; not Playback or Devices', () => {
-    expect(hrefs('user', caps(['cctv.live']))).toEqual(['/home', '/stores', '/live', '/groups'])
+  it('cctv.live shows Live, Locations and Groups; not Playback or Devices', () => {
+    expect(hrefs('user', caps(['cctv.live']))).toEqual(['/home', '/locations', '/live', '/groups'])
   })
 
-  it('cctv.playback shows Playback, Stores and Groups; not Live', () => {
-    expect(hrefs('user', caps(['cctv.playback']))).toEqual(['/home', '/stores', '/playback', '/groups'])
+  it('cctv.playback shows Playback, Locations and Groups; not Live', () => {
+    expect(hrefs('user', caps(['cctv.playback']))).toEqual(['/home', '/locations', '/playback', '/groups'])
   })
 
-  it('cctv.export alone shows Stores and Groups (it is a CCTV capability) but neither Live nor Playback', () => {
-    expect(hrefs('user', caps(['cctv.export']))).toEqual(['/home', '/stores', '/groups'])
+  it('cctv.export alone shows Locations and Groups (it is a CCTV capability) but neither Live nor Playback', () => {
+    expect(hrefs('user', caps(['cctv.export']))).toEqual(['/home', '/locations', '/groups'])
   })
 
-  it('the IT view shows Devices and Stores, never the CCTV pages', () => {
-    expect(hrefs('user', caps(['it.inventory.view']))).toEqual(['/home', '/stores', '/devices'])
-    expect(hrefs('user', caps(['it.monitoring.view']))).toEqual(['/home', '/stores', '/devices'])
-    expect(hrefs('operator', caps(['it.monitoring.operate']))).toEqual(['/home', '/stores'])
+  it('the IT view shows Devices and Locations, never the CCTV pages', () => {
+    expect(hrefs('user', caps(['it.inventory.view']))).toEqual(['/home', '/locations', '/devices'])
+    expect(hrefs('user', caps(['it.monitoring.view']))).toEqual(['/home', '/locations', '/devices'])
+    expect(hrefs('operator', caps(['it.monitoring.operate']))).toEqual(['/home', '/locations'])
   })
 
-  // P2-5c-2 brief item 4 replaces "a Wi-Fi grant shows Stores only": wifi.inventory.view now has its screen, the Wi-Fi inventory.
-  it('a Wi-Fi grant shows Stores and the Wi-Fi inventory; no other capability shows the Wi-Fi inventory', () => {
-    expect(hrefs('user', caps(['wifi.inventory.view']))).toEqual(['/home', '/stores', '/locations/wifi'])
+  // P2-5c-2 brief item 4 replaces "a Wi-Fi grant shows Locations only": wifi.inventory.view now has its screen, the Wi-Fi inventory.
+  it('a Wi-Fi grant shows Locations and the Wi-Fi inventory; no other capability shows the Wi-Fi inventory', () => {
+    expect(hrefs('user', caps(['wifi.inventory.view']))).toEqual(['/home', '/locations', '/locations/wifi'])
     expect(NAV.find((i) => i.href === '/locations/wifi')?.label).toBe('Wi-Fi inventory')
-    expect(hrefs('user', caps(['wifi.config.view_redacted']))).toEqual(['/home', '/stores'])
+    expect(hrefs('user', caps(['wifi.config.view_redacted']))).toEqual(['/home', '/locations'])
     expect(hrefs('admin', caps(['it.inventory.view', 'admin.inventory'], ORG))).not.toContain('/locations/wifi')
   })
 
   it('administrative capabilities show admin pages only together with an administrative role, and never data pages', () => {
     const adminSet = caps(['admin.users', 'admin.access', 'admin.inventory'], ORG)
-    expect(hrefs('admin', adminSet)).toEqual(['/home', '/admin/users', '/admin/access-review', '/admin/monitoring', '/admin/locations', '/admin/regions', '/admin/assets', '/admin/stores', '/admin/devices', '/admin/import'])
+    expect(hrefs('admin', adminSet)).toEqual(['/home', '/admin/users', '/admin/access-review', '/admin/monitoring', '/admin/locations', '/admin/regions', '/admin/assets', '/admin/devices', '/admin/import'])
     expect(hrefs('platform_owner', adminSet)).toEqual(hrefs('admin', adminSet))
     for (const role of ['user', 'operator', 'manager'] as const) expect(hrefs(role, adminSet), role).toEqual(['/home'])
   })
 
   it('each admin page needs its own capability, organisation-wide', () => {
     expect(hrefs('admin', caps(['admin.users'], ORG))).toEqual(['/home', '/admin/users'])
-    expect(hrefs('admin', caps(['admin.inventory'], ORG))).toEqual(['/home', '/admin/monitoring', '/admin/locations', '/admin/regions', '/admin/assets', '/admin/stores', '/admin/devices', '/admin/import'])
+    expect(hrefs('admin', caps(['admin.inventory'], ORG))).toEqual(['/home', '/admin/monitoring', '/admin/locations', '/admin/regions', '/admin/assets', '/admin/devices', '/admin/import'])
     // P2-3 review: "Access review" for admin.access (the editor itself is reached from Users).
     expect(hrefs('admin', caps(['admin.access'], ORG))).toEqual(['/home', '/admin/access-review'])
     expect(NAV.find((i) => i.href === '/admin/access-review')?.label).toBe('Access review')
-    // P2-5c-1: the administration screens for the hierarchy, NVRs and assets (ruling T-1: "Location", never "Store", in new screens).
+    // P2-5c-1: the administration screens for the hierarchy, NVRs and assets (ruling T-1: "Location", never "Store").
+    expect(NAV.find((i) => i.href === '/locations')?.label).toBe('Locations')
+    expect(NAV.map((i) => i.label).filter((l) => /store/i.test(l))).toEqual([])
+    expect(NAV.map((i) => i.href).filter((h) => /stores/.test(h))).toEqual([])
     expect(['/admin/locations', '/admin/regions', '/admin/assets'].map((h) => NAV.find((i) => i.href === h)?.label)).toEqual(['Locations and NVRs', 'Regions and clusters', 'Assets'])
     // An administrator role with no admin.* capability sees no admin page (P2-2 rule: role AND capability).
-    expect(hrefs('admin', caps(['cctv.live'], ORG))).toEqual(['/home', '/stores', '/live', '/groups'])
+    expect(hrefs('admin', caps(['cctv.live'], ORG))).toEqual(['/home', '/locations', '/live', '/groups'])
   })
 
   it('the old role rules are gone: a manager or admin role alone opens nothing', () => {
@@ -123,8 +126,8 @@ describe('home sections', () => {
 describe('mobile navigation', () => {
   it('shows the small-bar pages the person may use, from the same list as the sidebar', () => {
     const everything = caps(['cctv.live', 'cctv.playback', 'it.inventory.view'], ORG)
-    expect(mobileNavFor({ role: 'user', capabilities: everything }).map((i) => i.href)).toEqual(['/home', '/stores', '/devices', '/live'])
-    expect(mobileNavFor({ role: 'user', capabilities: caps(['cctv.playback']) }).map((i) => i.href)).toEqual(['/home', '/stores'])
+    expect(mobileNavFor({ role: 'user', capabilities: everything }).map((i) => i.href)).toEqual(['/home', '/locations', '/devices', '/live'])
+    expect(mobileNavFor({ role: 'user', capabilities: caps(['cctv.playback']) }).map((i) => i.href)).toEqual(['/home', '/locations'])
     expect(mobileNavFor({ role: 'admin', capabilities: NONE }).map((i) => i.href)).toEqual(['/home'])
   })
 })

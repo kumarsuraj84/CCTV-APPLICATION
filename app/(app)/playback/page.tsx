@@ -11,6 +11,7 @@ import { requireCapability } from '@/lib/auth/profile'
 import { cameraFor } from '@/lib/auth/resource'
 import { storesForCapability } from '@/lib/queries/access'
 import { getLiveScope } from '@/lib/queries/live'
+import { pickLocationParam } from '@/lib/queries/location-param'
 import { parseDay, shownToday } from '@/lib/streams/timeline'
 import { FAST_PLAYBACK_CAPABILITY } from '@/lib/streams/speed'
 import { fastPlaybackAvailable } from '@/lib/streams/vod'
@@ -21,11 +22,11 @@ export const metadata = { title: 'Playback' }
 
 const one = (v: string | string[] | undefined): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined)
 
-// Choose a store, then a camera of it (only what this person may see), then look at its recordings.
-// ?camera=<id>[&day=yyyy-mm-dd] opens a camera directly; ?store=<id> lists the cameras of a store.
-export default async function PlaybackPage({ searchParams }: { searchParams: Promise<{ store?: string | string[]; camera?: string | string[]; day?: string | string[] }> }) {
+// Choose a location, then a camera of it (only what this person may see), then look at its recordings.
+// ?camera=<id>[&day=yyyy-mm-dd] opens a camera directly; ?location=<id> lists the cameras of a location (the older ?store=<id> still works).
+export default async function PlaybackPage({ searchParams }: { searchParams: Promise<{ location?: string | string[]; store?: string | string[]; camera?: string | string[]; day?: string | string[] }> }) {
   const sp = await searchParams
-  const storeId = one(sp.store)
+  const storeId = pickLocationParam(sp) || undefined
   const cameraId = one(sp.camera)
   // P2-2: recordings need cctv.playback; the lists hold only cameras the person may play back (the database decides, per camera).
   const profile = await requireCapability('cctv.playback')
@@ -89,16 +90,16 @@ export default async function PlaybackPage({ searchParams }: { searchParams: Pro
   const stores = await storesForCapability(supabase, profile.capabilities, 'cctv.playback')
   return (
     <div className="space-y-4">
-      <PageHeader title="Playback" description="Choose a store, then a camera, to look at its recordings." />
+      <PageHeader title="Playback" description="Choose a location, then a camera, to look at its recordings." />
       {stores.length === 0 ? (
         <div className="rounded-xl border bg-card">
-          <EmptyState icon={History} title="No stores with cameras" description="You will see a store here once it has a working camera whose recordings you can play back." />
+          <EmptyState icon={History} title="No locations with cameras" description="You will see a location here once it has a working camera whose recordings you can play back." />
         </div>
       ) : (
         <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {stores.map((s) => (
             <li key={s.id}>
-              <Link href={`/playback?store=${encodeURIComponent(s.id)}`} className="flex flex-col rounded-lg border bg-card p-3 text-sm hover:bg-muted/50">
+              <Link href={`/playback?location=${encodeURIComponent(s.id)}`} className="flex flex-col rounded-lg border bg-card p-3 text-sm hover:bg-muted/50">
                 <span className="break-words font-medium"><span className="font-mono">{s.code}</span> · {s.name}</span>
                 <span className="text-muted-foreground">{[s.city, `${s.camera_count} ${s.camera_count === 1 ? 'camera' : 'cameras'}`].filter(Boolean).join(' · ')}</span>
               </Link>

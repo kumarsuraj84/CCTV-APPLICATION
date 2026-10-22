@@ -52,7 +52,7 @@ function OutageList({ items, empty }: { items: Outage[]; empty: string }) {
 // P2-2 (brief items 4 and 6): a CCTV section (camera availability only) for any CCTV capability, an IT section (devices, NVRs) for the
 // IT view, "Check now" for it.monitoring.operate, and a clear state when nothing is assigned. The numbers come through the person's own
 // client (row security), so each section can only ever count what the person may see; only the monitoring heartbeat, which is not
-// about any store, uses the service role.
+// about any location, uses the service role.
 export default async function HomePage() {
   const profile = await requireProfile()
   const show = homeSections({ role: profile.role, capabilities: profile.capabilities })
@@ -122,11 +122,11 @@ export default async function HomePage() {
               <p className="text-sm text-muted-foreground">No cameras are assigned to you yet. Ask an administrator for access.</p>
             ) : (
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                {tile('cam-live', 'Live', d.cameras.live, '/stores', 'good')}
-                {tile('cam-down', 'Offline', d.cameras.down, '/stores', 'bad')}
-                {d.cameras.stale > 0 && tile('cam-stale', 'Not checked lately', d.cameras.stale, '/stores')}
-                {tile('cam-unknown', 'Not checked yet', d.cameras.unknown, '/stores')}
-                {tile('stores', 'Stores', d.stores.total, '/stores')}
+                {tile('cam-live', 'Live', d.cameras.live, '/locations', 'good')}
+                {tile('cam-down', 'Offline', d.cameras.down, '/locations', 'bad')}
+                {d.cameras.stale > 0 && tile('cam-stale', 'Not checked lately', d.cameras.stale, '/locations')}
+                {tile('cam-unknown', 'Not checked yet', d.cameras.unknown, '/locations')}
+                {tile('locations', 'Locations', d.stores.total, '/locations')}
               </div>
             )}
           </div>
@@ -151,7 +151,7 @@ export default async function HomePage() {
               <ul className="divide-y rounded-xl border bg-card text-sm">
                 {d.stores.nvrDown.map((s) => (
                   <li key={s.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-2">
-                    <Link href={`/stores/${s.locationId}`} className="underline">{s.code} · {s.name} · {s.recorder}</Link>
+                    <Link href={`/locations/${s.locationId}`} className="underline">{s.code} · {s.name} · {s.recorder}</Link>
                     <span className="text-muted-foreground">Offline since {formatDateTime(s.since)}</span>
                   </li>
                 ))}

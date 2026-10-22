@@ -40,9 +40,9 @@ async function ctx(withStreams = false) {
 
 const text = (f: FormData, k: string) => String(f.get(k) ?? '')
 const MSG_SLOW_DOWN = 'Too many requests in a short time. Wait a minute and try again.'
-/** Every screen of the hierarchy shows counts of the others, so a change refreshes all of them (and the old store pages). */
+/** Every screen of the hierarchy shows counts of the others, so a change refreshes all of them (and the locations list). */
 function refresh() {
-  for (const p of ['/admin/locations', '/admin/regions', '/admin/reconciliation', '/admin/assets', '/admin/stores', '/stores']) revalidatePath(p, 'layout')
+  for (const p of ['/admin/locations', '/admin/regions', '/admin/reconciliation', '/admin/assets', '/locations']) revalidatePath(p, 'layout')
 }
 const done = <T extends { ok: true } | { ok: false; error: string }>(res: T, okState: (r: Extract<T, { ok: true }>) => AdminActionState): AdminActionState =>
   res.ok ? okState(res as Extract<T, { ok: true }>) : { error: (res as { error: string }).error }

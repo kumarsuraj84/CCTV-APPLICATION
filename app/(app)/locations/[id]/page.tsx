@@ -17,7 +17,7 @@ import { createClient } from '@/lib/supabase/server'
 import { formatDateTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 
-export const metadata = { title: 'Store' }
+export const metadata = { title: 'Location' }
 
 /** "Offline since …" or "Last seen live …", or nothing for a target that was never checked. */
 function Since({ state }: { state: StateRow | undefined }) {
@@ -26,7 +26,7 @@ function Since({ state }: { state: StateRow | undefined }) {
   return <div className="text-muted-foreground">Last seen live {formatDateTime(state.last_up_at ?? state.last_checked_at)}</div>
 }
 
-export default async function StorePage({ params }: { params: Promise<{ id: string }> }) {
+export default async function LocationPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const profile = await requireProfile()
   if (!holdsAnyLocationGrant(profile.capabilities)) notFound()
@@ -76,7 +76,7 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
       {/* Only while monitoring runs: with the checker stopped nothing new will appear. */}
       {monitoring.running && <AutoRefresh busy={false} />}
       <PageHeader title={`${store.code} · ${store.name}`} description={[store.city, store.zone].filter(Boolean).join(' · ')}
-        actions={anyLive ? <Link href={`/live?store=${store.id}`} className={cn(buttonVariants())}>Watch live</Link> : undefined}
+        actions={anyLive ? <Link href={`/live?location=${store.id}`} className={cn(buttonVariants())}>Watch live</Link> : undefined}
       />
       <MonitoringBanner monitoring={monitoring} />
       {store.recorders.length > 0 && (
