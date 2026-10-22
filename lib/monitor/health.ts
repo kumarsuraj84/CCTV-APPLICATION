@@ -8,6 +8,9 @@ export type WorkerStatus = WorkerHealth & {
   requestedAt: string | null
   runStartedAt: string | null
   runFinishedAt: string | null
+  /** When the last scheduled devices-and-NVR round, and the last scheduled cameras round, finished. */
+  lastDevicesRoundAt: string | null
+  lastCamerasRoundAt: string | null
   running: boolean
   progressDone: number
   progressTotal: number
@@ -41,6 +44,8 @@ export async function getWorkerStatus(admin: Admin, now = new Date()): Promise<W
     requestedAt: s.check_requested_at,
     runStartedAt: s.run_started_at,
     runFinishedAt: s.run_finished_at,
+    lastDevicesRoundAt: s.last_devices_round_at,
+    lastCamerasRoundAt: s.last_cameras_round_at,
     running: !!s.run_started_at && (!s.run_finished_at || new Date(s.run_finished_at) < new Date(s.run_started_at)),
     progressDone: s.progress_done,
     progressTotal: s.progress_total,

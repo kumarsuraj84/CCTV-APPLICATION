@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { AutoRefresh } from '@/components/monitor/AutoRefresh'
 import { CheckNowButton } from '@/components/monitor/CheckNowButton'
 import { MonitoringBanner } from '@/components/monitor/MonitoringBanner'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
@@ -7,6 +8,7 @@ import { requireProfile } from '@/lib/auth/profile'
 import { DEVICE_TYPE_LABELS, DEVICE_TYPES, type DeviceType } from '@/lib/inventory/device-types'
 import { canRunChecks } from '@/lib/admin/roles'
 import { getWorkerStatus } from '@/lib/monitor/health'
+import { lastCheckedAt } from '@/lib/monitor/last-checked'
 import { getMonitoringState } from '@/lib/monitor/uptime'
 import { getDashboard } from '@/lib/queries/status'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -25,6 +27,8 @@ export default async function HomePage() {
     // Only the time of the last full check is shown; if it cannot be read, the line is simply left out.
     getWorkerStatus(admin).catch(() => null),
   ])
+  // The most recent of the last devices round, the last cameras round and the last full check.
+  const checkedAt = worker ? lastCheckedAt(worker) : null
   const nothing = d.stores.total === 0 && d.cameras.total === 0 && Object.keys(d.devices).length === 0
   const tile = (key: string, label: string, value: string | number, href: string, tone?: 'good' | 'bad') => (
     <Link key={key} href={href} className="rounded-xl border bg-card p-4 hover:bg-muted">
@@ -39,9 +43,11 @@ export default async function HomePage() {
         description="What is working and what is not, right now."
         actions={canRunChecks(profile.role) ? <CheckNowButton /> : undefined}
       />
+      {/* Only while monitoring runs: with the checker stopped nothing new will appear. Same pacing as the Monitoring page. */}
+      {monitoring.running && <AutoRefresh busy={!!worker?.running} />}
       {worker && (
         <p className="text-sm text-muted-foreground">
-          {worker.running ? 'Checking everything now…' : worker.runFinishedAt ? `Last checked ${formatDateTime(worker.runFinishedAt)}` : 'Everything has not been checked in full yet.'}
+          {worker.running ? 'Checking everything now…' : checkedAt ? `Last checked ${formatDateTime(checkedAt)}` : 'Nothing has been checked yet.'}
         </p>
       )}
       <MonitoringBanner monitoring={monitoring} />
@@ -54,9 +60,15 @@ export default async function HomePage() {
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               {tile('cam-live', 'Live', d.cameras.live, '/stores', 'good')}
               {tile('cam-down', 'Offline', d.cameras.down, '/stores', 'bad')}
+              {d.cameras.stale > 0 && tile('cam-stale', 'Not checked lately', d.cameras.stale, '/stores')}
               {tile('cam-unknown', 'Not checked yet', d.cameras.unknown, '/stores')}
               {tile('stores', 'Stores', d.stores.total, '/stores')}
             </div>
+            {d.stores.nvrStale > 0 && (
+              <p className="text-sm text-muted-foreground">
+                {d.stores.nvrStale} {d.stores.nvrStale === 1 ? 'NVR has' : 'NVRs have'} not been checked lately. Their cameras and status may be out of date.
+              </p>
+            )}
           </section>
 
           {d.stores.nvrDown.length > 0 && (
@@ -85,6 +97,7 @@ export default async function HomePage() {
                       <div className="mt-1 text-sm text-muted-foreground">
                         <span className="text-emerald-600 dark:text-emerald-400">{c.up} live</span> ·{' '}
                         <span className={c.down ? 'text-red-600 dark:text-red-400' : ''}>{c.down} offline</span>
+                        {c.stale > 0 && <> · {c.stale} not checked lately</>}
                         {c.unknown > 0 && <> · {c.unknown} not checked yet</>}
                       </div>
                     </Link>

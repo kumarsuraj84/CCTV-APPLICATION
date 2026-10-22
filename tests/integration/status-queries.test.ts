@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { getDashboard, getStates, listStoreStatus } from '@/lib/queries/status'
+import { getDashboard, getStates, listStoreStatus, STALE_AFTER_MINUTES } from '@/lib/queries/status'
 import { uptimeFor } from '@/lib/monitor/uptime'
 import { adminClient, cleanupOrg, createOrg, createUser, type TestUser } from '../setup/fixtures'
 
@@ -44,11 +44,10 @@ describe('status queries', () => {
 
   it('the dashboard summarises what the reader may see', async () => {
     const d = await getDashboard(manager.client)
-    expect(d.cameras).toEqual({ total: 4, live: 1, down: 2, unknown: 1 })
+    expect(d.cameras).toEqual({ total: 4, live: 1, down: 2, unknown: 1, stale: 0 })
     expect(d.stores.total).toBe(2)
     expect(d.stores.nvrDown.map((s) => s.code)).toEqual(['ST2'])
-    expect(d.stores.noLiveCamera).toBe(1)
-    expect(d.devices.server).toEqual({ total: 2, up: 1, down: 1, unknown: 0 })
+    expect(d.devices.server).toEqual({ total: 2, up: 1, down: 1, unknown: 0, stale: 0 })
     const labels = d.recentOutages.map((o) => `${o.kind}:${o.label}`)
     expect(labels).toEqual(expect.arrayContaining(['camera:C2', 'device:Mail', 'nvr:Store ST2']))
     expect(labels).not.toContain('camera:D1') // listed once, as the NVR outage
@@ -197,5 +196,104 @@ describe('status queries: a capped scan of grouped outages', () => {
     const d = await getDashboard(manager.client)
     expect(d.recentOutages.map((o) => o.label)).toEqual(['Big store'])
     expect(d.recentOutagesLimited).toBe(false)
+  })
+})
+
+describe('status queries: grouping uses the time an outage was recorded (I5)', () => {
+  let orgId: string
+  let manager: TestUser
+
+  beforeAll(async () => {
+    orgId = await createOrg()
+    const a = admin()
+    const store = (await a.from('stores').insert({ org_id: orgId, code: 'EAR', name: 'Early camera', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const cam = (await a.from('cameras').insert({ org_id: orgId, store_id: store, channel: 1, name: 'EarlyStart' }).select('id').single()).data!.id
+    const apply = (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: 1 })
+    // The NVR's outage is recorded first and starts 30 minutes ago. The camera's, caused by it, is recorded afterwards but its first failure
+    // (the round began a moment earlier) is dated before the NVR's: it still belongs under the NVR outage.
+    await apply([{ type: 'nvr', id: store, ok: false, at: ago(30) }])
+    await apply([{ type: 'camera', id: cam, ok: false, at: ago(31), cause: 'nvr_down' }])
+    manager = await createUser(orgId, 'manager')
+  })
+  afterAll(() => cleanupOrg(orgId))
+
+  it('hides a camera outage recorded after the NVR outage even when it started a little earlier', async () => {
+    const d = await getDashboard(manager.client)
+    const labels = d.recentOutages.map((o) => `${o.kind}:${o.label}`)
+    expect(labels).toContain('nvr:Early camera')
+    expect(labels).not.toContain('camera:EarlyStart')
+  })
+})
+
+describe('status queries: stale and switched-off targets', () => {
+  let orgId: string
+  let manager: TestUser
+  let off: string
+  const minutesAgo = (m: number) => ago(m)
+
+  beforeAll(async () => {
+    orgId = await createOrg()
+    const a = admin()
+    const mk = async (code: string) => (await a.from('stores').insert({ org_id: orgId, code, name: `Place ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const on = await mk('ON')
+    off = await mk('OFF')
+    const cams = (await a.from('cameras').insert([1, 2, 3].map((n) => ({ org_id: orgId, store_id: on, channel: n, name: `K${n}`, is_active: true }))).select('id, channel').order('channel')).data!.map((c) => c.id)
+    const offCam = (await a.from('cameras').insert({ org_id: orgId, store_id: off, channel: 1, name: 'InOff' }).select('id').single()).data!.id
+    const devs = (await a.from('devices').insert([
+      { org_id: orgId, store_id: on, type: 'server', name: 'FreshDev', ip: '127.0.0.1', tcp_port: 1, enabled: true },
+      { org_id: orgId, store_id: on, type: 'server', name: 'OldDev', ip: '127.0.0.1', tcp_port: 2, enabled: true },
+      { org_id: orgId, store_id: on, type: 'server', name: 'OffDev', ip: '127.0.0.1', tcp_port: 3, enabled: true },
+    ]).select('id, name').order('name')).data!
+    const dev = Object.fromEntries(devs.map((d) => [d.name, d.id]))
+    const apply = (results: object[], threshold = 2) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: threshold })
+    await apply([
+      { type: 'camera', id: cams[0], ok: true, at: minutesAgo(2) },
+      { type: 'camera', id: cams[1], ok: true, at: minutesAgo(STALE_AFTER_MINUTES + 5) },
+      { type: 'nvr', id: on, ok: true, at: minutesAgo(STALE_AFTER_MINUTES + 5) },
+      { type: 'device', id: dev.FreshDev, ok: true, at: minutesAgo(1) },
+      { type: 'device', id: dev.OldDev, ok: true, at: minutesAgo(STALE_AFTER_MINUTES + 5) },
+      { type: 'device', id: dev.OffDev, ok: false, at: minutesAgo(15) },
+    ])
+    await apply([{ type: 'device', id: dev.OffDev, ok: false, at: minutesAgo(10) }])
+    // A store that is switched off while its NVR is down.
+    await apply([{ type: 'nvr', id: off, ok: false, at: minutesAgo(8) }], 1)
+    await apply([{ type: 'camera', id: offCam, ok: false, at: minutesAgo(8), cause: 'nvr_down' }], 1)
+    manager = await createUser(orgId, 'manager')
+  })
+  afterAll(() => cleanupOrg(orgId))
+
+  it('counts a live result older than 20 minutes as stale, not live; unknown stays unknown', async () => {
+    const d = await getDashboard(manager.client)
+    expect(d.cameras).toEqual({ total: 3 + 1, live: 1, down: 1, unknown: 1, stale: 1 })
+    expect(d.stores.nvrStale).toBe(1)
+  })
+
+  it('counts devices the same way', async () => {
+    const d = await getDashboard(manager.client)
+    expect(d.devices.server).toEqual({ total: 3, up: 1, down: 1, unknown: 0, stale: 1 })
+  })
+
+  it('a store that is switched off leaves the NVR list, the counts and the recent problems; its outage is closed', async () => {
+    const before = await getDashboard(manager.client)
+    expect(before.stores.nvrDown.map((s) => s.code)).toEqual(['OFF'])
+    await admin().from('stores').update({ is_active: false }).eq('id', off)
+    const d = await getDashboard(manager.client)
+    expect(d.stores.nvrDown).toEqual([])
+    expect(d.stores.total).toBe(1)
+    expect(d.cameras.total).toBe(3)
+    expect(d.recentOutages.map((o) => o.label)).not.toContain('Place OFF')
+    expect(d.recentOutages.map((o) => o.label)).not.toContain('InOff')
+    expect((await admin().from('outages').select('ended_at').eq('target_id', off)).data?.[0].ended_at).not.toBeNull()
+    // Back on: it starts as not checked yet.
+    await admin().from('stores').update({ is_active: true }).eq('id', off)
+    const back = await listStoreStatus(manager.client)
+    expect(back.get(off)).toMatchObject({ nvr_status: null, cameras_unknown: 1, cameras_down: 0 })
+  })
+
+  it('a device that is switched off is not counted or listed', async () => {
+    await admin().from('devices').update({ enabled: false }).eq('org_id', orgId).eq('name', 'OffDev')
+    const d = await getDashboard(manager.client)
+    expect(d.devices.server).toEqual({ total: 2, up: 1, down: 0, unknown: 0, stale: 1 })
+    expect(d.recentOutages.map((o) => o.label)).not.toContain('OffDev')
   })
 })

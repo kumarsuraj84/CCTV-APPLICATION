@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { AutoRefresh } from '@/components/monitor/AutoRefresh'
 import { MonitoringBanner } from '@/components/monitor/MonitoringBanner'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -18,6 +19,8 @@ export default async function StoresPage({ searchParams }: { searchParams: Promi
   const [stores, statuses, monitoring] = await Promise.all([listVisibleStores(supabase, q), listStoreStatus(supabase), getMonitoringState(createAdminClient())])
   return (
     <div className="space-y-4">
+      {/* Only while monitoring runs: with the checker stopped nothing new will appear. */}
+      {monitoring.running && <AutoRefresh busy={false} />}
       <PageHeader title="Stores" description="The stores you can see." />
       <MonitoringBanner monitoring={monitoring} />
       <form className="flex gap-2">
@@ -35,21 +38,26 @@ export default async function StoresPage({ searchParams }: { searchParams: Promi
           <tbody>
             {stores.map((s) => {
               const status = statuses.get(s.id)
-              const notChecked = !status || status.cameras_total === 0 || status.cameras_unknown === status.cameras_total
+              const total = status?.cameras_total ?? 0
+              const notChecked = !status || total === 0 || status.cameras_unknown === total
+              const allStale = !!status && total > 0 && status.cameras_stale === total
               return (
                 <tr key={s.id} className="border-t hover:bg-muted/50">
                   <td className="px-3 py-2 font-mono"><Link href={`/stores/${s.id}`} className="underline">{s.code}</Link></td>
                   <td className="px-3 py-2">{s.name}</td>
                   <td className="px-3 py-2">{s.city ?? '—'}</td>
                   <td className="px-3 py-2">{s.zone ?? '—'}</td>
-                  <td className="px-3 py-2"><StatusBadge status={status?.nvr_status} /></td>
+                  <td className="px-3 py-2"><StatusBadge status={status?.nvr_status} stale={status?.nvr_stale} /></td>
                   <td className="whitespace-nowrap px-3 py-2">
-                    {!status || status.cameras_total === 0 ? '—' : notChecked ? (
+                    {!status || total === 0 ? '—' : notChecked ? (
                       <span className="text-muted-foreground">Not checked yet</span>
+                    ) : allStale ? (
+                      <span className="text-muted-foreground">Not checked lately</span>
                     ) : (
                       <span className={status.cameras_down > 0 ? 'font-medium text-red-600 dark:text-red-400' : ''}>
-                        {status.cameras_live} / {status.cameras_total}
+                        {status.cameras_live} / {total}
                         {status.cameras_down > 0 ? ` (${status.cameras_down} offline)` : ''}
+                        {status.cameras_stale > 0 ? ` (${status.cameras_stale} not checked lately)` : ''}
                       </span>
                     )}
                   </td>

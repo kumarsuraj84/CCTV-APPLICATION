@@ -6,7 +6,7 @@ import { requireProfile } from '@/lib/auth/profile'
 import { DEVICE_TYPE_LABELS, DEVICE_TYPES, type DeviceType } from '@/lib/inventory/device-types'
 import { getMonitoringState, uptimeForPage, uptimeSuffix } from '@/lib/monitor/uptime'
 import { listVisibleDevices } from '@/lib/queries/inventory'
-import { formatUptime, getStates } from '@/lib/queries/status'
+import { formatUptime, getStates, isStale } from '@/lib/queries/status'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { formatDateTime } from '@/lib/time'
@@ -24,6 +24,7 @@ export default async function DevicesPage({ searchParams }: { searchParams: Prom
   const ids = devices.map((d) => d.id)
   const monitoring = await getMonitoringState(admin)
   const [states, uptime] = await Promise.all([getStates(supabase, 'device', ids), uptimeForPage(admin, profile.org_id, 'device', ids, '24h', monitoring)])
+  const now = new Date()
   return (
     <div className="space-y-4">
       <PageHeader title="Devices" description="Servers, attendance machines, footfall counters and other devices you can see." />
@@ -52,7 +53,7 @@ export default async function DevicesPage({ searchParams }: { searchParams: Prom
                   <td className="px-3 py-2">{(d.stores as unknown as { code: string } | null)?.code ?? '—'}</td>
                   <td className="px-3 py-2 font-mono">{d.ip}{d.tcp_port ? `:${d.tcp_port}` : ''}</td>
                   <td className="px-3 py-2">
-                    <StatusBadge status={st?.status} />
+                    <StatusBadge status={st?.status} stale={!!st && isStale(st.last_checked_at, now)} />
                     {st?.status === 'down' && <div className="mt-0.5 whitespace-nowrap text-xs text-muted-foreground">since {formatDateTime(st.down_since)}</div>}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 text-right">{formatUptime(uptime.get(d.id))}</td>

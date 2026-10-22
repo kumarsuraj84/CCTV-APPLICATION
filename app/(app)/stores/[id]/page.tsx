@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation'
 import { TriangleAlert } from 'lucide-react'
+import { AutoRefresh } from '@/components/monitor/AutoRefresh'
 import { MonitoringBanner } from '@/components/monitor/MonitoringBanner'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -7,7 +8,7 @@ import { requireProfile } from '@/lib/auth/profile'
 import { DEVICE_TYPE_LABELS, type DeviceType } from '@/lib/inventory/device-types'
 import { getMonitoringState, uptimeForPage, uptimeSuffix } from '@/lib/monitor/uptime'
 import { getVisibleStore } from '@/lib/queries/inventory'
-import { formatUptime, getStates, nvrLoginProblem, type StateRow } from '@/lib/queries/status'
+import { formatUptime, getStates, isStale, nvrLoginProblem, type StateRow } from '@/lib/queries/status'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { formatDateTime } from '@/lib/time'
@@ -42,16 +43,20 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
     uptimeForPage(admin, profile.org_id, 'device', deviceIds, '24h', monitoring),
   ])
   const nvr = nvrStates.get(id)
-  const loginProblem = monitoring.running && nvrLoginProblem({ nvr, cameraIds, cameraStates, now: new Date() })
+  const now = new Date()
+  const loginProblem = monitoring.running && nvrLoginProblem({ nvr, cameraIds, cameraStates, now })
+  const stale = (st: StateRow | undefined) => !!st && isStale(st.last_checked_at, now)
 
   return (
     <div className="space-y-6">
+      {/* Only while monitoring runs: with the checker stopped nothing new will appear. */}
+      {monitoring.running && <AutoRefresh busy={false} />}
       <PageHeader title={`${store.code} · ${store.name}`} description={[store.city, store.zone].filter(Boolean).join(' · ')} />
       <MonitoringBanner monitoring={monitoring} />
       <section className="space-y-1 text-sm">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">NVR</span>
-          <StatusBadge status={nvr?.status} />
+          <StatusBadge status={nvr?.status} stale={stale(nvr)} />
           {nvr?.status === 'down' && <span className="text-muted-foreground">Offline since {formatDateTime(nvr.down_since)}</span>}
           {nvr?.status === 'up' && <span className="text-muted-foreground">Checked {formatDateTime(nvr.last_checked_at)}</span>}
         </div>
@@ -76,7 +81,7 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
               <div key={c.id} className="space-y-1 rounded-lg border bg-card p-3 text-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="min-w-0 break-words font-medium">{c.channel} · {c.name}</span>
-                  <StatusBadge status={st?.status} />
+                  <StatusBadge status={st?.status} stale={stale(st)} />
                 </div>
                 <div className="text-muted-foreground">{c.camera_ip ?? 'Address not known yet'}</div>
                 <Since state={st} />
@@ -101,7 +106,7 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
                 <li key={d.id} className="space-y-0.5">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <span className="min-w-0 break-words">{d.name} · {DEVICE_TYPE_LABELS[d.type as DeviceType]} · <span className="font-mono">{d.ip}{d.tcp_port ? `:${d.tcp_port}` : ''}</span></span>
-                    <StatusBadge status={st?.status} />
+                    <StatusBadge status={st?.status} stale={stale(st)} />
                   </div>
                   <Since state={st} />
                   <div className="text-muted-foreground">{u24 == null ? 'Uptime: no data yet' : `Uptime 24h ${formatUptime(u24)}${uptimeSuffix(monitoring)}`}</div>

@@ -3,9 +3,9 @@ import { CheckNowButton } from '@/components/monitor/CheckNowButton'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { requireAdmin } from '@/lib/auth/profile'
-import { loadMonitorConfig } from '@/lib/monitor/config'
 import { getWorkerStatus } from '@/lib/monitor/health'
-import { nvrLoginProblem, type StateRow } from '@/lib/queries/status'
+import { describeRounds } from '@/lib/monitor/last-checked'
+import { isStale, nvrLoginProblem, type StateRow } from '@/lib/queries/status'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import { formatDateTime } from '@/lib/time'
@@ -40,14 +40,16 @@ export default async function MonitoringPage() {
     admin.from('monitor_gaps').select('id, started_at, ended_at').gte('ended_at', since).order('started_at', { ascending: false }).limit(GAPS_SHOWN),
   ])
   const gaps = gapsRead.error ? null : (gapsRead.data ?? [])
-  const cfg = loadMonitorConfig()
+  const rounds = describeRounds(worker)
 
-  const counts: Record<string, { up: number; down: number; unknown: number }> = {}
+  // "Live" here means live and checked lately: a live result older than the limit is counted as not checked lately.
+  const counts: Record<string, { up: number; down: number; unknown: number; stale: number }> = {}
   const nvrByStore = new Map<string, StateRow>()
   const cameraStates = new Map<string, StateRow>()
   for (const s of states) {
-    const c = (counts[s.target_type] ??= { up: 0, down: 0, unknown: 0 })
-    c[s.status as 'up' | 'down' | 'unknown']++
+    const c = (counts[s.target_type] ??= { up: 0, down: 0, unknown: 0, stale: 0 })
+    if (s.status === 'up' && isStale(s.last_checked_at, now)) c.stale++
+    else c[s.status as 'up' | 'down' | 'unknown']++
     const row: StateRow = { ...s, status: s.status as StateRow['status'], error: null }
     if (s.target_type === 'nvr') nvrByStore.set(s.target_id, row)
     else if (s.target_type === 'camera') cameraStates.set(s.target_id, row)
@@ -91,8 +93,10 @@ export default async function MonitoringPage() {
           <dd>{worker.runFinishedAt && !worker.running ? formatDateTime(worker.runFinishedAt) : worker.runFinishedAt ? `${formatDateTime(worker.runFinishedAt)} (a newer one is under way)` : 'Not yet'}</dd>
           <dt className="text-muted-foreground">Now</dt>
           <dd>{activity}</dd>
-          <dt className="text-muted-foreground">Rounds</dt>
-          <dd>Devices and NVRs every {cfg.deviceCheckSec} seconds, cameras every {cfg.cameraCheckSec} seconds</dd>
+          <dt className="text-muted-foreground">Devices and NVRs</dt>
+          <dd>{rounds.devices}</dd>
+          <dt className="text-muted-foreground">Cameras</dt>
+          <dd>{rounds.cameras}</dd>
         </dl>
         {!worker.ok && (
           <p className="text-sm text-destructive">
@@ -122,13 +126,14 @@ export default async function MonitoringPage() {
         <h2 className="font-medium">What it found</h2>
         <div className="grid gap-3 sm:grid-cols-3">
           {(['camera', 'nvr', 'device'] as const).map((t) => {
-            const c = counts[t] ?? { up: 0, down: 0, unknown: 0 }
+            const c = counts[t] ?? { up: 0, down: 0, unknown: 0, stale: 0 }
             return (
               <div key={t} className="rounded-xl border bg-card p-4">
                 <div className="text-sm font-medium">{NAMES[t]}</div>
                 <div className="mt-1 text-sm text-muted-foreground">
                   <span className="text-emerald-600 dark:text-emerald-400">{c.up} live</span> ·{' '}
                   <span className={c.down ? 'text-red-600 dark:text-red-400' : ''}>{c.down} offline</span>
+                  {c.stale > 0 && <> · {c.stale} not checked lately</>}
                   {c.unknown > 0 && <> · {c.unknown} not checked yet</>}
                 </div>
               </div>
