@@ -579,30 +579,16 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
-                },"inventory_migration_snapshot": {
-                  Row: {
-                    "assets": (string)[],"cameras": (string)[],"capability": string,"id": number,"locations": (string)[],"org_id": string,"taken_at": string,"user_id": string
-                  }
-                  ComputedFields: never
-                  Insert: {
-                    "assets": (string)[],"cameras": (string)[],"capability": string,"id"?: number,"locations": (string)[],"org_id": string,"taken_at": string,"user_id": string
-                  }
-                  Update: {
-                    "assets"?: (string)[],"cameras"?: (string)[],"capability"?: string,"id"?: number,"locations"?: (string)[],"org_id"?: string,"taken_at"?: string,"user_id"?: string
-                  }
-                  Relationships: [
-                    
-                  ]
                 },"locations": {
                   Row: {
-                    "address": string | null,"archived_at": string | null,"archived_was_active": boolean | null,"city": string | null,"cluster_id": string | null,"code": string,"created_at": string,"expected_channels": number,"http_port": number,"id": string,"is_active": boolean,"kind": string,"name": string,"nvr_ip": string | null,"nvr_secret_id": string | null,"nvr_username": string | null,"org_id": string,"parent_location_id": string | null,"rtsp_port": number,"state": string | null,"updated_at": string,"uplink_asset_id": string | null,"zone": string | null
+                    "address": string | null,"archived_at": string | null,"archived_was_active": boolean | null,"city": string | null,"cluster_id": string | null,"code": string,"created_at": string,"id": string,"is_active": boolean,"kind": string,"name": string,"org_id": string,"parent_location_id": string | null,"state": string | null,"updated_at": string,"uplink_asset_id": string | null,"zone": string | null
                   }
                   ComputedFields: never
                   Insert: {
-                    "address"?: string | null,"archived_at"?: string | null,"archived_was_active"?: boolean | null,"city"?: string | null,"cluster_id"?: string | null,"code": string,"created_at"?: string,"expected_channels"?: number,"http_port"?: number,"id"?: string,"is_active"?: boolean,"kind"?: string,"name": string,"nvr_ip"?: string | null,"nvr_secret_id"?: string | null,"nvr_username"?: string | null,"org_id": string,"parent_location_id"?: string | null,"rtsp_port"?: number,"state"?: string | null,"updated_at"?: string,"uplink_asset_id"?: string | null,"zone"?: string | null
+                    "address"?: string | null,"archived_at"?: string | null,"archived_was_active"?: boolean | null,"city"?: string | null,"cluster_id"?: string | null,"code": string,"created_at"?: string,"id"?: string,"is_active"?: boolean,"kind"?: string,"name": string,"org_id": string,"parent_location_id"?: string | null,"state"?: string | null,"updated_at"?: string,"uplink_asset_id"?: string | null,"zone"?: string | null
                   }
                   Update: {
-                    "address"?: string | null,"archived_at"?: string | null,"archived_was_active"?: boolean | null,"city"?: string | null,"cluster_id"?: string | null,"code"?: string,"created_at"?: string,"expected_channels"?: number,"http_port"?: number,"id"?: string,"is_active"?: boolean,"kind"?: string,"name"?: string,"nvr_ip"?: string | null,"nvr_secret_id"?: string | null,"nvr_username"?: string | null,"org_id"?: string,"parent_location_id"?: string | null,"rtsp_port"?: number,"state"?: string | null,"updated_at"?: string,"uplink_asset_id"?: string | null,"zone"?: string | null
+                    "address"?: string | null,"archived_at"?: string | null,"archived_was_active"?: boolean | null,"city"?: string | null,"cluster_id"?: string | null,"code"?: string,"created_at"?: string,"id"?: string,"is_active"?: boolean,"kind"?: string,"name"?: string,"org_id"?: string,"parent_location_id"?: string | null,"state"?: string | null,"updated_at"?: string,"uplink_asset_id"?: string | null,"zone"?: string | null
                   }
                   Relationships: [
                     {
@@ -1314,12 +1300,6 @@ isOneToOne: false
               "assets": (string)[],"cameras": (string)[],"capability": string,"locations": (string)[],"user_id": string
             }[]
                            },
-"inventory_migrate_org":
-{ Args: { "p_fail_at"?: string,"p_org": string }; Returns: Json
-                           },
-"inventory_migrate_org_test":
-{ Args: { "p_fail_at"?: string,"p_org": string }; Returns: Json
-                           },
 "inventory_move_cluster":
 { Args: { "p_actor"?: string,"p_cluster": string,"p_org": string,"p_region": string }; Returns: Json
                            },
@@ -1334,6 +1314,9 @@ isOneToOne: false
 "inventory_purge_test_org":
 { Args: { "p_org": string }; Returns: Json
                            },
+"inventory_refresh_statistics":
+{ Args: Record<PropertyKey, never>; Returns: undefined
+                           },
 "inventory_remap_effects":
 { Args: { "p_camera": string,"p_from": string,"p_org": string,"p_to": string }; Returns: undefined
                            },
@@ -1343,19 +1326,8 @@ isOneToOne: false
 "inventory_restore":
 { Args: { "p_actor"?: string,"p_id": string,"p_kind": string,"p_org": string }; Returns: Json
                            },
-"inventory_secret_fingerprint_test":
-{ Args: { "p_org": string }; Returns: {
-              "ciphertext_sha256": string,"location_id": string,"name": string,"secret_id": string
-            }[]
-                           },
 "inventory_stale_name_scan":
 { Args: Record<PropertyKey, never>; Returns: string[]
-                           },
-"inventory_unmigrate_org":
-{ Args: { "p_org": string }; Returns: number
-                           },
-"inventory_unmigrate_org_test":
-{ Args: { "p_org": string }; Returns: number
                            },
 "it_view_asset_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
@@ -1397,15 +1369,6 @@ isOneToOne: false
 "network_validate_address":
 { Args: { "p_asset": string,"p_host": string,"p_org": string }; Returns: string
                            },
-"nvr_delete_credential":
-{ Args: { "p_store": string }; Returns: undefined
-                           },
-"nvr_read_credential":
-{ Args: { "p_store": string }; Returns: string
-                           },
-"nvr_store_credential":
-{ Args: { "p_secret": string,"p_store": string }; Returns: string
-                           },
 "preview_access_change":
 { Args: { "p_at"?: string,"p_changes": Json,"p_org": string,"p_sample"?: number,"p_user": string }; Returns: Json
                            },
@@ -1421,17 +1384,14 @@ isOneToOne: false
 "recorder_delete_credential":
 { Args: { "p_recorder": string }; Returns: undefined
                            },
-"recorder_ensure_primary":
-{ Args: { "p_location": string }; Returns: Record<string, unknown>
-                           },
 "recorder_primary_of":
 { Args: { "p_location": string }; Returns: string
                            },
 "recorder_read_credential":
 { Args: { "p_recorder": string }; Returns: string
                            },
-"recorder_seam_of":
-{ Args: { "p_location": string }; Returns: string
+"recorder_save":
+{ Args: { "p_actor"?: string,"p_expected_channels"?: number,"p_host": string,"p_http_port": number,"p_location": string,"p_name"?: string,"p_org": string,"p_recorder": string,"p_rtsp_port": number,"p_username": string }; Returns: string
                            },
 "recorder_set_monitoring":
 { Args: { "p_actor"?: string,"p_enabled": boolean,"p_org": string,"p_reason": string,"p_recorder": string }; Returns: Json
