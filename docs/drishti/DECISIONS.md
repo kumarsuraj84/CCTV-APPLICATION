@@ -83,3 +83,10 @@ Owner supplied `\10.0.0.45\Store Soft\stores_sample.csv` (216 locations; columns
 
 ## Ruling PORTS-1 (owner, 2026-10-22): port plan on the shared machines
 Owner's apps use: CKDesk 3210, CKAM (Asset Management) 3211, **Drishti (this app) 3212**, Spinwheel 3213. The Drishti video gateway therefore moved from 3213 to **3412** (default `GATEWAY_PORT=3412`; `NEXT_PUBLIC_STREAM_GATEWAY_URL` must be an address browsers can reach, e.g. `http://<hub-host>:3412`; in production the app and gateway sit behind one TLS address, so no browser-visible port conflicts remain). go2rtc stays loopback-only (1984, 8555, demo 8554). Historical plan/spec/audit documents still mention 3213; the current architecture and README use 3412.
+
+## Decision point LG-4 (P4-L1 review round 1, 2026-10-23): double-click on a live tile — OWNER TO CONFIRM
+The legacy CCTV Hub opened playback on a double-click. Drishti, following the P4-L1 brief ("Double-click enlarge"), opens the large
+picture with the camera's main stream on a double-click; Playback is one click on the tile's own button and in the large view. Reasons:
+playback is a separate right (`cctv.playback`), so a double-click → playback gesture would do nothing for the many live-only viewers;
+the playback screen is being reworked in P4-L2. This is a deliberate departure from the legacy gesture, recorded on tracker row LG-4.
+If the owner wants the legacy behaviour back it is a one-line change in `components/live/LiveTile.tsx` (`onDoubleClick`).

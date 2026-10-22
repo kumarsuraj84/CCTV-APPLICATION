@@ -1,5 +1,5 @@
 {
-  "base": "http://localhost:3361",
+  "base": "http://localhost:3371",
   "shots": [
     {
       "name": "LG-1-live-landing-1366",
@@ -58,7 +58,7 @@
       "path": "/live",
       "scrollWidth": 375,
       "innerWidth": 375,
-      "height": 1007,
+      "height": 979,
       "videos": 0,
       "playing": 0,
       "mentionsNvr": true,
@@ -94,10 +94,10 @@
     },
     {
       "name": "LG-1-live-open-location-nvrs-1366",
-      "path": "/live?open=7f3278a1-7a9e-4267-93e3-b88ccd440eb2",
+      "path": "/live?open=428294a5-34d2-436f-a185-93d6056b7b32",
       "scrollWidth": 1351,
       "innerWidth": 1366,
-      "height": 1436,
+      "height": 1422,
       "videos": 0,
       "playing": 0,
       "mentionsNvr": true,
@@ -107,7 +107,7 @@
     },
     {
       "name": "LG-2-wall-5x5-region-1366",
-      "path": "/live?region=086ce779-2b4a-4930-9e08-2d1650a86f8c",
+      "path": "/live?region=51fabf55-c433-4ed7-b521-b4e45766f0d7",
       "scrollWidth": 1351,
       "innerWidth": 1366,
       "height": 841,
@@ -120,7 +120,7 @@
     },
     {
       "name": "LG-2-wall-5x5-region-1920",
-      "path": "/live?region=086ce779-2b4a-4930-9e08-2d1650a86f8c",
+      "path": "/live?region=51fabf55-c433-4ed7-b521-b4e45766f0d7",
       "scrollWidth": 1905,
       "innerWidth": 1920,
       "height": 1117,
@@ -133,7 +133,7 @@
     },
     {
       "name": "LG-2-wall-5x5-region-375",
-      "path": "/live?region=086ce779-2b4a-4930-9e08-2d1650a86f8c",
+      "path": "/live?region=51fabf55-c433-4ed7-b521-b4e45766f0d7",
       "scrollWidth": 375,
       "innerWidth": 375,
       "height": 812,
@@ -146,7 +146,7 @@
     },
     {
       "name": "LG-3-tour-1366",
-      "path": "/live?region=086ce779-2b4a-4930-9e08-2d1650a86f8c",
+      "path": "/live?region=51fabf55-c433-4ed7-b521-b4e45766f0d7",
       "scrollWidth": 1366,
       "innerWidth": 1366,
       "height": 768,
@@ -160,7 +160,7 @@
     },
     {
       "name": "LG-3-tour-stopped-by-key-1366",
-      "path": "/live?region=086ce779-2b4a-4930-9e08-2d1650a86f8c",
+      "path": "/live?region=51fabf55-c433-4ed7-b521-b4e45766f0d7",
       "scrollWidth": 1351,
       "innerWidth": 1366,
       "height": 838,
@@ -173,7 +173,7 @@
     },
     {
       "name": "LG-4-enlarged-main-1366",
-      "path": "/live?location=7f3278a1-7a9e-4267-93e3-b88ccd440eb2",
+      "path": "/live?location=428294a5-34d2-436f-a185-93d6056b7b32",
       "scrollWidth": 1366,
       "innerWidth": 1366,
       "height": 768,
@@ -186,7 +186,7 @@
     },
     {
       "name": "LG-5-add-to-group-1366",
-      "path": "/live?location=7f3278a1-7a9e-4267-93e3-b88ccd440eb2",
+      "path": "/live?location=428294a5-34d2-436f-a185-93d6056b7b32",
       "scrollWidth": 1366,
       "innerWidth": 1366,
       "height": 768,
@@ -199,7 +199,7 @@
     },
     {
       "name": "LG-5-group-wall-remove-1366",
-      "path": "/live?group=b70f9949-d83d-4207-995a-64e9ee5ac85e",
+      "path": "/live?group=6b187bf6-8316-41ca-80da-f5a24d545630",
       "scrollWidth": 1366,
       "innerWidth": 1366,
       "height": 768,
@@ -209,6 +209,45 @@
       "mentionsStore": false,
       "pausedForBandwidth": 0,
       "recorderNotReachable": 1
+    },
+    {
+      "name": "MC-4-locations-list-1366",
+      "path": "/locations",
+      "scrollWidth": 1366,
+      "innerWidth": 1366,
+      "height": 768,
+      "videos": 0,
+      "playing": 0,
+      "mentionsNvr": true,
+      "mentionsStore": false,
+      "pausedForBandwidth": 0,
+      "recorderNotReachable": 0
+    },
+    {
+      "name": "MC-4-locations-list-375",
+      "path": "/locations",
+      "scrollWidth": 375,
+      "innerWidth": 375,
+      "height": 1054,
+      "videos": 0,
+      "playing": 0,
+      "mentionsNvr": true,
+      "mentionsStore": false,
+      "pausedForBandwidth": 0,
+      "recorderNotReachable": 0
+    },
+    {
+      "name": "MC-4-location-page-recorder-not-reachable-1366",
+      "path": "/locations/eb7c522f-f0c3-4614-bdf0-9c10bc1c36d1",
+      "scrollWidth": 1351,
+      "innerWidth": 1366,
+      "height": 772,
+      "videos": 0,
+      "playing": 0,
+      "mentionsNvr": true,
+      "mentionsStore": false,
+      "pausedForBandwidth": 0,
+      "recorderNotReachable": 16
     },
     {
       "name": "LG-1-live-landing-cctv-only-cluster-1366",
@@ -228,7 +267,7 @@
       "path": "/live",
       "scrollWidth": 375,
       "innerWidth": 375,
-      "height": 1103,
+      "height": 1087,
       "videos": 0,
       "playing": 0,
       "mentionsNvr": false,
@@ -238,10 +277,10 @@
     },
     {
       "name": "LG-1-live-open-location-cctv-only-1366",
-      "path": "/live?open=7f3278a1-7a9e-4267-93e3-b88ccd440eb2",
+      "path": "/live?open=428294a5-34d2-436f-a185-93d6056b7b32",
       "scrollWidth": 1351,
       "innerWidth": 1366,
-      "height": 1122,
+      "height": 1115,
       "videos": 0,
       "playing": 0,
       "mentionsNvr": false,

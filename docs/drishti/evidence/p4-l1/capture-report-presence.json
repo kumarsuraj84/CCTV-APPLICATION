@@ -1,0 +1,51 @@
+{
+  "base": "http://localhost:3371",
+  "shots": [
+    {
+      "name": "LG-7-are-you-still-there-1366",
+      "path": "/live?region=51fabf55-c433-4ed7-b521-b4e45766f0d7",
+      "scrollWidth": 1351,
+      "innerWidth": 1366,
+      "height": 838,
+      "videos": 0,
+      "playing": 0,
+      "mentionsNvr": false,
+      "mentionsStore": false,
+      "pausedForBandwidth": 0,
+      "recorderNotReachable": 9,
+      "note": "SESSION_IDLE_MINUTES=1 on this server; no input for 70 s"
+    }
+  ],
+  "console": [
+    "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+    "[HMR] connected",
+    "Images loaded lazily and replaced with placeholders. Load events are deferred. See https://go.microsoft.com/fwlink/?linkid=2048113",
+    "Images loaded lazily and replaced with placeholders. Load events are deferred. See https://go.microsoft.com/fwlink/?linkid=2048113",
+    "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+    "[HMR] connected",
+    "stream.oninit",
+    "stream.onconnect",
+    "stream.onconnect",
+    "stream.oninit",
+    "stream.onconnect",
+    "stream.onconnect",
+    "stream.oninit",
+    "stream.onconnect",
+    "stream.onconnect",
+    "stream.oninit",
+    "stream.onconnect",
+    "stream.onconnect",
+    "stream.onopen",
+    "stream.onopen",
+    "stream.onopen",
+    "stream.onopen",
+    "stream.onmessge ",
+    "stream.onmessge ",
+    "stream.onmessge ",
+    "stream.onmessge ",
+    "stream.ondisconnect",
+    "stream.ondisconnect",
+    "stream.ondisconnect",
+    "stream.ondisconnect"
+  ]
+}

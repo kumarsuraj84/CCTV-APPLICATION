@@ -1,9 +1,9 @@
 {
-  "base": "http://localhost:3361",
+  "base": "http://localhost:3371",
   "shots": [
     {
       "name": "CC-9-paused-to-save-bandwidth-1366",
-      "path": "/live?region=086ce779-2b4a-4930-9e08-2d1650a86f8c",
+      "path": "/live?region=51fabf55-c433-4ed7-b521-b4e45766f0d7",
       "scrollWidth": 1351,
       "innerWidth": 1366,
       "height": 866,
