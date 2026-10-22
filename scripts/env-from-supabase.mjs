@@ -30,6 +30,7 @@ const lines = {
   WORKER_SECRET: secret(),
   STREAM_TOKEN_SECRET: secret(),
   SYSTEM_LOG_INGEST_SECRET: secret(),
+  ACCESS_PREVIEW_SECRET: secret(),
   // Local development sign-in for create-dev-admin.mjs (synthetic address, random password, never printed).
   DEV_ADMIN_EMAIL: 'dev-admin@example.test',
   DEV_ADMIN_PASSWORD: randomBytes(15).toString('base64url') + 'aA1',

@@ -8,9 +8,18 @@ export type Area = 'cctv' | 'it' | 'wifi' | 'admin'
 export type CatalogueEntry = { key: string; area: Area | string; risk: 'low' | 'medium' | 'high' | string; description: string; scope_kinds?: string[] }
 
 /** Given only by a platform owner (brief item 6: the ruling recorded in docs/drishti/access-model.md). */
+// wifi.credentials.admin added in the P2-3 review (ruling M-9: symmetric with it.credentials.admin). Same list in SQL: access_owner_only().
 export const OWNER_ONLY_CAPABILITIES = [
   'it.os.deploy', 'it.credentials.admin', 'it.remote.control', 'it.script.run', 'it.software.manage', 'it.config.deploy', 'it.patch.manage',
+  'wifi.credentials.admin',
 ] as const
+
+/** Owner ruling E-1: downloads (cctv.export) only for administrators and super administrators. */
+export const MSG_EXPORT_ADMINS_ONLY = 'Download rights (export) can only be given to administrators and super administrators.'
+export const isAdministrativeRole = (r: Role) => r === 'admin' || r === 'platform_owner'
+/** May a person with this role hold the capability at all (E-1 for export, rule 7 for admin.*)? */
+export const roleMayHold = (role: Role, capability: string) =>
+  isAdministrativeRole(role) || !(capability === 'cctv.export' || capability.startsWith('admin.'))
 
 /** The administrator set: exactly what the migration (migrated:admin), the dev-admin script and the demo give administrators. */
 export const ADMINISTRATOR_SET = [
@@ -133,6 +142,7 @@ export function grantRefusal(i: {
   const label = `“${i.cap.description}”`
   if (reasonRequired(i.cap) && !hasReason(i.reason)) return `Give a reason for ${label} (at least three characters).`
   if (areaOf(i.cap.key) === 'admin' && i.targetRole !== 'admin' && i.targetRole !== 'platform_owner') return 'Administration rights can only be given to administrators.'
+  if (i.cap.key === 'cctv.export' && !isAdministrativeRole(i.targetRole)) return MSG_EXPORT_ADMINS_ONLY
   if (i.actorRole === 'platform_owner') return null
   if ((OWNER_ONLY_CAPABILITIES as readonly string[]).includes(i.cap.key)) return `Only a super administrator can give ${label}.`
   const t = (i.now ?? new Date()).getTime()

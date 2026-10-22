@@ -27,7 +27,19 @@ export const ROLE_HELP: Record<Role, string> = {
 export const MSG_ROLES_GIVE_NO_ACCESS =
   'A role says what a person may administer. It gives no access to cameras, recordings, IT or Wi-Fi: that comes only from the access you assign (except a super administrator, who holds every right).'
 
-export const isAdminRole =(role: Role): boolean => role === 'admin' || role === 'platform_owner'
+/** What a role change does to the person's access (review I-2 and ruling E-1; change_person_role in the database). */
+export function ROLE_CHANGE_EFFECT(from: Role, to: Role): string {
+  const admin = (r: Role) => r === 'admin' || r === 'platform_owner'
+  if (to === 'platform_owner') return 'They get every right for the whole organisation.'
+  if (from === 'platform_owner' && to === 'admin') {
+    return 'The rights only a super administrator may hold are removed (remote control, scripts, software, configuration, patching, credentials, operating-system deployment). Their other access stays: review it next.'
+  }
+  if (from === 'platform_owner' && !admin(to)) return 'Their administration rights (admin.*), download rights (export) and the rights only a super administrator may hold are removed. Their other access stays: review it next.'
+  if (admin(from) && !admin(to)) return 'Their administration rights (admin.*) and download rights (export) are removed. Their other access stays: review it next.'
+  return 'Their access stays as it is.'
+}
+
+export const isAdminRole = (role: Role): boolean => role === 'admin' || role === 'platform_owner'
 
 // A platform owner manages everyone; a plain admin manages viewers, operators and managers; nobody else manages anyone.
 export function canManageRole(actorRole: Role, targetRole: Role): boolean {

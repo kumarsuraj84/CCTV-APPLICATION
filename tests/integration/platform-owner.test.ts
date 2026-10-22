@@ -6,6 +6,7 @@ import { applyChange, previewChange, revokeAll } from '@/lib/admin/access'
 import type { Actor } from '@/lib/admin/types'
 import { createUser as createPerson, resetUserPassword, updateUser } from '@/lib/admin/users'
 import { CAPABILITIES } from '@/lib/auth/capabilities'
+import { OWNER_ONLY_CAPABILITIES } from '@/lib/admin/access-rules'
 import { adminClient, cleanupOrg, createOrg, createUser, grant } from '../setup/fixtures'
 
 const admin = () => adminClient()
@@ -38,7 +39,7 @@ describe('platform owner = super administrator with full rights (P-1)', () => {
     expect(await orgWideOf(o.id)).toEqual(ALL)
     expect((await admin().rpc('grant_platform_owner_all', { p_org: org, p_user: o.id })).data).toBe(0)
     const { data: one } = await admin().from('access_grants').select('reason, source').eq('user_id', o.id).eq('capability', 'it.os.deploy').is('revoked_at', null).single()
-    expect(one).toEqual({ reason: 'Platform owner: all capabilities', source: 'manual' })
+    expect(one).toEqual({ reason: 'Super administrator: all capabilities', source: 'manual' }) // review M-8 (was "Platform owner: …")
     const notOwner = await createUser(org, 'admin')
     expect((await admin().rpc('grant_platform_owner_all', { p_org: org, p_user: notOwner.id })).error?.code).toBe('42501')
   })
@@ -50,7 +51,7 @@ describe('platform owner = super administrator with full rights (P-1)', () => {
     const someAdmin = await createUser(org, 'admin')
     const probe = await admin().rpc('access_catalogue_probe_test', { p_org: org })
     expect(probe.error).toBeNull()
-    const holders = probe.data as string[]
+    const holders = (probe.data as { after_insert_with_org: string[] }).after_insert_with_org // review M-13: the probe also covers updates
     expect(holders).toContain(active.id)
     expect(holders).toContain(owner.id)
     expect(holders).not.toContain(inactive.id)
@@ -80,9 +81,9 @@ describe('platform owner = super administrator with full rights (P-1)', () => {
     expect((await updateUser(admin(), owner, made.userId, { is_active: false })).ok).toBe(true)
     expect((await updateUser(admin(), owner, made.userId, { is_active: true })).ok).toBe(true)
     expect(await orgWideOf(made.userId)).toEqual(ALL)
-    // Demotion keeps the grants (a role change never changes grants).
+    // Review I-2 (was: "demotion keeps the grants"): demotion to administrator removes the rights only a super administrator may hold.
     expect((await updateUser(admin(), owner, made.userId, { role: 'admin' })).ok).toBe(true)
-    expect(await orgWideOf(made.userId)).toEqual(ALL)
+    expect(await orgWideOf(made.userId)).toEqual(ALL.filter((c) => !(OWNER_ONLY_CAPABILITIES as readonly string[]).includes(c)))
   })
 
   it('creating a platform owner on the people screen gives the full set', async () => {

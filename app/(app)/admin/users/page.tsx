@@ -40,7 +40,11 @@ export default async function UsersPage() {
       )}
       {accessEditable && summaries === null && <p role="alert" className="text-sm text-destructive">The access summary could not be read just now. Reload the page in a moment.</p>}
       <CreateUserForm allowedRoles={[...allowedRoles]} stores={stores} canAssignAccess={accessEditable} />
-      <p className="max-w-3xl text-sm text-muted-foreground">Roles give no access by themselves (a super administrator holds every right). Changing a role keeps the person’s access as it is.</p>
+      <p className="max-w-3xl text-sm text-muted-foreground">
+        Roles give no access by themselves (a super administrator holds every right). When someone leaves the administrator roles, their
+        administration and download rights are removed; when someone stops being a super administrator, the rights only a super
+        administrator may hold are removed. Other access stays and is shown for review.
+      </p>
       <div className="overflow-x-auto rounded-xl border bg-card">
         <table className={RT.table}>
           <caption className="sr-only">People of the organisation</caption>
@@ -58,6 +62,7 @@ export default async function UsersPage() {
               <UserRow
                 key={u.id}
                 showSummary={showSummary}
+                allowedRoles={[...allowedRoles]}
                 u={{ ...u, manageable: canManageRole(me.role, u.role), is_self: u.id === me.id, access_editable: accessEditable, summary: summaries?.get(u.id) ?? null }}
               />
             ))}

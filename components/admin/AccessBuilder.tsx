@@ -286,6 +286,9 @@ export function AccessBuilder(props: {
             </div>
           )}
           <p className={HELP}>Live, playback and export are separate: for example live for a whole location and export for two of its cameras only.</p>
+          {props.targetRole !== 'admin' && props.targetRole !== 'platform_owner' && (
+            <p className={HELP}>Downloads (export) can only be given to administrators and super administrators, so they are not offered for this person.</p>
+          )}
         </div>
       )}
 

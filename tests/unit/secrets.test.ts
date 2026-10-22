@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { auditSecrets, getSecret, MIN_SECRET_LENGTH } from '@/lib/secrets'
 
-const KEYS = ['CRON_SECRET', 'WORKER_SECRET', 'STREAM_TOKEN_SECRET', 'SYSTEM_LOG_INGEST_SECRET']
+const KEYS = ['CRON_SECRET', 'WORKER_SECRET', 'STREAM_TOKEN_SECRET', 'SYSTEM_LOG_INGEST_SECRET', 'ACCESS_PREVIEW_SECRET']
 // tests/setup/env.ts loads .env.local, which may already define some of these; start from a clean slate.
 beforeEach(() => KEYS.forEach((k) => delete process.env[k]))
 afterEach(() => KEYS.forEach((k) => delete process.env[k]))
@@ -16,7 +16,7 @@ describe('secrets', () => {
   })
 
   it('treats a secret shorter than the minimum as not set, for every purpose', () => {
-    for (const [env, purpose] of [['CRON_SECRET', 'cron'], ['WORKER_SECRET', 'worker'], ['STREAM_TOKEN_SECRET', 'stream_token'], ['SYSTEM_LOG_INGEST_SECRET', 'system_log_ingest']] as const) {
+    for (const [env, purpose] of [['CRON_SECRET', 'cron'], ['WORKER_SECRET', 'worker'], ['STREAM_TOKEN_SECRET', 'stream_token'], ['SYSTEM_LOG_INGEST_SECRET', 'system_log_ingest'], ['ACCESS_PREVIEW_SECRET', 'access_preview']] as const) {
       process.env[env] = 'a'.repeat(MIN_SECRET_LENGTH - 1)
       expect(getSecret(purpose), purpose).toBeNull()
       process.env[env] = 'a'.repeat(MIN_SECRET_LENGTH)
@@ -39,7 +39,7 @@ describe('secrets', () => {
   it('has no issues when every secret is set, long and different', () => {
     const env = {
       CRON_SECRET: 'a'.repeat(20), WORKER_SECRET: 'b'.repeat(20),
-      STREAM_TOKEN_SECRET: 'c'.repeat(20), SYSTEM_LOG_INGEST_SECRET: 'd'.repeat(20),
+      STREAM_TOKEN_SECRET: 'c'.repeat(20), SYSTEM_LOG_INGEST_SECRET: 'd'.repeat(20), ACCESS_PREVIEW_SECRET: 'e'.repeat(20),
     }
     expect(auditSecrets(env)).toEqual([])
   })

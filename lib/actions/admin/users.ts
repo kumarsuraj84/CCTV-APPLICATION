@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
-import { liveGrantsOf, MSG_CONFLICT, revokeAll } from '@/lib/admin/access'
+import { MSG_CONFLICT, reviewBeforeReactivation, revokeAll, type GrantView } from '@/lib/admin/access'
 import { createUser, resetUserPassword, updateUser } from '@/lib/admin/users'
 import type { AdminCapability } from '@/lib/auth/capabilities'
 import { mayAdminister, requireAdministration } from '@/lib/auth/profile'
@@ -60,25 +60,38 @@ export async function setActiveAction(userId: string, isActive: boolean, opts?: 
   return res.ok ? { ok: true } : { error: res.error }
 }
 
-/** Before reactivating: the person's live grants, which apply again as soon as they are active (P2-3 brief, review item 7). */
+type ListedGrant = { id: string; capabilityLabel: string; scopeLabel: string; lastDay: string | null; state: string; source: string }
+const listed = (grants: GrantView[]): ListedGrant[] => grants.map((g) => ({ id: g.id, capabilityLabel: g.capabilityLabel, scopeLabel: g.scopeLabel, lastDay: g.lastDay, state: g.state, source: g.source }))
+
+/**
+ * Before reactivating: the person's live grants, which apply again as soon as they are active (P2-3 brief; review M-1: only for an
+ * administrator who may manage the person, and — without admin.access — only while the person is deactivated).
+ */
 export async function reactivationReviewAction(userId: string): Promise<ReactivationState> {
   const { profile, admin, actor } = await ctx()
   if (!z.uuid().safeParse(userId).success) return { ok: false, error: 'User not found.' }
   if (await limited(actor.id)) return { ok: false, error: MSG_SLOW_DOWN }
-  const live = await liveGrantsOf(admin, actor.orgId, userId)
-  if (!live) return { ok: false, error: 'User not found.' }
-  return {
-    ok: true, version: live.version, canRevoke: mayAdminister(profile, 'admin.access'),
-    grants: live.grants.map((g) => ({ id: g.id, capabilityLabel: g.capabilityLabel, scopeLabel: g.scopeLabel, lastDay: g.lastDay, state: g.state, source: g.source })),
-  }
+  const mayReadAccess = mayAdminister(profile, 'admin.access')
+  const r = await reviewBeforeReactivation(admin, actor, userId, { mayReadAccess })
+  if (!r.ok) return r
+  return { ok: true, version: r.version, canRevoke: mayReadAccess, grants: listed(r.grants) }
 }
 
-export async function setRoleAction(userId: string, role: string): Promise<SimpleState> {
-  const { admin, actor } = await ctx()
+export type RoleState = { error?: string; ok?: boolean; revoked?: number; remaining?: ListedGrant[] | null }
+
+/**
+ * Changes a role (review I-2): the rights the new role may not keep are revoked in the same transaction; afterwards the remaining
+ * access is returned for review when the administrator may read access (admin.access).
+ */
+export async function setRoleAction(userId: string, role: string, expectedVersion?: number | null): Promise<RoleState> {
+  const { profile, admin, actor } = await ctx()
   if (await limited(actor.id)) return { error: MSG_SLOW_DOWN }
-  const res = await updateUser(admin, actor, userId, { role })
+  const version = typeof expectedVersion === 'number' && Number.isInteger(expectedVersion) && expectedVersion >= 0 ? expectedVersion : null
+  const res = await updateUser(admin, actor, userId, { role }, { expectedVersion: version })
   revalidatePath('/admin/users')
-  return res.ok ? { ok: true } : { error: res.error }
+  if (!res.ok) return { error: res.error }
+  const after = mayAdminister(profile, 'admin.access') ? await reviewBeforeReactivation(admin, actor, userId, { mayReadAccess: true }) : null
+  return { ok: true, revoked: res.revoked ?? 0, remaining: after?.ok ? listed(after.grants) : null }
 }
 
 export async function resetPasswordAction(userId: string): Promise<PasswordState> {

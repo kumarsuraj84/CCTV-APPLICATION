@@ -11,6 +11,11 @@ export const SOURCE_LABELS: Record<string, string> = {
   'migrated:admin': 'Moved over from the administrator role',
 }
 
+/** Review M-8: grants made before the wording change keep their reason (history); it is shown with the new words. */
+export function displayReason(reason: string | null): string | null {
+  return reason === 'Platform owner: all capabilities' ? 'Super administrator: all capabilities' : reason
+}
+
 export const STATE_LABELS: Record<string, string> = { active: 'In effect', future: 'Not started yet', expired: 'Ended', revoked: 'Removed' }
 
 export const AREA_LABELS: Record<string, string> = { cctv: 'CCTV', it: 'IT', wifi: 'Wi-Fi', admin: 'Administration' }

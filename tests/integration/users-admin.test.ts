@@ -184,6 +184,13 @@ describe('user administration', () => {
     const after = await rowsOf()
     for (const r of after.filter((x) => x.scope_id !== storeId)) expect(r).toEqual(before.find((b) => b.id === r.id))
     expect(after.filter((x) => x.scope_id === storeId).every((x) => x.revoked_at !== null)).toBe(true)
+    // Restored (P2-3 review M-2): the administrator gives the expired location again: the expired grants stay exactly as they were
+    // (expired, not re-dated, not revoked) and new grants are added next to them.
+    expect((await saveAccess(plainAdmin, viewer.id, live('location', past.s))).ok).toBe(true)
+    const again = await rowsOf()
+    for (const old of before.filter((x) => x.scope_id === past.s)) expect(again.find((r) => r.id === old.id)).toEqual(old)
+    expect(again.filter((x) => x.scope_id === past.s && x.revoked_at === null && x.valid_until === null)).toHaveLength(2)
+    expect(await seen()).toContain(past.c)
   })
 
   // Review fix I-4 (kept in P2-3): every grant is listed, organisation-wide (for example migrated) access included, and a change of
@@ -335,6 +342,11 @@ describe('user administration', () => {
       const back = (await loadEditor(admin(), actor, v.id))!.grants.filter((g) => g.state === 'active').map((g) => g.scopeId)
       expect(back).toHaveLength(1002)
       expect(new Set(back).size).toBe(1002)
+      // P2-3 review M-4: a large save is audited in parts of at most 200 grants; no grant id is lost.
+      const { data: parts } = await admin().from('admin_audit_log').select('detail').eq('org_id', pagingOrg).eq('action', 'access_granted').eq('entity_id', v.id)
+      const audited = new Set((parts ?? []).flatMap((p) => (p.detail as { grants: { grant_id: string }[] }).grants.map((g) => g.grant_id)))
+      expect(audited.size).toBe(1002)
+      expect((parts ?? []).every((p) => (p.detail as { grants: unknown[] }).grants.length <= 200)).toBe(true)
 
       expect((await listUsers(admin(), pagingOrg)).length).toBe(2)
     } finally {

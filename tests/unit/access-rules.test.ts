@@ -8,6 +8,7 @@ import {
   grantState,
   istDate,
   matrixChanges,
+  MSG_EXPORT_ADMINS_ONLY,
   OWNER_ONLY_CAPABILITIES,
   presetChanges,
   PRESETS,
@@ -94,15 +95,20 @@ describe('who may grant what', () => {
     expect(grantRefusal({ ...base, targetRole: 'admin', holdings, cap: live, spec: at('cctv.live', 'location', 'L1'), parentLocation: null })).toMatch(/not allowed to change/)
   })
   it('the seven high-risk IT rights only from a platform owner; administration rights only for administrators; reasons', () => {
-    expect(OWNER_ONLY_CAPABILITIES).toEqual(['it.os.deploy', 'it.credentials.admin', 'it.remote.control', 'it.script.run', 'it.software.manage', 'it.config.deploy', 'it.patch.manage'])
+    // Review ruling M-9: wifi.credentials.admin is owner-only like it.credentials.admin.
+    expect(OWNER_ONLY_CAPABILITIES).toEqual(['it.os.deploy', 'it.credentials.admin', 'it.remote.control', 'it.script.run', 'it.software.manage', 'it.config.deploy', 'it.patch.manage', 'wifi.credentials.admin'])
     const holdings = [hold('it.remote.control', 'organization', null), hold('it.remote.view', 'organization', null)]
     expect(grantRefusal({ ...base, reason: 'Store IT lead', holdings, cap: remote, spec: at('it.remote.control', 'organization', null), parentLocation: null })).toMatch(/Only a super administrator/)
     expect(grantRefusal({ ...base, reason: 'Store IT lead', holdings, cap: remoteView, spec: at('it.remote.view', 'organization', null), parentLocation: null })).toBeNull()
     expect(grantRefusal({ ...base, reason: '', holdings, cap: remoteView, spec: at('it.remote.view', 'organization', null), parentLocation: null })).toMatch(/reason/)
     const owner = { ...base, actorRole: 'platform_owner' as const, holdings: [] }
     expect(grantRefusal({ ...owner, reason: 'Store IT lead', cap: remote, spec: at('it.remote.control', 'location', 'L1'), parentLocation: null })).toBeNull()
-    expect(grantRefusal({ ...owner, reason: 'Incident 42', cap: exp, spec: at('cctv.export', 'camera', 'C1'), parentLocation: 'L1' })).toBeNull()
-    expect(grantRefusal({ ...owner, reason: ' ', cap: exp, spec: at('cctv.export', 'camera', 'C1'), parentLocation: 'L1' })).toMatch(/reason/)
+    // Ruling E-1: export only for administrators and super administrators (before: any role).
+    expect(grantRefusal({ ...owner, targetRole: 'admin', reason: 'Incident 42', cap: exp, spec: at('cctv.export', 'camera', 'C1'), parentLocation: 'L1' })).toBeNull()
+    expect(grantRefusal({ ...owner, targetRole: 'admin', reason: ' ', cap: exp, spec: at('cctv.export', 'camera', 'C1'), parentLocation: 'L1' })).toMatch(/reason/)
+    for (const targetRole of ['user', 'operator', 'manager'] as const) {
+      expect(grantRefusal({ ...owner, targetRole, reason: 'Incident 42', cap: exp, spec: at('cctv.export', 'camera', 'C1'), parentLocation: 'L1' }), targetRole).toBe(MSG_EXPORT_ADMINS_ONLY)
+    }
     expect(grantRefusal({ ...owner, reason: 'Needed', targetRole: 'manager', cap: users, spec: at('admin.users', 'organization', null), parentLocation: null })).toMatch(/only be given to administrators/)
     expect(grantRefusal({ ...owner, reason: 'Needed', targetRole: 'admin', cap: users, spec: at('admin.users', 'organization', null), parentLocation: null })).toBeNull()
   })

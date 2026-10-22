@@ -108,7 +108,8 @@ describe('access administration in the database (P2-3)', () => {
     })
 
     it('a platform owner gives anything, but a reason is required for export and high-risk rights', async () => {
-      const v = await createUser(org, 'operator')
+      // Ruling E-1 (P2-3 review): export only for administrators, so the person is an administrator here (was an operator).
+      const v = await createUser(org, 'admin')
       expect((await grantAs(owner, v, [spec('cctv.export', 'location', L2)], '')).error?.message).toMatch(/reason required/)
       expect((await grantAs(owner, v, [spec('it.os.deploy', 'organization', null)], '  ')).error?.message).toMatch(/reason required/)
       expect((await grantAs(owner, v, [spec('cctv.export', 'location', L2), spec('it.os.deploy', 'organization', null)], 'Regional IT lead')).error).toBeNull()
@@ -141,7 +142,8 @@ describe('access administration in the database (P2-3)', () => {
 
   describe('apply_access_change', () => {
     it('revokes and grants in one transaction with a reason per change, and bumps the version once', async () => {
-      const v = await createUser(org, 'user')
+      const v = await createUser(org, 'admin') // E-1: the change includes export
+
       const [old] = await grant(org, v.id, 'cctv.live', ORG_SCOPE)
       const before = await version(v.id)
       const r = await rpc('apply_access_change', {

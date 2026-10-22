@@ -126,6 +126,9 @@ export async function cleanupOrg(orgId: string | undefined): Promise<void> {
   }
   const { data: people, error: pErr } = await admin.from('profiles').select('id').eq('org_id', orgId)
   note('list profiles', pErr)
+  // P2-3 review I-1: the last active super administrator of an organisation cannot be deleted; the clean-up of a test or demo
+  // organisation removes its people through the one server function allowed to (it refuses every other organisation).
+  if ((people ?? []).length > 0) note('profiles (teardown)', (await admin.rpc('access_teardown_test_org_people', { p_org: orgId })).error)
   for (const p of people ?? []) note('auth user', (await admin.auth.admin.deleteUser(p.id)).error)
   note('profiles', (await admin.from('profiles').delete().eq('org_id', orgId)).error)
   note('organization', (await admin.from('organizations').delete().eq('id', orgId)).error)

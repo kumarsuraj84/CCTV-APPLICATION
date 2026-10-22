@@ -7,10 +7,12 @@
 // between (access_version moved) gives MSG_CONFLICT. History is never edited: revoking sets revoked_at with a reason.
 // Every function here takes the service-role client and the acting administrator; the caller (lib/actions/admin/access.ts) has
 // already checked the session, the administrative role and admin.access (requireAdministration).
-import { createHash } from 'node:crypto'
+import { createHmac, randomBytes } from 'node:crypto'
+import { processSingleton } from '@/lib/process-singleton'
+import { getSecret } from '@/lib/secrets'
 import { z } from 'zod'
 import { addAudit } from '@/lib/admin/audit'
-import type { Role } from '@/lib/admin/roles'
+import { canManageRole, type Role } from '@/lib/admin/roles'
 import type { Actor, AdminClient } from '@/lib/admin/types'
 import {
   areaOf,
@@ -22,7 +24,9 @@ import {
   istDate,
   lastDayIst,
   manageRefusal,
+  MSG_EXPORT_ADMINS_ONLY,
   OWNER_ONLY_CAPABILITIES,
+  roleMayHold,
   summarise,
   type CatalogueEntry,
   type GrantState,
@@ -215,10 +219,18 @@ async function checkChanges(admin: AdminClient, actor: Actor, userId: string, in
   return { ok: true, target, normal, cat, live, label }
 }
 
-/** Binds a save to the preview the administrator saw: the same person, access version and changes. A screen guarantee, not a secret. */
-export function previewToken(userId: string, version: number, normal: readonly Normal[]): string {
+// Review M-5: the key of the preview token. ACCESS_PREVIEW_SECRET when configured; otherwise a random key of this server process
+// (kept across hot reloads), so a token cannot be made outside the server; after a restart the administrator simply checks again.
+const ephemeralKey = processSingleton('admin.accessPreviewKey', () => randomBytes(32).toString('base64url'))
+const previewKey = () => getSecret('access_preview') ?? ephemeralKey
+
+/**
+ * Binds a save to the preview the administrator saw: an HMAC (server secret) of the person, the access version and the exact changes.
+ * The protection against lost updates is expected_version in apply_access_change; the token makes "save without the preview" impossible.
+ */
+export function previewToken(userId: string, version: number, normal: readonly { op: string; [k: string]: unknown }[]): string {
   const canon = normal.map((n) => (n.op === 'revoke' ? ['r', n.grant_id, n.reason] : ['g', n.capability, n.scope_kind, n.scope_id, n.valid_until, n.reason]))
-  return createHash('sha256').update(JSON.stringify(['drishti-access-preview-v1', userId, version, canon])).digest('hex')
+  return createHmac('sha256', previewKey()).update(JSON.stringify(['drishti-access-preview-v2', userId, version, canon])).digest('hex')
 }
 
 export type PreviewCapability = {
@@ -266,6 +278,8 @@ export async function previewChange(admin: AdminClient, actor: Actor, userId: st
 
 function dbRefusal(error: { code?: string; message: string }, route: string): string {
   if (error.code === '42501' && /own access/.test(error.message)) return 'You cannot change your own access. Ask another administrator.'
+  if (error.code === '42501' && /download rights only/.test(error.message)) return MSG_EXPORT_ADMINS_ONLY
+  if (error.code === '42501' && /only a platform owner/.test(error.message)) return 'Only a super administrator can give one of these rights.'
   if (error.code === '42501') return 'You are not allowed to make one of these changes. Reload the page and check what you hold yourself.'
   if (error.code === 'P0002') return MSG_GRANT_GONE
   if (error.code === '22023' && /reason required/.test(error.message)) return 'Give a reason for export, for high-risk rights and for each removal.'
@@ -273,28 +287,39 @@ function dbRefusal(error: { code?: string; message: string }, route: string): st
   return sanitizeError(error, { route, fallback: 'Could not save the access changes. Please try again.' })
 }
 
-const auditGrants = (normal: Normal[], ids: string[]) =>
-  normal.filter((n): n is NormalGrant => n.op === 'grant').slice(0, 200).map((n, i) => ({ grant_id: ids[i] ?? null, capability: n.capability, scope_kind: n.scope_kind, scope_id: n.scope_id, valid_until: n.valid_until, reason: n.reason || null }))
+export const AUDIT_PART = 200
+
+/** One audit event per part of at most AUDIT_PART grants (review M-4: no id is ever left out of the audit). */
+export async function auditInParts(admin: AdminClient, e: { orgId: string; actorId: string | null; action: string; entityId: string; detail: Record<string, unknown>; grants: Record<string, unknown>[] }) {
+  const parts = Math.max(1, Math.ceil(e.grants.length / AUDIT_PART))
+  for (let p = 0; p < parts; p++) {
+    const grants = e.grants.slice(p * AUDIT_PART, (p + 1) * AUDIT_PART)
+    await addAudit(admin, {
+      orgId: e.orgId, actorId: e.actorId ?? e.entityId, action: e.action, entityType: 'profile', entityId: e.entityId,
+      detail: JSON.parse(JSON.stringify({ ...e.detail, count: e.grants.length, part: p + 1, parts, grants })),
+    })
+  }
+}
 
 async function applyNormal(admin: AdminClient, actor: Actor, target: Target, normal: Normal[], expectedVersion: number, live: GrantRow[]): Promise<AccessResult<{ version: number; added: number; revoked: number }>> {
   const { data, error } = await admin.rpc('apply_access_change', { p_org: actor.orgId, p_user: target.id, p_changes: normal, p_actor: actor.id, p_expected_version: expectedVersion })
   if (error) return isConflict(error) ? { ok: false, error: MSG_CONFLICT, conflict: true } : { ok: false, error: dbRefusal(error, 'access.apply') }
   const res = data as { version: number; added: number; revoked: number; grant_ids: string[] }
-  const grants = normal.filter((n) => n.op === 'grant')
+  const grants = normal.filter((n): n is NormalGrant => n.op === 'grant')
   const revokes = normal.filter((n): n is NormalRevoke => n.op === 'revoke')
   if (grants.length > 0) {
-    await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'access_granted', entityType: 'profile', entityId: target.id, detail: { count: grants.length, added: res.added, version: res.version, grants: auditGrants(normal, res.grant_ids ?? []) } })
+    await auditInParts(admin, {
+      orgId: actor.orgId, actorId: actor.id, action: 'access_granted', entityId: target.id, detail: { added: res.added, version: res.version },
+      grants: grants.map((n, i) => ({ grant_id: res.grant_ids?.[i] ?? null, capability: n.capability, scope_kind: n.scope_kind, scope_id: n.scope_id, valid_until: n.valid_until, reason: n.reason || null })),
+    })
   }
   if (revokes.length > 0) {
-    await addAudit(admin, {
-      orgId: actor.orgId, actorId: actor.id, action: 'access_revoked', entityType: 'profile', entityId: target.id,
-      detail: {
-        count: revokes.length, version: res.version,
-        grants: revokes.slice(0, 200).map((n) => {
-          const g = live.find((x) => x.id === n.grant_id)
-          return { grant_id: n.grant_id, capability: g?.capability ?? null, scope_kind: g?.scope_kind ?? null, scope_id: g?.scope_id ?? null, valid_until: g?.valid_until ?? null, reason: n.reason }
-        }),
-      },
+    await auditInParts(admin, {
+      orgId: actor.orgId, actorId: actor.id, action: 'access_revoked', entityId: target.id, detail: { version: res.version },
+      grants: revokes.map((n) => {
+        const g = live.find((x) => x.id === n.grant_id)
+        return { grant_id: n.grant_id, capability: g?.capability ?? null, scope_kind: g?.scope_kind ?? null, scope_id: g?.scope_id ?? null, valid_until: g?.valid_until ?? null, reason: n.reason }
+      }),
     })
   }
   return { ok: true, version: Number(res.version), added: Number(res.added), revoked: Number(res.revoked) }
@@ -384,39 +409,58 @@ export async function loadEditor(admin: AdminClient, actor: Actor, userId: strin
   const notEditableReason = manageRefusal({ actorRole: actor.role, actorId: actor.id, targetId: target.id, targetRole: target.role })
   const t = now.getTime()
   const held = new Set(holdings.filter((h) => new Date(h.valid_from).getTime() <= t && (h.valid_until === null || new Date(h.valid_until).getTime() > t)).map((h) => h.capability))
-  const adminTarget = target.role === 'admin' || target.role === 'platform_owner'
+  // Rule 7 and ruling E-1: admin.* and cctv.export only for administrative roles; nothing an acting administrator may not give.
   const grantable = cat
     .map((c) => c.key)
-    .filter((k) => (areaOf(k) !== 'admin' || adminTarget) && (actor.role === 'platform_owner' || (held.has(k) && !(OWNER_ONLY_CAPABILITIES as readonly string[]).includes(k))))
+    .filter((k) => roleMayHold(target.role, k) && (actor.role === 'platform_owner' || (held.has(k) && !(OWNER_ONLY_CAPABILITIES as readonly string[]).includes(k))))
   const { access_version, ...person } = target
   return { person, version: access_version, editable: notEditableReason === null, notEditableReason, grants, catalogue: cat, grantable, locations, cameras, assets }
 }
 
 // ── Review of migrated grants (D-2a) ─────────────────────────────────────────
 export const REVIEW_SOURCES = ['migrated:home', 'migrated:manager', 'migrated:admin'] as const
-export type ReviewItem = GrantView & { grantId: string; userId: string; personName: string; personEmail: string; personRole: string; personActive: boolean }
+export type ReviewItem = GrantView & {
+  grantId: string; userId: string; personName: string; personEmail: string; personRole: string; personActive: boolean
+  reviewDecision: 'kept' | 'self_confirmed' | null
+  /** Why the viewing administrator may not keep this grant (review M-10: keeping = giving), or null. */
+  keepRefusal: string | null
+}
 export type ReviewNote = { userId: string; personName: string; note: string; lostDevices: boolean; createdAt: string }
-export type ReviewData = { open: ReviewItem[]; kept: ReviewItem[]; notes: ReviewNote[]; openCount: number }
+export type ReviewData = { open: ReviewItem[]; kept: ReviewItem[]; notes: ReviewNote[]; openCount: number; selfConfirmAllowed: boolean }
 
-export async function listReview(admin: AdminClient, orgId: string, now = new Date()): Promise<ReviewData> {
+/**
+ * The review list. With `actor`, each item says whether that administrator may keep it, and `selfConfirmAllowed` whether they are the
+ * only active super administrator (break-glass self-confirmation, review M-11).
+ */
+export async function listReview(admin: AdminClient, orgId: string, actor?: Actor, now = new Date()): Promise<ReviewData> {
   const cols = `${GRANT_COLUMNS}, user_id`
-  const [bySource, flagged, reviews, people, reports, cat] = await Promise.all([
+  const [bySource, flagged, reviews, people, reports, cat, holdings] = await Promise.all([
     fetchAll((from, to) => admin.from('access_grants').select(cols).eq('org_id', orgId).is('revoked_at', null).in('source', [...REVIEW_SOURCES]).order('id').range(from, to)),
     fetchAll((from, to) => admin.from('access_grants').select(cols).eq('org_id', orgId).is('revoked_at', null).eq('needs_review', true).order('id').range(from, to)),
-    fetchAll((from, to) => admin.from('access_grant_reviews').select('grant_id, reviewed_at').eq('org_id', orgId).order('id').range(from, to)),
+    fetchAll((from, to) => admin.from('access_grant_reviews').select('grant_id, reviewed_at, decision').eq('org_id', orgId).order('id').range(from, to)),
     fetchAll((from, to) => admin.from('profiles').select('id, full_name, email, role, is_active').eq('org_id', orgId).order('id').range(from, to)),
     fetchAll((from, to) => admin.from('access_migration_report').select('user_id, note, created_at').eq('org_id', orgId).not('note', 'is', null).order('created_at', { ascending: false }).order('id').range(from, to)),
     catalogue(admin),
+    actor ? holdingsOf(admin, actor) : Promise.resolve([] as Holding[]),
   ])
   const rows = [...new Map([...bySource, ...flagged].map((g) => [g.id, g as GrantRow & { user_id: string }])).values()]
   const label = await scopeLabels(admin, orgId, rows)
   const person = new Map(people.map((p) => [p.id, p]))
   const names = new Map(people.map((p) => [p.id, p.full_name || p.email]))
   const kept = new Map(reviews.map((r) => [r.grant_id, r.reviewed_at]))
-  const views = toViews(rows, new Map(cat.map((c) => [c.key, c])), label, names, kept, now)
+  const decision = new Map(reviews.map((r) => [r.grant_id, r.decision as 'kept' | 'self_confirmed']))
+  const catMap = new Map(cat.map((c) => [c.key, c]))
+  const views = toViews(rows, catMap, label, names, kept, now)
   const items: ReviewItem[] = views.map((v, i) => {
     const p = person.get(rows[i].user_id)
-    return { ...v, grantId: v.id, userId: rows[i].user_id, personName: p?.full_name || p?.email || 'Person no longer exists', personEmail: p?.email ?? '', personRole: p?.role ?? '', personActive: p?.is_active ?? false }
+    const keepRefusal = !actor || !p ? 'You cannot confirm this grant.' : grantRefusal({
+      actorRole: actor.role, actorId: actor.id, targetId: p.id, targetRole: p.role, holdings, cap: catMap.get(v.capability) ?? { key: v.capability, area: v.area, risk: v.risk, description: v.capabilityLabel },
+      spec: { capability: v.capability, scope_kind: v.scopeKind as ScopeKind, scope_id: v.scopeId, valid_until: v.validUntil }, parentLocation: null, reason: 'Reviewed and kept', now,
+    })
+    return {
+      ...v, grantId: v.id, userId: rows[i].user_id, personName: p?.full_name || p?.email || 'Person no longer exists', personEmail: p?.email ?? '', personRole: p?.role ?? '',
+      personActive: p?.is_active ?? false, reviewDecision: decision.get(v.id) ?? null, keepRefusal,
+    }
   }).sort((a, b) => a.personName.localeCompare(b.personName) || a.capability.localeCompare(b.capability) || a.scopeLabel.localeCompare(b.scopeLabel))
   const latest = new Map<string, { user_id: string; note: string | null; created_at: string }>()
   for (const r of reports) if (!latest.has(r.user_id)) latest.set(r.user_id, r)
@@ -425,7 +469,50 @@ export async function listReview(admin: AdminClient, orgId: string, now = new Da
     .map((r) => ({ userId: r.user_id, personName: names.get(r.user_id) ?? 'Person no longer exists', note: r.note as string, lostDevices: /IT devices no longer visible/.test(r.note ?? ''), createdAt: r.created_at }))
     .sort((a, b) => Number(b.lostDevices) - Number(a.lostDevices) || a.personName.localeCompare(b.personName))
   const open = items.filter((x) => !x.keptAt)
-  return { open, kept: items.filter((x) => !!x.keptAt), notes, openCount: open.length }
+  const activeSupers = people.filter((p) => p.role === 'platform_owner' && p.is_active)
+  const selfConfirmAllowed = !!actor && actor.role === 'platform_owner' && activeSupers.length === 1 && activeSupers[0].id === actor.id
+  return { open, kept: items.filter((x) => !!x.keptAt), notes, openCount: open.length, selfConfirmAllowed }
+}
+
+export const selfConfirmSchema = z.object({
+  grantIds: z.array(z.uuid()).min(1, 'Choose at least one grant.').max(1000),
+  reason: z.string().trim().min(10, 'Give a reason of at least 10 characters.').max(500, 'Use 500 characters or fewer for the reason.'),
+})
+
+/**
+ * Break-glass (review M-11): the ONLY active super administrator confirms their own migrated grants with a typed reason; recorded as
+ * "self-confirmed (single super administrator)" and audited. Refused as soon as another active super administrator exists.
+ */
+export async function selfConfirmReview(admin: AdminClient, actor: Actor, input: unknown): Promise<AccessResult<{ confirmed: number }>> {
+  const parsed = selfConfirmSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: firstIssue(parsed.error) }
+  const { data, error } = await admin.rpc('access_review_self_confirm', { p_org: actor.orgId, p_actor: actor.id, p_grant_ids: parsed.data.grantIds, p_reason: parsed.data.reason })
+  if (error) {
+    if (error.code === 'DR002') return { ok: false, error: 'Another super administrator exists: they must review your access.' }
+    if (error.code === '42501') return { ok: false, error: 'Only a super administrator may confirm their own access, and only when there is no other one.' }
+    if (error.code === 'P0002') return { ok: false, error: 'One of these grants is no longer waiting for review. Reload the page.' }
+    return { ok: false, error: sanitizeError(error, { route: 'access.selfConfirm', fallback: 'Could not record the review. Please try again.' }) }
+  }
+  const confirmed = Number(data ?? 0)
+  await addAudit(admin, {
+    orgId: actor.orgId, actorId: actor.id, action: 'access_review_self_confirmed', entityType: 'profile', entityId: actor.id,
+    detail: { grant_ids: parsed.data.grantIds, count: confirmed, reason: parsed.data.reason, decision: 'self-confirmed (single super administrator)' },
+  })
+  return { ok: true, confirmed }
+}
+
+/**
+ * The person's live grants before reactivating them or after a role change (review M-1): only for an administrator who may manage the
+ * person, and — unless they also hold admin.access — only while the person is deactivated.
+ */
+export async function reviewBeforeReactivation(admin: AdminClient, actor: Actor, userId: string, opts: { mayReadAccess: boolean }, now = new Date()) {
+  const target = await loadTarget(admin, actor.orgId, userId)
+  if (!target) return { ok: false as const, error: 'User not found.' }
+  if (!canManageRole(actor.role, target.role) || target.id === actor.id) return { ok: false as const, error: 'You are not allowed to change this user.' }
+  if (target.is_active && !opts.mayReadAccess) return { ok: false as const, error: 'This person is active; their access is shown on the access screen.' }
+  const live = await liveGrantsOf(admin, actor.orgId, userId, now)
+  if (!live) return { ok: false as const, error: 'User not found.' }
+  return { ok: true as const, version: live.version, targetRole: target.role, grants: live.grants }
 }
 
 export const keepSchema = z.object({
@@ -441,6 +528,7 @@ export async function keepReviewed(admin: AdminClient, actor: Actor, input: unkn
   const { data, error } = await admin.rpc('access_review_keep', { p_org: actor.orgId, p_actor: actor.id, p_grant_ids: parsed.data.grantIds, p_note: note ?? undefined })
   if (error) {
     if (error.code === '42501' && /own access/.test(error.message)) return { ok: false, error: 'You cannot confirm your own access. Ask another administrator.' }
+    if (error.code === '42501' && /not held|only a platform owner|download rights|administration rights only/.test(error.message)) return { ok: false, error: 'You can only confirm access you could give yourself.' }
     if (error.code === '42501') return { ok: false, error: 'You are not allowed to confirm one of these grants.' }
     if (error.code === 'P0002') return { ok: false, error: 'One of these grants is no longer waiting for review. Reload the page.' }
     return { ok: false, error: sanitizeError(error, { route: 'access.keep', fallback: 'Could not record the review. Please try again.' }) }

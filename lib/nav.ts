@@ -33,6 +33,8 @@ export const NAV: NavItem[] = [
   { href: '/playback', label: 'Playback', icon: 'history', group: 'Monitoring', needs: { anyOf: ['cctv.playback'] } },
   { href: '/groups', label: 'Groups', icon: 'grid', group: 'Monitoring', needs: { anyOf: [...CCTV_CAPABILITIES] } },
   { href: '/admin/users', label: 'Users', icon: 'users', group: 'Admin', needs: { admin: 'admin.users' } },
+  // P2-3 review: the review of migrated grants (the editor itself is opened from Users). No count here: the items are static data.
+  { href: '/admin/access-review', label: 'Access review', icon: 'users', group: 'Admin', needs: { admin: 'admin.access' } },
   { href: '/admin/monitoring', label: 'Monitoring', icon: 'activity', group: 'Admin', needs: { admin: 'admin.inventory' } },
   { href: '/admin/stores', label: 'Manage stores', icon: 'building', group: 'Admin', needs: { admin: 'admin.inventory' } },
   { href: '/admin/devices', label: 'Manage devices', icon: 'server', group: 'Admin', needs: { admin: 'admin.inventory' } },

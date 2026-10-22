@@ -646,6 +646,9 @@ isOneToOne: false
 "access_check_manager":
 { Args: { "p_actor": string,"p_org": string,"p_user": string }; Returns: Database["public"]['Enums']["user_role"]
                            },
+"access_check_people_admin":
+{ Args: { "p_actor": string,"p_new_role": Database["public"]['Enums']["user_role"],"p_org": string,"p_user": string }; Returns: undefined
+                           },
 "access_check_spec":
 { Args: { "p_org": string,"p_spec": Json }; Returns: undefined
                            },
@@ -695,6 +698,9 @@ isOneToOne: false
 "access_lock_person":
 { Args: { "p_expected": number,"p_org": string,"p_user": string }; Returns: number
                            },
+"access_merge_plan":
+{ Args: { "p_from": string,"p_now": string,"p_rows": Json,"p_until": string }; Returns: Record<string, unknown>
+                           },
 "access_merge_window":
 { Args: { "p_new_from": string,"p_new_until": string,"p_old_from": string,"p_old_until": string }; Returns: Record<string, unknown>
                            },
@@ -704,11 +710,17 @@ isOneToOne: false
 "access_migrate_legacy_test":
 { Args: { "p_force"?: boolean,"p_run": string,"p_users"?: (string)[] }; Returns: number
                            },
+"access_owner_only":
+{ Args: Record<PropertyKey, never>; Returns: (string)[]
+                           },
 "access_put_grant":
 { Args: { "p_actor": string,"p_needs_review": boolean,"p_org": string,"p_reason": string,"p_source": string,"p_spec": Json,"p_user": string }; Returns: Record<string, unknown>
                            },
 "access_review_keep":
 { Args: { "p_actor": string,"p_grant_ids": (string)[],"p_note"?: string,"p_org": string }; Returns: number
+                           },
+"access_review_self_confirm":
+{ Args: { "p_actor": string,"p_grant_ids": (string)[],"p_org": string,"p_reason": string }; Returns: number
                            },
 "access_session_capabilities":
 { Args: { "p_claims": Json,"p_mfa_enforced": boolean,"p_user": string }; Returns: string[]
@@ -718,6 +730,9 @@ isOneToOne: false
                            },
 "access_stores_for":
 { Args: { "p_aal2": boolean,"p_at": string,"p_caps": (string)[],"p_ignore_status": boolean,"p_user": string }; Returns: string[]
+                           },
+"access_teardown_test_org_people":
+{ Args: { "p_org": string }; Returns: number
                            },
 "any_cctv_camera_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
@@ -743,6 +758,9 @@ isOneToOne: false
 "cctv_visible_group_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },
+"change_person_role":
+{ Args: { "p_actor": string,"p_expected_version"?: number,"p_org": string,"p_role": Database["public"]['Enums']["user_role"],"p_user": string }; Returns: Json
+                           },
 "current_org_id":
 { Args: Record<PropertyKey, never>; Returns: string
                            },
@@ -758,7 +776,7 @@ isOneToOne: false
 { Args: { "p_actor"?: string,"p_expected_version"?: number,"p_grants": Json,"p_org": string,"p_reason"?: string,"p_user": string }; Returns: Json
                            },
 "grant_platform_owner_all":
-{ Args: { "p_org": string,"p_user": string }; Returns: number
+{ Args: { "p_actor"?: string,"p_org": string,"p_user": string }; Returns: number
                            },
 "has_capability":
 { Args: { "p_cap": string }; Returns: boolean
@@ -821,6 +839,9 @@ isOneToOne: false
                            },
 "revoke_user_sessions":
 { Args: { "p_user": string }; Returns: undefined
+                           },
+"set_person_active":
+{ Args: { "p_active": boolean,"p_actor": string,"p_org": string,"p_user": string }; Returns: boolean
                            },
 "status_reasons":
 { Args: { "p_ids": (string)[],"p_type": string }; Returns: {

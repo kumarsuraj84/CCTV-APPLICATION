@@ -37,6 +37,7 @@ export function AccessPreviewPanel(props: { capabilities: PreviewCapability[]; l
           </li>
         ))}
       </ul>
+      <p className="text-xs text-muted-foreground">Downloads (export) are only for administrators and super administrators; nothing here can give them to anybody else.</p>
       <div className="grid gap-3 md:grid-cols-2">
         <div>
           <h3 className="text-sm font-semibold">Grants that will be created ({grants.length})</h3>

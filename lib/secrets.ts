@@ -1,11 +1,13 @@
 // One secret per purpose. A missing one means "not available" (the feature is off and says so), never "use another secret".
-export type SecretPurpose = 'cron' | 'worker' | 'stream_token' | 'system_log_ingest'
+// access_preview (P2-3 review M-5): the key of the access editor's preview token (an HMAC binding a save to the preview shown).
+export type SecretPurpose = 'cron' | 'worker' | 'stream_token' | 'system_log_ingest' | 'access_preview'
 
 const ENV_NAME: Record<SecretPurpose, string> = {
   cron: 'CRON_SECRET',
   worker: 'WORKER_SECRET',
   stream_token: 'STREAM_TOKEN_SECRET',
   system_log_ingest: 'SYSTEM_LOG_INGEST_SECRET',
+  access_preview: 'ACCESS_PREVIEW_SECRET',
 }
 
 export const MIN_SECRET_LENGTH = 16

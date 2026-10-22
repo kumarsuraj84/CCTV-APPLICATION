@@ -6,7 +6,7 @@
 // organisation of every id and the grant rules, and writes audit records. They return plain results and never throw to the client.
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
-import { applyChange, keepReviewed, previewChange, type ChangeLine, type PreviewCapability } from '@/lib/admin/access'
+import { applyChange, keepReviewed, previewChange, selfConfirmReview, type ChangeLine, type PreviewCapability } from '@/lib/admin/access'
 import { requireAdministration } from '@/lib/auth/profile'
 import { rateLimit } from '@/lib/rate-limit'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -44,6 +44,20 @@ export async function applyAccessAction(userId: string, input: { changes: unknow
     revalidatePath(`/admin/users/${userId}/access`)
     revalidatePath('/admin/users')
     revalidatePath('/admin/access-review')
+  }
+  return res
+}
+
+export type SelfConfirmState = { ok: true; confirmed: number } | { ok: false; error: string }
+
+/** Break-glass (review M-11): the only super administrator confirms their own migrated grants with a typed reason. */
+export async function selfConfirmReviewAction(input: { grantIds: string[]; reason: string }): Promise<SelfConfirmState> {
+  const { admin, actor } = await ctx()
+  if (await limited('keep', actor.id, 30)) return { ok: false, error: MSG_SLOW_DOWN }
+  const res = await selfConfirmReview(admin, actor, input)
+  if (res.ok) {
+    revalidatePath('/admin/access-review')
+    revalidatePath('/admin/users')
   }
   return res
 }

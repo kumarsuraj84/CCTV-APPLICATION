@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
-vi.mock('@/lib/actions/admin/access', () => ({ previewAccessAction: vi.fn(), applyAccessAction: vi.fn(), keepReviewedAction: vi.fn() }))
-vi.mock('@/lib/actions/admin/users', () => ({ createUserAction: vi.fn(), setActiveAction: vi.fn(), reactivationReviewAction: vi.fn(), resetPasswordAction: vi.fn() }))
+vi.mock('@/lib/actions/admin/access', () => ({ previewAccessAction: vi.fn(), applyAccessAction: vi.fn(), keepReviewedAction: vi.fn(), selfConfirmReviewAction: vi.fn() }))
+vi.mock('@/lib/actions/admin/users', () => ({ createUserAction: vi.fn(), setActiveAction: vi.fn(), setRoleAction: vi.fn(), reactivationReviewAction: vi.fn(), resetPasswordAction: vi.fn() }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }) }))
 
 import { AccessEditor } from '@/components/admin/AccessEditor'
@@ -162,7 +162,7 @@ describe('the preview, the people list, the create form and the review', () => {
   })
 
   it('the review list offers Keep, Remove and Convert per grant, and explains when one may not act', () => {
-    const item = { ...grant({ id: 'r1', source: 'migrated:home', needsReview: true }), grantId: 'r1', userId: 'u2', personName: 'Ravi', personEmail: 'r@x.test', personRole: 'user', personActive: true }
+    const item = { ...grant({ id: 'r1', source: 'migrated:home', needsReview: true }), grantId: 'r1', userId: 'u2', personName: 'Ravi', personEmail: 'r@x.test', personRole: 'user', personActive: true, reviewDecision: null, keepRefusal: null }
     const html = renderToStaticMarkup(<AccessReviewList groups={[
       { userId: 'u2', personName: 'Ravi', personEmail: 'r@x.test', personRole: 'user', personActive: true, manageable: true, self: false, items: [item] },
       { userId: 'u3', personName: 'Me', personEmail: 'me@x.test', personRole: 'platform_owner', personActive: true, manageable: true, self: true, items: [{ ...item, userId: 'u3', grantId: 'r2', id: 'r2' }] },

@@ -22,7 +22,7 @@ vi.mock('@/lib/rate-limit', () => ({ rateLimit: async () => ({ limited: m.limite
 const record = (fn: string) => async (...args: unknown[]) => (m.calls.push({ fn, args }), m.result)
 vi.mock('@/lib/admin/access', () => ({
   previewChange: record('previewChange'), applyChange: record('applyChange'), keepReviewed: record('keepReviewed'),
-  revokeAll: record('revokeAll'), liveGrantsOf: record('liveGrantsOf'), MSG_CONFLICT: 'conflict',
+  revokeAll: record('revokeAll'), selfConfirmReview: record('selfConfirmReview'), reviewBeforeReactivation: record('reviewBeforeReactivation'), MSG_CONFLICT: 'conflict',
 }))
 vi.mock('@/lib/admin/users', () => ({ updateUser: record('updateUser'), createUser: record('createUser'), resetUserPassword: record('resetUserPassword') }))
 
@@ -77,6 +77,17 @@ describe('access actions', () => {
 })
 
 describe('reactivation', () => {
+  it('review M-1: the grant list is asked with whether the administrator may read access (admin.access)', async () => {
+    const u = await import('@/lib/actions/admin/users')
+    m.result = { ok: false, error: 'This person is active; their access is shown on the access screen.' }
+    for (const may of [false, true]) {
+      m.calls = []
+      m.mayAccess = may
+      expect(await u.reactivationReviewAction(U)).toEqual({ ok: false, error: 'This person is active; their access is shown on the access screen.' })
+      expect(m.calls[0]).toMatchObject({ fn: 'reviewBeforeReactivation', args: [{ tag: 'admin' }, { id: 'a1', orgId: 'o1', role: 'admin' }, U, { mayReadAccess: may }] })
+    }
+  })
+
   it('revoking old grants on reactivation needs admin.access as well, and happens before the activation', async () => {
     const u = await import('@/lib/actions/admin/users')
     m.mayAccess = false

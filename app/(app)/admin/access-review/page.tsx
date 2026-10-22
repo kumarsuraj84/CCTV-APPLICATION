@@ -15,7 +15,7 @@ export const metadata = { title: 'Access review' }
 // The administrative role AND admin.access, like the editor.
 export default async function AccessReviewPage() {
   const me = await requireAdministration('admin.access')
-  const review = await listReview(createAdminClient(), me.org_id)
+  const review = await listReview(createAdminClient(), me.org_id, { id: me.id, orgId: me.org_id, role: me.role })
   const groups = new Map<string, ReviewGroup>()
   for (const i of review.open) {
     const g = groups.get(i.userId) ?? {
@@ -36,7 +36,11 @@ export default async function AccessReviewPage() {
         {review.openCount === 0 ? 'Nothing is waiting for review.' : `${review.openCount} ${review.openCount === 1 ? 'grant is' : 'grants are'} waiting for review, for ${groups.size} ${groups.size === 1 ? 'person' : 'people'}.`}
       </p>
 
-      <AccessReviewList groups={[...groups.values()]} />
+      <p className="max-w-3xl text-sm text-muted-foreground">
+        Keeping a grant is the same as giving it: you can only confirm what you could give yourself. Downloads (export) are only for
+        administrators and super administrators.
+      </p>
+      <AccessReviewList groups={[...groups.values()]} selfConfirm={review.selfConfirmAllowed} />
 
       <section aria-labelledby="notes" className="space-y-2">
         <h2 id="notes" className="text-base font-semibold">Notes from the move to the new access model</h2>
@@ -61,7 +65,7 @@ export default async function AccessReviewPage() {
         <summary className="cursor-pointer text-base font-semibold">Already reviewed and kept ({review.kept.length})</summary>
         {review.kept.length === 0 ? <p className="mt-2 text-sm text-muted-foreground">None yet.</p> : (
           <ul className="mt-2 space-y-1 text-sm">
-            {review.kept.map((k) => <li key={k.grantId}>{k.personName} · {k.capabilityLabel} · {k.scopeLabel} · {SOURCE_LABELS[k.source] ?? k.source} · kept {formatDay(istDate(k.keptAt!))}</li>)}
+            {review.kept.map((k) => <li key={k.grantId}>{k.personName} · {k.capabilityLabel} · {k.scopeLabel} · {SOURCE_LABELS[k.source] ?? k.source} · {k.reviewDecision === 'self_confirmed' ? 'self-confirmed (single super administrator)' : 'kept'} {formatDay(istDate(k.keptAt!))}</li>)}
           </ul>
         )}
       </details>

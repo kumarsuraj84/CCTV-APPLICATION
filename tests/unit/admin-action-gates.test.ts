@@ -17,7 +17,7 @@ vi.mock('@/lib/auth/profile', () => ({
 }))
 vi.mock('@/lib/admin/access', () => ({
   previewChange: async () => ({ ok: false, error: 'x' }), applyChange: async () => ({ ok: false, error: 'x' }), keepReviewed: async () => ({ ok: false, error: 'x' }),
-  liveGrantsOf: async () => null, revokeAll: async () => ({ ok: false, error: 'x' }), MSG_CONFLICT: 'conflict',
+  reviewBeforeReactivation: async () => ({ ok: false, error: 'x' }), selfConfirmReview: async () => ({ ok: false, error: 'x' }), revokeAll: async () => ({ ok: false, error: 'x' }), MSG_CONFLICT: 'conflict',
 }))
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => (m.clients++, { tag: 'admin' }) }))
@@ -59,6 +59,7 @@ describe('admin actions', () => {
       ['admin.access', () => access.previewAccessAction('x', { changes: [], expectedVersion: 0 })],
       ['admin.access', () => access.applyAccessAction('x', { changes: [], expectedVersion: 0, token: '' })],
       ['admin.access', () => access.keepReviewedAction({ grantIds: [] })],
+      ['admin.access', () => access.selfConfirmReviewAction({ grantIds: [], reason: '' })],
       ['admin.inventory', () => inv.saveStoreAction({}, fd())],
       ['admin.inventory', () => inv.deleteStoreAction('x')],
       ['admin.inventory', () => inv.saveDeviceAction({}, fd())],

@@ -116,7 +116,8 @@ describe('access editor service (P2-3)', () => {
     })
 
     it('5: different live, playback and export for the same coverage (live for a location, export for two cameras)', async () => {
-      const v = await createUser(org, 'user')
+      // Owner ruling E-1 (P2-3 review): export only for administrators, so the person here is an administrator (was a viewer).
+      const v = await createUser(org, 'admin')
       const res = await save(owner, v.id, [
         g('cctv.live', 'location', L1),
         g('cctv.playback', 'location', L1),
@@ -270,9 +271,18 @@ describe('access editor service (P2-3)', () => {
     it('a plain administrator gives only what they hold, where they hold it', async () => {
       const v = await createUser(org, 'user')
       expect((await save(plain, v.id, [g('cctv.live', 'camera', c21)])).ok).toBe(true)
-      for (const bad of [g('cctv.live', 'location', L3), g('cctv.export', 'camera', c11, { reason: 'Incident' }), g('it.inventory.view', 'organization', null), g('it.os.deploy', 'location', L1, { reason: 'x y z' })]) {
+      // Review M-14: each refusal says exactly why.
+      const cases: [AccessChange, string][] = [
+        [g('cctv.live', 'location', L3), 'You can only give rights you hold yourself, for the same places: “Watch live video”.'],
+        [g('cctv.export', 'camera', c11, { reason: 'Incident' }), 'Download rights (export) can only be given to administrators and super administrators.'],
+        [g('cctv.export', 'camera', c11), 'Give a reason for “Export or download recordings as files” (at least three characters).'],
+        [g('it.inventory.view', 'organization', null), 'You can only give rights you hold yourself, for the same places: “See IT assets, their addresses and NVR addresses”.'],
+        [g('it.os.deploy', 'location', L1, { reason: 'x y z' }), 'Only a super administrator can give “Deploy operating systems”.'],
+        [g('cctv.live', 'location', L1, { valid_until: istDate(new Date(Date.now() - day)) }), 'The valid-until date must be today or later.'],
+      ]
+      for (const [bad, message] of cases) {
         const res = await previewChange(admin(), plain, v.id, { changes: [bad], expectedVersion: await versionOf(v.id) })
-        expect(res.ok, JSON.stringify(bad)).toBe(false)
+        expect(res, JSON.stringify(bad)).toEqual({ ok: false, error: message })
       }
     })
 
@@ -293,9 +303,18 @@ describe('access editor service (P2-3)', () => {
 
     it('bad input is refused in plain words', async () => {
       const v = await createUser(org, 'user')
-      for (const changes of [[], [{ op: 'grant', capability: 'cctv.live', scope_kind: 'location', scope_id: 'nope', valid_until: null, reason: '' }], [{ op: 'grant', capability: 'cctv.unknown', scope_kind: 'organization', scope_id: null, valid_until: null, reason: '' }], [{ op: 'grant', capability: 'admin.users', scope_kind: 'location', scope_id: L1, valid_until: null, reason: 'x y z' }]]) {
-        const res = await previewChange(admin(), owner, v.id, { changes: changes as AccessChange[], expectedVersion: 0 })
-        expect(res.ok, JSON.stringify(changes)).toBe(false)
+      const cases: [unknown[], string][] = [
+        [[], 'Add at least one change first.'],
+        [[{ op: 'grant', capability: 'cctv.live', scope_kind: 'location', scope_id: 'nope', valid_until: null, reason: '' }], 'Choose a location, camera or asset.'],
+        [[{ op: 'grant', capability: 'cctv.unknown', scope_kind: 'organization', scope_id: null, valid_until: null, reason: '' }], 'One of the rights is not known.'],
+        [[{ op: 'grant', capability: 'admin.users', scope_kind: 'location', scope_id: L1, valid_until: null, reason: 'x y z' }], '“Read and manage people” cannot be given for a single location.'],
+        [[{ op: 'grant', capability: 'cctv.live', scope_kind: 'location', scope_id: null, valid_until: null, reason: '' }], 'Choose a location, camera or asset for each right.'],
+        [[{ op: 'grant', capability: 'cctv.live', scope_kind: 'location', scope_id: L1, valid_until: '2026-02-30', reason: '' }], 'Use a real date for “valid until”.'],
+        [[{ op: 'grant', capability: 'admin.users', scope_kind: 'organization', scope_id: null, valid_until: null, reason: 'x y z' }], 'Administration rights can only be given to administrators.'],
+      ]
+      for (const [changes, message] of cases) {
+        const res = await previewChange(admin(), owner, v.id, { changes, expectedVersion: 0 })
+        expect(res, JSON.stringify(changes)).toEqual({ ok: false, error: message })
       }
     })
   })

@@ -1,6 +1,6 @@
 import type { GrantView } from '@/lib/admin/access'
 import { formatDateTime } from '@/lib/time'
-import { AREA_LABELS, AREAS, SOURCE_LABELS, STATE_LABELS, validityText } from './access-labels'
+import { AREA_LABELS, AREAS, displayReason, SOURCE_LABELS, STATE_LABELS, validityText } from './access-labels'
 import { BADGE, FOCUS, RT } from './fields'
 
 /**
@@ -65,7 +65,7 @@ export function AccessGrantTable(props: {
                       </td>
                       <td className={RT.td}>
                         <div><span className={RT.label}>Came from:</span>{SOURCE_LABELS[g.source] ?? g.source}{g.grantedByName ? ` (${g.grantedByName})` : ''}</div>
-                        {g.reason && <div className="text-xs text-muted-foreground">Reason: {g.reason}</div>}
+                        {g.reason && <div className="text-xs text-muted-foreground">Reason: {displayReason(g.reason)}</div>}
                         <div className="mt-1 flex flex-wrap gap-1">
                           {g.needsReview && !g.keptAt && <span className={BADGE.warn}>Please review</span>}
                           {g.keptAt && <span className={BADGE.info}>Review: kept {formatDateTime(g.keptAt)}</span>}

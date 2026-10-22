@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { addAudit } from '@/lib/admin/audit'
 import { canManageRole, ROLES } from '@/lib/admin/roles'
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
+import { auditInParts, MSG_CONFLICT } from '@/lib/admin/access'
 import { logger } from '@/lib/observability/logger'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { assertRefsInOrg } from '@/lib/security/org-scope'
@@ -41,7 +42,8 @@ export const updateUserSchema = z.object({
 
 // A person is created with NO grants (AC-8, P2-3): access is given afterwards in the access editor ("Assign access next"). A platform
 // owner ("Super administrator") is the exception of owner ruling P-1: they get every capability for the organisation at once.
-// A role change keeps the person's grants; a role is administrative authority only (lib/admin/roles.ts).
+// A role change keeps the person's other grants but revokes what the new role may not hold (review I-2, ruling E-1: admin.* and
+// cctv.export when leaving the administrative roles; the owner-only rights when leaving super administrator).
 export const MSG_LAST_SUPER_ADMIN = 'There must always be at least one active super administrator.'
 
 const firstIssue = (e: z.ZodError) => e.issues[0]?.message ?? 'Check the form and try again.'
@@ -85,18 +87,23 @@ export async function createUser(admin: AdminClient, actor: Actor, input: unknow
   }
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'user_created', entityType: 'profile', entityId: userId, detail: { role: v.role } })
   if (v.role === 'platform_owner') {
-    // Ruling P-1: a super administrator holds every capability for the organisation (migration 20261021000016).
-    const full = await admin.rpc('grant_platform_owner_all', { p_org: actor.orgId, p_user: userId })
+    // Ruling P-1: a super administrator holds every capability for the organisation; the database writes the audit record
+    // (access_granted, source platform_owner_auto, with this actor).
+    const full = await admin.rpc('grant_platform_owner_all', { p_org: actor.orgId, p_user: userId, p_actor: actor.id })
     if (full.error) {
       logger.error({ event: 'platform_owner_grants_failed', userId, errorCode: full.error.code })
       return { ok: true, userId, oneTimePassword, warning: 'The person was added, but their full rights could not be given. Open their access and use “Full rights”.' }
     }
-    await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'access_granted', entityType: 'profile', entityId: userId, detail: { preset: 'full-rights', added: Number(full.data ?? 0), reason: 'Platform owner: all capabilities' } })
   }
   return { ok: true, userId, oneTimePassword }
 }
 
-export async function updateUser(admin: AdminClient, actor: Actor, userId: string, input: unknown): Promise<Result<object>> {
+/**
+ * Changes name, home location, role or status. A role change also revokes what the new role may not keep (review I-2): leaving the
+ * administrative roles revokes admin.* and cctv.export (ruling E-1); leaving super administrator revokes the owner-only rights.
+ * `expectedVersion`: the person's access version the administrator saw (lost-update guard for that revocation).
+ */
+export async function updateUser(admin: AdminClient, actor: Actor, userId: string, input: unknown, opts: { expectedVersion?: number | null } = {}): Promise<Result<{ revoked?: number }>> {
   const parsed = updateUserSchema.safeParse(input)
   if (!parsed.success) return { ok: false, error: firstIssue(parsed.error) }
   const patch = parsed.data
@@ -123,14 +130,33 @@ export async function updateUser(admin: AdminClient, actor: Actor, userId: strin
       return { ok: false, error: 'That location was not found.' }
     }
   }
-  const { error } = await admin.from('profiles').update(patch).eq('id', userId).eq('org_id', actor.orgId)
-  if (error) return { ok: false, error: sanitizeError(error, { route: 'updateUser', fallback: 'Could not save the changes.' }) }
-  if (patch.is_active !== undefined) {
+  const { role, is_active, ...rest } = patch
+  let revoked: RevokedGrant[] = []
+  if (role !== undefined && role !== target.role) {
+    // Review I-2: the role change and the revocation of what the new role may not keep, in one transaction (change_person_role).
+    const changed = await admin.rpc('change_person_role', { p_org: actor.orgId, p_actor: actor.id, p_user: userId, p_role: role, p_expected_version: opts.expectedVersion ?? undefined })
+    if (changed.error) return { ok: false, error: dbRefusal(changed.error, 'updateUser.role') }
+    revoked = ((changed.data as { revoked?: RevokedGrant[] } | null)?.revoked ?? [])
+    if (revoked.length > 0) {
+      await auditInParts(admin, {
+        orgId: actor.orgId, actorId: actor.id, action: 'access_revoked', entityId: userId,
+        detail: { reason: revoked[0].reason, from_role: target.role, to_role: role }, grants: revoked.map((g) => ({ grant_id: g.id, capability: g.capability, scope_kind: g.scope_kind, scope_id: g.scope_id, valid_until: g.valid_until, reason: g.reason })),
+      })
+    }
+  }
+  if (Object.keys(rest).length > 0) {
+    const { error } = await admin.from('profiles').update(rest).eq('id', userId).eq('org_id', actor.orgId)
+    if (error) return { ok: false, error: sanitizeError(error, { route: 'updateUser', fallback: 'Could not save the changes.' }) }
+  }
+  if (is_active !== undefined) {
+    // Through the database (set_person_active), so the last-super-administrator rule and the automatic full rights apply with the actor.
+    const set = await admin.rpc('set_person_active', { p_org: actor.orgId, p_actor: actor.id, p_user: userId, p_active: is_active })
+    if (set.error) return { ok: false, error: dbRefusal(set.error, 'updateUser.status') }
     // Deactivating also stops sign-ins; reactivating lifts that.
-    const ban = await admin.auth.admin.updateUserById(userId, { ban_duration: patch.is_active ? 'none' : '876000h' })
+    const ban = await admin.auth.admin.updateUserById(userId, { ban_duration: is_active ? 'none' : '876000h' })
     if (ban.error) {
       logger.error({ event: 'update_user_ban_failed', userId, error: ban.error })
-      await admin.from('profiles').update({ is_active: target.is_active }).eq('id', userId).eq('org_id', actor.orgId)
+      await admin.rpc('set_person_active', { p_org: actor.orgId, p_actor: actor.id, p_user: userId, p_active: target.is_active })
       return { ok: false, error: 'Could not change the status. Please try again.' }
     }
     if (!patch.is_active) {
@@ -143,7 +169,19 @@ export async function updateUser(admin: AdminClient, actor: Actor, userId: strin
     }
   }
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'user_updated', entityType: 'profile', entityId: userId, detail: patch })
-  return { ok: true }
+  return { ok: true, revoked: revoked.length }
+}
+
+type RevokedGrant = { id: string; capability: string; scope_kind: string; scope_id: string | null; valid_until: string | null; reason: string }
+
+function dbRefusal(error: { code?: string; message: string }, route: string): string {
+  if (error.code === 'DR001') return MSG_LAST_SUPER_ADMIN
+  if (error.code === '40001') return MSG_CONFLICT
+  if (error.code === '42501' && /own role/.test(error.message)) return 'You cannot change your own role or status.'
+  if (error.code === '42501' && /give that role/.test(error.message)) return 'You are not allowed to give that role.'
+  if (error.code === '42501') return 'You are not allowed to change this user.'
+  if (error.code === 'P0002') return 'User not found.'
+  return sanitizeError(error, { route, fallback: 'Could not save the changes.' })
 }
 
 export async function resetUserPassword(admin: AdminClient, actor: Actor, userId: string): Promise<Result<{ oneTimePassword: string }>> {
