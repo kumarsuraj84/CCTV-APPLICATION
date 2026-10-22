@@ -9,6 +9,9 @@ const nextConfig: NextConfig = {
   generateBuildId: async () => BUILD_ID,
   output: 'standalone',
   devIndicators: false,
+  // Development only: the dev server refuses scripts and the hot-reload socket from any host but localhost, which left the page on another
+  // PC unhydrated (video tiles stuck on "Connecting…"). Extra hosts, comma separated, e.g. DEV_ALLOWED_ORIGINS=10.0.0.47,pc-name.
+  allowedDevOrigins: (process.env.DEV_ALLOWED_ORIGINS ?? '10.0.0.47').split(',').map((s) => s.trim()).filter(Boolean),
   turbopack: { root: __dirname },
   experimental: {
     serverActions: { bodySizeLimit: '30mb' },
