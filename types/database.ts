@@ -541,14 +541,14 @@ isOneToOne: false
                   ]
                 },"check_state": {
                   Row: {
-                    "consecutive_failures": number,"created_at": string,"down_since": string | null,"error": string | null,"first_failure_at": string | null,"id": string,"last_checked_at": string | null,"last_up_at": string | null,"method": string | null,"org_id": string,"status": string,"target_id": string,"target_type": string,"updated_at": string
+                    "applied_fencing_token": number | null,"applied_lease": string | null,"consecutive_failures": number,"created_at": string,"down_since": string | null,"error": string | null,"first_failure_at": string | null,"id": string,"last_checked_at": string | null,"last_up_at": string | null,"method": string | null,"org_id": string,"status": string,"target_id": string,"target_type": string,"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "consecutive_failures"?: number,"created_at"?: string,"down_since"?: string | null,"error"?: string | null,"first_failure_at"?: string | null,"id"?: string,"last_checked_at"?: string | null,"last_up_at"?: string | null,"method"?: string | null,"org_id": string,"status"?: string,"target_id": string,"target_type": string,"updated_at"?: string
+                    "applied_fencing_token"?: number | null,"applied_lease"?: string | null,"consecutive_failures"?: number,"created_at"?: string,"down_since"?: string | null,"error"?: string | null,"first_failure_at"?: string | null,"id"?: string,"last_checked_at"?: string | null,"last_up_at"?: string | null,"method"?: string | null,"org_id": string,"status"?: string,"target_id": string,"target_type": string,"updated_at"?: string
                   }
                   Update: {
-                    "consecutive_failures"?: number,"created_at"?: string,"down_since"?: string | null,"error"?: string | null,"first_failure_at"?: string | null,"id"?: string,"last_checked_at"?: string | null,"last_up_at"?: string | null,"method"?: string | null,"org_id"?: string,"status"?: string,"target_id"?: string,"target_type"?: string,"updated_at"?: string
+                    "applied_fencing_token"?: number | null,"applied_lease"?: string | null,"consecutive_failures"?: number,"created_at"?: string,"down_since"?: string | null,"error"?: string | null,"first_failure_at"?: string | null,"id"?: string,"last_checked_at"?: string | null,"last_up_at"?: string | null,"method"?: string | null,"org_id"?: string,"status"?: string,"target_id"?: string,"target_type"?: string,"updated_at"?: string
                   }
                   Relationships: [
                     {
@@ -691,14 +691,14 @@ isOneToOne: false
                   ]
                 },"media_sessions": {
                   Row: {
-                    "aal2": boolean,"asset_id": string | null,"camera_id": string | null,"capability": string,"closed_at": string | null,"connect_by": string,"created_at": string,"expires_at": string,"id": string,"kind": string,"last_validated_at": string | null,"location_id": string | null,"open_count": number,"opened_at": string | null,"org_id": string,"recorder_id": string | null,"revoke_reason": string | null,"revoked_at": string | null,"stream": string | null,"user_id": string,"media_session_problem": string | null
+                    "aal2": boolean,"asset_id": string | null,"camera_id": string | null,"capability": string,"closed_at": string | null,"connect_by": string,"created_at": string,"expires_at": string,"id": string,"kind": string,"last_validated_at": string | null,"location_id": string | null,"open_count": number,"opened_at": string | null,"org_id": string,"recorder_id": string | null,"revoke_reason": string | null,"revoked_at": string | null,"stream": string | null,"stream_cap": number | null,"user_id": string,"media_session_problem": string | null
                   }
                   ComputedFields: "media_session_problem"
                   Insert: {
-                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability": string,"closed_at"?: string | null,"connect_by": string,"created_at"?: string,"expires_at": string,"id"?: string,"kind": string,"last_validated_at"?: string | null,"location_id"?: string | null,"open_count"?: number,"opened_at"?: string | null,"org_id": string,"recorder_id"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"user_id": string
+                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability": string,"closed_at"?: string | null,"connect_by": string,"created_at"?: string,"expires_at": string,"id"?: string,"kind": string,"last_validated_at"?: string | null,"location_id"?: string | null,"open_count"?: number,"opened_at"?: string | null,"org_id": string,"recorder_id"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"stream_cap"?: number | null,"user_id": string
                   }
                   Update: {
-                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability"?: string,"closed_at"?: string | null,"connect_by"?: string,"created_at"?: string,"expires_at"?: string,"id"?: string,"kind"?: string,"last_validated_at"?: string | null,"location_id"?: string | null,"open_count"?: number,"opened_at"?: string | null,"org_id"?: string,"recorder_id"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"user_id"?: string
+                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability"?: string,"closed_at"?: string | null,"connect_by"?: string,"created_at"?: string,"expires_at"?: string,"id"?: string,"kind"?: string,"last_validated_at"?: string | null,"location_id"?: string | null,"open_count"?: number,"opened_at"?: string | null,"org_id"?: string,"recorder_id"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"stream_cap"?: number | null,"user_id"?: string
                   }
                   Relationships: [
                     {
@@ -1109,14 +1109,14 @@ isOneToOne: false
                   ]
                 },"worker_state": {
                   Row: {
-                    "check_requested_at": string | null,"id": number,"last_cameras_round_at": string | null,"last_devices_round_at": string | null,"last_heartbeat": string | null,"progress_done": number,"progress_total": number,"run_finished_at": string | null,"run_started_at": string | null
+                    "check_requested_at": string | null,"heartbeat_db_at": string | null,"id": number,"last_cameras_round_at": string | null,"last_devices_round_at": string | null,"last_heartbeat": string | null,"progress_done": number,"progress_total": number,"run_finished_at": string | null,"run_started_at": string | null
                   }
                   ComputedFields: never
                   Insert: {
-                    "check_requested_at"?: string | null,"id": number,"last_cameras_round_at"?: string | null,"last_devices_round_at"?: string | null,"last_heartbeat"?: string | null,"progress_done"?: number,"progress_total"?: number,"run_finished_at"?: string | null,"run_started_at"?: string | null
+                    "check_requested_at"?: string | null,"heartbeat_db_at"?: string | null,"id": number,"last_cameras_round_at"?: string | null,"last_devices_round_at"?: string | null,"last_heartbeat"?: string | null,"progress_done"?: number,"progress_total"?: number,"run_finished_at"?: string | null,"run_started_at"?: string | null
                   }
                   Update: {
-                    "check_requested_at"?: string | null,"id"?: number,"last_cameras_round_at"?: string | null,"last_devices_round_at"?: string | null,"last_heartbeat"?: string | null,"progress_done"?: number,"progress_total"?: number,"run_finished_at"?: string | null,"run_started_at"?: string | null
+                    "check_requested_at"?: string | null,"heartbeat_db_at"?: string | null,"id"?: number,"last_cameras_round_at"?: string | null,"last_devices_round_at"?: string | null,"last_heartbeat"?: string | null,"progress_done"?: number,"progress_total"?: number,"run_finished_at"?: string | null,"run_started_at"?: string | null
                   }
                   Relationships: [
                     
@@ -1184,7 +1184,7 @@ isOneToOne: false
                   ]
                 },"location_status": {
                   Row: {
-                    "cameras_down": number | null,"cameras_live": number | null,"cameras_monitoring_off": number | null,"cameras_stale": number | null,"cameras_total": number | null,"cameras_unknown": number | null,"location_id": string | null,"nvr_checked_at": string | null,"nvr_down_since": string | null,"nvr_stale": boolean | null,"nvr_status": string | null,"org_id": string | null,"recorders_down": number | null,"recorders_monitoring_off": number | null,"recorders_total": number | null,"recorders_unknown": number | null,"recorders_up": number | null
+                    "cameras_down": number | null,"cameras_live": number | null,"cameras_monitoring_off": number | null,"cameras_recorder_unreachable": number | null,"cameras_stale": number | null,"cameras_total": number | null,"cameras_unknown": number | null,"location_id": string | null,"nvr_checked_at": string | null,"nvr_down_since": string | null,"nvr_stale": boolean | null,"nvr_status": string | null,"org_id": string | null,"recorders_down": number | null,"recorders_monitoring_off": number | null,"recorders_total": number | null,"recorders_unknown": number | null,"recorders_up": number | null
                   }
                   ComputedFields: never
                   Relationships: [
@@ -1585,6 +1585,11 @@ isOneToOne: false
               "camera_id": string,"sid": string
             }[]
                            },
+"media_session_create_live":
+{ Args: { "p_cameras": (string)[],"p_max": number,"p_org": string,"p_release"?: (string)[],"p_streams": (string)[],"p_user": string }; Returns: {
+              "camera_id": string,"paused": boolean,"sid": string
+            }[]
+                           },
 "media_session_open":
 { Args: { "p_camera": string,"p_kind": string,"p_sid": string,"p_stream": string,"p_user": string }; Returns: {
               "expires_at": string,"kind": string,"ok": boolean,"reason": string,"stream": string
@@ -1598,6 +1603,9 @@ isOneToOne: false
                            },
 "media_sessions_age_test":
 { Args: { "p_seconds": number,"p_sid": string }; Returns: undefined
+                           },
+"media_sessions_held_live":
+{ Args: { "p_fresh_sec"?: number,"p_org": string,"p_user": string }; Returns: string[]
                            },
 "media_sessions_live_open":
 { Args: { "p_fresh_sec"?: number,"p_org": string,"p_user": string }; Returns: {
@@ -1644,7 +1652,7 @@ isOneToOne: false
 { Args: { "p_fencing_token": number,"p_lease": string,"p_org": string,"p_results": Json,"p_threshold": number }; Returns: undefined
                            },
 "monitor_heartbeat":
-{ Args: { "p_at": string,"p_fencing_token": number,"p_lease": string }; Returns: undefined
+{ Args: { "p_at": string,"p_fencing_token": number,"p_lease": string }; Returns: number
                            },
 "monitor_mark_round":
 { Args: { "p_at": string,"p_fencing_token": number,"p_kind": string,"p_lease": string }; Returns: undefined
@@ -1831,6 +1839,12 @@ isOneToOne: false
                            },
 "worker_fence":
 { Args: { "p_lease": string,"p_token": number }; Returns: undefined
+                           },
+"worker_fence_global":
+{ Args: { "p_lease": string,"p_token": number }; Returns: undefined
+                           },
+"worker_fence_org":
+{ Args: { "p_lease": string,"p_org": string,"p_token": number }; Returns: undefined
                            },
 "worker_lease_forget_test":
 { Args: Record<PropertyKey, never>; Returns: number
