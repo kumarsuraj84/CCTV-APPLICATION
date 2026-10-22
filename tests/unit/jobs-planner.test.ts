@@ -87,10 +87,13 @@ function job(state: JobState, extra: Partial<Job> = {}): Job {
   return {
     id: `j-${Math.random()}`, version: 1, rollout_id: 'r', rollout_seq: 1, adapter: 'fake', target_id: 't', location_id: 'L', payload_hash: 'h', idempotency_key: 'k',
     supersedes_key: null, setting_paths: ['a'], phase: 0, order: 0, state, attempt: 1, max_attempts: 1, lease: null, reconcile_lease: null,
-    reconcile_attempts: 0, last_reconcile: null, verify_attempts: 0, applied: false, partial: false, last_result: null, verification: null, snapshot: null, rollback: null,
+    reconcile_attempts: 0, next_reconcile_at: null, needs_manual: false, last_reconcile: null, verify_deadline: null, verify_lease: null, verify_attempts: 0,
+    effective_hash: 'e', waiting_reason: null, superseded_by_job: null, applied: false, partial: false, last_result: null, verification: null, snapshot: null, rollback: null,
     stop: null, blocked_reason: null, terminal_reason: null, superseded_by: null, recovery_actions: [], created_at: 0, updated_at: 0, finished_at: null, ...extra,
   }
 }
+
+const snap = (ref: string) => ({ status: 'taken' as const, ref, key_ref: 'kms:k', content_sha256: 'c'.repeat(64), retain_until: 1 })
 
 describe('summarize', () => {
   it('keeps requested, applied, verified, failed and unknown apart', () => {
@@ -127,7 +130,8 @@ describe('finalRolloutState', () => {
     expect(finalRolloutState([job('verification_failed'), job('failed')])).toBe('failed')
     expect(finalRolloutState([job('superseded'), job('superseded')])).toBe('superseded')
     expect(finalRolloutState([job('superseded'), job('verified')])).toBe('completed')
-    expect(finalRolloutState([job('resolved_manually')])).toBe('completed')
+    expect(finalRolloutState([job('resolved_manually')])).toBe('completed_manually')
+    expect(finalRolloutState([job('resolved_manually'), job('verified')])).toBe('completed')
   })
 
   it('is null while any job is still open', () => {
@@ -137,7 +141,7 @@ describe('finalRolloutState', () => {
 
 describe('recoveryActionsFor', () => {
   it('offers snapshot restore only when a snapshot exists and the adapter can roll back', () => {
-    const withSnap = job('verification_failed', { snapshot: { status: 'taken', ref: 'snap-1' } })
+    const withSnap = job('verification_failed', { snapshot: snap('snap-1') })
     expect(recoveryActionsFor(withSnap, { rollback: true })).toEqual(['restore_snapshot', 'manual'])
     expect(recoveryActionsFor(withSnap, { rollback: false })).toEqual(['manual'])
     expect(recoveryActionsFor(job('verification_failed'), { rollback: true })).toEqual(['manual'])
@@ -148,7 +152,11 @@ describe('recoveryActionsFor', () => {
   })
 
   it('a partial application offers restore and manual repair', () => {
-    expect(recoveryActionsFor(job('partially_applied', { snapshot: { status: 'taken', ref: 's' } }), { rollback: true })).toEqual(['restore_snapshot', 'manual'])
+    expect(recoveryActionsFor(job('partially_applied', { snapshot: snap('s') }), { rollback: true })).toEqual(['restore_snapshot', 'manual'])
+  })
+
+  it('an unknown job that needs a human offers only manual resolution', () => {
+    expect(recoveryActionsFor(job('unknown', { needs_manual: true }), { rollback: true })).toEqual(['manual'])
   })
 
   it('successful jobs need nothing', () => {

@@ -5,7 +5,8 @@ import { makePlan } from '@/lib/jobs/testing'
 
 function rollout(id: string): Rollout {
   return {
-    id, version: 0, seq: 1, title: 't', state: 'draft', plan: makePlan(), payload_hash: 'h', approvals: [], targets: [], excluded: [],
+    id, version: 0, seq: 1, title: 't', state: 'draft', plan: makePlan(), payload_hash: 'h', revision: 0, authors: ['u'], approval_subject: null,
+    effective_risk: 'medium', setting_paths_effective: [], targets_resolved_at: null, finished_acknowledged: 0, approvals: [], targets: [], excluded: [],
     impact: null, impact_requires_acknowledgement: false, conflicts: [], current_batch: -1, phase_finished_at: null, paused_from: null,
     pause_reason: null, failures_acknowledged: 0, consecutive_failures: 0, counted_jobs: [], canary_override: false, created_by: 'u', created_at: 0, updated_at: 0, started_at: null, finished_at: null,
   }
@@ -13,9 +14,10 @@ function rollout(id: string): Rollout {
 
 function job(id: string, target: string, state: Job['state'] = 'queued'): Job {
   return {
-    id, version: 0, rollout_id: 'r1', rollout_seq: 1, adapter: 'fake', target_id: target, location_id: 'L', payload_hash: 'h', idempotency_key: `${id}:h`,
+    id, version: 0, rollout_id: 'r1', rollout_seq: 1, adapter: 'fake', target_id: target, location_id: 'L', payload_hash: 'h', effective_hash: 'e', idempotency_key: `${id}:h`,
     supersedes_key: null, setting_paths: ['a'], phase: 0, order: 0, state, attempt: 0, max_attempts: 1, lease: null, reconcile_lease: null,
-    reconcile_attempts: 0, last_reconcile: null, verify_attempts: 0, applied: false, partial: false, last_result: null, verification: null, snapshot: null, rollback: null,
+    reconcile_attempts: 0, next_reconcile_at: null, needs_manual: false, last_reconcile: null, verify_deadline: null, verify_lease: null, verify_attempts: 0,
+    waiting_reason: null, superseded_by_job: null, applied: false, partial: false, last_result: null, verification: null, snapshot: null, rollback: null,
     stop: null, blocked_reason: null, terminal_reason: null, superseded_by: null, recovery_actions: [], created_at: 0, updated_at: 0, finished_at: null,
   }
 }
@@ -67,14 +69,42 @@ describe('InMemoryJobStore', () => {
     expect(r.ok).toBe(false)
   })
 
-  it('events get consecutive sequence numbers and cannot go back in time', async () => {
+  it('events get consecutive sequence numbers in commit order; the sequence, not the wall time, is the order', async () => {
     const s = new InMemoryJobStore()
     await s.commit({ events: [ev(5), ev(5)] })
     await s.commit({ events: [ev(7)] })
-    expect((await s.listEvents()).map((e) => e.seq)).toEqual([1, 2, 3])
-    const back = await s.commit({ events: [ev(6)] })
-    expect(back.ok).toBe(false)
-    expect(await s.listEvents()).toHaveLength(3)
+    expect((await s.commit({ events: [ev(6)] })).ok).toBe(true)
+    expect((await s.listEvents()).map((e) => [e.seq, e.at])).toEqual([[1, 5], [2, 5], [3, 7], [4, 6]])
+  })
+
+  it('a guard on a record or slot read earlier refuses the commit when it changed (write skew)', async () => {
+    const s = new InMemoryJobStore()
+    await s.commit({ jobs: [{ record: job('j1', 't1'), expected_version: null }, { record: job('j2', 't2'), expected_version: null }] })
+    const slots = await s.readSlots(['location:L'])
+    // Writer A offers j1 and bumps the location slot.
+    const a = await s.commit({ jobs: [{ record: { ...job('j1', 't1'), state: 'offered' }, expected_version: 1 }], guards: [{ kind: 'slot', key: 'location:L', version: slots['location:L'] }], bump_slots: ['location:L'] })
+    expect(a.ok).toBe(true)
+    // Writer B decided on the same old slot version: refused.
+    const b = await s.commit({ jobs: [{ record: { ...job('j2', 't2'), state: 'offered' }, expected_version: 1 }], guards: [{ kind: 'slot', key: 'location:L', version: slots['location:L'] }], bump_slots: ['location:L'] })
+    expect(!b.ok && b.error.code).toBe('version_conflict')
+    expect((await s.readSlots(['location:L']))['location:L']).toBe(1)
+    const g = await s.commit({ events: [ev(1)], guards: [{ kind: 'job', id: 'j1', version: 1 }] })
+    expect(g.ok).toBe(false)
+  })
+
+  it('leases: another holder only after expiry and with a higher fencing token; a stale fence is refused', async () => {
+    const s = new InMemoryJobStore()
+    const a = await s.acquireLease('offering', 'A', 0, 1000)
+    expect(a.ok && a.value.token).toBe(1)
+    expect((await s.acquireLease('offering', 'B', 500, 1000)).ok).toBe(false)
+    const renew = await s.acquireLease('offering', 'A', 600, 1000)
+    expect(renew.ok && renew.value.token).toBe(1)
+    const b = await s.acquireLease('offering', 'B', 2000, 1000)
+    expect(b.ok && b.value.token).toBe(2)
+    if (!a.ok || !b.ok) return
+    const stale = await s.commit({ events: [ev(1)], fence: a.value })
+    expect(!stale.ok && stale.error.code).toBe('stale_fence')
+    expect((await s.commit({ events: [ev(1)], fence: b.value })).ok).toBe(true)
   })
 
   it('lists jobs by rollout, by target and by state', async () => {

@@ -1,10 +1,16 @@
 // Persistence interface of the engine and an in-memory implementation (P7-0).
 //
-// Every write goes through `commit`, which applies a whole changeset atomically: every record is checked
-// against its expected version first (compare-and-set fencing), and only if all match are the records
-// written (version + 1) and the events appended. A PostgreSQL implementation does the same in one
-// transaction (`UPDATE ... WHERE id = $1 AND version = $2`, insert events, all or nothing).
-import { fail, ok, type Job, type JobEvent, type JobState, type NewJobEvent, type Outcome, type Rollout } from './types'
+// Every write goes through `commit`, which applies a whole changeset atomically:
+// - every written record is checked against its expected version (compare-and-set fencing);
+// - every GUARD (a record or counter slot the caller READ to make its decision) must still have the version
+//   the caller saw, which rejects write skew (two offers each seeing a free location);
+// - a FENCE, when given, must carry the current token of the named lease (only the offering-lease holder may
+//   offer; a holder that lost the lease is refused);
+// - only if all checks pass are the records written (version + 1), the slots in `bump_slots` incremented and
+//   the events appended (sequence numbers in commit order; the sequence, not the wall time, is the order).
+// A PostgreSQL implementation does the same in one transaction (UPDATE ... WHERE id = $1 AND version = $2 for
+// records and slots, a check of the lease row's fencing token, insert of the events; all or nothing).
+import { fail, ok, type Fence, type Job, type JobEvent, type JobState, type NewJobEvent, type Outcome, type Rollout } from './types'
 
 export interface VersionedWrite<T> {
   record: T
@@ -12,10 +18,20 @@ export interface VersionedWrite<T> {
   expected_version: number | null
 }
 
+/** Something read whose version must be unchanged at commit. Slots are counters such as "location:<id>", "target:<id>", "rollout-active:<id>". */
+export type Guard =
+  | { kind: 'rollout'; id: string; version: number }
+  | { kind: 'job'; id: string; version: number }
+  | { kind: 'slot'; key: string; version: number }
+
 export interface Changeset {
   rollouts?: VersionedWrite<Rollout>[]
   jobs?: VersionedWrite<Job>[]
   events?: NewJobEvent[]
+  guards?: Guard[]
+  /** Counter slots this commit changes (their version is incremented). */
+  bump_slots?: string[]
+  fence?: Fence
 }
 
 export interface CommitResult {
@@ -33,7 +49,14 @@ export interface JobStore {
   listJobsInStates(states: JobState[]): Promise<Job[]>
   /** Events in sequence order. */
   listEvents(filter?: { rollout_id?: string; job_id?: string }): Promise<JobEvent[]>
-  /** Atomic, compare-and-set write of records plus appended events. */
+  /** Current versions of counter slots (0 when never bumped). Read BEFORE reading the data they protect. */
+  readSlots(keys: string[]): Promise<Record<string, number>>
+  /**
+   * Take or renew a named lease. A different holder gets it only after it has run out, and then with a higher
+   * fencing token; the same holder renewing keeps its token.
+   */
+  acquireLease(name: string, holder: string, now: number, ttl_ms: number): Promise<Outcome<Fence>>
+  /** Atomic write of records plus appended events, with record versions, guards and an optional fence checked first. */
   commit(changes: Changeset): Promise<Outcome<CommitResult>>
   nextRolloutSeq(): Promise<number>
 }
@@ -54,6 +77,8 @@ export class InMemoryJobStore implements JobStore {
   private readonly rollouts = new Map<string, Rollout>()
   private readonly jobs = new Map<string, Job>()
   private readonly events: JobEvent[] = []
+  private readonly slots = new Map<string, number>()
+  private readonly leases = new Map<string, { holder: string; token: number; until: number }>()
   private seq = 0
 
   async getRollout(id: string): Promise<Rollout | null> {
@@ -91,6 +116,19 @@ export class InMemoryJobStore implements JobStore {
     return this.events.filter((e) => (filter.rollout_id === undefined || e.rollout_id === filter.rollout_id) && (filter.job_id === undefined || e.job_id === filter.job_id))
   }
 
+  async readSlots(keys: string[]): Promise<Record<string, number>> {
+    return Object.fromEntries(keys.map((k) => [k, this.slots.get(k) ?? 0]))
+  }
+
+  async acquireLease(name: string, holder: string, now: number, ttl_ms: number): Promise<Outcome<Fence>> {
+    const cur = this.leases.get(name)
+    if (cur && cur.holder !== holder && cur.until > now) return fail('stale_fence', `The ${name} lease is held by another worker until ${new Date(cur.until).toISOString()}.`)
+    const token = !cur ? 1 : cur.holder === holder && cur.until > now ? cur.token : cur.token + 1
+    const lease = { holder, token, until: now + ttl_ms }
+    this.leases.set(name, lease)
+    return ok({ name, holder, token, until: lease.until })
+  }
+
   async nextRolloutSeq(): Promise<number> {
     this.seq += 1
     return this.seq
@@ -112,18 +150,23 @@ export class InMemoryJobStore implements JobStore {
       }
       return ok(true)
     }
+    if (changes.fence) {
+      const lease = this.leases.get(changes.fence.name)
+      if (!lease || lease.token !== changes.fence.token) return fail('stale_fence', `The ${changes.fence.name} lease was taken over; this writer may no longer offer.`)
+    }
+    for (const g of changes.guards ?? []) {
+      const actual = g.kind === 'slot' ? (this.slots.get(g.key) ?? 0) : g.kind === 'rollout' ? this.rollouts.get(g.id)?.version : this.jobs.get(g.id)?.version
+      if (actual !== g.version) {
+        const what = g.kind === 'slot' ? g.key : `${g.kind} ${g.id}`
+        return fail('version_conflict', `${what} changed since it was read; decide again`)
+      }
+    }
     const rw = changes.rollouts ?? []
     const jw = changes.jobs ?? []
-    const ev = changes.events ?? []
     const r1 = check(this.rollouts, rw, 'rollout')
     if (!r1.ok) return r1
     const r2 = check(this.jobs, jw, 'job')
     if (!r2.ok) return r2
-    let lastAt = this.events.length ? this.events[this.events.length - 1].at : -Infinity
-    for (const e of ev) {
-      if (e.at < lastAt) return fail('version_conflict', 'events must not go back in time')
-      lastAt = e.at
-    }
 
     const out: CommitResult = { rollouts: [], jobs: [], events: [] }
     for (const w of rw) {
@@ -136,7 +179,8 @@ export class InMemoryJobStore implements JobStore {
       this.jobs.set(stored.id, stored)
       out.jobs.push(copy(stored))
     }
-    for (const e of ev) {
+    for (const k of new Set(changes.bump_slots ?? [])) this.slots.set(k, (this.slots.get(k) ?? 0) + 1)
+    for (const e of changes.events ?? []) {
       const stored = deepFreeze({ ...copy(e), seq: this.events.length + 1 })
       this.events.push(stored)
       out.events.push(stored)

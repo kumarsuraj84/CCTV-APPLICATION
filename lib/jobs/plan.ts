@@ -1,11 +1,15 @@
 // Plan hashing and structural validation (P7-0). Pure functions.
-import type { AdapterCapabilities } from './adapter'
-import { canonicalize, CanonicalJsonError, sha256Hex } from './canonical'
+import type { AdapterCapabilities, KindCapabilities } from './adapter'
+import { canonicalize, CanonicalJsonError, findNonNfc, sha256Hex, type JsonValue } from './canonical'
+import { pathsOverlap } from './paths'
 import type { Plan } from './types'
 import { parseZonedInstant, validateWindow } from './window'
 
 /** Domain tag so a plan hash can never equal the hash of some other canonical document. */
 export const PLAN_HASH_DOMAIN = 'drishti.plan.v1'
+
+/** Default longest time a plan may stay valid (its expiry minus now). */
+export const DEFAULT_MAX_HORIZON_MS = 30 * 86_400_000
 
 /** SHA-256 over the canonical JSON of the whole plan (every field influences execution). Throws CanonicalJsonError for non-JSON content. */
 export function payloadHash(plan: Plan): string {
@@ -20,30 +24,94 @@ export interface PlanIssue {
 export interface PlanValidationOptions {
   now: number
   adapters: Record<string, AdapterCapabilities>
+  /** Longest allowed distance from now to the expiry (default 30 days). */
+  max_horizon_ms?: number
 }
 
 const SHA256 = /^[0-9a-f]{64}$/
 const SETTING_PATH = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/
+/** Parameter names that hold or name a secret; their value must be a versioned SecretRef. */
+const SECRET_NAME = /(password|passphrase|passwd|secret|token|psk|pre_shared|wpa_key|community|credential|private_?key|api_?key)/i
 
 const isInt = (n: unknown, min: number, max = Number.MAX_SAFE_INTEGER): boolean =>
   typeof n === 'number' && Number.isInteger(n) && n >= min && n <= max
 const nonEmpty = (s: unknown): boolean => typeof s === 'string' && s.trim().length > 0
+
+/** Own-property lookup for user-supplied names (never a prototype property such as "constructor"). */
+export function own<T>(map: Record<string, T>, key: string): T | undefined {
+  return Object.hasOwn(map, key) ? map[key] : undefined
+}
+
+export function adapterFor(adapters: Record<string, AdapterCapabilities>, plan: Plan): AdapterCapabilities | undefined {
+  return own(adapters, plan.adapter)
+}
+
+export function kindFor(adapters: Record<string, AdapterCapabilities>, plan: Plan): KindCapabilities | undefined {
+  const a = adapterFor(adapters, plan)
+  return a ? own(a.kinds, plan.kind) : undefined
+}
+
+/** A versioned secret reference: exactly { ref: "vault:...", version: n ≥ 1, fingerprint: sha256 hex }. */
+export function isSecretRef(v: JsonValue | undefined): boolean {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false
+  const keys = Object.keys(v).sort().join(',')
+  return keys === 'fingerprint,ref,version' && typeof v.ref === 'string' && v.ref.startsWith('vault:') && isInt(v.version, 1) && typeof v.fingerprint === 'string' && SHA256.test(v.fingerprint)
+}
+
+/** Problems with secrets in the parameters: bare vault references or secret-named values that are not versioned references. */
+export function secretIssues(params: JsonValue, path = 'params'): string[] {
+  const out: string[] = []
+  const walk = (v: JsonValue, p: string, key: string | null) => {
+    if (key !== null && SECRET_NAME.test(key) && !isSecretRef(v)) {
+      out.push(`${p}: a secret must be a versioned reference { ref, version, fingerprint }, never a value or a bare reference`)
+      return
+    }
+    if (typeof v === 'string') {
+      if (v.startsWith('vault:')) out.push(`${p}: a bare vault reference can change after approval; use { ref, version, fingerprint }`)
+      return
+    }
+    if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${p}[${i}]`, null)); return }
+    if (v !== null && typeof v === 'object') {
+      if ('ref' in v && !isSecretRef(v)) { out.push(`${p}: an incomplete secret reference`); return }
+      if (isSecretRef(v)) return
+      for (const [k, inner] of Object.entries(v)) walk(inner, `${p}.${k}`, k)
+    }
+  }
+  walk(params, path, null)
+  return out
+}
+
+/** The setting paths a plan changes: derived by the adapter when it can, else the declaration. */
+export function effectiveSettingPaths(adapters: Record<string, AdapterCapabilities>, plan: Plan): string[] {
+  const a = adapterFor(adapters, plan)
+  const derived = a?.describeSettingPaths ? a.describeSettingPaths(plan) : plan.setting_paths
+  return [...new Set(derived)].sort()
+}
 
 /** Every structural problem of a plan; empty when it may be validated. */
 export function validatePlan(plan: Plan, opts: PlanValidationOptions): PlanIssue[] {
   const issues: PlanIssue[] = []
   const add = (field: string, message: string) => issues.push({ field, message })
 
+  let plain = true
   try {
     canonicalize(plan)
   } catch (e) {
+    plain = false
     const where = e instanceof CanonicalJsonError ? e.message : String(e)
     add('params', `The plan is not plain JSON: ${where}`)
   }
+  const nonNfc = plain ? findNonNfc(plan) : null
+  if (nonNfc) add(nonNfc.split(/[.[]/)[1] ?? 'plan', `${nonNfc} is not in Unicode NFC form; send the NFC text (the hash covers the NFC form).`)
+  if (plain) for (const m of secretIssues(plan.params)) add('params', m)
 
-  const adapter = opts.adapters[plan.adapter]
+  const adapter = adapterFor(opts.adapters, plan)
+  const kind = kindFor(opts.adapters, plan)
   if (!adapter) add('adapter', `Unknown adapter "${plan.adapter}".`)
-  else if (!adapter.kinds[plan.kind]) add('kind', `The adapter "${plan.adapter}" does not perform "${plan.kind}".`)
+  else {
+    if (!kind) add('kind', `The adapter "${plan.adapter}" does not perform "${plan.kind}".`)
+    if (plan.adapter_version !== adapter.version) add('adapter_version', `The plan names adapter version "${plan.adapter_version}", but "${adapter.version}" is installed.`)
+  }
   if (!nonEmpty(plan.kind)) add('kind', 'A kind is required.')
 
   if (!nonEmpty(plan.artifact?.id)) add('artifact.id', 'An artifact id is required.')
@@ -65,6 +133,11 @@ export function validatePlan(plan: Plan, opts: PlanValidationOptions): PlanIssue
   if (!Array.isArray(plan.setting_paths) || plan.setting_paths.length === 0) add('setting_paths', 'Name at least one setting the plan changes.')
   else if (new Set(plan.setting_paths).size !== plan.setting_paths.length) add('setting_paths', 'Setting paths must be unique.')
   else if (plan.setting_paths.some((p) => !SETTING_PATH.test(p))) add('setting_paths', 'Setting paths are dot-separated names.')
+  else if (adapter?.describeSettingPaths && plain) {
+    const derived = effectiveSettingPaths(opts.adapters, plan)
+    const stray = plan.setting_paths.filter((p) => !derived.some((d) => pathsOverlap(p, d)))
+    if (stray.length > 0) add('setting_paths', `The declared settings ${stray.join(', ')} are not what the plan changes (the adapter derives ${derived.join(', ') || 'nothing'}).`)
+  }
 
   if (plan.conflict_policy !== 'reject' && plan.conflict_policy !== 'wait') add('conflict_policy', 'The conflict policy is "reject" or "wait".')
 
@@ -75,6 +148,8 @@ export function validatePlan(plan: Plan, opts: PlanValidationOptions): PlanIssue
   else {
     if (expires <= opts.now) add('expires_at', 'The expiry must be in the future.')
     if (notBefore !== null && expires <= notBefore) add('expires_at', 'The expiry must be after the start.')
+    const horizon = opts.max_horizon_ms ?? DEFAULT_MAX_HORIZON_MS
+    if (expires - opts.now > horizon) add('expires_at', `The expiry is more than ${Math.round(horizon / 86_400_000)} days away.`)
   }
   if (plan.schedule.window !== null) {
     const w = validateWindow(plan.schedule.window)

@@ -1,24 +1,21 @@
 // Deterministic helpers for tests and local simulations: a controllable clock, sequential ids,
 // a seeded random generator and a plan builder. Nothing here reads real time or real randomness.
+// Test-only: application code must not import it (ESLint no-restricted-imports).
 import type { AdapterCapabilities } from './adapter'
 import type { Clock, IdGenerator } from './engine-deps'
-import { JobEngine, type EngineEnvironment, type EngineOptions } from './engine'
-import type { JsonValue } from './canonical'
-import { FakeAdapter } from './fake-adapter'
+import { JobEngine, type EngineEnvironment, type EngineOptions, type RevalidationDecision, type TickReport } from './engine'
+import { sha256Hex, type JsonValue } from './canonical'
+import { FakeAdapter, fakeCapabilities } from './fake-adapter'
 import { RolloutRunner } from './runner'
 import { InMemoryJobStore } from './store'
-import type { JobEvent, Outcome, Plan, Rollout, TargetCandidate } from './types'
+import type { Fence, JobEvent, OfferedJob, Outcome, Plan, Rollout, SecretRef, TargetCandidate } from './types'
 
 /** Capabilities of the fake Wi-Fi adapter used in tests. */
-export const FAKE_CAPABILITIES: AdapterCapabilities = {
-  adapter_id: 'fake',
-  maturity: 'fake',
-  kinds: {
-    'wifi.profile.apply': { required_target_capabilities: ['ssid.write'] },
-    'wifi.mac_rule.apply': { required_target_capabilities: ['mac_acl.write'] },
-    'desktop.wallpaper': { required_target_capabilities: [] },
-  },
-  operations: { snapshot: true, rollback: true, stop: false, verify: true, reconcile: true },
+export const FAKE_CAPABILITIES: AdapterCapabilities = fakeCapabilities()
+
+/** A versioned secret reference with a deterministic fingerprint (tests only; real fingerprints come from the vault). */
+export function secretRef(ref: string, version: number): SecretRef {
+  return { ref, version, fingerprint: sha256Hex(`${ref}#${version}`) }
 }
 
 /** A mutable environment: tests switch targets online/offline, bump policy and base versions, mark targets ineligible or already satisfied. */
@@ -34,6 +31,10 @@ export class TestEnvironment implements EngineEnvironment {
 
   /** Called by isOnline when set, instead of the `online` set. */
   isOnlineProbe: ((targetId: string) => boolean) | null = null
+
+  constructor() {
+    this.base.set('profile-staff', 7)
+  }
 
   currentPolicyVersion(kind: string): number {
     return this.policy.get(kind) ?? this.defaultPolicyVersion
@@ -59,6 +60,12 @@ export interface EngineSetup {
   store: InMemoryJobStore
   clock: FakeClock
   env: TestEnvironment
+  /** The test's offering lease (holder "test"), renewed on every call. */
+  fence(): Promise<Fence>
+  /** engine.tick with the test's fence. */
+  tick(): Promise<TickReport>
+  /** engine.targetReturned with the test's fence. */
+  targetReturned(targetId: string): Promise<{ decisions: { job_id: string; decision: RevalidationDecision }[]; offered: OfferedJob[] }>
 }
 
 /** An engine over an in-memory store with a fake clock, sequential ids and the test environment. */
@@ -67,7 +74,12 @@ export function setupEngine(options: Partial<Omit<EngineOptions, 'store' | 'cloc
   const store = options.store ?? new InMemoryJobStore()
   const env = new TestEnvironment()
   const engine = new JobEngine({ adapters: { fake: FAKE_CAPABILITIES }, ...options, store, clock, ids: sequentialIds(), env })
-  return { engine, store, clock, env }
+  const fence = async () => must(await engine.acquireOfferingLease('test', 3_600_000))
+  return {
+    engine, store, clock, env, fence,
+    tick: async () => engine.tick(await fence()),
+    targetReturned: async (id) => engine.targetReturned(id, await fence()),
+  }
 }
 
 /** Unwraps an Outcome in a test, failing loudly with the error. */
@@ -87,7 +99,7 @@ export async function approvedRollout(engine: JobEngine, plan: Plan, candidates:
   let cur = must(await engine.submit(r.id, plan.requested_by))
   for (const a of approvers) {
     if (cur.state !== 'pending_approval') break
-    cur = must(await engine.approve(r.id, { approver: a, payload_hash: cur.payload_hash, acknowledged_impact: true }))
+    cur = must(await engine.approve(r.id, { approver: a, subject: cur.approval_subject as string, acknowledged_impact: true }))
   }
   return must(await engine.schedule(r.id, plan.requested_by))
 }
@@ -104,21 +116,24 @@ export interface World extends EngineSetup {
  * Engine + fake adapter + runner wired together: presence comes from the fake devices, the "already satisfied"
  * check re-reads the fake device. Devices start online with the old staff profile.
  */
-export function createWorld(devices: { id: string; location: string; config?: Record<string, JsonValue> }[], options: Partial<Omit<EngineOptions, 'store' | 'clock' | 'ids' | 'env'>> & { latency_ms?: number; fakeCapabilities?: Partial<AdapterCapabilities> } = {}): World {
+export function createWorld(devices: { id: string; location: string; config?: Record<string, JsonValue> }[], options: Partial<Omit<EngineOptions, 'store' | 'clock' | 'ids' | 'env'>> & { latency_ms?: number; fakeCapabilities?: Partial<AdapterCapabilities>; journal?: boolean } = {}): World {
   const clock = new FakeClock()
-  const fake = new FakeAdapter({ clock, latency_ms: options.latency_ms, capabilities: options.fakeCapabilities })
+  const fake = new FakeAdapter({ clock, latency_ms: options.latency_ms, capabilities: options.fakeCapabilities, journal: options.journal })
   const s = setupEngine({ ...options, adapters: { fake: fake.describeCapabilities() }, clock })
   const locations = new Map<string, string>()
   for (const d of devices) {
-    fake.addDevice(d.id, d.location, d.config ?? { 'ssid.staff.ssid': 'CK-Staff', 'ssid.staff.security': 'wpa2-psk', 'ssid.staff.passphrase_ref': 'vault:wifi/staff/v6' })
+    fake.addDevice(d.id, d.location, d.config ?? { 'ssid.staff.ssid': 'CK-Staff', 'ssid.staff.security': 'wpa2-psk', 'ssid.staff.passphrase_ref': secretRef('vault:wifi/staff', 6) as unknown as JsonValue })
     locations.set(d.id, d.location)
   }
   s.env.isOnlineProbe = (id) => fake.isOnline(id)
   s.env.desiredStateProbe = async (id, plan) => {
+    // The "already satisfied" probe is a read-back: not available when the adapter cannot verify.
+    if (!fake.describeCapabilities().operations.verify) return 'unknown'
     const v = await fake.verify({ target_id: id, location_id: locations.get(id) ?? '' }, plan)
     return v.outcome === 'match' ? 'satisfied' : v.outcome === 'mismatch' ? 'not_satisfied' : 'unknown'
   }
-  const runner = new RolloutRunner(s.engine, { fake })
+  // Same lease holder as the test helpers, so tests can mix runner steps with direct targetReturned calls.
+  const runner = new RolloutRunner(s.engine, { fake }, 'test')
   return {
     ...s,
     fake,
@@ -155,13 +170,11 @@ export function analyseEvents(events: JobEvent[], locationOf: Map<string, string
   }
   const jobInfo = new Map<string, { target: string; rollout: string; location: string }>()
   let lastSeq = 0
-  let lastAt = -Infinity
   const bump = (m: Map<string, number>, k: string, v: number) => m.set(k, Math.max(m.get(k) ?? 0, v))
+  // The order is the sequence number, not the wall time (writers' clocks may differ).
   for (const e of events) {
     if (e.seq !== lastSeq + 1) a.problems.push(`seq ${e.seq} after ${lastSeq}`)
-    if (e.at < lastAt) a.problems.push(`time goes back at seq ${e.seq}`)
     lastSeq = e.seq
-    lastAt = e.at
     if (e.type !== 'transition') continue
     if (e.entity === 'rollout') {
       const prev = a.rolloutStates.get(e.rollout_id) ?? null
@@ -261,8 +274,9 @@ export function makePlan(overrides: Partial<Plan> = {}): Plan {
   return {
     kind: 'wifi.profile.apply',
     adapter: 'fake',
+    adapter_version: '1.0.0',
     artifact: { id: 'profile-staff', version: '7', sha256: SHA },
-    params: { ssid: 'CK-Staff', security: 'wpa2-psk', passphrase_ref: 'vault:wifi/staff/v7' },
+    params: { ssid: 'CK-Staff', security: 'wpa2-psk', passphrase_ref: secretRef('vault:wifi/staff', 7) as unknown as JsonValue },
     policy_version: 3,
     target_selector: { location_ids: ['store-1'] },
     base_version: { key: 'profile-staff', version: 7 },

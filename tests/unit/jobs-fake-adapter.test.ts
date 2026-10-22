@@ -1,42 +1,64 @@
 import { describe, expect, it } from 'vitest'
-import { FakeAdapter, desiredSettings } from '@/lib/jobs/fake-adapter'
-import { FakeClock, makePlan } from '@/lib/jobs/testing'
+import { FakeAdapter, desiredSettings, fakeCapabilities } from '@/lib/jobs/fake-adapter'
+import { FakeClock, makePlan, secretRef } from '@/lib/jobs/testing'
+import { payloadHash } from '@/lib/jobs/plan'
+import type { Plan } from '@/lib/jobs/types'
 
 const T = { target_id: 'ap1', location_id: 'store-1' }
+const hashes = (plan: Plan) => ({ payload_hash: payloadHash(plan), effective_hash: 'e'.repeat(64) })
 
-function setup(latency = 0) {
+function setup(latency = 0, journal = true) {
   const clock = new FakeClock()
-  const fake = new FakeAdapter({ clock, latency_ms: latency })
-  fake.addDevice('ap1', 'store-1', { 'ssid.staff.ssid': 'CK-Staff', 'ssid.staff.security': 'wpa2-psk', 'ssid.staff.passphrase_ref': 'vault:wifi/staff/v6' })
+  const fake = new FakeAdapter({ clock, latency_ms: latency, journal })
+  fake.addDevice('ap1', 'store-1', { 'ssid.staff.ssid': 'CK-Staff', 'ssid.staff.security': 'wpa2-psk', 'ssid.staff.passphrase_ref': secretRef('vault:wifi/staff', 6) })
   return { clock, fake, plan: makePlan() }
 }
 
 describe('desiredSettings', () => {
-  it('flattens the plan parameters under the first setting path', () => {
-    expect(desiredSettings(makePlan())).toEqual({ 'ssid.staff.ssid': 'CK-Staff', 'ssid.staff.security': 'wpa2-psk', 'ssid.staff.passphrase_ref': 'vault:wifi/staff/v7' })
+  it('flattens the plan parameters under the kind prefix, keeping versioned secret references whole', () => {
+    expect(desiredSettings(makePlan())).toEqual({ 'ssid.staff.ssid': 'CK-Staff', 'ssid.staff.security': 'wpa2-psk', 'ssid.staff.passphrase_ref': secretRef('vault:wifi/staff', 7) })
+  })
+
+  it('the fake derives setting paths from the plan, not from the declaration', () => {
+    const caps = fakeCapabilities()
+    expect(caps.describeSettingPaths!(makePlan({ setting_paths: ['radio'] }))).toEqual(['ssid.staff.ssid', 'ssid.staff.security', 'ssid.staff.passphrase_ref'])
+    expect(caps.describeSettingPaths!(makePlan({ kind: 'wifi.radio.apply', params: { channel: 'auto' } }))).toEqual(['radio.channel'])
+  })
+})
+
+describe('FakeAdapter without a journal', () => {
+  it('a repeated idempotency key executes again, and reconcile reads the configuration back', async () => {
+    const { fake, plan } = setup(0, false)
+    await fake.apply(T, plan, 'k', hashes(plan))
+    await fake.apply(T, plan, 'k', hashes(plan))
+    expect(fake.executions('ap1')).toBe(2)
+    expect(await fake.reconcile(T, 'k')).toEqual({ reachable: true, state: 'applied' })
+    fake.drift('ap1', 'ssid.staff.security', 'open')
+    expect(await fake.reconcile(T, 'k')).toEqual({ reachable: true, state: 'not_applied' })
+    expect(await fake.reconcile(T, 'never-sent')).toEqual({ reachable: true, state: 'not_applied' })
   })
 })
 
 describe('FakeAdapter', () => {
   it('applies a plan, and the same idempotency key never applies twice (duplicate delivery)', async () => {
     const { fake, plan } = setup()
-    expect(await fake.apply(T, plan, 'job-1:h')).toEqual({ delivered: true, outcome: 'applied', message: expect.any(String) })
-    fake.drift('ap1', 'ssid.staff.passphrase_ref', 'vault:old')
-    expect(await fake.apply(T, plan, 'job-1:h')).toMatchObject({ delivered: true, outcome: 'applied' })
+    expect(await fake.apply(T, plan, 'job-1:h', hashes(plan))).toEqual({ delivered: true, outcome: 'applied', message: expect.any(String) })
+    fake.drift('ap1', 'ssid.staff.passphrase_ref', secretRef('vault:wifi/staff', 1))
+    expect(await fake.apply(T, plan, 'job-1:h', hashes(plan))).toMatchObject({ delivered: true, outcome: 'applied' })
     expect(fake.executions('ap1')).toBe(1)
-    expect(fake.config('ap1')['ssid.staff.passphrase_ref']).toBe('vault:old')
+    expect(fake.config('ap1')['ssid.staff.passphrase_ref']).toEqual(secretRef('vault:wifi/staff', 1))
   })
 
   it('records every execution with the payload hash it executed', async () => {
     const { fake, plan } = setup()
-    await fake.apply(T, plan, 'job-1:h')
-    expect(fake.applyLog).toEqual([{ target_id: 'ap1', idempotency_key: 'job-1:h', payload_hash: expect.stringMatching(/^[0-9a-f]{64}$/), at: expect.any(Number) }])
+    await fake.apply(T, plan, 'job-1:h', hashes(plan))
+    expect(fake.applyLog).toEqual([{ target_id: 'ap1', idempotency_key: 'job-1:h', payload_hash: payloadHash(plan), effective_hash: 'e'.repeat(64), at: expect.any(Number) }])
   })
 
   it('verify compares desired with observed settings', async () => {
     const { fake, plan } = setup()
     expect((await fake.verify(T, plan)).outcome).toBe('mismatch')
-    await fake.apply(T, plan, 'k')
+    await fake.apply(T, plan, 'k', hashes(plan))
     const v = await fake.verify(T, plan)
     expect(v.outcome).toBe('match')
     expect(v.expected).toEqual(v.observed)
@@ -44,7 +66,7 @@ describe('FakeAdapter', () => {
 
   it('state drift after verification is visible to the next verification', async () => {
     const { fake, plan } = setup()
-    await fake.apply(T, plan, 'k')
+    await fake.apply(T, plan, 'k', hashes(plan))
     fake.drift('ap1', 'ssid.staff.security', 'open')
     const v = await fake.verify(T, plan)
     expect(v.outcome).toBe('mismatch')
@@ -54,21 +76,21 @@ describe('FakeAdapter', () => {
   it('a lost response applies the change but the hub hears nothing (lost acknowledgement)', async () => {
     const { fake, plan } = setup()
     fake.inject({ target_id: 'ap1', step: 'apply', mode: 'lost_response' })
-    expect(await fake.apply(T, plan, 'k')).toEqual({ delivered: false, reason: 'lost_response' })
+    expect(await fake.apply(T, plan, 'k', hashes(plan))).toEqual({ delivered: false, reason: 'lost_response' })
     expect(await fake.reconcile(T, 'k')).toEqual({ reachable: true, state: 'applied' })
   })
 
   it('a lost result: the device confirmed receipt and applied, then the answer was lost', async () => {
     const { fake, plan } = setup()
     fake.inject({ target_id: 'ap1', step: 'apply', mode: 'lost_result' })
-    expect(await fake.apply(T, plan, 'k')).toEqual({ delivered: false, reason: 'lost_response', acknowledged: true })
+    expect(await fake.apply(T, plan, 'k', hashes(plan))).toEqual({ delivered: false, reason: 'lost_response', acknowledged: true })
     expect(await fake.reconcile(T, 'k')).toEqual({ reachable: true, state: 'applied' })
   })
 
   it('a lost request does not apply; reconcile says not_applied', async () => {
     const { fake, plan } = setup()
     fake.inject({ target_id: 'ap1', step: 'apply', mode: 'lost_request' })
-    expect(await fake.apply(T, plan, 'k')).toEqual({ delivered: false, reason: 'timeout' })
+    expect(await fake.apply(T, plan, 'k', hashes(plan))).toEqual({ delivered: false, reason: 'timeout' })
     expect(await fake.reconcile(T, 'k')).toEqual({ reachable: true, state: 'not_applied' })
     expect(fake.executions('ap1')).toBe(0)
   })
@@ -76,17 +98,17 @@ describe('FakeAdapter', () => {
   it('faults are used up after the given number of times', async () => {
     const { fake, plan } = setup()
     fake.inject({ target_id: 'ap1', step: 'apply', mode: 'fail', times: 1 })
-    expect(await fake.apply(T, plan, 'k1')).toMatchObject({ delivered: true, outcome: 'failed' })
+    expect(await fake.apply(T, plan, 'k1', hashes(plan))).toMatchObject({ delivered: true, outcome: 'failed' })
     // The journal remembers the failure for that key; a new key runs normally.
-    expect(await fake.apply(T, plan, 'k1')).toMatchObject({ delivered: true, outcome: 'failed' })
-    expect(await fake.apply(T, plan, 'k2')).toMatchObject({ outcome: 'applied' })
+    expect(await fake.apply(T, plan, 'k1', hashes(plan))).toMatchObject({ delivered: true, outcome: 'failed' })
+    expect(await fake.apply(T, plan, 'k2', hashes(plan))).toMatchObject({ outcome: 'applied' })
     expect(await fake.reconcile(T, 'k1')).toEqual({ reachable: true, state: 'not_applied' })
   })
 
   it('partial application changes some settings only and is journalled as partial', async () => {
     const { fake, plan } = setup()
     fake.inject({ target_id: 'ap1', step: 'apply', mode: 'partial' })
-    expect(await fake.apply(T, plan, 'k')).toMatchObject({ delivered: true, outcome: 'partial' })
+    expect(await fake.apply(T, plan, 'k', hashes(plan))).toMatchObject({ delivered: true, outcome: 'partial' })
     expect(await fake.reconcile(T, 'k')).toEqual({ reachable: true, state: 'partial' })
     expect((await fake.verify(T, plan)).outcome).toBe('mismatch')
   })
@@ -94,7 +116,7 @@ describe('FakeAdapter', () => {
   it('a device can claim success without changing anything (only verification catches it)', async () => {
     const { fake, plan } = setup()
     fake.inject({ target_id: 'ap1', step: 'apply', mode: 'false_success' })
-    expect(await fake.apply(T, plan, 'k')).toMatchObject({ delivered: true, outcome: 'applied' })
+    expect(await fake.apply(T, plan, 'k', hashes(plan))).toMatchObject({ delivered: true, outcome: 'applied' })
     expect((await fake.verify(T, plan)).outcome).toBe('mismatch')
   })
 
@@ -102,12 +124,12 @@ describe('FakeAdapter', () => {
     const { fake, plan } = setup()
     fake.setOnline('ap1', false)
     expect(fake.isOnline('ap1')).toBe(false)
-    expect(await fake.apply(T, plan, 'k')).toEqual({ delivered: false, reason: 'unreachable' })
+    expect(await fake.apply(T, plan, 'k', hashes(plan))).toEqual({ delivered: false, reason: 'unreachable' })
     expect(await fake.reconcile(T, 'k')).toEqual({ reachable: false })
     expect((await fake.verify(T, plan)).outcome).toBe('inconclusive')
     expect((await fake.snapshot(T)).status).toBe('failed')
     fake.setOnline('ap1', true)
-    expect(await fake.apply(T, plan, 'k')).toMatchObject({ delivered: true })
+    expect(await fake.apply(T, plan, 'k', hashes(plan))).toMatchObject({ delivered: true })
   })
 
   it('reconcile can be made to answer unknown', async () => {
@@ -121,7 +143,7 @@ describe('FakeAdapter', () => {
     const before = fake.config('ap1')
     const snap = await fake.snapshot(T)
     expect(snap.status).toBe('taken')
-    await fake.apply(T, plan, 'k')
+    await fake.apply(T, plan, 'k', hashes(plan))
     if (snap.status !== 'taken') return
     expect(await fake.rollback(T, snap.ref)).toEqual({ status: 'restored' })
     expect(fake.config('ap1')).toEqual(before)
@@ -139,7 +161,7 @@ describe('FakeAdapter', () => {
   it('latency moves the injected clock, never real time', async () => {
     const { fake, plan, clock } = setup(1500)
     const t0 = clock.now()
-    await fake.apply(T, plan, 'k')
+    await fake.apply(T, plan, 'k', hashes(plan))
     expect(clock.now()).toBe(t0 + 1500)
   })
 
@@ -154,7 +176,7 @@ describe('FakeAdapter', () => {
   it('verification of secrets shows only references, never values', async () => {
     const { fake } = setup()
     const plan = makePlan({ params: { passphrase: 'hunter2' } })
-    await fake.apply(T, plan, 'k')
+    await fake.apply(T, plan, 'k', hashes(plan))
     const v = await fake.verify(T, plan)
     expect(JSON.stringify(v)).not.toContain('hunter2')
   })

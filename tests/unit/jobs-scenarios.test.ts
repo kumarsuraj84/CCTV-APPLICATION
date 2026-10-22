@@ -1,13 +1,16 @@
 // Scenario tests of the orchestration engine with the fake adapter (P7-0). Deterministic: fake clock, sequential
 // ids. These prove orchestration only; nothing here says how a real NETGEAR AP or Windows PC behaves.
 import { describe, expect, it } from 'vitest'
-import { analyseEvents, approvedRollout, createWorld, makeCandidate, makePlan, must, type World } from '@/lib/jobs/testing'
+import { analyseEvents, approvedRollout, createWorld, makeCandidate, makePlan, must, secretRef, type World } from '@/lib/jobs/testing'
 import { isWindowOpen } from '@/lib/jobs/window'
 import { payloadHash } from '@/lib/jobs/plan'
 import type { MaintenanceWindow, Plan } from '@/lib/jobs/types'
 
-const V7 = { ssid: 'CK-Staff', security: 'wpa2-psk', passphrase_ref: 'vault:wifi/staff/v7' }
-const V8 = { ssid: 'CK-Staff', security: 'wpa2-psk', passphrase_ref: 'vault:wifi/staff/v8' }
+const REF6 = secretRef('vault:wifi/staff', 6)
+const REF7 = secretRef('vault:wifi/staff', 7)
+const REF8 = secretRef('vault:wifi/staff', 8)
+const V7 = { ssid: 'CK-Staff', security: 'wpa2-psk', passphrase_ref: REF7 }
+const V8 = { ssid: 'CK-Staff', security: 'wpa2-psk', passphrase_ref: REF8 }
 
 function aps(n: number, location: string, prefix = 'ap') {
   return Array.from({ length: n }, (_, i) => ({ id: `${prefix}${i + 1}`, location }))
@@ -41,7 +44,7 @@ describe('scenario: staff SSID passphrase on all five APs of one store (E1)', ()
     expect(await stateOf(w, r.id)).toBe('completed')
     const s = must(await w.engine.summary(r.id))
     expect(s).toMatchObject({ requested: 5, applied: 5, verified: 5, failed: 0, unknown: 0, is_partial: false })
-    for (const d of aps(5, 'store-1')) expect(w.fake.config(d.id)['ssid.staff.passphrase_ref']).toBe('vault:wifi/staff/v7')
+    for (const d of aps(5, 'store-1')) expect(w.fake.config(d.id)['ssid.staff.passphrase_ref']).toEqual(REF7)
 
     const a = await analysis(w)
     expect(a.maxActivePerLocation.get('store-1')).toBe(1)
@@ -67,7 +70,7 @@ describe('scenario: staff SSID passphrase on all five APs of one store (E1)', ()
 describe('scenario: same policy to selected stores, keeping local settings (E2)', () => {
   it('per-location concurrency 1, global cap 2, one canary per store, unselected store untouched', async () => {
     const devices = [...aps(3, 'store-1', 'a'), ...aps(3, 'store-2', 'b'), ...aps(3, 'store-3', 'c')]
-    const w = createWorld(devices.map((d, i) => ({ ...d, config: { 'ssid.staff.passphrase_ref': 'vault:wifi/staff/v6', 'mgmt.ip': `10.${i}.0.2`, 'vlan.staff': 100 + i } })))
+    const w = createWorld(devices.map((d, i) => ({ ...d, config: { 'ssid.staff.passphrase_ref': REF6, 'mgmt.ip': `10.${i}.0.2`, 'vlan.staff': 100 + i } })))
     const plan = makePlan({
       params: V7,
       target_selector: { location_ids: ['store-1', 'store-2'] },
@@ -88,7 +91,7 @@ describe('scenario: same policy to selected stores, keeping local settings (E2)'
       const c = w.fake.config(d.id)
       expect(c['mgmt.ip']).toBe(`10.${i}.0.2`)
       expect(c['vlan.staff']).toBe(100 + i)
-      expect(c['ssid.staff.passphrase_ref']).toBe(d.location === 'store-3' ? 'vault:wifi/staff/v6' : 'vault:wifi/staff/v7')
+      expect(c['ssid.staff.passphrase_ref']).toEqual(d.location === 'store-3' ? REF6 : REF7)
     })
   })
 })
@@ -124,19 +127,23 @@ describe('scenario: an unreachable AP returns after the profile changed again (E
     // Profile version 8 is published and rolled out to the same APs.
     w.env.base.set('profile-staff', 8)
     const b = await approvedRollout(w.engine, makePlan({ params: V8, base_version: { key: 'profile-staff', version: 8 }, canary: { mode: 'none' } }), w.candidates().map((c) => ({ ...c, online: true })))
+    // Approval alone supersedes nothing; once B starts (it has a job for ap3) the old job is superseded.
+    expect((await jobFor(w, a.id, 'ap3')).state).toBe('queued')
+    await w.runner.step()
     const old = await jobFor(w, a.id, 'ap3')
     expect(old.state).toBe('superseded')
     expect(old.superseded_by).toBe(b.id)
+    expect(old.superseded_by_job).toBe((await jobFor(w, b.id, 'ap3')).id)
 
     w.fake.setOnline('ap3', true)
-    const back = await w.engine.targetReturned('ap3')
-    expect(back.decisions).toEqual([]) // nothing of the old rollout is waiting any more
+    const back = await w.targetReturned('ap3')
+    expect(back.decisions.map((d) => d.job_id)).not.toContain(old.id) // nothing of the old rollout is waiting any more
     await settle(w)
     expect(await stateOf(w, a.id)).toBe('completed')
     expect(await stateOf(w, b.id)).toBe('completed')
     const ap3Runs = w.fake.applyLog.filter((x) => x.target_id === 'ap3')
     expect(ap3Runs.map((x) => x.payload_hash)).toEqual([b.payload_hash])
-    expect(w.fake.config('ap3')['ssid.staff.passphrase_ref']).toBe('vault:wifi/staff/v8')
+    expect(w.fake.config('ap3')['ssid.staff.passphrase_ref']).toEqual(REF8)
     expect(must(await w.engine.summary(a.id))).toMatchObject({ verified: 2, superseded: 1 })
   })
 
@@ -157,21 +164,20 @@ describe('scenario: an unreachable AP returns after the profile changed again (E
     expect(w.fake.applyLog.map((x) => x.payload_hash)).toEqual([b.payload_hash])
   })
 
-  it('a newer rollout approved while the old job waits for an offline AP supersedes it before the AP returns', async () => {
+  it('a newer rollout that is approved but not started does not supersede: the old job still runs when the AP returns (I9)', async () => {
     const w = createWorld(aps(1, 'store-1'))
     w.fake.setOnline('ap1', false)
     const a = await approvedRollout(w.engine, makePlan({ params: V7, canary: { mode: 'none' } }), w.candidates())
     await w.runner.step()
-    w.env.base.set('profile-staff', 8)
-    const b = must(await w.engine.createRollout({ title: 'v8', plan: makePlan({ params: V8, base_version: { key: 'profile-staff', version: 8 }, canary: { mode: 'none' }, schedule: { not_before: '2026-11-03T00:00:00Z', window: null } }), actor: 'user-requester' }))
-    must(await w.engine.validate(b.id, 'u'))
-    must(await w.engine.resolveTargets(b.id, [makeCandidate('ap1', 'store-1')], 'u'))
-    const sub = must(await w.engine.submit(b.id, 'u'))
-    must(await w.engine.approve(b.id, { approver: 'approver-1', payload_hash: sub.payload_hash, acknowledged_impact: true }))
-    expect((await jobFor(w, a.id, 'ap1')).state).toBe('superseded')
+    const b = must(await w.engine.createRollout({ title: 'v8', plan: makePlan({ params: V8, canary: { mode: 'none' }, schedule: { not_before: '2026-11-03T00:00:00Z', window: null } }), actor: 'user-requester' }))
+    must(await w.engine.validate(b.id, 'user-requester'))
+    must(await w.engine.resolveTargets(b.id, [makeCandidate('ap1', 'store-1')], 'user-requester'))
+    const sub = must(await w.engine.submit(b.id, 'user-requester'))
+    must(await w.engine.approve(b.id, { approver: 'approver-1', subject: sub.approval_subject!, acknowledged_impact: true }))
+    expect((await jobFor(w, a.id, 'ap1')).state).toBe('queued')
     w.fake.setOnline('ap1', true)
-    await w.engine.targetReturned('ap1')
-    expect(w.fake.executions('ap1')).toBe(0)
+    const back = await w.targetReturned('ap1')
+    expect(back.offered.map((j) => j.rollout_id)).toEqual([a.id])
   })
 })
 
@@ -194,7 +200,7 @@ describe('scenario: approvals are bound to the exact payload', () => {
     expect(jobs.map((j) => [j.state, j.blocked_reason])).toEqual([['blocked', 'stale_configuration_version'], ['blocked', 'stale_configuration_version']])
     expect(w.fake.applyLog).toEqual([])
     // And a new rollout on version 7 is refused at validation.
-    const again = must(await w.engine.createRollout({ title: 'again', plan: makePlan(), actor: 'u' }))
+    const again = must(await w.engine.createRollout({ title: 'again', plan: makePlan(), actor: 'user-requester' }))
     const v = await w.engine.validate(again.id, 'u')
     expect(!v.ok && v.error.code).toBe('stale_configuration_version')
   })
@@ -206,7 +212,7 @@ describe('scenario: approvals are bound to the exact payload', () => {
     await steps(w, 5)
     w.env.defaultPolicyVersion = 4
     w.fake.setOnline('ap2', true)
-    const back = await w.engine.targetReturned('ap2')
+    const back = await w.targetReturned('ap2')
     expect(back.decisions.map((d) => d.decision)).toEqual([{ action: 'blocked', reason: 'policy_changed' }])
     await steps(w, 5)
     expect(w.fake.executions('ap2')).toBe(0)
@@ -214,7 +220,7 @@ describe('scenario: approvals are bound to the exact payload', () => {
   })
 
   it('a target that already has the desired state is marked already satisfied without executing', async () => {
-    const w = createWorld([{ id: 'ap1', location: 'store-1' }, { id: 'ap2', location: 'store-1', config: { 'ssid.staff.ssid': 'CK-Staff', 'ssid.staff.security': 'wpa2-psk', 'ssid.staff.passphrase_ref': 'vault:wifi/staff/v7' } }])
+    const w = createWorld([{ id: 'ap1', location: 'store-1' }, { id: 'ap2', location: 'store-1', config: { 'ssid.staff.ssid': 'CK-Staff', 'ssid.staff.security': 'wpa2-psk', 'ssid.staff.passphrase_ref': REF7 } }])
     const r = await approvedRollout(w.engine, makePlan({ canary: { mode: 'none' } }), w.candidates())
     await settle(w)
     expect((await jobFor(w, r.id, 'ap2')).state).toBe('already_satisfied')
@@ -225,9 +231,11 @@ describe('scenario: approvals are bound to the exact payload', () => {
 })
 
 describe('scenario: two concurrent jobs must not overwrite each other (E10)', () => {
+  // A different change (another supersede key) that also sets the staff SSID's security mode: the adapter-derived
+  // setting paths overlap on ssid.staff.security.
   const macPlan = (policy: 'reject' | 'wait'): Plan => makePlan({
-    kind: 'wifi.mac_rule.apply', supersedes_key: 'wifi:mac:staff', setting_paths: ['ssid.staff.mac_acl'], conflict_policy: policy,
-    params: { mode: 'deny', add: ['02:00:00:00:00:01'] }, base_version: null, canary: { mode: 'none' },
+    supersedes_key: 'wifi:security-hardening', setting_paths: ['ssid.staff.security'], conflict_policy: policy,
+    params: { security: 'wpa3-sae' }, base_version: null, canary: { mode: 'none' },
   })
 
   it('a second rollout touching the same target and setting is rejected at target resolution', async () => {
@@ -311,7 +319,7 @@ describe('scenario: partial failure, threshold pause, then a human decision (E8)
     expect(retry.targets.map((t) => t.target_id).sort()).toEqual(['a1', 'b1'])
     await settle(w)
     expect(await stateOf(w, retry.id)).toBe('completed')
-    expect(w.fake.config('a1')['ssid.staff.passphrase_ref']).toBe('vault:wifi/staff/v7')
+    expect(w.fake.config('a1')['ssid.staff.passphrase_ref']).toEqual(REF7)
   })
 })
 
@@ -386,7 +394,7 @@ describe('scenario: lost acknowledgements are reconciled, never blindly re-run',
     await settle(w)
     const j = await jobFor(w, r.id, 'ap1')
     const n = (await w.store.listEvents()).length
-    must(await w.engine.reportResult(j.id, j.last_result!.token, { outcome: 'applied', message: 'again' }))
+    must(await w.engine.reportResult(j.id, w.runner.deliveredTokens.get(j.id)!, { outcome: 'applied', message: 'again' }))
     expect((await w.store.listEvents()).length).toBe(n)
   })
 })
@@ -451,7 +459,7 @@ describe('scenario: expiry of queued jobs', () => {
     expect(await stateOf(w, r.id)).toBe('expired')
     expect((await jobFor(w, r.id, 'ap2')).state).toBe('expired')
     w.fake.setOnline('ap2', true)
-    await w.engine.targetReturned('ap2')
+    await w.targetReturned('ap2')
     await steps(w, 5)
     expect(w.fake.executions('ap2')).toBe(0)
     expect(must(await w.engine.summary(r.id))).toMatchObject({ verified: 1, expired: 1 })
@@ -471,8 +479,8 @@ describe('scenario: verification failure is not apply failure', () => {
     expect(s).toMatchObject({ applied: 3, verified: 2, verification_failed: 1, apply_failed: 1, failed: 2 })
     const ap2 = await jobFor(w, r.id, 'ap2')
     expect(ap2.state).toBe('verification_failed')
-    expect(ap2.verification!.expected['ssid.staff.passphrase_ref']).toBe('vault:wifi/staff/v7')
-    expect(ap2.verification!.observed['ssid.staff.passphrase_ref']).toBe('vault:wifi/staff/v6')
+    expect(ap2.verification!.expected['ssid.staff.passphrase_ref']).toEqual(REF7)
+    expect(ap2.verification!.observed['ssid.staff.passphrase_ref']).toEqual(REF6)
     expect(ap2.recovery_actions).toEqual(['restore_snapshot', 'manual'])
     const restored = await w.fake.rollback({ target_id: 'ap2', location_id: 'store-1' }, ap2.snapshot!.ref!)
     const after = must(await w.engine.recordRollback(ap2.id, 'ops', restored.status))

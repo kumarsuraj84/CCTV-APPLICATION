@@ -10,13 +10,13 @@ import {
 } from '@/lib/jobs/machines'
 import type { JobState, RolloutState } from '@/lib/jobs/types'
 
-const ROLLOUT_TERMINAL: RolloutState[] = ['completed', 'partially_failed', 'failed', 'cancelled', 'superseded', 'expired']
+const ROLLOUT_TERMINAL: RolloutState[] = ['completed', 'completed_manually', 'partially_failed', 'failed', 'cancelled', 'superseded', 'expired']
 const JOB_TERMINAL: JobState[] = ['verified', 'already_satisfied', 'accepted_but_not_verified', 'verification_failed', 'failed', 'partially_applied', 'cancelled', 'expired', 'superseded', 'resolved_manually']
 
 describe('rollout transition table', () => {
   it('lists every state', () => {
     expect(Object.keys(ROLLOUT_TRANSITIONS).sort()).toEqual([
-      'approved', 'cancelled', 'completed', 'draft', 'expired', 'failed', 'partially_failed', 'paused', 'paused_by_threshold',
+      'approved', 'cancelled', 'completed', 'completed_manually', 'draft', 'expired', 'failed', 'partially_failed', 'paused', 'paused_by_threshold',
       'pending_approval', 'running_batches', 'running_canary', 'scheduled', 'superseded', 'targets_resolved', 'validated', 'verifying',
     ])
   })

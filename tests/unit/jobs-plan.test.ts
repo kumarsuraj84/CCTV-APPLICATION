@@ -1,18 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { payloadHash, validatePlan, PLAN_HASH_DOMAIN } from '@/lib/jobs/plan'
 import { canonicalize, sha256Hex } from '@/lib/jobs/canonical'
-import { makePlan } from '@/lib/jobs/testing'
+import { FAKE_CAPABILITIES, makePlan, secretRef } from '@/lib/jobs/testing'
 import type { Plan } from '@/lib/jobs/types'
-import type { AdapterCapabilities } from '@/lib/jobs/adapter'
 
 const NOW = Date.parse('2026-11-02T04:30:00Z')
-const FAKE: AdapterCapabilities = {
-  adapter_id: 'fake',
-  maturity: 'fake',
-  kinds: { 'wifi.profile.apply': { required_target_capabilities: ['ssid.write'] } },
-  operations: { snapshot: true, rollback: true, stop: false, verify: true, reconcile: true },
-}
-const opts = { now: NOW, adapters: { fake: FAKE } }
+const opts = { now: NOW, adapters: { fake: FAKE_CAPABILITIES } }
 const fields = (plan: Plan) => validatePlan(plan, opts).map((i) => i.field)
 
 describe('payloadHash', () => {
@@ -34,9 +27,11 @@ describe('payloadHash', () => {
     const variants: Partial<Plan>[] = [
       { kind: 'wifi.profile.remove' },
       { adapter: 'other' },
+      { adapter_version: '1.0.1' },
       { artifact: { id: 'profile-staff', version: '8', sha256: 'a'.repeat(64) } },
       { artifact: { id: 'profile-staff', version: '7', sha256: 'b'.repeat(64) } },
-      { params: { ssid: 'CK-Staff2', security: 'wpa2-psk', passphrase_ref: 'vault:wifi/staff/v7' } },
+      { params: { ssid: 'CK-Staff2', security: 'wpa2-psk', passphrase_ref: secretRef('vault:wifi/staff', 7) } },
+      { params: { ssid: 'CK-Staff', security: 'wpa2-psk', passphrase_ref: secretRef('vault:wifi/staff', 8) } },
       { policy_version: 4 },
       { target_selector: { location_ids: ['store-2'] } },
       { base_version: { key: 'profile-staff', version: 8 } },

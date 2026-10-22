@@ -123,6 +123,30 @@ export function isCanonicalizable(value: unknown): boolean {
   }
 }
 
+/**
+ * The path of the first string or key that is not already in NFC, or null. The hash covers the NFC form, so a
+ * plan must be NFC itself: otherwise two different byte sequences (e.g. two SSIDs a device treats as different)
+ * would share one hash and one approval.
+ */
+export function findNonNfc(value: unknown, path = '$'): string | null {
+  if (typeof value === 'string') return value === value.normalize('NFC') ? null : path
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const p = findNonNfc(value[i], `${path}[${i}]`)
+      if (p) return p
+    }
+    return null
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value)) {
+      if (k !== k.normalize('NFC')) return `${path}.${k}`
+      const p = findNonNfc(v, `${path}.${k}`)
+      if (p) return p
+    }
+  }
+  return null
+}
+
 /** Hex SHA-256 of the UTF-8 bytes of a text. */
 export function sha256Hex(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
@@ -214,7 +238,7 @@ class Reader {
       const e = this.s[this.i + 1]
       this.i += 2
       const simple: Record<string, string> = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' }
-      if (e !== undefined && e in simple) { out += simple[e]; continue }
+      if (e !== undefined && Object.hasOwn(simple, e)) { out += simple[e]; continue }
       if (e === 'u') {
         const hex = this.s.slice(this.i, this.i + 4)
         if (!/^[0-9a-fA-F]{4}$/.test(hex)) this.fail('bad \\u escape')

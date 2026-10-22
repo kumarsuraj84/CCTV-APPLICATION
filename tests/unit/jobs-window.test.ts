@@ -80,6 +80,19 @@ describe('daily windows', () => {
     expect(validateWindow({ ...night, days: [] })).not.toEqual([])
   })
 
+  it('DST spring-forward gap: a window inside the skipped hour never opens that day; one spanning it opens on both sides', () => {
+    // New York 2027-03-14: 02:00 EST (07:00Z) jumps to 03:00 EDT.
+    const inGap = { kind: 'daily' as const, time_zone: 'America/New_York', start: '02:00', end: '02:59' }
+    expect(isWindowOpen(inGap, at('2027-03-14T06:59:00Z'))).toBe(false) // 01:59 EST
+    expect(isWindowOpen(inGap, at('2027-03-14T07:00:00Z'))).toBe(false) // 03:00 EDT
+    expect(isWindowOpen(inGap, at('2027-03-14T07:30:00Z'))).toBe(false) // 03:30 EDT
+    expect(isWindowOpen(inGap, at('2027-03-15T06:30:00Z'))).toBe(true) // next day 02:30 EDT
+    const spanning = { kind: 'daily' as const, time_zone: 'America/New_York', start: '01:30', end: '03:30' }
+    expect(isWindowOpen(spanning, at('2027-03-14T06:30:00Z'))).toBe(true) // 01:30 EST
+    expect(isWindowOpen(spanning, at('2027-03-14T07:15:00Z'))).toBe(true) // 03:15 EDT
+    expect(isWindowOpen(spanning, at('2027-03-14T07:30:00Z'))).toBe(false) // 03:30 EDT
+  })
+
   it('treats a missing window as always open', () => {
     expect(isWindowOpen(null, at('2026-11-02T12:00:00Z'))).toBe(true)
   })

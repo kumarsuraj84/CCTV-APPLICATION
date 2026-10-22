@@ -10,6 +10,17 @@ export type RiskLevel = 'low' | 'medium' | 'high'
 // ---------------------------------------------------------------------------------------------------
 // Plan: the immutable execution payload. Every field influences execution and is covered by payload_hash.
 
+/**
+ * A secret named by an immutable version: the vault path, the version number and the SHA-256 fingerprint of
+ * that version's value. A bare mutable reference ("vault:wifi/staff") is refused: the value behind it could
+ * change after approval.
+ */
+export type SecretRef = {
+  ref: string
+  version: number
+  fingerprint: string
+}
+
 export interface ArtifactRef {
   /** Library id of the script, package or configuration profile. */
   id: string
@@ -81,8 +92,10 @@ export interface Plan {
   kind: string
   /** Adapter id that executes it, e.g. "fake", "windows-agent", "netgear-wax-experimental". */
   adapter: string
+  /** Version of that adapter the plan was checked against (part of the hash; a changed adapter blocks the jobs). */
+  adapter_version: string
   artifact: ArtifactRef
-  /** Exact parameters (plain JSON; secrets are references, never values). */
+  /** Exact parameters (plain JSON, NFC strings; secrets only as immutable versioned references, see SecretRef). */
   params: JsonValue
   /** Version of the execution policy the plan was checked against. */
   policy_version: number
@@ -123,6 +136,7 @@ export type RolloutState =
   | 'paused'
   | 'paused_by_threshold'
   | 'completed'
+  | 'completed_manually'
   | 'partially_failed'
   | 'failed'
   | 'cancelled'
@@ -133,7 +147,13 @@ export interface Approval {
   id: string
   approver: string
   decision: 'approve' | 'reject'
-  /** The payload hash the approver saw. An approval counts only while it equals the rollout's payload hash. */
+  /**
+   * The approval subject the approver saw: H(domain, rollout id, revision, payload hash, resolved targets with
+   * phases and effective hashes, exclusions, impact, acknowledgement flag, effective risk). It counts only while
+   * it equals the rollout's current subject.
+   */
+  subject: string
+  revision: number
   payload_hash: string
   acknowledged_impact: boolean
   at: EpochMs
@@ -155,6 +175,8 @@ export interface TargetCandidate {
   /** Issues found by adapter preflight (only for online targets; offline ones are rechecked on return). */
   preflight_issues: PreflightIssue[]
   impact: ImpactEstimate | null
+  /** Target-specific execution inputs (resolved per-device settings); hashed into the job's effective hash. */
+  effective_inputs?: JsonObject
 }
 
 export interface PreflightIssue {
@@ -179,6 +201,8 @@ export interface IncludedTarget {
   /** 'canary' or the batch number (0-based). */
   phase: 'canary' | number
   warnings: string[]
+  /** H(payload hash, target id, location, model, firmware, effective inputs): what exactly runs on this target. */
+  effective_hash: string
 }
 
 export interface ExcludedTarget {
@@ -203,6 +227,17 @@ export interface Rollout {
   state: RolloutState
   plan: Plan
   payload_hash: string
+  /** Incremented on every amendment and every target resolution; part of the approval subject. */
+  revision: number
+  /** Everyone who authored the current version (creator, amenders, target resolvers, submitter): none may approve. */
+  authors: string[]
+  /** The current approval subject (null until targets are resolved). */
+  approval_subject: string | null
+  /** max(requested risk, adapter/policy minimum for the kind, impact-derived minimum). */
+  effective_risk: RiskLevel
+  /** Setting paths derived by the adapter (used for conflicts); the plan's declaration must be consistent with them. */
+  setting_paths_effective: string[]
+  targets_resolved_at: EpochMs | null
   approvals: Approval[]
   targets: IncludedTarget[]
   excluded: ExcludedTarget[]
@@ -218,6 +253,8 @@ export interface Rollout {
   pause_reason: string | null
   /** Failures already seen by a human when resuming after a threshold pause. */
   failures_acknowledged: number
+  /** Finished targets at that moment (the percentage threshold counts only what finished since). */
+  finished_acknowledged: number
   consecutive_failures: number
   /** Jobs already counted for the failure counters (in the order they finished). */
   counted_jobs: string[]
@@ -253,17 +290,31 @@ export type JobState =
   | 'superseded'
   | 'resolved_manually'
 
+/** A lease as stored: only the SHA-256 of the token; the raw token is returned once to the caller that gets the lease. */
 export interface Lease {
-  token: string
+  token_hash: string
   until: EpochMs
   attempt: number
 }
 
+/** A job just offered, with its raw lease token (returned once; never stored). */
+export type OfferedJob = Job & { token: string }
+
 export type ResultOutcome = 'applied' | 'failed' | 'partial' | 'unknown'
-export type ReconcileOutcome = 'applied' | 'not_applied' | 'partial' | 'unknown'
+/** `unsupported`: the device cannot answer reconcile requests at all (a human must check). */
+export type ReconcileOutcome = 'applied' | 'not_applied' | 'partial' | 'unknown' | 'unsupported'
 export type VerifyOutcome = 'match' | 'mismatch' | 'inconclusive' | 'unsupported'
 
 export type RecoveryAction = 'reconcile' | 'retry_after_reconcile' | 'restore_snapshot' | 'manual'
+
+/** A configuration snapshot: an encrypted blob reference, the key that encrypts it, the content hash and how long it is kept. */
+export interface SnapshotRecord {
+  status: 'taken' | 'unsupported' | 'failed'
+  ref: string | null
+  key_ref: string | null
+  content_sha256: string | null
+  retain_until: EpochMs | null
+}
 
 export interface VerificationRecord {
   outcome: VerifyOutcome
@@ -283,6 +334,8 @@ export interface Job {
   target_id: string
   location_id: string
   payload_hash: string
+  /** Per-target effective hash (see IncludedTarget); passed to the adapter for device-side checking. */
+  effective_hash: string
   /** job id + payload hash: what the device journal uses to recognise a repeat. */
   idempotency_key: string
   supersedes_key: string | null
@@ -294,24 +347,36 @@ export interface Job {
   attempt: number
   max_attempts: number
   lease: Lease | null
-  /** Token of an open reconcile request. */
+  /** An open reconcile request (token hash, deadline). */
   reconcile_lease: Lease | null
   reconcile_attempts: number
+  /** Earliest time of the next automatic reconcile request (exponential backoff). */
+  next_reconcile_at: EpochMs | null
+  /** Automatic reconciliation gave up (attempts exhausted, or the device cannot answer): a human must decide. */
+  needs_manual: boolean
   /** The last reconcile token answered and its answer (duplicate answers are idempotent). */
-  last_reconcile: { token: string; outcome: ReconcileOutcome } | null
+  last_reconcile: { token_hash: string; outcome: ReconcileOutcome } | null
+  /** Deadline for verification once the job is in `verifying`. */
+  verify_deadline: EpochMs | null
+  /** The open verification request (token hash). */
+  verify_lease: Lease | null
   verify_attempts: number
   /** Separate flags so requested/applied/verified/failed/unknown never collapse into one status. */
   applied: boolean
   partial: boolean
   /** The last lease token whose result was accepted, and that result (for duplicate detection). */
-  last_result: { token: string; outcome: ResultOutcome; at: EpochMs } | null
+  last_result: { token_hash: string; outcome: ResultOutcome; at: EpochMs } | null
   verification: VerificationRecord | null
-  snapshot: { status: 'taken' | 'unsupported' | 'failed'; ref: string | null } | null
+  snapshot: SnapshotRecord | null
   rollback: { status: 'restored' | 'failed' | 'unsupported'; at: EpochMs } | null
   stop: 'requested' | 'unsupported_left_to_complete' | null
   blocked_reason: string | null
+  /** Why a queued job is not offered yet when that needs explaining (e.g. waiting for an earlier conflicting rollout). */
+  waiting_reason: string | null
   terminal_reason: string | null
+  /** Rollout and job that superseded this job. */
   superseded_by: string | null
+  superseded_by_job: string | null
   recovery_actions: RecoveryAction[]
   created_at: EpochMs
   updated_at: EpochMs
@@ -340,6 +405,17 @@ export interface JobEvent {
 
 export type NewJobEvent = Omit<JobEvent, 'seq'>
 
+/**
+ * The offering lease: only its holder may offer jobs. `token` is a fencing token that grows on every takeover;
+ * the store refuses commits that carry an older token.
+ */
+export interface Fence {
+  name: string
+  holder: string
+  token: number
+  until: EpochMs
+}
+
 // ---------------------------------------------------------------------------------------------------
 // Results.
 
@@ -351,7 +427,11 @@ export type JobErrorCode =
   | 'conflicting_rollout'
   | 'no_targets'
   | 'payload_hash_mismatch'
+  | 'subject_mismatch'
   | 'approver_is_requester'
+  | 'approver_is_author'
+  | 'stale_fence'
+  | 'not_yet'
   | 'duplicate_approver'
   | 'impact_not_acknowledged'
   | 'approvals_missing'

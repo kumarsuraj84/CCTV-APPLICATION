@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { approvedRollout, makeCandidate, makePlan, must, setupEngine } from '@/lib/jobs/testing'
+import { approvedRollout, makeCandidate, makePlan, must, secretRef, setupEngine } from '@/lib/jobs/testing'
 import { payloadHash } from '@/lib/jobs/plan'
 
 const stores = (n: number, loc = 'store-1') => Array.from({ length: n }, (_, i) => makeCandidate(`ap${i + 1}`, loc))
@@ -20,7 +20,7 @@ describe('creating and validating a rollout', () => {
 
   it('refuses a plan that is not plain JSON', async () => {
     const s = setupEngine()
-    const r = await s.engine.createRollout({ title: 'x', plan: makePlan({ params: { bad: NaN } }), actor: 'u' })
+    const r = await s.engine.createRollout({ title: 'x', plan: makePlan({ params: { bad: NaN } }), actor: 'user-requester' })
     expect(!r.ok && r.error.code).toBe('invalid_plan')
   })
 
@@ -31,7 +31,7 @@ describe('creating and validating a rollout', () => {
 
   it('refuses validation with the list of problems and stays a draft', async () => {
     const { engine } = await created()
-    const bad = must(await engine.createRollout({ title: 'bad', plan: makePlan({ max_attempts: 0 }), actor: 'u' }))
+    const bad = must(await engine.createRollout({ title: 'bad', plan: makePlan({ max_attempts: 0 }), actor: 'user-requester' }))
     const v = await engine.validate(bad.id, 'u')
     expect(!v.ok && v.error.code).toBe('invalid_plan')
     expect((await engine.getRollout(bad.id))!.state).toBe('draft')
@@ -134,62 +134,65 @@ describe('target resolution', () => {
 })
 
 describe('approvals', () => {
-  async function resolved(plan = makePlan()) {
+  async function resolved(plan = makePlan(), cands = stores(2)) {
     const s = await created(plan)
     must(await s.engine.validate(s.r.id, 'u'))
-    must(await s.engine.resolveTargets(s.r.id, stores(2), 'u'))
+    must(await s.engine.resolveTargets(s.r.id, cands, 'u'))
     return s
   }
 
-  it('low risk needs no approval: submit goes straight to approved', async () => {
-    const { engine, r } = await resolved(makePlan({ risk: 'low' }))
+  it('low risk with no disruption needs no approval: submit goes straight to approved', async () => {
+    const none = { disruption: 'none' as const, reboot_required: false, reconnect_required: false, estimated_downtime_s: 0, notes: [] }
+    const { engine, r } = await resolved(makePlan({ risk: 'low' }), stores(2).map((c) => ({ ...c, impact: none })))
     expect(must(await engine.submit(r.id, 'u')).state).toBe('approved')
   })
 
-  it('medium risk needs one approver who is not the requester', async () => {
+  it('medium risk needs one approver who is not an author (requester, resolver or submitter)', async () => {
     const { engine, r } = await resolved()
     const p = must(await engine.submit(r.id, 'u'))
     expect(p.state).toBe('pending_approval')
-    const self = await engine.approve(r.id, { approver: 'user-requester', payload_hash: p.payload_hash, acknowledged_impact: true })
-    expect(!self.ok && self.error.code).toBe('approver_is_requester')
-    const a = must(await engine.approve(r.id, { approver: 'boss', payload_hash: p.payload_hash, acknowledged_impact: true }))
+    for (const who of ['user-requester', 'u']) {
+      const self = await engine.approve(r.id, { approver: who, subject: p.approval_subject!, acknowledged_impact: true })
+      expect(!self.ok && self.error.code).toBe('approver_is_author')
+    }
+    const a = must(await engine.approve(r.id, { approver: 'boss', subject: p.approval_subject!, acknowledged_impact: true }))
     expect(a.state).toBe('approved')
   })
 
   it('high risk needs two distinct approvers', async () => {
     const { engine, r } = await resolved(makePlan({ risk: 'high' }))
     const p = must(await engine.submit(r.id, 'u'))
-    const one = must(await engine.approve(r.id, { approver: 'a1', payload_hash: p.payload_hash, acknowledged_impact: true }))
+    const one = must(await engine.approve(r.id, { approver: 'a1', subject: p.approval_subject!, acknowledged_impact: true }))
     expect(one.state).toBe('pending_approval')
-    const dup = await engine.approve(r.id, { approver: 'a1', payload_hash: p.payload_hash, acknowledged_impact: true })
+    const dup = await engine.approve(r.id, { approver: 'a1', subject: p.approval_subject!, acknowledged_impact: true })
     expect(!dup.ok && dup.error.code).toBe('duplicate_approver')
-    expect(must(await engine.approve(r.id, { approver: 'a2', payload_hash: p.payload_hash, acknowledged_impact: true })).state).toBe('approved')
+    expect(must(await engine.approve(r.id, { approver: 'a2', subject: p.approval_subject!, acknowledged_impact: true })).state).toBe('approved')
   })
 
-  it('an approval must name the hash the approver reviewed', async () => {
+  it('an approval must name the subject the approver reviewed', async () => {
     const { engine, r } = await resolved()
     must(await engine.submit(r.id, 'u'))
-    const res = await engine.approve(r.id, { approver: 'boss', payload_hash: 'f'.repeat(64), acknowledged_impact: true })
-    expect(!res.ok && res.error.code).toBe('payload_hash_mismatch')
+    const res = await engine.approve(r.id, { approver: 'boss', subject: 'f'.repeat(64), acknowledged_impact: true })
+    expect(!res.ok && res.error.code).toBe('subject_mismatch')
   })
 
   it('needs the impact acknowledged when it disrupts clients', async () => {
     const { engine, r } = await resolved()
     const p = must(await engine.submit(r.id, 'u'))
-    const res = await engine.approve(r.id, { approver: 'boss', payload_hash: p.payload_hash, acknowledged_impact: false })
+    const res = await engine.approve(r.id, { approver: 'boss', subject: p.approval_subject!, acknowledged_impact: false })
     expect(!res.ok && res.error.code).toBe('impact_not_acknowledged')
   })
 
   it('payload changed after approval: approvals become invalid, the rollout returns to draft and cannot be scheduled', async () => {
     const { engine, r } = await resolved()
     const p = must(await engine.submit(r.id, 'u'))
-    must(await engine.approve(r.id, { approver: 'boss', payload_hash: p.payload_hash, acknowledged_impact: true }))
-    const amended = must(await engine.amendPlan(r.id, makePlan({ params: { ssid: 'CK-Staff', security: 'wpa3-sae', passphrase_ref: 'vault:wifi/staff/v7' } }), 'user-requester'))
+    must(await engine.approve(r.id, { approver: 'boss', subject: p.approval_subject!, acknowledged_impact: true }))
+    const amended = must(await engine.amendPlan(r.id, makePlan({ params: { ssid: 'CK-Staff', security: 'wpa3-sae', passphrase_ref: secretRef('vault:wifi/staff', 7) } }), 'user-requester'))
     expect(amended.state).toBe('draft')
     expect(amended.payload_hash).not.toBe(p.payload_hash)
     expect(amended.approvals).toHaveLength(1)
     expect(engine.approvalStatus(amended).satisfied).toBe(false)
-    expect(engine.approvalStatus(amended).ignored[0].reason).toBe('payload_changed')
+    expect(engine.approvalStatus(amended).ignored[0].reason).toBe('subject_changed')
     const sch = await engine.schedule(r.id, 'u')
     expect(!sch.ok && sch.error.code).toBe('invalid_transition')
     // Going through the steps again needs a fresh approval of the new hash.
@@ -201,7 +204,7 @@ describe('approvals', () => {
   it('an amendment that changes nothing keeps the approvals and the state', async () => {
     const { engine, r } = await resolved()
     const p = must(await engine.submit(r.id, 'u'))
-    must(await engine.approve(r.id, { approver: 'boss', payload_hash: p.payload_hash, acknowledged_impact: true }))
+    must(await engine.approve(r.id, { approver: 'boss', subject: p.approval_subject!, acknowledged_impact: true }))
     const same = must(await engine.amendPlan(r.id, makePlan(), 'user-requester'))
     expect(same.state).toBe('approved')
   })
@@ -209,7 +212,7 @@ describe('approvals', () => {
   it('a rejection cancels the rollout', async () => {
     const { engine, r } = await resolved()
     const p = must(await engine.submit(r.id, 'u'))
-    const res = must(await engine.reject(r.id, { approver: 'boss', payload_hash: p.payload_hash, note: 'Not during the sale.' }))
+    const res = must(await engine.reject(r.id, { approver: 'boss', subject: p.approval_subject!, note: 'Not during the sale.' }))
     expect(res.state).toBe('cancelled')
   })
 
@@ -217,7 +220,7 @@ describe('approvals', () => {
     const s = setupEngine()
     s.env.online.add('ap1')
     const r = await approvedRollout(s.engine, makePlan(), stores(1))
-    await s.engine.tick()
+    await s.tick()
     const res = await s.engine.amendPlan(r.id, makePlan({ params: { x: 1 } }), 'user-requester')
     expect(!res.ok && res.error.code).toBe('immutable_after_start')
   })
@@ -229,10 +232,10 @@ describe('scheduling, start and events', () => {
     s.env.online.add('ap1')
     const r = await approvedRollout(s.engine, makePlan({ schedule: { not_before: '2026-11-02T05:00:00Z', window: null } }), stores(1))
     expect(r.state).toBe('scheduled')
-    await s.engine.tick()
+    await s.tick()
     expect((await s.engine.getRollout(r.id))!.state).toBe('scheduled')
     s.clock.set('2026-11-02T05:00:00Z')
-    const rep = await s.engine.tick()
+    const rep = await s.tick()
     expect((await s.engine.getRollout(r.id))!.state).toBe('running_canary')
     expect(rep.offered.map((j) => j.target_id)).toEqual(['ap1'])
   })
@@ -240,7 +243,7 @@ describe('scheduling, start and events', () => {
   it('creates one queued job per included target, each with the payload hash and an idempotency key', async () => {
     const s = setupEngine()
     const r = await approvedRollout(s.engine, makePlan(), stores(3))
-    await s.engine.tick()
+    await s.tick()
     const jobs = await s.engine.listJobs(r.id)
     expect(jobs).toHaveLength(3)
     for (const j of jobs) {
@@ -265,7 +268,7 @@ describe('scheduling, start and events', () => {
     const s = setupEngine()
     const r = await approvedRollout(s.engine, makePlan({ schedule: { not_before: '2026-11-20T00:00:00Z', window: null }, expires_at: '2026-11-21T00:00:00Z' }), stores(1))
     s.clock.set('2026-11-21T00:00:00Z')
-    await s.engine.tick()
+    await s.tick()
     expect((await s.engine.getRollout(r.id))!.state).toBe('expired')
   })
 
@@ -273,10 +276,10 @@ describe('scheduling, start and events', () => {
     const s = setupEngine()
     for (const c of stores(3)) s.env.online.add(c.target_id)
     const r = await approvedRollout(s.engine, makePlan({ canary: { mode: 'none' } }), stores(3))
-    await s.engine.tick() // starts, offers
+    await s.tick() // starts, offers
     const paused = must(await s.engine.pause(r.id, 'ops', 'Store asked to wait.'))
     expect(paused.state).toBe('paused')
-    expect((await s.engine.tick()).offered).toEqual([])
+    expect((await s.tick()).offered).toEqual([])
     const resumed = must(await s.engine.resume(r.id, 'ops', 'Store is ready.'))
     expect(resumed.state).toBe('running_batches')
   })
