@@ -127,7 +127,7 @@ All database access is over HTTP through supabase-js and PostgREST; there is no 
 | Video gateway | `npm run gateway` (`services/gateway/index.ts`) | **3412**, `0.0.0.0`, plain HTTP/WS | BUILT | The only video endpoint a browser reaches; serves `/g/ws`, `/g/video-stream.js`, `/g/video-rtc.js`, `/g/health` (JSON); asks the media session registry in the database (PostgREST, its own key `SUPABASE_VIDEO_GATEWAY_KEY`, role `video_gateway`, P2-6) when a socket arrives and every 15 s (P2-4) |
 | go2rtc | `npm run stack:up` (`deploy/docker-compose.dev.yml`, `deploy/go2rtc.yaml`) | **1984** API, published on `127.0.0.1` only | BUILT | `cap_drop: ALL`, `no-new-privileges`, config mounted read-only, RTSP server off. P2-6: API login from `GO2RTC_API_USERNAME`/`GO2RTC_API_PASSWORD` (empty = none); WebRTC listener off and 8555 no longer published (a running container changes when it is recreated) |
 | go2rtc demo override | `npm run stack:up:demo` (+ `deploy/docker-compose.demo.yml`, `go2rtc.demo.yaml`) | adds RTSP **8554** on the container's own `127.0.0.1` (not published) | BUILT (dev only) | Needed only for the generated test picture (`DEMO_VIDEO=1`, non-production, loopback NVR address) |
-| Worker | `npm run worker` (`services/worker/index.ts`) | none | BUILT | Its own key `SUPABASE_MONITOR_WORKER_KEY` (role `monitor_worker`, P2-6); housekeeping every ten minutes (rate-limit windows, media sessions, credential-read log); heartbeat-based single-worker guard (`lib/monitor/guard.ts`) — to be replaced by a lease (P2-7) |
+| Worker | `npm run worker` (`services/worker/index.ts`) | none | BUILT | Its own key `SUPABASE_MONITOR_WORKER_KEY` (role `monitor_worker`, P2-6); housekeeping every ten minutes while it holds the lease (rate-limit windows, media sessions, credential-read log); P2-7: works only while it holds the lease `monitor` (standby otherwise), every write fenced with the lease's token (section 6.8, `docs/drishti/worker-lease.md`) |
 | Supabase | `npm run db:start` | 55321 API, 55322 DB, 55323 Studio, 55324 mail catcher (55320 shadow DB for diffs) | BUILT | `supabase/config.toml` |
 | Fake NVR and devices | `npm run fake:nvr` (`scripts/fake-nvr.ts`) | `127.0.0.1`: ISAPI 8081 (default), RTSP 8554, TCP 9101-9103 | BUILT (dev only) | Demo data: `npm run demo:seed` (DEMO organisation, generated passwords printed once) |
 | ffmpeg | spawned per fast-playback request by the web process (`lib/streams/vod.ts`) | none (pipe only) | BUILT (fakes only) | Not installed on the development host; never run end to end |
@@ -140,7 +140,7 @@ The spike (`docs/drishti/adr-service-roles.md`) showed that PostgREST on the pin
 |---|---|---|
 | `app_web` (`SUPABASE_APP_WEB_KEY`) | web app (`createAdminClient`) | the tables and RPCs the web code uses (BYPASSRLS; every query org-scoped); **no NVR login read**, no write to `check_state`/`outages`/`worker_state`/`monitor_gaps`, no worker, gateway, test or diagnostic function; writes an NVR password only through `recorder_store_credential` |
 | `media_service` (`SUPABASE_MEDIA_SERVICE_KEY`) | the video path of the web process (`createMediaClient`: open live, playback, fast playback; the NVR login of discovery and the connection test) | camera routes (SELECT on cameras, locations, mappings, recorders, assets), `media_session_create/open/still_valid/close`, `recorder_credential_read` for `live`/`playback`/`vod`/`export`/`discovery`/`connection_test`, the access audit rows of video |
-| `monitor_worker` (`SUPABASE_MONITOR_WORKER_KEY`) | worker | monitoring inputs, `monitor_apply_results`, its own `worker_state` columns, `monitor_gaps` insert, `cameras.camera_ip`, `recorder_credential_read` for `monitoring`, housekeeping prunes; lease RPCs in P2-7 |
+| `monitor_worker` (`SUPABASE_MONITOR_WORKER_KEY`) | worker | monitoring inputs (read), `recorder_credential_read` for `monitoring`, housekeeping prunes; P2-7: the lease functions and the fenced writes (`monitor_apply_results`, `monitor_heartbeat`, `monitor_record_gap`, `monitor_mark_round`, `monitor_run_started/progress/finished`, `monitor_save_camera_ips`); no direct table or column write |
 | `video_gateway` (`SUPABASE_VIDEO_GATEWAY_KEY`) | gateway | EXECUTE on `media_session_open` / `media_sessions_still_valid` / `media_session_close` only; no table (not even through the API description) |
 | `fleet_service` | Phase 7 | not created yet |
 | signer (separate Windows service) | D-9 | holds the command-signing key in CNG, signs only after its own database checks |
@@ -205,7 +205,7 @@ RLS summary (0011, 0014): cameras visible with any CCTV capability covering them
 | `device_capabilities` | per vendor/model/firmware/mode and operation: supported / unsupported / unverified, doc reference, verification state; seeded from the research with nothing `lab_validated` | P2-5a/c (W-2) | PLANNED |
 | History re-keying | `check_state`/`outages` of type `nvr` → `recorder`; soft delete instead of the delete triggers that erase history | P2-5a | PLANNED |
 | `media_sessions` | session registry for video and remote sessions (section 6.6) | P2-4 (D-3) | PLANNED |
-| `worker_leases` (+ `monitor_requests`) | atomic lease with fencing token (section 6.9) | P2-7 (D-8) | PLANNED |
+| `worker_leases` | atomic lease with fencing token (section 6.8); `check_requested_at` stays in `worker_state` (no `monitor_requests`, `docs/drishti/worker-lease.md` section 5) | P2-7 (D-8) | BUILT (migration `20261021000036`) |
 | `rate_limit_hits`, `vault_reads`, `security_settings` | shared rate limiter; credential-read log; per-organisation lock of the service key on NVR logins | P2-6 (D-11, D-14) | BUILT (migration `20261021000033`) |
 | Observation states and facets | `check_state.state` ∈ {healthy, degraded, failed, unreachable, unknown_parent, maintenance, unsupported, not_checked}; `stale` computed on read; `evidence jsonb`; per-camera facets reachability / stream / recording | WP-4.1 (D-7) | PLANNED |
 | `incidents` (replaces `outages`) | kind ∈ {failure, unreachable}, `parent_incident_id`, `cause_asset_id`; `targets_availability` returns up / down / unknown seconds and coverage | WP-4.1 | PLANNED |
@@ -462,7 +462,7 @@ stateDiagram-v2
   down --> unknown: target switched off (outage closed, state cleared)
 ```
 
-`monitor_apply_results` (`supabase/migrations/20261021000006_monitoring_fixes.sql`) applies batches atomically; only the service role may call it; a failure left from before a worker stop is discarded when a recorded gap overlaps the silent period; results for switched-off targets are ignored. Display: Live / Offline / Not checked yet / Not checked lately (last good result older than 20 minutes, excluded from Live counts).
+`monitor_apply_results` (`supabase/migrations/20261021000006_monitoring_fixes.sql`, fenced since P2-7: `20261021000036`) applies batches atomically; only the worker's role and the service role may call it, with the current lease token (section 6.8); a result older than its target's last check is skipped; a failure left from before a worker stop is discarded when a recorded gap overlaps the silent period; results for switched-off targets are ignored. Display: Live / Offline / Not checked yet / Not checked lately (last good result older than 20 minutes, excluded from Live counts).
 
 ```mermaid
 sequenceDiagram
@@ -483,7 +483,7 @@ sequenceDiagram
 
 The check covers every target of every organisation (one global `worker_state` row), not only the requester's locations.
 
-### 6.8 Worker lease (PLANNED, P2-7, D-8)
+### 6.8 Worker lease (BUILT, P2-7, D-8; design, locking argument and failure modes in `docs/drishti/worker-lease.md`)
 
 ```mermaid
 sequenceDiagram
@@ -503,7 +503,11 @@ sequenceDiagram
   DB-->>A: whole batch rejected (stale token), A stops and goes standby
 ```
 
-Also planned: SQL guard skipping results older than `last_checked_at`; check-now requests surviving a takeover; lease names per shard (`monitor:shard-n`).
+Built with it (migration `20261021000036`): every worker write is a function that checks the token first in its own transaction
+(`worker_fence`: `FOR SHARE` on the lease row, so a takeover waits for a write in progress and a later write sees the new token;
+SQLSTATE WL001, the whole call rolled back); the SQL guard skipping results older than `last_checked_at`; check-now requests surviving
+a takeover (the new holder repeats the open run once). The lease name is a parameter (`monitor:shard-n` later), but targets are not yet
+split between shards.
 
 ### 6.9 Agent check-in and signed command (PLANNED, WP-6.1 / WP-7.1, D-9)
 
@@ -710,7 +714,7 @@ The requirement-level status is the tracker (`docs/drishti/DELIVERY-STATUS.md`, 
 | P2-4 session registry, ≤ 60 s revocation (WP-2.2) | `p2-4-brief.md` | PLANNED |
 | P2-5a/b/c locations, assets, recorders, mappings, network definitions, Wi-Fi inventory, import + discover-all (WP-2.3) | `p2-5-brief.md` | PLANNED |
 | P2-6 credential/SQL hardening, service roles, outbound restriction, shared rate limits (WP-2.4, D-11, D-14) | `p2-6-brief.md`, `p2-6-report.md` | BUILT (review pending) |
-| P2-7 worker lease and fencing (WP-2.5) | `p2-7-brief.md` | PLANNED |
+| P2-7 worker lease and fencing (WP-2.5) | `p2-7-brief.md`, `p2-7-report.md`, `docs/drishti/worker-lease.md` | BUILT (review pending) |
 | P3-0 brand quick pass | `eef5b3b` | BUILT |
 | P3 shell, auth, MFA, CSP, visual QA (WP-3.1…3.5) | — | PLANNED |
 | P4 observation states, control centre, CCTV completion (offsets, exports, media service), codec matrix; legacy parity P4-L1…L5 | — | PLANNED |
@@ -731,7 +735,7 @@ Working tree at writing: `docs/drishti/DECISIONS.md` and `DELIVERY-STATUS.md` ha
 2. Open video survives revocation and deactivation for up to about 41 minutes (P2-4).
 3. P3-1: two-step sign-in (TOTP), the per-organisation switch, fresh sign-in and session limits are built (section 5.9). Left: the switch is off on the local stack; TOTP needs the local stack restarted to be on (`supabase/config.toml`); one authenticator app per person (no second factor or recovery codes: a super administrator resets); the idle timer counts the Live wall's own renewals as activity.
 4. NVR-down marks cameras down; no unreachable/unknown/maintenance states; no recording health (WP-4.1, WP-5.2).
-5. Heartbeat-only worker guard with race windows; check-now global across organisations; late-result guard and NVR back-off in memory only (P2-7).
+5. P2-7 replaced the heartbeat guard with a fenced lease and moved the late-result guard into SQL. Left: check-now is global across organisations; the NVR login back-off is in the worker's memory only; one lease for all targets (sharding needs the targets split first).
 6. P2-6 closed the single-key, outbound-target, go2rtc-login, WebRTC-listener and `search_path` items (sections 3.3, 8.4, 8.5). Left: the web process still holds the service key (GoTrue admin API) and both web keys (media path not yet its own process, WP-4.3); go2rtc 1.9.9 accepts `echo:`/`expr:`/`ffmpeg:` through its API and lists sources with passwords to whoever has the API login; `app_web` still writes several tables directly instead of narrow RPCs.
 7. Plain HTTP/WS until the TLS layout of `docs/drishti/runbook-tls.md` is deployed (Caddy, one address; not yet run through Caddy: verified by header and address tests only); app on all interfaces, gateway on `0.0.0.0` unless `GATEWAY_HOST` (WP-5.4 packages it). The CSP is built (P3-1, section 8.8); the go2rtc player scripts still come from the gateway (allowed through `'strict-dynamic'`), not vendored with SRI.
 8. Rate limits are shared since P2-6 (section 8.6); agent enrolment and check-in limits exist as names only until the agent API does (P6/P7).
@@ -798,7 +802,7 @@ lib/admin/                       users, access, access-rules (grant rules), role
 lib/actions/                     Server Actions: auth, streams, playback, groups, monitor, admin/{users,access,inventory,monitoring}
 lib/streams/                     token, go2rtc client, source builders, open, playback, vod, speed, gateway, limiters, timeline, calendar, wall, thumbnail
 lib/nvr/ lib/rtsp/ lib/probes.ts Digest client, ISAPI parsers, recording search; RTSP DESCRIBE; TCP/ICMP probes
-lib/monitor/                     runner, checks, config, guard (heartbeat), health, check-now, discovery, uptime, supabase-db
+lib/monitor/                     runner, checks, config, lease + supervisor (P2-7), health, check-now, discovery, uptime, supabase-db
 lib/queries/ lib/inventory/ lib/import/ lib/groups/   read models; store/device services; CSV import; group service
 lib/jobs/                        rollout/job engine (in memory), canonical hashing, approvals, planner, windows, fake adapter (test only)
 lib/security/ lib/observability/ lib/design/   org scope; logger, masking, error sanitising; contrast computation
