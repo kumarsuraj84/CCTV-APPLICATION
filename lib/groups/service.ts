@@ -192,6 +192,90 @@ export async function addCamerasByKeyword(deps: GroupDeps, actor: Actor, groupId
   return res.ok ? { ok: true, added: res.added, truncated } : res
 }
 
+// ── Dynamic rules (P2-5c-1 brief item 6; ruling C-1) ─────────────────────────────────────────────────────────────────────────
+// A rule adds every camera of a region, cluster, location or NVR (optionally only those whose name contains a word), or every camera
+// whose name contains a word. Rules are resolved when the group is read and are ALWAYS intersected with what the reader may see
+// (group_rule_members), so a dynamic group never widens anybody's access. Adding a rule for a place needs live view of that WHOLE place
+// (has_capability_for as the person) — the same rule as adding its cameras one by one — so a rule can neither probe nor reveal a place.
+export type RuleKind = 'region' | 'cluster' | 'location' | 'recorder' | 'name'
+const RULE_KINDS: readonly RuleKind[] = ['region', 'cluster', 'location', 'recorder', 'name']
+export const MSG_RULE_PLACE = 'You can only add a rule for a place where you may watch every camera live.'
+export type GroupRule = { id: string; kind: RuleKind; refId: string | null; label: string; nameContains: string | null }
+
+export async function addGroupRule(deps: GroupDeps, actor: Actor, groupId: string, input: { kind: RuleKind; refId?: string | null; nameContains?: string | null }): Promise<Result<{ ruleId: string }>> {
+  const may = await mayEdit(deps, actor)
+  if (!may.ok) return may
+  const kind = input?.kind
+  if (!RULE_KINDS.includes(kind)) return { ok: false, error: 'Choose what the rule includes.' }
+  const word = typeof input?.nameContains === 'string' ? input.nameContains.trim() : ''
+  if (word.length > 100) return { ok: false, error: 'The word can be at most 100 characters.' }
+  if (kind === 'name' && !word) return { ok: false, error: 'Enter a word to look for in the camera names.' }
+  const found = await findGroup(deps, actor, groupId)
+  if (!found.ok) return found
+  let refId: string | null = null
+  if (kind !== 'name') {
+    refId = typeof input?.refId === 'string' && /^[0-9a-f-]{36}$/i.test(input.refId) ? input.refId.toLowerCase() : null
+    if (!refId) return { ok: false, error: MSG_RULE_PLACE }
+    const { data, error } = await deps.rls.rpc('has_capability_for', { p_cap: 'cctv.live', p_kind: kind, p_id: refId })
+    if (error) return { ok: false, error: 'Could not check your access. Please try again.' }
+    if (data !== true) return { ok: false, error: MSG_RULE_PLACE }
+  }
+  const { data, error } = await deps.admin.from('camera_group_rules')
+    .insert({ org_id: actor.orgId, group_id: found.group.id, kind, ref_id: refId, name_contains: word || null, created_by: actor.id }).select('id').single()
+  if (error?.code === DUPLICATE) return { ok: false, error: 'The group already has this rule.' }
+  if (error?.code === '23503') return { ok: false, error: MSG_RULE_PLACE }
+  if (error || !data) return { ok: false, error: sanitizeError(error, { route: 'addGroupRule', fallback: 'Could not add the rule.' }) }
+  await audit(deps, actor, 'group_rule_added', found.group.id, { kind, ...(refId ? { ref: refId } : {}), ...(word ? { name_contains: word } : {}) })
+  return { ok: true, ruleId: data.id }
+}
+
+export async function removeGroupRule(deps: GroupDeps, actor: Actor, groupId: string, ruleId: string): Promise<Result<object>> {
+  const may = await mayEdit(deps, actor)
+  if (!may.ok) return may
+  const found = await findGroup(deps, actor, groupId)
+  if (!found.ok) return found
+  const { data, error } = await deps.admin.from('camera_group_rules').delete().eq('id', ruleId).eq('group_id', found.group.id).eq('org_id', actor.orgId).select('id, kind')
+  if (error?.code === MALFORMED_ID) return { ok: false, error: 'That rule is not in this group.' }
+  if (error) return { ok: false, error: sanitizeError(error, { route: 'removeGroupRule', fallback: 'Could not remove the rule.' }) }
+  if (!data?.length) return { ok: false, error: 'That rule is not in this group.' }
+  await audit(deps, actor, 'group_rule_removed', found.group.id, { kind: data[0].kind })
+  return { ok: true }
+}
+
+/**
+ * The rules of a group, for its editors, with plain labels. A place the editor cannot see is named "a place you cannot see" (its name
+ * is never read with more rights than the editor has: the labels come from the editor's own client).
+ */
+export async function listGroupRules(deps: GroupDeps, actor: Actor, groupId: string): Promise<Result<{ rules: GroupRule[] }>> {
+  const may = await mayEdit(deps, actor)
+  if (!may.ok) return may
+  const found = await findGroup(deps, actor, groupId)
+  if (!found.ok) return found
+  const { data, error } = await deps.admin.from('camera_group_rules').select('id, kind, ref_id, name_contains').eq('group_id', found.group.id).eq('org_id', actor.orgId).order('created_at').order('id')
+  if (error) return { ok: false, error: sanitizeError(error, { route: 'listGroupRules', fallback: 'Could not read the rules.' }) }
+  const rows = data ?? []
+  const ids = (k: RuleKind) => rows.filter((r) => r.kind === k && r.ref_id).map((r) => r.ref_id as string)
+  const [regions, clusters, locations, recorders] = await Promise.all([
+    ids('region').length ? deps.rls.from('regions').select('id, code, name').in('id', ids('region')) : Promise.resolve({ data: [] as { id: string; code: string; name: string }[] }),
+    ids('cluster').length ? deps.rls.from('clusters').select('id, code, name').in('id', ids('cluster')) : Promise.resolve({ data: [] as { id: string; code: string; name: string }[] }),
+    ids('location').length ? deps.rls.from('locations').select('id, code, name').in('id', ids('location')) : Promise.resolve({ data: [] as { id: string; code: string; name: string }[] }),
+    ids('recorder').length ? deps.rls.from('assets').select('id, name').in('id', ids('recorder')) : Promise.resolve({ data: [] as { id: string; name: string }[] }),
+  ])
+  const label = new Map<string, string>([
+    ...(regions.data ?? []).map((r) => [r.id, `Region ${r.code} · ${r.name}`] as [string, string]),
+    ...(clusters.data ?? []).map((r) => [r.id, `Cluster ${r.code} · ${r.name}`] as [string, string]),
+    ...(locations.data ?? []).map((r) => [r.id, `Location ${r.code} · ${r.name}`] as [string, string]),
+    ...(recorders.data ?? []).map((r) => [r.id, `NVR ${r.name}`] as [string, string]),
+  ])
+  return {
+    ok: true,
+    rules: rows.map((r) => ({
+      id: r.id, kind: r.kind as RuleKind, refId: r.ref_id, nameContains: r.name_contains,
+      label: r.kind === 'name' ? 'Every camera you can see' : (r.ref_id && label.get(r.ref_id)) || 'A place you cannot see',
+    })),
+  }
+}
+
 export async function removeCamera(deps: GroupDeps, actor: Actor, groupId: string, cameraId: string): Promise<Result<object>> {
   const may = await mayEdit(deps, actor)
   if (!may.ok) return may

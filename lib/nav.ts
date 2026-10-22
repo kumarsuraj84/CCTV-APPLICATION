@@ -16,7 +16,7 @@ export type NavNeed = { anyOf?: Capability[]; anyLocationGrant?: true; admin?: A
 export type NavItem = {
   href: string
   label: string
-  icon: 'home' | 'store' | 'server' | 'users' | 'upload' | 'building' | 'activity' | 'grid' | 'video' | 'history'
+  icon: 'home' | 'store' | 'server' | 'users' | 'upload' | 'building' | 'activity' | 'grid' | 'video' | 'history' | 'network' | 'boxes'
   group: 'Monitoring' | 'Admin'
   needs?: NavNeed
   mobile?: true
@@ -36,6 +36,10 @@ export const NAV: NavItem[] = [
   // P2-3 review: the review of migrated grants (the editor itself is opened from Users). No count here: the items are static data.
   { href: '/admin/access-review', label: 'Access review', icon: 'users', group: 'Admin', needs: { admin: 'admin.access' } },
   { href: '/admin/monitoring', label: 'Monitoring', icon: 'activity', group: 'Admin', needs: { admin: 'admin.inventory' } },
+  // P2-5c-1: the hierarchy, NVRs, mapping editor and reconciliation; the asset inventory. ("Manage stores" stays until T-1 redirects it.)
+  { href: '/admin/locations', label: 'Locations and NVRs', icon: 'building', group: 'Admin', needs: { admin: 'admin.inventory' } },
+  { href: '/admin/regions', label: 'Regions and clusters', icon: 'network', group: 'Admin', needs: { admin: 'admin.inventory' } },
+  { href: '/admin/assets', label: 'Assets', icon: 'boxes', group: 'Admin', needs: { admin: 'admin.inventory' } },
   { href: '/admin/stores', label: 'Manage stores', icon: 'building', group: 'Admin', needs: { admin: 'admin.inventory' } },
   { href: '/admin/devices', label: 'Manage devices', icon: 'server', group: 'Admin', needs: { admin: 'admin.inventory' } },
   { href: '/admin/import', label: 'Import', icon: 'upload', group: 'Admin', needs: { admin: 'admin.inventory' } },

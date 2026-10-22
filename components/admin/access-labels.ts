@@ -39,6 +39,9 @@ export function validityText(g: { state: string; validFrom: string; lastDay: str
 
 export const SCOPE_KIND_LABELS: Record<string, string> = {
   organization: 'Whole organisation',
+  region: 'Every location of the region, including ones added or moved there later',
+  cluster: 'Every location of the cluster, including ones added or moved there later',
+  recorder: 'The cameras on this NVR (and the NVR for IT rights)',
   location: 'All cameras and assets of the location, including ones added later',
   camera: 'This camera only',
   asset: 'This asset only',

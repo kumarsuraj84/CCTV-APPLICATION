@@ -295,8 +295,12 @@ export async function previewChange(admin: AdminClient, actor: Actor, userId: st
   return { ok: true, version: input.expectedVersion, token: previewToken(target.id, input.expectedVersion, normal), personActive: out.person_active === true, capabilities, lines }
 }
 
-function dbRefusal(error: { code?: string; message: string }, route: string): string {
+/** The database's refusal of an access change, in plain words (P2-5c-1: "the database enforces; show the DB message plainly"). */
+export function dbRefusal(error: { code?: string; message: string }, route: string): string {
   if (error.code === '42501' && /own access/.test(error.message)) return 'You cannot change your own access. Ask another administrator.'
+  if (error.code === '42501' && /not held by the acting person/.test(error.message)) {
+    return 'You can only give rights you hold yourself, at the same or a wider place (for example the region above a cluster), and for no longer than you hold them.'
+  }
   if (error.code === '42501' && /download rights only/.test(error.message)) return MSG_EXPORT_ADMINS_ONLY
   if (error.code === '42501' && /only a platform owner/.test(error.message)) return 'Only a super administrator can give one of these rights.'
   if (error.code === '42501') return 'You are not allowed to make one of these changes. Reload the page and check what you hold yourself.'
@@ -403,6 +407,10 @@ export type EditorData = {
   locations: { id: string; code: string; name: string }[]
   cameras: { id: string; store_id: string; channel: number; name: string }[]
   assets: { id: string; store_id: string | null; name: string; type: string }[]
+  /** P2-5c-1 scope modes "A region", "A cluster" and "NVR(s)" (ruling C-1). */
+  regions: { id: string; code: string; name: string }[]
+  clusters: { id: string; code: string; name: string; region_id: string | null }[]
+  recorders: { id: string; location_id: string; name: string }[]
 }
 
 const STATE_ORDER: Record<GrantState, number> = { active: 0, future: 1, expired: 2, revoked: 3 }
@@ -411,7 +419,7 @@ const STATE_ORDER: Record<GrantState, number> = { active: 0, future: 1, expired:
 export async function loadEditor(admin: AdminClient, actor: Actor, userId: string, now = new Date()): Promise<EditorData | null> {
   const target = await loadTarget(admin, actor.orgId, userId)
   if (!target) return null
-  const [cat, rows, holdings, locations, cameras, assets, reviews] = await Promise.all([
+  const [cat, rows, holdings, locations, cameras, assets, reviews, regions, clusters, recorderRows] = await Promise.all([
     catalogue(admin),
     fetchAll((from, to) => admin.from('access_grants').select(GRANT_COLUMNS).eq('org_id', actor.orgId).eq('user_id', target.id).order('granted_at', { ascending: false }).order('id').range(from, to)),
     holdingsOf(admin, actor),
@@ -419,7 +427,12 @@ export async function loadEditor(admin: AdminClient, actor: Actor, userId: strin
     fetchAll((from, to) => admin.from('cameras').select('id, store_id:location_id, channel, name').eq('org_id', actor.orgId).is('archived_at', null).order('location_id').order('channel').order('id').range(from, to)),
     fetchAll((from, to) => admin.from('assets').select('id, store_id:location_id, name, type').eq('org_id', actor.orgId).is('archived_at', null).order('name').order('id').range(from, to)),
     fetchAll((from, to) => admin.from('access_grant_reviews').select('grant_id, reviewed_at').eq('org_id', actor.orgId).order('id').range(from, to)),
+    fetchAll((from, to) => admin.from('regions').select('id, code, name').eq('org_id', actor.orgId).is('archived_at', null).order('code').order('id').range(from, to)),
+    fetchAll((from, to) => admin.from('clusters').select('id, code, name, region_id').eq('org_id', actor.orgId).is('archived_at', null).order('code').order('id').range(from, to)),
+    fetchAll((from, to) => admin.from('recorders').select('id, location_id, assets!recorders_asset_fk!inner(name, archived_at)').eq('org_id', actor.orgId).is('assets.archived_at', null)
+      .order('location_id').order('created_at').order('id').range(from, to)),
   ])
+  const recorders = (recorderRows as unknown as { id: string; location_id: string; assets: { name: string } }[]).map((r) => ({ id: r.id, location_id: r.location_id, name: r.assets.name }))
   const grantRows = rows as GrantRow[]
   const label = await scopeLabels(admin, actor.orgId, grantRows)
   const names = await peopleNames(admin, actor.orgId, grantRows.flatMap((g) => [g.granted_by, g.revoked_by]))
@@ -433,7 +446,7 @@ export async function loadEditor(admin: AdminClient, actor: Actor, userId: strin
     .map((c) => c.key)
     .filter((k) => roleMayHold(target.role, k) && (actor.role === 'platform_owner' || (held.has(k) && !(OWNER_ONLY_CAPABILITIES as readonly string[]).includes(k))))
   const { access_version, ...person } = target
-  return { person, version: access_version, editable: notEditableReason === null, notEditableReason, grants, catalogue: cat, grantable, locations, cameras, assets }
+  return { person, version: access_version, editable: notEditableReason === null, notEditableReason, grants, catalogue: cat, grantable, locations, cameras, assets, regions, clusters, recorders }
 }
 
 // ── Review of migrated grants (D-2a) ─────────────────────────────────────────

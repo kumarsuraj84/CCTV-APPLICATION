@@ -13,6 +13,8 @@ function line(nvr: string, r: Reconciliation): string {
       return `${nvr}, channel ${r.channel}: "${r.from}" is now called "${r.to}" by the NVR.`
     case 'channel_taken':
       return `${nvr}, channel ${r.channel}: the restored camera "${r.cameraName}" was on this channel, which another camera now uses; it was left unlinked.`
+    case 'unplaced':
+      return `${nvr}: the restored camera "${r.cameraName}" (last on channel ${r.channel}) could not be placed; link it on the Reconciliation page.`
   }
 }
 

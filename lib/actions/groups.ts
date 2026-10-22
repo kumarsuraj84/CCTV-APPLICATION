@@ -5,7 +5,7 @@ import { hasGroupEditingAuthority, MSG_GROUPS_DENIED } from '@/lib/admin/roles'
 import type { Actor } from '@/lib/admin/types'
 import { holds } from '@/lib/auth/capabilities'
 import { requireProfile } from '@/lib/auth/profile'
-import { addCameras, addCamerasByKeyword, createGroup, deleteGroup, removeCamera, type GroupDeps } from '@/lib/groups/service'
+import { addCameras, addCamerasByKeyword, addGroupRule, createGroup, deleteGroup, removeCamera, removeGroupRule, type GroupDeps, type RuleKind } from '@/lib/groups/service'
 import { logger } from '@/lib/observability/logger'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
@@ -67,6 +67,21 @@ export async function addByKeywordAction(groupId: string, keyword: string): Prom
     const more = res.truncated ? ' More than 500 cameras matched, so only the first 500 (in name order) were looked at. Use a longer word to narrow it down.' : ''
     if (res.added === 0) return { ok: true, message: `No new cameras found with that word in the name. They may already be in the group, or you may not be able to see them.${more}` }
     return { ok: true, message: `Added ${plural(res.added, 'camera', 'cameras')} to the group.${more}` }
+  })
+}
+
+/** P2-5c-1: a dynamic rule (region / cluster / location / NVR / name); members are always intersected with what each viewer may see. */
+export async function addRuleAction(groupId: string, input: { kind: RuleKind; refId?: string | null; nameContains?: string | null }): Promise<GroupActionState> {
+  return run('addRuleAction', async (deps, actor) => {
+    const res = await addGroupRule(deps, actor, String(groupId), { kind: input?.kind, refId: input?.refId ?? null, nameContains: input?.nameContains ?? null })
+    return res.ok ? { ok: true, message: 'Rule added. Its cameras are in the group now, and cameras added there later will be too.' } : { error: res.error }
+  })
+}
+
+export async function removeRuleAction(groupId: string, ruleId: string): Promise<GroupActionState> {
+  return run('removeRuleAction', async (deps, actor) => {
+    const res = await removeGroupRule(deps, actor, String(groupId), String(ruleId))
+    return res.ok ? { ok: true, message: 'Rule removed.' } : { error: res.error }
   })
 }
 

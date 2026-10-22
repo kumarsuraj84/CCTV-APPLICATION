@@ -31,15 +31,59 @@ export async function listVisibleGroups(supabase: Client, only?: { capabilities:
       .order('camera_id')
       .range(from, to),
   )) as unknown as { group_id: string; camera_id: string; cameras: { store_id: string } }[]
+  // P2-5c-1: the members dynamic rules add (only cameras the reader may see, of groups the reader may see), counted once per camera.
+  const dynamic = await ruleMembers(supabase, null)
+  const extra = await camerasOf(supabase, [...new Set(dynamic.map((d) => d.camera_id))])
+  const members = new Map<string, Map<string, string>>()
+  const add = (group: string, camera: string, location: string) => {
+    const m = members.get(group) ?? new Map<string, string>()
+    m.set(camera, location)
+    members.set(group, m)
+  }
+  for (const i of items) add(i.group_id, i.camera_id, i.cameras.store_id)
+  for (const d of dynamic) {
+    const cam = extra.get(d.camera_id)
+    if (cam) add(d.group_id, d.camera_id, cam.store_id)
+  }
   const counts = new Map<string, number>()
-  for (const i of items) {
-    if (only && !coversCamera(only.capabilities, only.capability, { id: i.camera_id, location_id: i.cameras.store_id })) continue
-    counts.set(i.group_id, (counts.get(i.group_id) ?? 0) + 1)
+  for (const [group, cams] of members) {
+    let n = 0
+    for (const [id, location_id] of cams) if (!only || coversCamera(only.capabilities, only.capability, { id, location_id })) n++
+    counts.set(group, n)
   }
   return groups.map((g) => ({ id: g.id, name: g.name, created_by: g.created_by, camera_count: counts.get(g.id) ?? 0 }))
 }
 
-export type GroupCamera = { id: string; channel: number; name: string; store_id: string; store_code: string; store_name: string }
+/** Dynamic members (P2-5c-1) as the database resolves them for the reader: never wider than what they may see. */
+async function ruleMembers(supabase: Client, groupId: string | null): Promise<{ group_id: string; camera_id: string }[]> {
+  const out: { group_id: string; camera_id: string }[] = []
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase.rpc('group_rule_members', groupId ? { p_group: groupId } : {}).range(from, from + 999)
+    if (error) {
+      if (error.code === MALFORMED_ID) return []
+      throw new Error('Could not read the group.')
+    }
+    out.push(...((data ?? []) as { group_id: string; camera_id: string }[]))
+    if ((data ?? []).length < 1000) return out
+  }
+}
+
+type CameraRow = { id: string; channel: number; name: string; store_id: string; stores: { id: string; code: string; name: string } }
+
+/** Working cameras (active, at an active location) among these ids, read through the person's own client. */
+async function camerasOf(supabase: Client, ids: string[]): Promise<Map<string, CameraRow>> {
+  const out = new Map<string, CameraRow>()
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data, error } = await supabase.from('cameras').select('id, channel, name, store_id:location_id, stores:locations!inner(id, code, name, is_active)')
+      .in('id', ids.slice(i, i + 200)).eq('is_active', true).eq('stores.is_active', true)
+    if (error) throw new Error('Could not read the cameras.')
+    for (const c of (data ?? []) as unknown as CameraRow[]) out.set(c.id, c)
+  }
+  return out
+}
+
+/** `from_rule`: the camera is in the group only through a dynamic rule (P2-5c-1); it cannot be removed one by one. */
+export type GroupCamera = { id: string; channel: number; name: string; store_id: string; store_code: string; store_name: string; from_rule?: true }
 export type GroupDetail = { id: string; name: string; created_by: string | null; cameras: GroupCamera[] }
 
 type ItemRow = { camera_id: string; cameras: { id: string; channel: number; name: string; stores: { id: string; code: string; name: string } } }
@@ -62,9 +106,12 @@ export async function getVisibleGroup(supabase: Client, id: string): Promise<Gro
       .order('camera_id')
       .range(from, to),
   )) as unknown as ItemRow[]
-  const cameras = rows
-    .map((r) => ({ id: r.cameras.id, channel: r.cameras.channel, name: r.cameras.name, store_id: r.cameras.stores.id, store_code: r.cameras.stores.code, store_name: r.cameras.stores.name }))
-    .sort((a, b) => a.store_code.localeCompare(b.store_code) || a.channel - b.channel || a.id.localeCompare(b.id))
+  const byId = new Map<string, GroupCamera>(rows.map((r) => [r.cameras.id, { id: r.cameras.id, channel: r.cameras.channel, name: r.cameras.name, store_id: r.cameras.stores.id, store_code: r.cameras.stores.code, store_name: r.cameras.stores.name }]))
+  // P2-5c-1: members added by the group's dynamic rules (intersected with the reader's own access by the database).
+  const dynamic = await ruleMembers(supabase, id)
+  const extra = await camerasOf(supabase, dynamic.map((d) => d.camera_id).filter((c) => !byId.has(c)))
+  for (const c of extra.values()) byId.set(c.id, { id: c.id, channel: c.channel, name: c.name, store_id: c.stores.id, store_code: c.stores.code, store_name: c.stores.name, from_rule: true })
+  const cameras = [...byId.values()].sort((a, b) => a.store_code.localeCompare(b.store_code) || a.channel - b.channel || a.id.localeCompare(b.id))
   return { ...group, cameras }
 }
 

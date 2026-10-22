@@ -39,8 +39,15 @@ export function AccessEditor(props: { userId: string; data: EditorData; prefill?
   const cam = useMemo(() => new Map(data.cameras.map((c) => [c.id, `${data.locations.find((l) => l.id === c.store_id)?.code ?? ''} · ${c.name}`])), [data.cameras, data.locations])
   const asset = useMemo(() => new Map(data.assets.map((a) => [a.id, a.name])), [data.assets])
   const capLabel = useMemo(() => new Map(data.catalogue.map((c) => [c.key, c.description])), [data.catalogue])
+  const node = useMemo(() => new Map<string, string>([
+    ...(data.regions ?? []).map((r) => [r.id, `Region ${r.code} · ${r.name}`] as [string, string]),
+    ...(data.clusters ?? []).map((c) => [c.id, `Cluster ${c.code} · ${c.name}`] as [string, string]),
+    ...(data.recorders ?? []).map((n) => [n.id, `NVR ${data.locations.find((l) => l.id === n.location_id)?.code ?? ''} · ${n.name}`] as [string, string]),
+  ]), [data.regions, data.clusters, data.recorders, data.locations])
   const where = (g: GrantChangeInput) =>
-    g.scope_kind === 'organization' ? 'Whole organisation' : g.scope_kind === 'location' ? `${loc.get(g.scope_id!) ?? 'Location'} (all, incl. later)` : g.scope_kind === 'camera' ? `${cam.get(g.scope_id!) ?? 'Camera'} (this camera only)` : asset.get(g.scope_id!) ?? 'Asset'
+    g.scope_kind === 'organization' ? 'Whole organisation' : g.scope_kind === 'location' ? `${loc.get(g.scope_id!) ?? 'Location'} (all, incl. later)` : g.scope_kind === 'camera' ? `${cam.get(g.scope_id!) ?? 'Camera'} (this camera only)`
+      : g.scope_kind === 'region' || g.scope_kind === 'cluster' ? `${node.get(g.scope_id!) ?? g.scope_kind} (all its locations, incl. later)`
+        : g.scope_kind === 'recorder' ? `${node.get(g.scope_id!) ?? 'NVR'} (its cameras only)` : asset.get(g.scope_id!) ?? 'Asset'
 
   const staged = new Set(pending.filter((c) => c.op === 'revoke').map((c) => (c as { grant_id: string }).grant_id))
   const addChanges = (list: ChangeInput[]) => {
@@ -120,6 +127,7 @@ export function AccessEditor(props: { userId: string; data: EditorData; prefill?
       {data.editable && (
         <AccessBuilder
           catalogue={data.catalogue} grantable={data.grantable} targetRole={role} locations={data.locations} cameras={data.cameras} assets={data.assets}
+          regions={data.regions} clusters={data.clusters} recorders={data.recorders}
           prefill={props.prefill?.builder ?? null} onAdd={addChanges}
         />
       )}

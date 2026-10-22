@@ -76,8 +76,9 @@ export function GroupEditor({ groupId, cameras, canManage, stores, selectedStore
               <li key={c.id} className="flex items-center justify-between gap-3 px-3 py-2">
                 <span className="min-w-0 break-words">
                   <span className="font-mono">{c.store_code}</span> · channel {c.channel} · {c.name}
+                  {c.from_rule && <span className="text-muted-foreground"> (added by a rule)</span>}
                 </span>
-                {canManage && removable(c.id) && (
+                {canManage && removable(c.id) && !c.from_rule && (
                   <Button size="sm" variant="outline" disabled={pending} aria-label={`Remove ${c.name} (${c.store_code}, channel ${c.channel}) from the group`} onClick={() => remove(c.id)}>
                     Remove
                   </Button>

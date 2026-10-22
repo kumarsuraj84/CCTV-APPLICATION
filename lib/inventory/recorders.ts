@@ -28,6 +28,8 @@ export type Recorder = {
   clock_offset_sec: number | null
   /** Switched on AND its asset enabled (review M4). */
   monitored: boolean
+  /** Its location is switched on (P2-5b re-review N-3: discovery and the connection test never contact an NVR of a location that is off). */
+  location_active: boolean
 }
 
 /** The way to one camera: the camera (with the channel of its ACTIVE mapping) and the recorder of that mapping. */
@@ -62,15 +64,16 @@ export function isMonitored(r: { monitoring_enabled: boolean; assets?: unknown }
 
 const PIECE = 200
 const RECORDER_COLUMNS =
-  'id, org_id, location_id, http_port, rtsp_port, username, clock_offset_sec, monitoring_enabled, assets!recorders_asset_fk!inner(name, ip, enabled, archived_at), locations!recorders_location_fk!inner(code)'
+  'id, org_id, location_id, http_port, rtsp_port, username, clock_offset_sec, monitoring_enabled, assets!recorders_asset_fk!inner(name, ip, enabled, archived_at), locations!recorders_location_fk!inner(code, is_active)'
 type RecorderRead = {
   id: string; org_id: string; location_id: string; http_port: number; rtsp_port: number; username: string | null; clock_offset_sec: number | null
-  monitoring_enabled: boolean; assets: { name: string; ip: string | null; enabled: boolean; archived_at: string | null }; locations: { code: string }
+  monitoring_enabled: boolean; assets: { name: string; ip: string | null; enabled: boolean; archived_at: string | null }; locations: { code: string; is_active: boolean }
 }
 
 const toRecorder = (r: RecorderRead): Recorder => ({
   id: r.id, org_id: r.org_id, location_id: r.location_id, code: r.locations.code, name: r.assets.name, host: r.assets.ip,
   http_port: r.http_port, rtsp_port: r.rtsp_port, username: r.username ?? '', clock_offset_sec: r.clock_offset_sec, monitored: isMonitored(r),
+  location_active: r.locations.is_active !== false,
 })
 
 /** The non-archived recorders with these ids in the organisation (service role, after the person's own access check). */

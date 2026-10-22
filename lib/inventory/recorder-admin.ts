@@ -1,0 +1,181 @@
+import { createHash } from 'node:crypto'
+import { addAudit } from '@/lib/admin/audit'
+import type { Actor, AdminClient, Result } from '@/lib/admin/types'
+import { cleanId, inventoryAdmin, type InventoryClients } from '@/lib/inventory/admin-gate'
+import { ensurePlaceholderCameras } from '@/lib/inventory/cameras'
+import { isHostOrIp, optionalText, parseClockOffset, parseWhole } from '@/lib/inventory/forms'
+import { isMonitored, MSG_MONITORING_OFF, readRecorderPassword } from '@/lib/inventory/recorders'
+import { loadMonitorConfig } from '@/lib/monitor/config'
+import { realProbes } from '@/lib/monitor/probes'
+import type { Probes } from '@/lib/monitor/types'
+import { describeNvrError, NvrError } from '@/lib/nvr/client'
+import { sanitizeError } from '@/lib/observability/sanitize-error'
+import { processSingleton } from '@/lib/process-singleton'
+
+// The NVRs (recorders) of a location (P2-5c-1 brief item 2). A location has 1..n NVRs (a head office may have none). Each NVR has its
+// own address, ports, login name, number of cameras and clock offset; its password is WRITE-ONLY: it goes to the vault through
+// recorder_store_credential and is never read back to a screen, a result, a log or an audit row (the screens show only "a password is
+// saved"). The connection test is read-only (one ISAPI GET of the channel status) through the same credential path the worker uses
+// (recorder_read_credential, which refuses a switched-off NVR), and after a refused login it waits — like the worker's back-off (R9) —
+// so a wrong password can never lock the NVR's account from this screen either.
+
+export const MSG_NVR_NOT_FOUND = 'NVR not found.'
+export const MSG_NEED_PASSWORD = 'Enter the NVR password.'
+export const MSG_ADDRESS_TAKEN_HERE = 'Another NVR of this location already has this address.'
+export const MSG_ADDRESS_SHARED_ELSEWHERE = 'This NVR address is also used by an NVR of another location. Check that it is right.'
+export const MSG_TEST_BACKOFF = 'The NVR refused this login a short while ago. To protect its account it is not asked again for a while; check the saved user name and password.'
+
+export type RecorderInput = {
+  id?: string | null; name: string; host: string; httpPort: number | string; rtspPort: number | string; username: string
+  /** Write-only. Empty keeps the saved password (an existing NVR); a new NVR needs one. */
+  password?: string | null
+  expectedChannels: number | string; clockOffsetSec: string | number | null
+}
+
+async function liveLocation(admin: AdminClient, orgId: string, id: string | null) {
+  if (!id) return null
+  const { data } = await admin.from('locations').select('id').eq('id', id).eq('org_id', orgId).is('archived_at', null).maybeSingle()
+  return data
+}
+
+/** Creates or changes one NVR of a location; returns its id and, when worth a look, a warning. Never returns or logs the password. */
+export async function saveRecorder(clients: InventoryClients, actor: Actor, locationId: string, input: RecorderInput): Promise<Result<{ recorderId: string; warning?: string }>> {
+  const may = await inventoryAdmin(clients.rls, actor)
+  if (!may.ok) return may
+  const admin = clients.admin
+  const loc = cleanId(locationId)
+  if (!(await liveLocation(admin, actor.orgId, loc)) || !loc) return { ok: false, error: 'Location not found.' }
+  const name = optionalText(input?.name, 200)
+  if (!name) return { ok: false, error: 'Enter a name for the NVR (for example Ground floor).' }
+  const host = String(input?.host ?? '').trim()
+  if (!isHostOrIp(host)) return { ok: false, error: 'Enter the NVR address (an IP address or a host name).' }
+  const httpPort = parseWhole(input?.httpPort, 1, 65535, 80)
+  const rtspPort = parseWhole(input?.rtspPort, 1, 65535, 554)
+  if (httpPort == null || rtspPort == null) return { ok: false, error: 'A port must be a whole number from 1 to 65535.' }
+  const username = optionalText(input?.username, 200)
+  if (!username) return { ok: false, error: 'Enter the NVR user name.' }
+  const channels = parseWhole(input?.expectedChannels, 0, 999, 0)
+  if (channels == null) return { ok: false, error: 'The number of cameras must be a whole number from 0 to 999.' }
+  const offset = parseClockOffset(input?.clockOffsetSec)
+  if (!offset.ok) return offset
+  const password = typeof input?.password === 'string' && input.password !== '' ? input.password : null
+  if (password !== null && password.length > 200) return { ok: false, error: 'The password is too long.' }
+  let current: string | null = null
+  if (input?.id) {
+    current = cleanId(input.id)
+    const { data } = current
+      ? await admin.from('recorders').select('id, assets!recorders_asset_fk!inner(archived_at)').eq('id', current).eq('org_id', actor.orgId).eq('location_id', loc).is('assets.archived_at', null).maybeSingle()
+      : { data: null }
+    if (!data) return { ok: false, error: MSG_NVR_NOT_FOUND }
+  } else if (!password) return { ok: false, error: MSG_NEED_PASSWORD }
+
+  const { data: saved, error: saveError } = await admin.rpc('recorder_save', {
+    p_org: actor.orgId, p_location: loc, p_recorder: current as string, p_host: host, p_http_port: httpPort, p_rtsp_port: rtspPort, p_username: username,
+    p_expected_channels: channels, p_name: name, p_actor: actor.id,
+  })
+  if (saveError || !saved) {
+    if (saveError?.code === 'DR010') return { ok: false, error: MSG_ADDRESS_TAKEN_HERE }
+    return { ok: false, error: sanitizeError(saveError, { route: 'saveRecorder', fallback: 'Could not save the NVR.' }) }
+  }
+  const recorderId = saved as string
+  if (password) {
+    const cred = await admin.rpc('recorder_store_credential', { p_recorder: recorderId, p_secret: password })
+    if (cred.error) {
+      // A new NVR without its password is not left behind (review M-7); archived, never deleted.
+      if (!current) await admin.rpc('inventory_archive', { p_org: actor.orgId, p_kind: 'recorder', p_id: recorderId, p_actor: actor.id })
+      return { ok: false, error: sanitizeError(cred.error, { route: 'saveRecorder.credential', fallback: 'Could not save the NVR password.' }) }
+    }
+    await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'recorder_password_set', entityType: 'recorder', entityId: recorderId })
+  }
+  const { error: offErr } = await admin.from('recorders').update({ clock_offset_sec: offset.value, clock_offset_source: offset.value === null ? null : 'manual' })
+    .eq('id', recorderId).eq('org_id', actor.orgId)
+  if (offErr) return { ok: false, error: sanitizeError(offErr, { route: 'saveRecorder.offset', fallback: 'The NVR was saved, but its clock offset was not. Save it again.' }) }
+  try {
+    await ensurePlaceholderCameras(admin, actor.orgId, loc, recorderId, channels)
+  } catch (e) {
+    sanitizeError(e, { route: 'saveRecorder.cameras' })
+    return { ok: true, recorderId, warning: 'The NVR was saved, but its cameras could not be made yet. Use "Find cameras" on this NVR.' }
+  }
+  const warning = (await sharedElsewhere(admin, actor.orgId, loc, recorderId, host, httpPort)) ? MSG_ADDRESS_SHARED_ELSEWHERE : undefined
+  return warning ? { ok: true, recorderId, warning } : { ok: true, recorderId }
+}
+
+/** The same address and web port as an NVR of ANOTHER location: saved (decision D5-8), but probably a typo on this all-VPN network. */
+async function sharedElsewhere(admin: AdminClient, orgId: string, locationId: string, recorderId: string, host: string, port: number): Promise<boolean> {
+  const { data, error } = await admin.from('assets').select('id').eq('org_id', orgId).eq('is_recorder', true).is('archived_at', null)
+    .eq('ip', host).eq('tcp_port', port).neq('id', recorderId).neq('location_id', locationId).limit(1)
+  if (error) {
+    sanitizeError(error, { route: 'saveRecorder.addressCheck' })
+    return false
+  }
+  return (data ?? []).length > 0
+}
+
+/** Switches monitoring of one NVR off (nothing contacts it or its cameras) or on, with a reason (the database checks and audits). */
+export async function setRecorderMonitoring(clients: InventoryClients, actor: Actor, recorderId: string, input: { enabled: boolean; reason: string }): Promise<Result<object>> {
+  const may = await inventoryAdmin(clients.rls, actor)
+  if (!may.ok) return may
+  const id = cleanId(recorderId)
+  if (!id) return { ok: false, error: MSG_NVR_NOT_FOUND }
+  const reason = typeof input?.reason === 'string' ? input.reason.trim() : ''
+  if (reason.length < 3 || reason.length > 500) return { ok: false, error: 'Give a reason (at least three characters).' }
+  const { error } = await clients.admin.rpc('recorder_set_monitoring', { p_org: actor.orgId, p_recorder: id, p_enabled: input.enabled === true, p_reason: reason, p_actor: actor.id })
+  if (error) {
+    if (error.code === 'P0002') return { ok: false, error: MSG_NVR_NOT_FOUND }
+    if (error.code === '42501') return { ok: false, error: 'Only a super administrator, or an administrator with inventory rights for the whole organisation, may do this.' }
+    return { ok: false, error: sanitizeError(error, { route: 'setRecorderMonitoring', fallback: 'Could not change the monitoring of this NVR.' }) }
+  }
+  return { ok: true }
+}
+
+// The connection test's own back-off (per NVR and saved login, in memory, like the worker's): after a refused login this NVR is not
+// asked again from this screen until the window is over or its saved login changes. Holds a hash of the login, never the password.
+type Backoff = { until: number; login: string }
+const backoffs = processSingleton('inventory.nvrTestBackoff', () => new Map<string, Backoff>())
+const fingerprint = (host: string, port: number, username: string, password: string) => createHash('sha256').update(`${host}|${port}|${username}:${password}`).digest('hex')
+
+type TestDeps = { nvr: Probes['nvr']; now?: () => number; backoffSec?: number }
+
+/** Asks the NVR once, read-only, whether the saved login works and how many cameras it reports. */
+export async function testRecorderConnection(clients: InventoryClients, actor: Actor, recorderId: string, deps: TestDeps = { nvr: realProbes.nvr }): Promise<Result<{ message: string; channels: number }>> {
+  const may = await inventoryAdmin(clients.rls, actor)
+  if (!may.ok) return may
+  const id = cleanId(recorderId)
+  if (!id) return { ok: false, error: MSG_NVR_NOT_FOUND }
+  const admin = clients.admin
+  const { data: r, error } = await admin.from('recorders')
+    .select('id, http_port, username, monitoring_enabled, assets!recorders_asset_fk!inner(ip, enabled, archived_at), locations!recorders_location_fk!inner(is_active, archived_at)')
+    .eq('id', id).eq('org_id', actor.orgId).maybeSingle()
+  if (error) return { ok: false, error: sanitizeError(error, { route: 'testRecorderConnection', fallback: 'Could not read the NVR.' }) }
+  const row = r as unknown as { id: string; http_port: number; username: string | null; monitoring_enabled: boolean; assets: { ip: string | null; enabled: boolean; archived_at: string | null }; locations: { is_active: boolean; archived_at: string | null } } | null
+  if (!row || row.locations.archived_at) return { ok: false, error: MSG_NVR_NOT_FOUND }
+  if (row.assets.archived_at) return { ok: false, error: 'This NVR is archived. Restore it first.' }
+  if (!isMonitored(row)) return { ok: false, error: MSG_MONITORING_OFF }
+  if (!row.locations.is_active) return { ok: false, error: 'This location is switched off. Switch it on before testing its NVRs.' }
+  if (!row.assets.ip) return { ok: false, error: 'This NVR has no address saved.' }
+  const read = await readRecorderPassword(admin, id)
+  if (!read.ok) return { ok: false, error: sanitizeError({ code: read.code }, { route: 'testRecorderConnection', fallback: 'Could not read the NVR password.' }) }
+  if (!read.password) return { ok: false, error: 'This NVR has no password saved yet.' }
+  const host = row.assets.ip
+  const username = row.username ?? ''
+  const login = fingerprint(host, row.http_port, username, read.password)
+  const now = (deps.now ?? Date.now)()
+  const held = backoffs.get(id)
+  if (held && held.until > now && held.login === login) return { ok: false, error: MSG_TEST_BACKOFF }
+  if (held) backoffs.delete(id)
+  let outcome: string
+  try {
+    const status = await deps.nvr({ host, port: row.http_port, username, password: read.password }, { timeoutMs: 8000 }).channelStatus()
+    outcome = 'ok'
+    await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'recorder_connection_tested', entityType: 'recorder', entityId: id, detail: { outcome, channels: status.size } })
+    const n = status.size
+    return { ok: true, channels: n, message: `The NVR answered and accepted the login. It reports ${n} ${n === 1 ? 'camera' : 'cameras'}.` }
+  } catch (e) {
+    outcome = e instanceof NvrError ? e.kind : 'failed'
+    if (e instanceof NvrError && (e.kind === 'auth' || e.kind === 'forbidden')) {
+      backoffs.set(id, { until: now + (deps.backoffSec ?? loadMonitorConfig().nvrLoginBackoffSec) * 1000, login })
+    }
+    await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'recorder_connection_tested', entityType: 'recorder', entityId: id, detail: { outcome } })
+    return { ok: false, error: describeNvrError(e) }
+  }
+}

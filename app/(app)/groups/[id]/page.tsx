@@ -1,6 +1,9 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { GroupEditor } from '@/components/groups/GroupEditor'
+import { GroupRules } from '@/components/groups/GroupRules'
+import { listGroupRules } from '@/lib/groups/service'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { buttonVariants } from '@/components/ui/button'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { hasGroupEditingAuthority } from '@/lib/admin/roles'
@@ -38,6 +41,11 @@ export default async function GroupPage({ params, searchParams }: { params: Prom
   }
   const watchable = live ? await camerasFor(supabase, 'cctv.live', group.cameras.map((c) => c.id)) : { ok: true as const, ids: [] }
   const canOpenWall = watchable.ok && watchable.ids.length > 0
+  // P2-5c-1: dynamic rules, for the people who may change the group. Places are offered from what the person can see (their own
+  // client); adding a rule checks live view of the whole place again in the database.
+  const actor = { id: profile.id, orgId: profile.org_id, role: profile.role }
+  const rules = canManage ? await listGroupRules({ admin: createAdminClient(), rls: supabase }, actor, group.id) : null
+  const places = canManage ? await rulePlaces(supabase, stores) : null
 
   return (
     <div className="space-y-6">
@@ -56,6 +64,26 @@ export default async function GroupPage({ params, searchParams }: { params: Prom
         choices={choices}
         removableIds={watchable.ok ? watchable.ids : []}
       />
+      {canManage && rules?.ok && places && <GroupRules groupId={group.id} rules={rules.rules} places={places} />}
     </div>
   )
+}
+
+/** The places a rule may name, from what the person can see (regions, clusters, locations with live view, NVRs with the IT view). */
+async function rulePlaces(supabase: Awaited<ReturnType<typeof createClient>>, stores: { id: string; code: string; name: string }[]) {
+  const [regions, clusters, recorders] = await Promise.all([
+    supabase.from('regions').select('id, code, name').order('code'),
+    supabase.from('clusters').select('id, code, name').order('code'),
+    supabase.from('recorders').select('id, location_id').order('location_id'),
+  ])
+  const recIds = (recorders.data ?? []).map((r) => r.id)
+  const { data: names } = recIds.length ? await supabase.from('assets').select('id, name').in('id', recIds) : { data: [] }
+  const name = new Map((names ?? []).map((n) => [n.id, n.name]))
+  const code = new Map(stores.map((s) => [s.id, s.code]))
+  return {
+    region: (regions.data ?? []).map((r) => ({ id: r.id, label: `${r.code} · ${r.name}` })),
+    cluster: (clusters.data ?? []).map((c) => ({ id: c.id, label: `${c.code} · ${c.name}` })),
+    location: stores.map((s) => ({ id: s.id, label: `${s.code} · ${s.name}` })),
+    recorder: (recorders.data ?? []).filter((r) => name.has(r.id)).map((r) => ({ id: r.id, label: `${code.get(r.location_id) ?? ''} · ${name.get(r.id)}` })),
+  }
 }

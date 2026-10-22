@@ -20,7 +20,12 @@ import { BADGE, CHECK, FIELD, FOCUS, HELP, LABEL, TEXTAREA } from './fields'
 export type LocationRef = { id: string; code: string; name: string }
 export type CameraRef = { id: string; store_id: string; channel: number; name: string }
 export type AssetRef = { id: string; store_id: string | null; name: string; type: string }
-export type BuilderPrefill = { area: 'cctv' | 'it' | 'wifi' | 'admin'; mode: 'organization' | 'location' | 'camera' | 'asset'; capabilities: string[]; locationIds: string[] }
+export type RegionRef = { id: string; code: string; name: string }
+export type ClusterRef = { id: string; code: string; name: string; region_id: string | null }
+export type RecorderRef = { id: string; location_id: string; name: string }
+/** P2-5c-1 (ruling C-1): "A region", "A cluster" and "NVR(s)" next to locations, cameras and assets. */
+export type BuilderMode = 'organization' | 'region' | 'cluster' | 'location' | 'recorder' | 'camera' | 'asset'
+export type BuilderPrefill = { area: 'cctv' | 'it' | 'wifi' | 'admin'; mode: BuilderMode; capabilities: string[]; locationIds: string[] }
 
 const SHOW_MAX = 300
 const toggle = (s: ReadonlySet<string>, id: string, on?: boolean) => {
@@ -44,16 +49,26 @@ export function AccessBuilder(props: {
   locations: LocationRef[]
   cameras: CameraRef[]
   assets: AssetRef[]
+  regions?: RegionRef[]
+  clusters?: ClusterRef[]
+  recorders?: RecorderRef[]
   prefill?: BuilderPrefill | null
   onAdd: (changes: GrantChangeInput[]) => void
 }) {
   const capsOf = (area: string) => props.catalogue.filter((c) => c.area === area && props.grantable.includes(c.key))
   const areas = (['cctv', 'it', 'wifi', 'admin'] as const).filter((a) => capsOf(a).length > 0 || (a === 'admin' && fullRights(props)))
   const [area, setArea] = useState<(typeof areas)[number] | undefined>(props.prefill?.area && areas.includes(props.prefill.area) ? props.prefill.area : areas[0])
-  const [mode, setMode] = useState<BuilderPrefill['mode']>(props.prefill?.mode ?? 'location')
+  const [mode, setMode] = useState<BuilderMode>(props.prefill?.mode ?? 'location')
   const [locs, setLocs] = useState<ReadonlySet<string>>(new Set(props.prefill?.mode === 'location' ? props.prefill.locationIds : []))
   const [cams, setCams] = useState<ReadonlySet<string>>(new Set())
   const [assets, setAssets] = useState<ReadonlySet<string>>(new Set())
+  const [nodes, setNodes] = useState<Record<'region' | 'cluster' | 'recorder', ReadonlySet<string>>>({ region: new Set(), cluster: new Set(), recorder: new Set() })
+  const regions = props.regions ?? []
+  const clusters = props.clusters ?? []
+  const recorders = props.recorders ?? []
+  // A scope kind is offered only when the organisation has such places AND some right of the area may be given at it (catalogue).
+  const kindOffered = (k: 'region' | 'cluster' | 'recorder') =>
+    (k === 'region' ? regions : k === 'cluster' ? clusters : recorders).length > 0 && !!area && capsOf(area).some((c) => (c.scope_kinds ?? []).includes(k))
   const [wholeOrg, setWholeOrg] = useState(props.prefill?.mode === 'organization')
   const [ticks, setTicks] = useState<Record<string, ReadonlySet<string>>>({})
   const [areaCaps, setAreaCaps] = useState<ReadonlySet<string>>(new Set(props.prefill && props.prefill.area !== 'cctv' ? props.prefill.capabilities : []))
@@ -75,10 +90,33 @@ export function AccessBuilder(props: {
   const shownAssets = props.assets.filter((a) => !q || `${a.name} ${a.type} ${a.store_id ? locById.get(a.store_id)?.code ?? '' : ''}`.toLowerCase().includes(q)).slice(0, SHOW_MAX)
   const camLocs = props.locations.filter((l) => (camsByLoc.get(l.id)?.length ?? 0) > 0 && (!q || `${l.code} ${l.name}`.toLowerCase().includes(q) || (camsByLoc.get(l.id) ?? []).some((c) => c.name.toLowerCase().includes(q))))
 
+  const regionById = new Map(regions.map((r) => [r.id, r]))
+  const nodeLabel: Record<'region' | 'cluster' | 'recorder', (id: string) => string> = {
+    region: (id) => { const r = regionById.get(id); return r ? `Region ${r.code} · ${r.name}` : 'Region' },
+    cluster: (id) => {
+      const c = clusters.find((x) => x.id === id)
+      const r = c?.region_id ? regionById.get(c.region_id) : undefined
+      return c ? `Cluster ${c.code} · ${c.name}${r ? ` (${r.name})` : ''}` : 'Cluster'
+    },
+    recorder: (id) => { const n = recorders.find((x) => x.id === id); return n ? `NVR ${locById.get(n.location_id)?.code ?? ''} · ${n.name}` : 'NVR' },
+  }
+  const nodeList = (k: 'region' | 'cluster' | 'recorder') =>
+    (k === 'region' ? regions : k === 'cluster' ? clusters : recorders).map((x) => ({ id: x.id, label: nodeLabel[k](x.id) })).filter((x) => !q || x.label.toLowerCase().includes(q)).slice(0, SHOW_MAX)
+  const isNodeMode = (m: BuilderMode): m is 'region' | 'cluster' | 'recorder' => m === 'region' || m === 'cluster' || m === 'recorder'
+
   const cctvCaps = capsOf('cctv')
-  // Matrix rows for CCTV: the organisation, each whole location, and per location the cameras chosen one by one.
+  // Matrix rows for CCTV: the organisation, each region / cluster / NVR, each whole location, and per location the cameras chosen one by one.
   const rows: { key: string; label: string; help: string; build: (caps: string[]) => MatrixRow[] }[] = []
   if (wholeOrg) rows.push({ key: 'org', label: 'Whole organisation', help: 'Every camera, including ones added later', build: (caps) => [{ scope_kind: 'organization', scope_id: null, capabilities: caps }] })
+  for (const k of ['region', 'cluster', 'recorder'] as const) {
+    for (const id of nodes[k]) {
+      rows.push({
+        key: `${k}:${id}`, label: nodeLabel[k](id),
+        help: k === 'recorder' ? 'The cameras on this NVR, including ones linked to it later' : `Every location in this ${k}, including ones added later`,
+        build: (caps) => [{ scope_kind: k, scope_id: id, capabilities: caps }],
+      })
+    }
+  }
   for (const id of locs) {
     const l = locById.get(id)
     if (l) rows.push({ key: `loc:${id}`, label: `${l.code} · ${l.name}`, help: 'All cameras, including ones added later', build: (caps) => [{ scope_kind: 'location', scope_id: id, capabilities: caps }] })
@@ -124,7 +162,8 @@ export function AccessBuilder(props: {
     const matrix: MatrixRow[] =
       area === 'admin' || mode === 'organization' ? [{ scope_kind: 'organization', scope_id: null, capabilities: caps }]
         : mode === 'asset' ? [...assets].map((id) => ({ scope_kind: 'asset', scope_id: id, capabilities: caps }))
-          : [...locs].map((id) => ({ scope_kind: 'location', scope_id: id, capabilities: caps }))
+          : isNodeMode(mode) ? [...nodes[mode]].map((id) => ({ scope_kind: mode, scope_id: id, capabilities: caps }))
+            : [...locs].map((id) => ({ scope_kind: 'location', scope_id: id, capabilities: caps }))
     finish(caps.length === 0 ? [] : matrixChanges(matrix, until || null, reason.trim()))
   }
   const addPreset = (p: Preset) => {
@@ -133,7 +172,7 @@ export function AccessBuilder(props: {
 
   if (!area) return <p className="text-sm text-muted-foreground">There are no rights you may give this person.</p>
 
-  const radio = (value: BuilderPrefill['mode'], label: string, help: string) => (
+  const radio = (value: BuilderMode, label: string, help: string) => (
     <label className="flex items-start gap-2 rounded-lg border border-[#7C8795] p-3 text-sm has-[:checked]:border-[var(--ring)] has-[:checked]:bg-[var(--secondary)]">
       <input type="radio" name="coverage-mode" value={value} checked={mode === value} onChange={() => { setMode(value); setWholeOrg(value === 'organization' ? true : wholeOrg) }} className={`mt-0.5 ${CHECK}`} />
       <span><span className="font-medium">{label}</span><span className={`block ${HELP}`}>{help}</span></span>
@@ -164,15 +203,31 @@ export function AccessBuilder(props: {
               : <>{radio('location', 'All assets in these locations', 'Includes assets added to the location later.')}
                 {radio('asset', 'Selected assets', 'Exactly the assets you pick. New assets are not included automatically.')}
                 {radio('organization', 'Whole organisation', 'Every location and asset, now and later.')}</>}
+            {kindOffered('region') && radio('region', 'A region', 'Every location of every cluster in the region, including ones added or moved there later.')}
+            {kindOffered('cluster') && radio('cluster', 'A cluster', 'Every location in the cluster, including ones added or moved there later.')}
+            {kindOffered('recorder') && radio('recorder', 'NVR(s)', area === 'cctv' ? 'The cameras on these NVRs only, including ones linked later. Not the rest of the location.' : 'These NVRs and the assets attached to them.')}
           </div>
         </fieldset>
       )}
 
       {area !== 'admin' && mode !== 'organization' && (
         <div className="space-y-2">
-          <label htmlFor="access-search" className={LABEL}>{mode === 'camera' ? 'Find locations or cameras' : mode === 'asset' ? 'Find assets' : 'Find locations'}</label>
+          <label htmlFor="access-search" className={LABEL}>{mode === 'camera' ? 'Find locations or cameras' : mode === 'asset' ? 'Find assets' : mode === 'region' ? 'Find regions' : mode === 'cluster' ? 'Find clusters' : mode === 'recorder' ? 'Find NVRs' : 'Find locations'}</label>
           <input id="access-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="For example DEMO1 or Entrance" className={`${FIELD} max-w-md`} />
         </div>
+      )}
+
+      {area !== 'admin' && isNodeMode(mode) && (
+        <fieldset className="max-h-72 space-y-1 overflow-y-auto rounded-lg border p-2">
+          <legend className="sr-only">{mode === 'recorder' ? 'NVRs' : mode === 'region' ? 'Regions' : 'Clusters'}</legend>
+          {nodeList(mode).length === 0 && <p className="text-sm text-muted-foreground">Nothing matches.</p>}
+          {nodeList(mode).map((n) => (
+            <label key={n.id} className="flex items-center gap-2 py-0.5 text-sm">
+              <input type="checkbox" className={CHECK} checked={nodes[mode].has(n.id)} onChange={() => setNodes((s) => ({ ...s, [mode]: toggle(s[mode], n.id) }))} />
+              {n.label}
+            </label>
+          ))}
+        </fieldset>
       )}
 
       {area === 'cctv' && mode === 'organization' && (
