@@ -270,9 +270,11 @@ max_frequency = "5s"
 # 4152127777 = "123456"
 
 # Configure logged in session timeouts.
-# [auth.sessions]
+# P3-1: the app ends sessions itself (proxy.ts: SESSION_MAX_HOURS, default 12 h; idle 60 min for administrators, SESSION_IDLE_MINUTES
+# for others). This is the auth server's own backstop: no refresh after 12 hours. Keep it at or above SESSION_MAX_HOURS.
+[auth.sessions]
 # Force log out after the specified duration.
-# timebox = "24h"
+timebox = "12h"
 # Force log out if the user has been inactive longer than the specified duration.
 # inactivity_timeout = "8h"
 
@@ -300,9 +302,11 @@ auth_token = "env(SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN)"
 max_enrolled_factors = 10
 
 # Control MFA via App Authenticator (TOTP)
+# P3-1 (D-10): authenticator apps are available to everybody (viewers may set one up). Whether administrators MUST use one is the
+# per-organisation switch security_settings.mfa_enforced (off on the local stack). Takes effect after the stack restarts.
 [auth.mfa.totp]
-enroll_enabled = false
-verify_enabled = false
+enroll_enabled = true
+verify_enabled = true
 
 # Configure MFA via Phone Messaging
 [auth.mfa.phone]

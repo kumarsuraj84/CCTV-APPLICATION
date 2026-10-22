@@ -333,6 +333,26 @@ isOneToOne: false
       referencedColumns: ["id","org_id"]
     }
                   ]
+                },"auth_events": {
+                  Row: {
+                    "actor_id": string | null,"at": string,"detail": NonNullable<Json>,"email_hash": string | null,"event": string,"id": string,"ip": string | null,"org_id": string | null,"user_agent": string | null,"user_id": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "actor_id"?: string | null,"at"?: string,"detail"?: NonNullable<Json>,"email_hash"?: string | null,"event": string,"id"?: string,"ip"?: string | null,"org_id"?: string | null,"user_agent"?: string | null,"user_id"?: string | null
+                  }
+                  Update: {
+                    "actor_id"?: string | null,"at"?: string,"detail"?: NonNullable<Json>,"email_hash"?: string | null,"event"?: string,"id"?: string,"ip"?: string | null,"org_id"?: string | null,"user_agent"?: string | null,"user_id"?: string | null
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "auth_events_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"camera_channel_mappings": {
                   Row: {
                     "camera_id": string,"channel": number,"created_at": string,"created_by": string | null,"id": string,"org_id": string,"recorder_id": string,"valid_from": string,"valid_to": string | null
@@ -899,14 +919,14 @@ isOneToOne: false
                   ]
                 },"security_settings": {
                   Row: {
-                    "note": string | null,"org_id": string,"service_role_credential_reads": boolean,"updated_at": string
+                    "mfa_enforced": boolean,"note": string | null,"org_id": string,"service_role_credential_reads": boolean,"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "note"?: string | null,"org_id": string,"service_role_credential_reads"?: boolean,"updated_at"?: string
+                    "mfa_enforced"?: boolean,"note"?: string | null,"org_id": string,"service_role_credential_reads"?: boolean,"updated_at"?: string
                   }
                   Update: {
-                    "note"?: string | null,"org_id"?: string,"service_role_credential_reads"?: boolean,"updated_at"?: string
+                    "mfa_enforced"?: boolean,"note"?: string | null,"org_id"?: string,"service_role_credential_reads"?: boolean,"updated_at"?: string
                   }
                   Relationships: [
                     {
@@ -1385,6 +1405,12 @@ isOneToOne: false
 "asset_sync_endpoints":
 { Args: { "p_asset": string }; Returns: undefined
                            },
+"auth_event_record":
+{ Args: { "p_actor": string,"p_detail": Json,"p_email": string,"p_email_hash": string,"p_event": string,"p_ip": string,"p_user": string,"p_user_agent": string }; Returns: string
+                           },
+"auth_session_end":
+{ Args: { "p_session": string,"p_user": string }; Returns: boolean
+                           },
 "camera_group_rule_members":
 { Args: { "p_groups"?: (string)[],"p_org": string }; Returns: {
               "camera_id": string,"group_id": string
@@ -1562,6 +1588,14 @@ isOneToOne: false
 "mfa_enforced":
 { Args: Record<PropertyKey, never>; Returns: boolean
                            },
+"mfa_enforced_for_user":
+{ Args: { "p_user": string }; Returns: boolean
+                           },
+"mfa_factor_people":
+{ Args: { "p_org": string }; Returns: {
+              "factors": number,"user_id": string
+            }[]
+                           },
 "monitor_apply_results":
 { Args: { "p_org": string,"p_results": Json,"p_threshold"?: number }; Returns: undefined
                            },
@@ -1577,6 +1611,11 @@ isOneToOne: false
 "my_access_summary":
 { Args: Record<PropertyKey, never>; Returns: {
               "asset_ids": (string)[],"camera_ids": (string)[],"capability": string,"cluster_ids": (string)[],"covered_location_ids": (string)[],"location_ids": (string)[],"organization_wide": boolean,"recorder_camera_ids": (string)[],"recorder_ids": (string)[],"region_ids": (string)[]
+            }[]
+                           },
+"my_session_status":
+{ Args: Record<PropertyKey, never>; Returns: {
+              "aal2": boolean,"has_factor": boolean,"last_auth_at": string,"mfa_enforced": boolean,"privileged": boolean,"session_id": string,"signed_in_at": string
             }[]
                            },
 "network_address_conflicts":
@@ -1662,6 +1701,9 @@ isOneToOne: false
                            },
 "revoke_user_sessions":
 { Args: { "p_user": string }; Returns: undefined
+                           },
+"security_settings_set_mfa_test":
+{ Args: { "p_mfa_enforced": boolean,"p_org": string }; Returns: undefined
                            },
 "security_settings_set_test":
 { Args: { "p_org": string,"p_service_role_credential_reads": boolean }; Returns: undefined
