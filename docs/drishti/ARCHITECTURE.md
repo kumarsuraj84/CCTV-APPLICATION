@@ -90,7 +90,7 @@ flowchart LR
     PL[go2rtc player script / plain video element]
   end
   subgraph Hub["Hub host (local development)"]
-    APP["Next.js app :3212<br/>pages, Server Actions, /api/health, /api/version, /api/vod"]
+    APP["Next.js app :3212<br/>pages, Server Actions, /api/health, /api/version, /api/playback/stream, /api/vod (export)"]
     FF["ffmpeg (optional, spawned by the app<br/>for fast playback)"]
     GW["Gateway :3412<br/>WebSocket proxy, HMAC token check"]
     WRK["Worker (no port)<br/>probes, state machine, check-now"]
@@ -111,7 +111,7 @@ flowchart LR
   APP -->|ISAPI search, download| NVR
   APP --> FF
   PL -->|WS + signed stream token| GW -->|ws /api/ws?src=name| G2R -->|RTSP| NVR
-  PL -->|GET /api/vod fragmented MP4| APP
+  PL -->|GET /api/playback/stream fragmented MP4 (token header, MSE)| APP
   WRK -->|service role| REST
   WRK -->|ISAPI Digest, RTSP DESCRIBE, TCP| NVR
   WRK -->|TCP / ICMP| DEV
@@ -268,7 +268,8 @@ Store / zone / home-store / camera grants became explicit `cctv.live` + `cctv.pl
 |---|---|---|---|
 | Open live streams (sub/main), refresh tokens every 8 min | `lib/actions/streams.ts` → `lib/streams/open.ts` | `cctv.live` per camera | camera silently left out; no go2rtc call |
 | Recording calendar, day search, 1× playback | `lib/actions/playback.ts` → `lib/streams/playback.ts` | `cctv.playback` per camera | "Camera not found."; no NVR request |
-| Fast playback 2×/4×/8× and its probe | `app/api/vod/route.ts` → `lib/streams/vod.ts` | **today** `cctv.export` AND `cctv.playback` per camera (D-6a, ruling M-3); **target** (D-L1) `cctv.playback` through the stream path, `cctv.export` only for saveable files | 403 / 404 / 503, audited |
+| Fast playback 2×/4×/8×/16× (P4-L2, D-L1) | `openFastPlaybackAction` → `lib/streams/fast.ts`; `app/api/playback/stream/route.ts` → `serveFastStream` | `cctv.playback` per camera; the token must be the signed-in person's; a stream, never a file | "Camera not found." / 403 / 400 (not a script fetch) / 503, audited |
+| Saveable recording file and its probe (export only since P4-L2) | `app/api/vod/route.ts` → `lib/streams/vod.ts` | `cctv.export` AND `cctv.playback` per camera (ruling M-3; export only for administrators, E-1), fresh sign-in | 403 / 404 / 503, audited |
 | Thumbnails | `lib/streams/thumbnail.ts` (choke point only; no thumbnail feature yet) | `cctv.live` per camera | not allowed |
 | Why a target is offline | `getStates` → `status_reasons()` | camera: any CCTV, checker's text only with the IT view; device/NVR: IT view | camera terms ("Recorder not reachable.") |
 | Camera groups: read / change | `lib/queries/groups.ts`; `lib/actions/groups.ts` → `lib/groups/service.ts` | read: any CCTV; change: operator/admin role AND `cctv.live` for every added or removed camera; delete: creator, or admin role AND `admin.inventory` | not listed / plain refusal |
@@ -413,28 +414,39 @@ sequenceDiagram
   V->>G: same gateway path as live
 ```
 
-One global `PLAYBACK_OFFSET_MIN` (`lib/actions/playback.ts`) handles NVR clocks; per-recorder measured offsets and true UTC are D-17 (P4-L2 / WP-4.3). Recordings crossing midnight are tested against the fake NVR only.
+**Times (P4-L2, brief item 2).** Every time on the Playback screen is IST 24 h ("shown time", India has no daylight saving time, so every shown day has 86 400 s). Each recorder's own `clock_offset_sec` (else `PLAYBACK_OFFSET_MIN`) is applied everywhere: the day's recordings and the 1× / fast request ranges (NVR time = shown time − offset), the **calendar** (an NVR day reaches into one or two shown days, so every shown day it touches is marked; with an offset the neighbouring NVR month is read too — `lib/streams/calendar.ts` `shownRecordedDays`, `nvrMonthsFor`) and the **oldest recording** (one search over 400 days asking for one result, `findOldestRecording`; the NVR's result order is assumed earliest-first, to confirm with hardware). Tested with 0 / +3600 s / −97 s recorders, recordings across midnight, month ends and 29 February (`tests/integration/fast-playback.test.ts` "times: …", `tests/unit/playback-calendar-offset.test.ts`, `tests/unit/playback-timeline-view.test.ts`). The offset is a stored value: measuring it automatically (LG-16) is WP-5.2.
 
-### 6.5 Fast playback today and the D-L1 target
+**The screen (P4-L2, LG-9..LG-13, LG-17).** Calendar with shown-day marks, the oldest recording ("Go to it") and no month before it; a timeline in seconds (`lib/streams/timeline.ts`) with hover time, click-to-start snapped to the nearest recording (inside one: there; in a gap: the next one's start or the previous one's last minute), mouse-wheel / button / `+` `−` zoom down to 10 minutes and "Whole day", edge-dwell (0.7 s at the outer 4 %) that pans a zoomed-in bar or opens the previous / next day (never past today, never before the oldest recording or the year back), previous / next day buttons, jump buttons −10 / −5 / −1 / +1 / +5 / +10 min from where the picture is (across midnight), and ←/→ 30 s (Shift 5 min) on the bar or the player. When the day's list cannot be read, a banner says so in plain words, the bar is drawn as unknown and any time can still be tried (LG-17).
 
-Today (BUILT, fakes only): `GET /api/vod` (`app/api/vod/route.ts`, `lib/streams/vod.ts`) needs `cctv.export` AND `cctv.playback`; downloads the recording from the NVR (`/ISAPI/ContentMgmt/download`), pipes it through ffmpeg without re-encoding (`-protocol_whitelist pipe`, `-format_whitelist mpeg,mpegts,mov,mp4,h264,hevc`) into a fragmented MP4 for a plain `<video>` at 2×/4×/8×; 1 conversion per person, 8 in all (in-process); a new one ends the previous one; killed on page close, after 30 minutes or after 60 s of NVR silence; audited start/end/denied. ffmpeg is not installed on the development host, so the real-ffmpeg test is skipped and nothing has been played end to end.
+### 6.5 Fast playback 2×–16× (BUILT in P4-L2, decision D-L1; the remux step unvalidated: ffmpeg is not installed)
 
-Target (ruling D-L1, P4-L2 PLANNED): fast playback (2×-16×) becomes a `cctv.playback` right delivered **only** as a non-downloadable stream through the gateway/MSE path (same session registry, ≤ 60 s revocation, concurrency caps, audit), with chunked prefetch and stall downshift; saveable files move to export jobs that require `cctv.export` (D-6, P4-L4). This supersedes D-6a and the current `/api/vod` rule. Until P4-L2 lands, `/api/vod` returns a savable MP4 and therefore keeps requiring `cctv.export`.
+Decision D-L1: fast playback is part of `cctv.playback` and reaches the browser **only as a stream**; a saveable file needs `cctv.export` (administrators only, ruling E-1). Since P4-L2:
+
+- **Opening** — `openFastPlaybackAction(camera, start, minutes 1–30, speed 2/4/8/16)` → `lib/streams/fast.ts` `openFastPlayback`: `cctv.playback` for the camera (the database, as the person; export not needed), the remux adapter can work here, then ONE `media_sessions` row of kind `playback` (capability re-checked by `media_session_create`; stream `fpb_<camera>_<start>_<end>`) and a **fast token** (`lib/streams/fast-token.ts`: sid, person, camera, span ≤ 30 min, 90 s connect window, signed with the stream secret under its own purpose `fastpb.v1.`, so it never opens a gateway socket and a gateway token never opens it). No NVR request, no NVR login read. Counted with the playback openings (30 / min), audited `cctv_playback_opened` with the speed.
+- **Streaming** — the page fetches `GET /api/playback/stream` with the token in the `x-playback-token` header (`app/api/playback/stream/route.ts`): signed in, active, sign-in finished, `cctv.playback` somewhere; refused (400) for anything a person could open or save — a typed address, a link, a download (`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`), `<video>`/`<audio>` sources, frames and embeds, any request without the header, a token in the address. `serveFastStream`: the token is genuine, unexpired and **the signed-in person's** (else "Camera not found.", the owner's session untouched), `cctv.playback` for its camera again, `media_session_open` (that person, camera, kind and stream; one socket at a time; never after a revocation) — only then the NVR login is read and the shared core (`lib/streams/vod.ts` `deliverRecording`) runs: conversion limits (1 per person, 8 in all, shared with `/api/vod`), the session watch (15 s; revoked or unverifiable for 45 s: the NVR transfer and the remux stop; measured 280 ms with a 250 ms test interval), the recording list in the recorder's own offset, the remux adapter, the download. The answer is `application/vnd.ckdrishti.stream`, `no-store, private`, `nosniff`, **no Content-Disposition**, `X-Video-Codec`. Audited `cctv_fast_playback_started` / `_ended` / `_denied` (reason token, token_person, camera, session).
+- **The browser** (`lib/streams/fast-client.ts`, `components/live/FastStreamPlayer.tsx`): reads the stream with `fetch`, finds the codec in the initialisation segment (`lib/streams/mp4.ts`: avcC → `avc1.PPCCLL`, hvcC → `hvc1.…`), appends to Media Source Extensions; the `<video>` plays a `blob:` address made in the page (`controlsList="nodownload noplaybackrate"`, no picture-in-picture). Buffer gating (about 2 s of watching at the speed), back-pressure (reading pauses while 240 s are buffered ahead, which stops the server reading the NVR), old picture let go 30 s behind, and three stalls within 40 s step the speed down one level with a plain message (LG-15). H.265 that the browser cannot play: a plain message naming the transcode option as a later release (LG-18).
+- **The remux step is an adapter** (`lib/streams/remux.ts`): `ffmpegRemux` (`-c:v copy`, `lib/streams/ffmpeg.ts`, unchanged arguments and limits) in production; tests use `tests/helpers/fake-remux.ts`; `FAST_PLAYBACK_REMUX=passthrough` is a development-only switch (ignored in production, refused for any NVR not on loopback) for browser checks against a fake NVR serving a ready fragmented MP4. **ffmpeg is not installed on the development PC: real remuxing is unvalidated**; install and validation steps: `docs/drishti/runbooks/ffmpeg.md`.
+- **`/api/vod`** stays, as the **export** path only (`cctv.export` AND `cctv.playback`, fresh sign-in, kind `vod`, `video/mp4`); the Playback screen no longer uses it, and its refusal now reads "Downloading recordings is not available for your account.". Clip export jobs with expiring person-bound links remain P4-L4 / Release 1.1.
+- **What it cannot prevent:** a person can film the screen, and developer tools can copy bytes a page has received. There is no address that hands a recording file to a playback-only person.
+- **Not built:** next-chunk prefetch for gapless 30-minute boundaries (a clip ends and "Continue from here" opens the next), same-time multi-camera playback (LG-8, Release 1.1), the H.265 transcode option (P4-L5 / WP-4.4), automatic clock-offset measurement (WP-5.2).
 
 ```mermaid
 sequenceDiagram
-  participant V as Viewer (cctv.playback)
-  participant M as Media service (planned)
+  participant V as Playback screen (cctv.playback)
+  participant A as openFastPlaybackAction
   participant S as media_sessions
-  participant W as Gateway
-  participant X as Exporter (planned)
-  V->>M: fast playback 8x (camera, start)
-  M->>S: create session kind=playback (capability re-checked)
-  M-->>V: sid token (90 s connect window)
-  V->>W: WS stream (MSE), re-validated every 15 s
-  Note over V,W: no file URL is ever handed out on this path
-  V->>X: request clip export (needs cctv.export + fresh MFA)
-  X-->>V: job, later a person-bound expiring download link (session kind export_download)
+  participant R as /api/playback/stream
+  participant N as NVR (ISAPI)
+  participant F as remux adapter (ffmpeg -c:v copy)
+  V->>A: camera, start, minutes, speed
+  A->>S: media_session_create kind=playback (capability re-checked)
+  A-->>V: fast token (90 s, person + camera + session + span)
+  V->>R: fetch, header x-playback-token (never in the address)
+  R->>S: media_session_open (that person, camera, stream; once)
+  R->>N: search (shown time - recorder offset), then download
+  N-->>F: recording bytes
+  F-->>V: fragmented MP4 (no Content-Disposition) -> MSE blob: picture at 2x-16x
+  Note over R,S: re-checked every 15 s; revoked -> NVR transfer and remux stop
 ```
 
 ### 6.6 Session revocation (PLANNED, P2-4)
@@ -751,7 +763,7 @@ Working tree at writing: `docs/drishti/DECISIONS.md` and `DELIVERY-STATUS.md` ha
 7. Plain HTTP/WS until the TLS layout of `docs/drishti/runbook-tls.md` is deployed (Caddy, one address; not yet run through Caddy: verified by header and address tests only); app on all interfaces, gateway on `0.0.0.0` unless `GATEWAY_HOST` (WP-5.4 packages it). The CSP is built (P3-1, section 8.8); the go2rtc player scripts still come from the gateway (allowed through `'strict-dynamic'`), not vendored with SRI.
 8. Rate limits are shared since P2-6 (section 8.6); agent enrolment and check-in limits exist as names only until the agent API does (P6/P7).
 9. Best-effort, mutable audit (WP-5.4).
-10. Fast playback returns a savable MP4 (contrary to the D-L1 target) and runs ffmpeg inside the web process (P4-L2, WP-4.3).
+10. Fast playback runs ffmpeg inside the web process (WP-4.3); P4-L2 moved it to a token-bound stream (D-L1) behind a remux adapter, but ffmpeg is not installed on the development PC, so real remuxing is unvalidated (`docs/drishti/runbooks/ffmpeg.md`).
 11. Group names unique per organisation leak the existence of a hidden group's name (AC-11).
 12. One global playback clock offset; no per-recorder offset or drift (D-17).
 13. Not packaged for production: `tsx` (a dev dependency) runs the worker and gateway; no Windows services, no tested backup/restore.
@@ -791,7 +803,7 @@ Pilot blockers, each a named package:
 3. **Hardening required "before any real pilot"** by the directive: MFA and fresh authentication for privileged people (P3), per-service least privilege and closed outbound targets (P2-6), go2rtc API credentials and listener review (D-13), shared rate limits (D-11), CSP (D-12), TLS for app and gateway (external certificates), atomic worker lease (P2-7).
 4. **Honest monitoring**: NVR or WAN loss is reported as camera failure (WP-4.1) — a pilot would produce misleading outage figures.
 5. **No real-hardware evidence at all**: ISAPI, RTSP, browser codecs and ffmpeg have only met fakes; a lab NVR with cameras (external dependency 2) is needed before people rely on it.
-6. **Fast playback rights**: today's savable-MP4 path contradicts the accepted D-L1 rule (P4-L2).
+6. **Fast playback rights**: resolved in P4-L2 (D-L1: cctv.playback, stream only; `/api/vod` is export only).
 7. **Network exposure in development**: app and gateway listen on all interfaces over HTTP; dev data is reachable over the VPN until an explicit bind is configured (R10).
 
 ---
@@ -802,7 +814,7 @@ Pilot blockers, each a named package:
 app/(auth)/                      login, forgot-password, reset-password (redirect), change-password; AuthCard, full logo
 app/(app)/                       home, locations, locations/[id], locations/wifi, devices, live, playback, groups, groups/[id], error
 app/(app)/admin/                 users, users/[id]/access (access editor), access-review, locations (+ discover, [id], nvrs/[nvrId]), regions, assets, reconciliation, devices, import, monitoring
-app/api/                         health, version, vod (fast playback)
+app/api/                         health, version, playback/stream (fast playback, D-L1), vod (export file)
 app/auth/callback/               password-reset code exchange
 proxy.ts                         session check, signed user header, exact public allow-list
 components/admin/                AccessEditor, AccessBuilder, AccessPreviewPanel, AccessGrantTable, AccessReviewList, user/store/device forms

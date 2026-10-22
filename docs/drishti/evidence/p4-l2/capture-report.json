@@ -1,0 +1,277 @@
+{
+  "base": "http://localhost:3471",
+  "shots": [
+    {
+      "name": "LG-9-calendar-oldest-1366",
+      "path": "/playback?camera=ffd99bd3-9cb4-410d-ba2e-06092583d1bb&day=2026-10-22",
+      "scrollWidth": 1366,
+      "innerWidth": 1366,
+      "height": 768,
+      "videos": 0,
+      "playing": 0,
+      "rate": [],
+      "videoSrc": [],
+      "mentionsStore": false,
+      "mentionsNvr": true
+    },
+    {
+      "name": "LG-9-calendar-oldest-1920",
+      "path": "/playback?camera=ffd99bd3-9cb4-410d-ba2e-06092583d1bb&day=2026-10-22",
+      "scrollWidth": 1920,
+      "innerWidth": 1920,
+      "height": 1080,
+      "videos": 0,
+      "playing": 0,
+      "rate": [],
+      "videoSrc": [],
+      "mentionsStore": false,
+      "mentionsNvr": true
+    },
+    {
+      "name": "LG-9-calendar-oldest-375",
+      "path": "/playback?camera=ffd99bd3-9cb4-410d-ba2e-06092583d1bb&day=2026-10-22",
+      "scrollWidth": 375,
+      "innerWidth": 375,
+      "height": 1228,
+      "videos": 0,
+      "playing": 0,
+      "rate": [],
+      "videoSrc": [],
+      "mentionsStore": false,
+      "mentionsNvr": true
+    },
+    {
+      "name": "LG-10-timeline-hover-snap-1366",
+      "path": "/playback?camera=ffd99bd3-9cb4-410d-ba2e-06092583d1bb&day=2026-10-22",
+      "scrollWidth": 1366,
+      "innerWidth": 1366,
+      "height": 768,
+      "videos": 0,
+      "playing": 0,
+      "rate": [],
+      "videoSrc": [],
+      "mentionsStore": false,
+      "mentionsNvr": true
+    },
+    {
+      "name": "LG-11-timeline-zoomed-1366",
+      "path": "/playback?camera=ffd99bd3-9cb4-410d-ba2e-06092583d1bb&day=2026-10-22",
+      "scrollWidth": 1366,
+      "innerWidth": 1366,
+      "height": 768,
+      "videos": 0,
+      "playing": 0,
+      "rate": [],
+      "videoSrc": [],
+      "mentionsStore": false,
+      "mentionsNvr": true
+    },
+    {
+      "name": "LG-11-timeline-zoomed-375",
+      "path": "/playback?camera=ffd99bd3-9cb4-410d-ba2e-06092583d1bb&day=2026-10-22",
+      "scrollWidth": 375,
+      "innerWidth": 375,
+      "height": 1228,
+      "videos": 0,
+      "playing": 0,
+      "rate": [],
+      "videoSrc": [],
+      "mentionsStore": false,
+      "mentionsNvr": true
+    },
+    {
+      "name": "LG-13-jump-buttons-1366",
+      "path": "/playback?camera=ffd99bd3-9cb4-410d-ba2e-06092583d1bb&day=2026-10-22",
+      "scrollWidth": 1366,
+      "innerWidth": 1366,
+      "height": 768,
+      "videos": 0,
+      "playing": 0,
+      "rate": [],
+      "videoSrc": [],
+      "mentionsStore": false,
+      "mentionsNvr": true
+    },
+    {
+      "name": "LG-12-edge-dwell-next-day-1366",
+      "path": "/playback?camera=ffd99bd3-9cb4-410d-ba2e-06092583d1bb&day=2026-10-23",
+      "scrollWidth": 1366,
+      "innerWidth": 1366,
+      "height": 768,
+      "videos": 0,
+      "playing": 0,
+      "rate": [],
+      "videoSrc": [],
+      "mentionsStore": false,
+      "mentionsNvr": true
+    },
+    {
+      "name": "LG-14-fast-16x-playing-1366",
+      "path": "/playback?camera=ffd99bd3-9cb4-410d-ba2e-06092583d1bb&day=2026-10-22",
+      "scrollWidth": 1351,
+      "innerWidth": 1366,
+      "height": 1315,
+      "videos": 1,
+      "playing": 1,
+      "rate": [
+        8
+      ],
+      "videoSrc": [
+        "blob:"
+      ],
+      "mentionsStore": false,
+      "mentionsNvr": true
+    },
+    {
+      "name": "LG-14-fast-16x-playing-1920",
+      "path": "/playback?camera=ffd99bd3-9cb4-410d-ba2e-06092583d1bb&day=2026-10-22",
+      "scrollWidth": 1905,
+      "innerWidth": 1920,
+      "height": 1591,
+      "videos": 1,
+      "playing": 1,
+      "rate": [
+        8
+      ],
+      "videoSrc": [
+        "blob:"
+      ],
+      "mentionsStore": false,
+      "mentionsNvr": true
+    },
+    {
+      "name": "LG-14-fast-16x-playing-375",
+      "path": "/playback?camera=ffd99bd3-9cb4-410d-ba2e-06092583d1bb&day=2026-10-22",
+      "scrollWidth": 375,
+      "innerWidth": 375,
+      "height": 1576,
+      "videos": 1,
+      "playing": 1,
+      "rate": [
+        8
+      ],
+      "videoSrc": [
+        "blob:"
+      ],
+      "mentionsStore": false,
+      "mentionsNvr": true
+    },
+    {
+      "name": "LG-14-stream-address-refused-1366",
+      "path": "/api/playback/stream",
+      "scrollWidth": 1366,
+      "innerWidth": 1366,
+      "height": 768,
+      "videos": 0,
+      "playing": 0,
+      "rate": [],
+      "videoSrc": [],
+      "mentionsStore": false,
+      "mentionsNvr": false
+    },
+    {
+      "name": "LG-17-list-unavailable-1366",
+      "path": "/playback?camera=7809dba7-314a-470b-a331-9dd8c17f05bb&day=2026-10-22",
+      "scrollWidth": 1366,
+      "innerWidth": 1366,
+      "height": 768,
+      "videos": 0,
+      "playing": 0,
+      "rate": [],
+      "videoSrc": [],
+      "mentionsStore": false,
+      "mentionsNvr": true
+    },
+    {
+      "name": "LG-17-list-unavailable-375",
+      "path": "/playback?camera=7809dba7-314a-470b-a331-9dd8c17f05bb&day=2026-10-22",
+      "scrollWidth": 375,
+      "innerWidth": 375,
+      "height": 1378,
+      "videos": 0,
+      "playing": 0,
+      "rate": [],
+      "videoSrc": [],
+      "mentionsStore": false,
+      "mentionsNvr": true
+    }
+  ],
+  "checks": {
+    "afterSignIn": "/home",
+    "speedOptions": "1x\n2x\n4x\n8x\n16x",
+    "snappedStart": "10:00:00",
+    "zoomedWindow": "Showing 09:00 to 12:00",
+    "jumps": {
+      "before": "10:00:00",
+      "after": "10:04:00"
+    },
+    "edgeNextDay": "2026-10-23",
+    "edgeBeyondToday": "2026-10-23",
+    "fast16-1366": {
+      "started": true,
+      "paused": false,
+      "readyState": 4,
+      "rate": 8,
+      "time": 50,
+      "src": "blob:"
+    },
+    "fast16-1920": {
+      "started": true,
+      "paused": false,
+      "readyState": 4,
+      "rate": 8,
+      "time": 49,
+      "src": "blob:"
+    },
+    "fast16-375": {
+      "started": true,
+      "paused": false,
+      "readyState": 4,
+      "rate": 16,
+      "time": 99,
+      "src": "blob:"
+    },
+    "streamResponses": [
+      {
+        "status": 200,
+        "mimeType": "application/vnd.ckdrishti.stream",
+        "contentType": "application/vnd.ckdrishti.stream",
+        "contentDisposition": null,
+        "cacheControl": "no-store, private",
+        "url": "http://localhost:3471/api/playback/stream"
+      },
+      {
+        "status": 200,
+        "mimeType": "application/vnd.ckdrishti.stream",
+        "contentType": "application/vnd.ckdrishti.stream",
+        "contentDisposition": null,
+        "cacheControl": "no-store, private",
+        "url": "http://localhost:3471/api/playback/stream"
+      },
+      {
+        "status": 200,
+        "mimeType": "application/vnd.ckdrishti.stream",
+        "contentType": "application/vnd.ckdrishti.stream",
+        "contentDisposition": null,
+        "cacheControl": "no-store, private",
+        "url": "http://localhost:3471/api/playback/stream"
+      },
+      {
+        "status": 400,
+        "mimeType": "application/json",
+        "contentType": "application/json",
+        "contentDisposition": null,
+        "cacheControl": "no-store",
+        "url": "http://localhost:3471/api/playback/stream"
+      }
+    ],
+    "vodForViewer": {
+      "status": 403,
+      "body": {
+        "error": "Downloading recordings is not available for your account."
+      },
+      "disposition": null
+    },
+    "streamAddressTyped": "{\"error\":\"This address is only for the Playback screen.\"}"
+  }
+}
