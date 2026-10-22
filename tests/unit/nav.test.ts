@@ -36,8 +36,12 @@ describe('navigation by capability', () => {
     expect(hrefs('operator', caps(['it.monitoring.operate']))).toEqual(['/home', '/stores'])
   })
 
-  it('a Wi-Fi grant shows Stores only', () => {
-    expect(hrefs('user', caps(['wifi.inventory.view']))).toEqual(['/home', '/stores'])
+  // P2-5c-2 brief item 4 replaces "a Wi-Fi grant shows Stores only": wifi.inventory.view now has its screen, the Wi-Fi inventory.
+  it('a Wi-Fi grant shows Stores and the Wi-Fi inventory; no other capability shows the Wi-Fi inventory', () => {
+    expect(hrefs('user', caps(['wifi.inventory.view']))).toEqual(['/home', '/stores', '/locations/wifi'])
+    expect(NAV.find((i) => i.href === '/locations/wifi')?.label).toBe('Wi-Fi inventory')
+    expect(hrefs('user', caps(['wifi.config.view_redacted']))).toEqual(['/home', '/stores'])
+    expect(hrefs('admin', caps(['it.inventory.view', 'admin.inventory'], ORG))).not.toContain('/locations/wifi')
   })
 
   it('administrative capabilities show admin pages only together with an administrative role, and never data pages', () => {

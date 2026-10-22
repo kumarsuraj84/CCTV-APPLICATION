@@ -360,9 +360,12 @@ describe('locations, recorders and channel mappings (P2-5a)', () => {
       const r = await viewer.client.from(t as 'regions').select('*').limit(5)
       expect(r.error === null ? r.data : [], `viewer ${t}`).toEqual([])
     }
-    for (const t of ['device_capabilities', 'inventory_migration_report'] as const) {
+    for (const t of ['inventory_migration_report'] as const) {
       expect((await viewer.client.from(t).select('*').limit(1)).error?.code, `viewer ${t}`).toBe('42501')
     }
+    // P2-5c-2 brief item 4 replaces "device_capabilities is server-only": holders of wifi.inventory.view read it (the Wi-Fi inventory);
+    // a CCTV-only viewer still sees no row of it (tests/integration/p2-5c-2-wifi-discover.test.ts covers the holders).
+    expect((await viewer.client.from('device_capabilities').select('*').limit(1)).data, 'viewer device_capabilities').toEqual([])
     // Signed-in people never write inventory.
     expect((await itPerson.client.from('recorders').update({ username: 'x' }).eq('id', recA).select('id')).error?.code).toBe('42501')
     expect((await itPerson.client.from('camera_channel_mappings').insert({ org_id: orgId, camera_id: cams.A1, recorder_id: recA, channel: 50 })).error?.code).toBe('42501')

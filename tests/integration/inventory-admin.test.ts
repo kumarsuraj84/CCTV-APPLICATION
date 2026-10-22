@@ -4,6 +4,7 @@ import { importDevices, importStores } from '@/lib/import/apply'
 import { parseDevicesCsv } from '@/lib/import/devices-csv'
 import { parseStoresCsv } from '@/lib/import/stores-csv'
 import { createDevice, deleteDevice, updateDevice } from '@/lib/inventory/devices'
+import { MSG_PASSWORD_AGAIN } from '@/lib/inventory/recorder-admin'
 import { createStore, deleteStore, updateStore } from '@/lib/inventory/stores'
 import { adminClient, cleanupOrg, createOrg, createRecorder, createUser, primaryRecorderOf } from '../setup/fixtures'
 
@@ -43,16 +44,25 @@ describe('inventory administration', () => {
     expect(cams?.map((c) => [c.name, c.recorder_id, c.channel])).toEqual([1, 2, 3, 4].map((n) => [`Camera ${n}`, rec.id, n]))
   })
 
-  it('a second import updates stores, keeps the password when the cell is empty and keeps camera names', async () => {
+  // P2-5c-1 review I-4 replaces "a second import keeps the password when the cell is empty" for a CHANGED address: the saved password
+  // belongs to the address and web port it was saved for, so a row that moves the NVR without a password is refused (nothing changes);
+  // with a password the new one is saved. An unchanged address with an empty cell still keeps the saved password.
+  it('a second import updates stores and keeps camera names; an empty password keeps the saved one only while the address stays', async () => {
     const { data: alpha } = await admin().from('locations').select('id').eq('org_id', orgId).eq('code', 'ALPHA').single()
     await admin().from('cameras').update({ name: 'Front door' }).eq('location_id', alpha!.id).eq('channel', 1)
-    const parsed = parseStoresCsv('name,city,zone,ip,user,password,channels\nAlpha,Patna City,BR,192.0.2.99,viewer,,4\n')
-    const res = await importStores(admin(), actor, parsed.rows)
-    expect(res).toEqual({ created: 0, updated: 1, errors: [] })
+    const same = await importStores(admin(), actor, parseStoresCsv('name,city,zone,ip,user,password,channels\nAlpha,Patna City,BR,192.0.2.10,viewer,,4\n').rows)
+    expect(same).toEqual({ created: 0, updated: 1, errors: [] })
     const { data: row } = await admin().from('locations').select('city').eq('id', alpha!.id).single()
     expect(row).toEqual({ city: 'Patna City' })
-    expect((await recorderOf(alpha!.id)).assets.ip).toBe('192.0.2.99')
     expect((await password(alpha!.id)).data).toBe('Secret-A1')
+    const moved = await importStores(admin(), actor, parseStoresCsv('name,city,zone,ip,user,password,channels\nAlpha,Gaya,BR,192.0.2.99,viewer,,4\n').rows)
+    expect(moved).toEqual({ created: 0, updated: 0, errors: [{ line: 2, message: MSG_PASSWORD_AGAIN }] })
+    expect((await recorderOf(alpha!.id)).assets.ip).toBe('192.0.2.10')
+    expect((await admin().from('locations').select('city').eq('id', alpha!.id).single()).data).toEqual({ city: 'Patna City' })
+    const withPassword = await importStores(admin(), actor, parseStoresCsv('name,city,zone,ip,user,password,channels\nAlpha,Patna City,BR,192.0.2.99,viewer,Secret-A9,4\n').rows)
+    expect(withPassword).toEqual({ created: 0, updated: 1, errors: [] })
+    expect((await recorderOf(alpha!.id)).assets.ip).toBe('192.0.2.99')
+    expect((await password(alpha!.id)).data).toBe('Secret-A9')
     const { data: cam } = await admin().from('cameras').select('name').eq('location_id', alpha!.id).eq('channel', 1).single()
     expect(cam?.name).toBe('Front door')
   })

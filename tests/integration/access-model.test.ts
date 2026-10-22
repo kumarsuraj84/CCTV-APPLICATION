@@ -780,6 +780,12 @@ describe('capability access model (P2-1)', () => {
       // P2-5c-1 review round 1 (20261021000027): group counts for the caller; the ticked zone proposals in one transaction (server).
       group_member_counts: ['authenticated'],
       inventory_apply_proposals: server,
+      // P2-5c-2 (20261021000028): the location import in one transaction, its placeholder twin and the saved-password comparison
+      // (server only); the Wi-Fi inventory for the signed-in reader (it applies the reader's own wifi.inventory.view grants).
+      inventory_import_apply: server,
+      inventory_ensure_placeholders: server,
+      recorder_credentials_match: server,
+      wifi_inventory: ['authenticated'],
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)
@@ -813,6 +819,8 @@ describe('capability access model (P2-1)', () => {
       'group_rule_members',
       // P2-5c-1 review I-7: per-group counts of the cameras the caller may see.
       'group_member_counts',
+      // P2-5c-2: the Wi-Fi inventory of the caller's own wifi.inventory.view grants (tests/integration/p2-5c-2-wifi-discover.test.ts).
+      'wifi_inventory',
     ])
     for (const f of data ?? []) {
       expect(f.grantees.filter((g) => g === 'anon' || g.startsWith('PUBLIC')), `${f.name}(${f.args})`).toEqual([])
