@@ -32,6 +32,8 @@ export const NAV: NavItem[] = [
   { href: '/live', label: 'Live', icon: 'video', group: 'Monitoring', needs: { anyOf: ['cctv.live'] }, mobile: true },
   { href: '/playback', label: 'Playback', icon: 'history', group: 'Monitoring', needs: { anyOf: ['cctv.playback'] } },
   { href: '/groups', label: 'Groups', icon: 'grid', group: 'Monitoring', needs: { anyOf: [...CCTV_CAPABILITIES] } },
+  // P2-5c-2: access points, routers and switches with their documented capabilities (wifi.inventory.view, at the places granted).
+  { href: '/locations/wifi', label: 'Wi-Fi inventory', icon: 'network', group: 'Monitoring', needs: { anyOf: ['wifi.inventory.view'] } },
   { href: '/admin/users', label: 'Users', icon: 'users', group: 'Admin', needs: { admin: 'admin.users' } },
   // P2-3 review: the review of migrated grants (the editor itself is opened from Users). No count here: the items are static data.
   { href: '/admin/access-review', label: 'Access review', icon: 'users', group: 'Admin', needs: { admin: 'admin.access' } },

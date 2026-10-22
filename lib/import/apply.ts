@@ -3,6 +3,7 @@ import { addAudit } from '@/lib/admin/audit'
 import { isAdminRole } from '@/lib/admin/roles'
 import type { DeviceRow } from '@/lib/import/devices-csv'
 import type { RowError, StoreRow } from '@/lib/import/stores-csv'
+import { addressChanged, MSG_PASSWORD_AGAIN } from '@/lib/inventory/recorder-admin'
 import { CAMERAS_FAILED, ensurePlaceholderCameras, primaryRecorderOf, recorderSaveError, savePrimaryRecorder } from '@/lib/inventory/stores'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { fetchAll } from '@/lib/supabase/fetch-all'
@@ -35,6 +36,17 @@ export async function importStores(admin: AdminClient, actor: Actor, rows: Store
         if (!current && !r.recorder.password) {
           result.errors.push({ line: r.line, message: 'This store has no NVR yet: give the password of its NVR.' })
           continue
+        }
+        // P2-5c-1 review I-4 (the NVR page's rule and words): the saved password belongs to the address and web port it was saved for;
+        // a row that changes them without a password is refused before anything changes.
+        if (current && !r.recorder.password) {
+          const { data: saved, error: savedError } = await admin.from('recorders').select('http_port, assets!recorders_asset_fk!inner(ip)').eq('id', current).eq('org_id', actor.orgId).maybeSingle()
+          if (savedError) throw savedError
+          const s = saved as unknown as { http_port: number; assets: { ip: string | null } } | null
+          if (!s || addressChanged(s.assets.ip, s.http_port, r.recorder.host, r.recorder.http_port)) {
+            result.errors.push({ line: r.line, message: MSG_PASSWORD_AGAIN })
+            continue
+          }
         }
       } else {
         if (!r.recorder.password) {

@@ -1,0 +1,5 @@
+code,display_name,kind,city,zone,state,address,region,cluster,ip,port,http_port,user,password,channels,nvr_name,monitoring
+SMP1,,store,Patna,BR,Bihar,"Station Road, Patna",EAST,EAST-1,192.0.2.10,554,80,viewer,change-me-1,16,Ground floor,yes
+SMP1,,,,,,,,,192.0.2.11,554,80,viewer,change-me-2,8,First floor,yes
+SMP2,,store,Ranchi,JH,Jharkhand,,EAST,EAST-1,192.0.2.12,554,80,viewer,change-me-3,12,,yes
+HO1,Head office Kolkata,head_office,Kolkata,WB,West Bengal,,,,,,,,,,,

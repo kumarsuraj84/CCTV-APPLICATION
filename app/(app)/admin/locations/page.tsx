@@ -31,7 +31,7 @@ export default async function LocationsPage({ searchParams }: { searchParams: Pr
       <PageHeader
         title="Locations and NVRs"
         description="Every kind of location (store, head office, distribution centre, warehouse) with its NVRs. Region and cluster are optional."
-        actions={<><Link href="/admin/regions" className={LINK}>Regions and clusters</Link><Link href="/admin/reconciliation" className={LINK}>Reconciliation</Link></>}
+        actions={<><Link href="/admin/regions" className={LINK}>Regions and clusters</Link><Link href="/admin/reconciliation" className={LINK}>Reconciliation</Link><Link href="/admin/locations/discover" className={LINK}>Find cameras for all</Link><Link href="/admin/import" className={LINK}>Import</Link></>}
       />
       <form method="get" className="grid gap-3 rounded-md border bg-card p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,14rem)_auto_auto] sm:items-end">
         <div className="space-y-1.5">
