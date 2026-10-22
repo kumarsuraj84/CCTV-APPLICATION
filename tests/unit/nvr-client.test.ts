@@ -204,3 +204,130 @@ describe('NvrClient address checks', () => {
     expect(err).toMatchObject({ kind: 'unreachable', message: 'request failed' })
   })
 })
+
+describe('NvrClient.post', () => {
+  const SEARCH = '/ISAPI/ContentMgmt/search'
+  const XML = '<CMSearchDescription><searchID>a</searchID></CMSearchDescription>'
+  it('sends the XML with Digest login and the XML content type, and returns the answer', async () => {
+    nvr = await startFakeNvr({ recordings: [] })
+    const answer = await client(nvr.port).post(SEARCH, XML)
+    expect(answer).toContain('<CMSearchResult')
+    expect(nvr.posts).toEqual([{ path: SEARCH, body: XML, contentType: 'application/xml' }])
+    expect(nvr.requests).toEqual([`POST ${SEARCH}`, `POST ${SEARCH}`]) // the login challenge, then the answered request
+    expect(nvr.authorizations).toHaveLength(1)
+    expect(nvr.authorizations.every((a) => a.startsWith('Digest '))).toBe(true)
+  })
+  it('sends the body again, intact, on the answered request (multi-byte text)', async () => {
+    nvr = await startFakeNvr({ recordings: [] })
+    const xml = '<a>café ✓</a>'
+    await client(nvr.port).post(SEARCH, xml)
+    expect(nvr.posts[0].body).toBe(xml)
+  })
+  it('accepts a body of exactly 8192 bytes and refuses one byte more, counting bytes not letters', async () => {
+    nvr = await startFakeNvr({ recordings: [] })
+    const c = client(nvr.port)
+    await expect(c.post(SEARCH, 'a'.repeat(8192))).resolves.toBeTypeOf('string')
+    await expect(c.post(SEARCH, 'a'.repeat(8193))).rejects.toThrow(Error)
+    await expect(c.post(SEARCH, '€'.repeat(2731))).rejects.toThrow(Error) // 8193 bytes
+    await expect(c.post(SEARCH, 5 as unknown as string)).rejects.toThrow(Error)
+    await expect(c.post(SEARCH, undefined as unknown as string)).rejects.toThrow(Error)
+    expect(nvr.posts).toHaveLength(1)
+  })
+  it.each([
+    ['/other/path'],
+    ['ISAPI/ContentMgmt/search'],
+    ['/isapi/ContentMgmt/search'],
+    ['//ISAPI/x'],
+    ['http://evil.example/ISAPI/x'],
+    ['/ISAPI/a b'],
+    ['/ISAPI/a\tb'],
+    ['/ISAPI/a\r\nHost: evil'],
+    ['/ISAPI/a\nb'],
+    ['/ISAPI/a\u00a0b'],
+    ['/ISAPI/../etc'],
+    ['/ISAPI/a?b=c'],
+    ['/ISAPI/a#b'],
+    ['/ISAPI/a\b'],
+    ['/ISAPI/é'],
+    [''],
+  ])('refuses the path %j with a plain error and sends nothing', async (path) => {
+    nvr = await startFakeNvr({ recordings: [] })
+    const err = await client(nvr.port).post(path, XML).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err).not.toBeInstanceOf(NvrError)
+    expect(nvr.requests).toEqual([])
+  })
+  it('refuses a path that is not text', async () => {
+    nvr = await startFakeNvr({ recordings: [] })
+    await expect(client(nvr.port).post(undefined as unknown as string, XML)).rejects.toThrow(Error)
+    expect(nvr.requests).toEqual([])
+  })
+  it('sends no credentials to an NVR that offers only Basic or SHA-256', async () => {
+    for (const challenge of ['basic-only', 'sha256-only'] as const) {
+      const n = await startFakeNvr({ challenge, recordings: [] })
+      const err = await client(n.port).post(SEARCH, XML).catch((e: unknown) => e)
+      expect(err).toMatchObject({ kind: 'bad_response', reason: 'unsupported_login' })
+      expect(n.authorizations).toEqual([])
+      expect(n.requests).toHaveLength(1)
+      await n.close()
+    }
+  })
+  it('logs in with Digest when Basic is offered too', async () => {
+    nvr = await startFakeNvr({ challenge: 'basic-then-digest', recordings: [] })
+    await expect(client(nvr.port).post(SEARCH, XML)).resolves.toContain('CMSearchResult')
+    expect(nvr.authorizations.every((a) => a.startsWith('Digest '))).toBe(true)
+  })
+  it('maps errors like get: auth, forbidden, unreachable, timeout, garbage', async () => {
+    nvr = await startFakeNvr({ recordings: [] })
+    await expect(client(nvr.port, 'wrong').post(SEARCH, XML)).rejects.toMatchObject({ kind: 'auth' })
+    await expect(client(await closedPort()).post(SEARCH, XML)).rejects.toMatchObject({ kind: 'unreachable' })
+    const forbidden = await startFakeNvr({ mode: 'forbidden' })
+    await expect(client(forbidden.port).post(SEARCH, XML)).rejects.toMatchObject({ kind: 'forbidden' })
+    await forbidden.close()
+    const missing = await startFakeNvr({})
+    await expect(client(missing.port).post('/ISAPI/ContentMgmt/nothing', XML)).rejects.toMatchObject({ kind: 'bad_response' })
+    await missing.close()
+    const slow = await startFakeNvr({ mode: 'slow' })
+    await expect(client(slow.port, 'secret-pass', 300).post(SEARCH, XML)).rejects.toMatchObject({ kind: 'timeout' })
+    await slow.close()
+    const stall = await startFakeNvr({ mode: 'stall-body' })
+    const t = Date.now()
+    await expect(client(stall.port, 'secret-pass', 300).post(SEARCH, XML)).rejects.toMatchObject({ kind: 'timeout' })
+    expect(Date.now() - t).toBeLessThan(1500)
+    await stall.close()
+    const reset = await startFakeNvr({ mode: 'reset-body' })
+    await expect(client(reset.port).post(SEARCH, XML)).rejects.toMatchObject({ kind: 'unreachable' })
+    await reset.close()
+  })
+  it('reports an answer over 1 MB as a bad response', async () => {
+    nvr = await startFakeNvr({ mode: 'huge' })
+    const err = await client(nvr.port).post(SEARCH, XML).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(NvrError)
+    expect(err).toMatchObject({ kind: 'bad_response' })
+  })
+  it('refuses a bad address without connecting', async () => {
+    nvr = await startFakeNvr({ recordings: [] })
+    const err = await new NvrClient({ host: 'bad host', port: nvr.port, username: 'viewer', password: 'secret-pass' }).post(SEARCH, XML).catch((e: unknown) => e)
+    expect(err).toMatchObject({ kind: 'unreachable' })
+    expect(nvr.requests).toEqual([])
+  })
+  it('gives one deadline to a shared signal, and a new one per call when none is given', async () => {
+    nvr = await startFakeNvr({ recordings: [], delayMs: 200 })
+    const c = client(nvr.port, 'secret-pass', 700)
+    const signal = c.deadline()
+    await c.post(SEARCH, XML, signal) // 2 requests, 400 ms
+    await expect(c.post(SEARCH, XML, signal)).rejects.toMatchObject({ kind: 'timeout' }) // the same 700 ms is used up
+    await expect(c.post(SEARCH, XML)).resolves.toContain('CMSearchResult') // a call with no signal starts its own deadline
+  })
+  it('does not show the password in errors from failing posts', async () => {
+    const PASSWORD = 'Sup3r-S3cret-pw-4711'
+    nvr = await startFakeNvr({ recordings: [] })
+    const closed = await closedPort()
+    const cases: (() => Promise<unknown>)[] = [() => client(nvr!.port, PASSWORD).post(SEARCH, XML), () => client(closed, PASSWORD).post(SEARCH, XML), () => client(nvr!.port, PASSWORD).post('/bad path', XML)]
+    for (const run of cases) {
+      const err = (await run().catch((e: unknown) => e)) as Error
+      expect([String(err), err.stack ?? '', JSON.stringify(err), inspect(err, { showHidden: true, depth: 8 })].join('\n')).not.toContain(PASSWORD)
+    }
+    expect(nvr.authorizations.join('\n')).not.toContain(PASSWORD)
+  })
+})

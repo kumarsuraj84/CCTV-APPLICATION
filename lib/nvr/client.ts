@@ -34,7 +34,11 @@ export type NvrClientOptions = { timeoutMs?: number; fetchImpl?: typeof fetch }
 
 /** Largest answer read from an NVR. ISAPI answers are a few kilobytes. */
 export const MAX_RESPONSE_BYTES = 1024 * 1024
+/** Largest request body sent to an NVR (search and calendar requests are a few hundred bytes). */
+export const MAX_REQUEST_BYTES = 8 * 1024
 const DEFAULT_TIMEOUT_MS = 8000
+/** Only ISAPI paths made of plain path characters: no space, control character, query, fragment or backslash. */
+const SAFE_PATH = /^\/ISAPI\/[A-Za-z0-9._~/-]*$/
 
 const HOSTNAME = /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/
 const validHost = (h: string) => h.length > 0 && h.length <= 253 && (isIP(h) !== 0 ? !h.includes('%') : HOSTNAME.test(h))
@@ -71,17 +75,36 @@ export class NvrClient {
     this.#opts = { timeoutMs: opts.timeoutMs, fetchImpl: opts.fetchImpl }
   }
 
-  /** One deadline for a whole operation: every request of it and the reading of every answer. */
-  private deadline(): AbortSignal {
+  /** One deadline for a whole operation: every request of it and the reading of every answer. A caller that makes several requests for one operation passes the same signal to each. */
+  deadline(): AbortSignal {
     return AbortSignal.timeout(this.#opts.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   }
 
   private async get(path: string, signal: AbortSignal): Promise<string> {
+    return this.request('GET', path, undefined, signal)
+  }
+
+  /**
+   * POSTs one small XML document (at most 8 KB) to an ISAPI path and returns the answer text. Same login (Digest only), same limit on the
+   * answer, same errors and same deadline rules as the reads. Pass a signal from `deadline()` to share one deadline between several posts.
+   */
+  async post(path: string, xml: string, signal: AbortSignal = this.deadline()): Promise<string> {
+    return this.request('POST', path, xml, signal)
+  }
+
+  private async request(method: 'GET' | 'POST', path: string, body: string | undefined, signal: AbortSignal): Promise<string> {
+    // Programming mistakes (not NVR trouble): plain errors that never echo the path or the body.
+    if (typeof path !== 'string' || !SAFE_PATH.test(path) || path.includes('..')) throw new Error('Invalid NVR request path.')
+    if (method === 'POST' && (typeof body !== 'string' || Buffer.byteLength(body, 'utf8') > MAX_REQUEST_BYTES)) throw new Error('Invalid NVR request body.')
     const ep = this.#ep
     if (!validHost(ep.host) || !validPort(ep.port)) throw new NvrError('unreachable', 'invalid NVR address')
     const host = isIP(ep.host) === 6 ? `[${ep.host}]` : ep.host
     try {
-      const res = await digestFetch(`http://${host}:${ep.port}${path}`, { username: ep.username, password: ep.password, signal }, this.#opts.fetchImpl)
+      const res = await digestFetch(
+        `http://${host}:${ep.port}${path}`,
+        { method, headers: body === undefined ? undefined : { 'Content-Type': 'application/xml' }, body, username: ep.username, password: ep.password, signal },
+        this.#opts.fetchImpl,
+      )
       if (res.status !== 200) {
         await drop(res)
         if (res.status === 401) throw new NvrError('auth', 'login refused')

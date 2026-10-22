@@ -8,11 +8,11 @@ const MAX_CHANNEL = 4096
 const MAX_NAME = 80
 
 // ASCII-only lower-casing keeps every index aligned with the original text (toLowerCase can change the length).
-const ascii = (s: string) => s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32))
+export const ascii = (s: string) => s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32))
 const isNameChar = (c: string | undefined) => c !== undefined && /[A-Za-z0-9_.:-]/.test(c)
 
 /** Inner text of the closed `<tag>` elements, in order (at most `limit`). Linear in the size of the text. */
-function elements(xml: string, tag: string, limit = Infinity): string[] {
+export function elements(xml: string, tag: string, limit = Infinity): string[] {
   const lower = ascii(xml)
   const open = `<${ascii(tag)}`
   const close = `</${ascii(tag)}>`
@@ -37,7 +37,7 @@ function elements(xml: string, tag: string, limit = Infinity): string[] {
   return out
 }
 
-const firstElement = (block: string, tag: string): string | null => elements(block, tag, 1)[0] ?? null
+export const firstElement = (block: string, tag: string): string | null => elements(block, tag, 1)[0] ?? null
 
 const ENTITY = /&(?:#x([0-9a-f]{1,6})|#(\d{1,7})|(lt|gt|quot|apos|amp));/gi
 const NAMED: Record<string, string> = { lt: '<', gt: '>', quot: '"', apos: "'", amp: '&' }
@@ -51,7 +51,7 @@ function unescapeEntities(s: string): string {
 }
 
 /** Element text: CDATA sections unwrapped as they are, everything else with entities decoded once, then trimmed. */
-function text(raw: string | null): string | null {
+export function text(raw: string | null): string | null {
   if (raw === null) return null
   let out = ''
   let pos = 0

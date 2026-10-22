@@ -58,13 +58,82 @@ export type FakeNvrOptions = {
   inputProxy?: 'ok' | 'empty' | 'missing'
   /** The older channel list: ok or an empty list. */
   videoInputs?: 'ok' | 'empty'
+  /**
+   * Recordings in NVR-local terms: ISO times that the fake writes out with a Z, as an NVR does, and compares as they are.
+   * `channel` limits one to a camera (all cameras when left out). Serves the recording search and the calendar (derived from these).
+   */
+  recordings?: { start: string; end: string; channel?: number }[]
+  /** Items per page of the recording search (tests use a small page so paging is exercised). Default 2. */
+  searchPageSize?: number
+  /** Takes over the whole search answer (for hostile and odd answers). `position` and `maxResults` are what the request asked for. */
+  searchAnswer?: (o: { position: number; maxResults: number; body: string }) => string
+  /** Takes over the whole calendar answer. */
+  dailyAnswer?: (o: { year: number; month: number; body: string }) => string
   port?: number
 }
 export type FakeNvr = Bound & {
   requests: string[]
   /** Every Authorization header received, in order. */
   authorizations: string[]
+  /** Every POST that passed the Digest login and reached a known endpoint: path, body and content type. */
+  posts: { path: string; body: string; contentType: string }[]
+  /** The bodies of the POSTs to /ISAPI/ContentMgmt/download that passed the login. */
+  downloadBodies: string[]
   setStatuses: (s: Record<number, boolean>) => void
+}
+
+/** What the fake NVR answers to a download request: always these bytes. */
+export const FAKE_DOWNLOAD_BYTES = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypmp42FAKE-RECORDING', 'latin1')])
+const MAX_FAKE_BODY = 64 * 1024
+const SEARCH_PATH = '/ISAPI/ContentMgmt/search'
+const DOWNLOAD_PATH = '/ISAPI/ContentMgmt/download'
+const DAILY_PATH = /^\/ISAPI\/ContentMgmt\/record\/tracks\/(\d+)\/dailyDistribution$/
+const GET_PATHS = new Set(['/ISAPI/ContentMgmt/InputProxy/channels/status', '/ISAPI/ContentMgmt/InputProxy/channels', '/ISAPI/System/Video/inputs/channels'])
+
+type Recording = { start: string; end: string; channel?: number }
+const isoMs = (s: string) => Date.parse(/(Z|[+-]\d\d:\d\d)$/i.test(s) ? s : `${s}Z`)
+const stamp = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z')
+const tagNumber = (body: string, tag: string) => Number(new RegExp(`<${tag}>\\s*(\\d+)\\s*</${tag}>`).exec(body)?.[1] ?? Number.NaN)
+const forChannel = (list: Recording[], channel: number) => list.filter((r) => r.channel === undefined || r.channel === channel)
+
+function searchXml(list: Recording[], body: string, pageSize: number): string {
+  const channel = Math.floor(tagNumber(body, 'trackID') / 100)
+  const from = isoMs(/<startTime>([^<]*)</.exec(body)?.[1] ?? '')
+  const to = isoMs(/<endTime>([^<]*)</.exec(body)?.[1] ?? '')
+  const position = Math.max(0, tagNumber(body, 'searchResultPostion') || 0)
+  const asked = tagNumber(body, 'maxResults')
+  const size = Math.min(pageSize, Number.isFinite(asked) && asked > 0 ? asked : pageSize)
+  const matches = forChannel(list, channel)
+    .map((r) => ({ s: isoMs(r.start), e: isoMs(r.end) }))
+    .filter((r) => r.e > from && r.s < to)
+    .sort((a, b) => a.s - b.s)
+  const page = matches.slice(position, position + size)
+  const more = position + page.length < matches.length
+  const items = page
+    .map((r) => `<searchMatchItem><sourceID>{00000000-0000-0000-0000-000000000000}</sourceID><trackID>${channel}01</trackID><timeSpan><startTime>${stamp(r.s)}</startTime><endTime>${stamp(r.e)}</endTime></timeSpan><mediaSegmentDescriptor><contentType>video</contentType><codecType>H.264-BP</codecType></mediaSegmentDescriptor></searchMatchItem>`)
+    .join('')
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?><CMSearchResult version="2.0" ${NS}><searchID>fake</searchID><responseStatus>true</responseStatus>` +
+    `<responseStatusStrg>${more ? 'MORE' : page.length ? 'OK' : 'NO MATCHES'}</responseStatusStrg><numOfMatches>${page.length}</numOfMatches><matchList>${items}</matchList></CMSearchResult>`
+  )
+}
+
+function dailyXml(list: Recording[], channel: number, year: number, month: number): string {
+  const recorded = new Set<number>()
+  for (const r of forChannel(list, channel)) {
+    const s = isoMs(r.start)
+    const e = isoMs(r.end)
+    if (!Number.isFinite(s) || !Number.isFinite(e)) continue
+    const last = Math.max(s, e - 1)
+    for (let day = Date.UTC(new Date(s).getUTCFullYear(), new Date(s).getUTCMonth(), new Date(s).getUTCDate()), n = 0; day <= last && n < 400; day += 86_400_000, n++) {
+      const d = new Date(day)
+      if (d.getUTCFullYear() === year && d.getUTCMonth() + 1 === month) recorded.add(d.getUTCDate())
+    }
+  }
+  const length = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  let days = ''
+  for (let d = 1; d <= length; d++) days += `<day><dayOfMonth>${d}</dayOfMonth><record>${recorded.has(d)}</record><recordType>CMR</recordType></day>`
+  return `<?xml version="1.0" encoding="UTF-8"?><trackDailyDistribution version="2.0" ${NS}><dayList>${days}</dayList></trackDailyDistribution>`
 }
 
 const NS = 'xmlns="http://www.hikvision.com/ver20/XMLSchema"'
@@ -115,7 +184,10 @@ export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNv
   const nonces = new Set<string>()
   const sockets = new Set<net.Socket>()
 
-  const handle = (req: http.IncomingMessage, res: http.ServerResponse) => {
+  const posts: FakeNvr['posts'] = []
+  const downloadBodies: string[] = []
+
+  const handle = (req: http.IncomingMessage, res: http.ServerResponse, body: string) => {
     const challenge = () => {
       const nonce = randomBytes(8).toString('hex')
       nonces.add(nonce)
@@ -161,6 +233,31 @@ export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNv
       res.end(xml)
     }
     if (options.mode === 'garbage') return send('this is not xml')
+    const daily = DAILY_PATH.exec(path)
+    if (path === SEARCH_PATH || path === DOWNLOAD_PATH || daily) {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { Allow: 'POST' })
+        return res.end()
+      }
+      posts.push({ path, body, contentType: String(req.headers['content-type'] ?? '') })
+      if (path === DOWNLOAD_PATH) {
+        downloadBodies.push(body)
+        res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': String(FAKE_DOWNLOAD_BYTES.length) })
+        return res.end(FAKE_DOWNLOAD_BYTES)
+      }
+      if (path === SEARCH_PATH) {
+        const asked = tagNumber(body, 'maxResults')
+        const position = tagNumber(body, 'searchResultPostion') || 0
+        return send(options.searchAnswer ? options.searchAnswer({ position, maxResults: asked, body }) : searchXml(options.recordings ?? [], body, options.searchPageSize ?? 2))
+      }
+      const year = tagNumber(body, 'year')
+      const month = tagNumber(body, 'monthOfYear')
+      return send(options.dailyAnswer ? options.dailyAnswer({ year, month, body }) : dailyXml(options.recordings ?? [], Math.floor(Number(daily![1]) / 100), year, month))
+    }
+    if (GET_PATHS.has(path) && req.method !== 'GET') {
+      res.writeHead(405, { Allow: 'GET' })
+      return res.end()
+    }
     if (path === '/ISAPI/ContentMgmt/InputProxy/channels/status') return send(statusXml(statuses))
     if (path === '/ISAPI/ContentMgmt/InputProxy/channels' && options.inputProxy !== 'missing') return send(channelsXml(options.inputProxy === 'empty' ? [] : channels))
     if (path === '/ISAPI/System/Video/inputs/channels') return send(videoInputXml(options.videoInputs === 'empty' ? [] : channels))
@@ -171,15 +268,31 @@ export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNv
     requests.push(`${req.method} ${req.url}`)
     if (req.headers.authorization) authorizations.push(req.headers.authorization)
     if (options.mode === 'slow') return // never answers
-    if (options.delayMs) setTimeout(() => handle(req, res), options.delayMs)
-    else handle(req, res)
+    const chunks: Buffer[] = []
+    let size = 0
+    let refused = false
+    req.on('data', (c: Buffer) => {
+      size += c.length
+      if (size > MAX_FAKE_BODY) {
+        refused = true
+        res.writeHead(413)
+        res.end()
+        req.destroy()
+      } else chunks.push(c)
+    })
+    req.on('end', () => {
+      if (refused) return
+      const body = Buffer.concat(chunks).toString('utf8')
+      if (options.delayMs) setTimeout(() => handle(req, res, body), options.delayMs)
+      else handle(req, res, body)
+    })
   })
   server.on('connection', (s) => {
     sockets.add(s)
     s.on('close', () => sockets.delete(s))
   })
   const port = await new Promise<number>((resolve) => server.listen(options.port ?? 0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port)))
-  return { port, host: (server.address() as net.AddressInfo).address, requests, authorizations, setStatuses: (s) => (statuses = s), close: closer(server, sockets) }
+  return { port, host: (server.address() as net.AddressInfo).address, requests, authorizations, posts, downloadBodies, setStatuses: (s) => (statuses = s), close: closer(server, sockets) }
 }
 
 // ── Fake RTSP camera endpoint ────────────────────────────────────────────────

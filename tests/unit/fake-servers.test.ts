@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { closedPort, startFakeNvr, startFakeRtsp, startFakeTcp, type Running } from '../helpers/fake-servers'
+import { closedPort, FAKE_DOWNLOAD_BYTES, startFakeNvr, startFakeRtsp, startFakeTcp, type Running } from '../helpers/fake-servers'
 import { createHash } from 'node:crypto'
 import net from 'node:net'
 
@@ -107,5 +107,81 @@ describe('fake servers', () => {
     expect(await describeRtsp(always.port)).toBe('RTSP/1.0 401 Unauthorized')
     expect(await describeRtsp(always.port, auth)).toBe('RTSP/1.0 401 Unauthorized')
     expect(needsAuth.requests).toHaveLength(2)
+  })
+})
+
+describe('fake NVR recording endpoints', () => {
+  const md5 = (s: string) => createHash('md5').update(s).digest('hex')
+  const header = (challenge: string, user: string, pass: string, method: string, signedUri: string, sentUri = signedUri) => {
+    const nonce = /nonce="([^"]+)"/.exec(challenge)![1]
+    const nc = '00000001'
+    const cnonce = 'abcdef0123456789'
+    const response = md5(`${md5(`${user}:fake-nvr:${pass}`)}:${nonce}:${nc}:${cnonce}:auth:${md5(`${method}:${signedUri}`)}`)
+    return `Digest username="${user}", realm="fake-nvr", nonce="${nonce}", uri="${sentUri}", qop=auth, nc=${nc}, cnonce="${cnonce}", response="${response}", opaque="op"`
+  }
+  const call = async (port: number, method: string, uri: string, body: string | undefined, opts: { user?: string; pass?: string; signedAs?: string; signedMethod?: string } = {}) => {
+    const url = `http://127.0.0.1:${port}${uri}`
+    const first = await fetch(url, { method, body })
+    const auth = header(first.headers.get('www-authenticate')!, opts.user ?? 'viewer', opts.pass ?? 'secret-pass', opts.signedMethod ?? method, opts.signedAs ?? uri, uri)
+    return fetch(url, { method, body, headers: { Authorization: auth, 'Content-Type': 'application/xml' } })
+  }
+  const DOWNLOAD = '/ISAPI/ContentMgmt/download'
+
+  it('POST download asks for a login, then returns the same fixed bytes every time and records the body', async () => {
+    const nvr = await startFakeNvr()
+    running.push(nvr)
+    const unauth = await fetch(`http://127.0.0.1:${nvr.port}${DOWNLOAD}`, { method: 'POST', body: '<x/>' })
+    expect(unauth.status).toBe(401)
+    expect(nvr.downloadBodies).toEqual([])
+    const a = await call(nvr.port, 'POST', DOWNLOAD, '<downloadRequest><playbackURI>one</playbackURI></downloadRequest>')
+    expect(a.status).toBe(200)
+    const bytesA = Buffer.from(await a.arrayBuffer())
+    const b = await call(nvr.port, 'POST', DOWNLOAD, '<downloadRequest><playbackURI>two</playbackURI></downloadRequest>')
+    const bytesB = Buffer.from(await b.arrayBuffer())
+    expect(bytesA.length).toBeGreaterThan(0)
+    expect(bytesA.equals(bytesB)).toBe(true)
+    expect(bytesA.toString('latin1')).toBe(FAKE_DOWNLOAD_BYTES.toString('latin1'))
+    expect(nvr.downloadBodies).toEqual(['<downloadRequest><playbackURI>one</playbackURI></downloadRequest>', '<downloadRequest><playbackURI>two</playbackURI></downloadRequest>'])
+  })
+
+  it.each([
+    ['a wrong password', { pass: 'wrong' }],
+    ['a wrong user', { user: 'intruder' }],
+    ['a Digest answer signed for another path (the uri must equal the request line)', { signedAs: '/ISAPI/ContentMgmt/other' }],
+    ['a Digest answer signed for GET', { signedMethod: 'GET' }],
+  ])('POST endpoints refuse %s', async (_name, opts) => {
+    const nvr = await startFakeNvr()
+    running.push(nvr)
+    expect((await call(nvr.port, 'POST', DOWNLOAD, '<a/>', opts)).status).toBe(401)
+    expect((await call(nvr.port, 'POST', '/ISAPI/ContentMgmt/search', '<a/>', opts)).status).toBe(401)
+    expect((await call(nvr.port, 'POST', '/ISAPI/ContentMgmt/record/tracks/101/dailyDistribution', '<a/>', opts)).status).toBe(401)
+    expect(nvr.downloadBodies).toEqual([])
+    expect(nvr.posts).toEqual([])
+  })
+
+  it('POST endpoints refuse any other method, and the old GET endpoints refuse POST', async () => {
+    const nvr = await startFakeNvr({ statuses: { 1: true } })
+    running.push(nvr)
+    for (const path of [DOWNLOAD, '/ISAPI/ContentMgmt/search', '/ISAPI/ContentMgmt/record/tracks/101/dailyDistribution']) {
+      for (const method of ['GET', 'PUT', 'DELETE']) expect((await call(nvr.port, method, path, undefined)).status, `${method} ${path}`).toBe(405)
+    }
+    expect((await call(nvr.port, 'POST', '/ISAPI/ContentMgmt/InputProxy/channels/status', '<a/>')).status).toBe(405)
+    expect(nvr.downloadBodies).toEqual([])
+  })
+
+  it('search honours searchResultPostion with a page of two and says MORE until the last page', async () => {
+    const recordings = [1, 2, 3, 4, 5].map((h) => ({ start: `2026-10-20T0${h}:00:00`, end: `2026-10-20T0${h}:30:00` }))
+    const nvr = await startFakeNvr({ recordings })
+    running.push(nvr)
+    const body = (pos: number) =>
+      `<CMSearchDescription><searchID>a</searchID><trackIDList><trackID>101</trackID></trackIDList><timeSpanList><timeSpan><startTime>2026-10-20T00:00:00Z</startTime><endTime>2026-10-21T00:00:00Z</endTime></timeSpan></timeSpanList><maxResults>200</maxResults><searchResultPostion>${pos}</searchResultPostion></CMSearchDescription>`
+    const page = async (pos: number) => {
+      const text = await (await call(nvr.port, 'POST', '/ISAPI/ContentMgmt/search', body(pos))).text()
+      return { starts: [...text.matchAll(/<startTime>([^<]+)</g)].map((m) => m[1]), more: /<responseStatusStrg>MORE</.test(text) }
+    }
+    expect(await page(0)).toEqual({ starts: ['2026-10-20T01:00:00Z', '2026-10-20T02:00:00Z'], more: true })
+    expect(await page(2)).toEqual({ starts: ['2026-10-20T03:00:00Z', '2026-10-20T04:00:00Z'], more: true })
+    expect(await page(4)).toEqual({ starts: ['2026-10-20T05:00:00Z'], more: false })
+    expect(await page(6)).toEqual({ starts: [], more: false })
   })
 })
