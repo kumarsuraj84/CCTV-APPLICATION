@@ -13,7 +13,8 @@ export function Sidebar({ items }: { items: NavItem[] }) {
   const pathname = usePathname()
   const groups = ['Monitoring', 'Admin'] as const
   return (
-    <aside className="hidden w-60 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground md:flex">
+    // P3-1: stays in view, full height, while a long page scrolls (it used to end after one screen).
+    <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col self-start border-r bg-sidebar text-sidebar-foreground md:flex">
       <div className="flex justify-center px-5 pt-5 pb-4">
         <Link href="/home" className="rounded-sm">
           <BrandLogo priority className="w-[184px]" sizes="184px" />

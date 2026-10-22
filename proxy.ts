@@ -5,6 +5,7 @@ import { ACTIVITY_COOKIE, activityKey, decodeActivity, encodeActivity } from '@/
 import { claimsOf, idleMinutesFor, sessionExpiry, sessionPolicy } from '@/lib/auth/session-policy'
 import { VERIFIED_USER_HEADER, VERIFIED_USER_SIG_HEADER, signVerifiedUser } from '@/lib/auth/verified-user'
 import { buildCsp, cspHeaderName, cspReportOnly, makeNonce, REDIRECT_CSP } from '@/lib/web/csp'
+import { legacyRedirect } from '@/lib/web/legacy-redirects'
 import type { PageAddress } from '@/lib/streams/wall'
 
 // Public pages and routes are an exact-match list. Every other path needs a signed-in person.
@@ -66,6 +67,10 @@ export async function proxy(request: NextRequest) {
     res.headers.set(csp.name, value)
     return res
   }
+
+  // T-1's old addresses (/stores, /admin/stores): permanent redirects, before sign-in, now here so they carry the policy (P3-1).
+  const moved = legacyRedirect(pathname, request.nextUrl.search)
+  if (moved) return withPolicy(NextResponse.redirect(new URL(moved, request.nextUrl.origin), 308), REDIRECT_CSP)
 
   // Image files at the top level of public/ and directly inside public/brand/ (the logo shown on the sign-in page, P3-0).
   const isAsset = pathname.startsWith('/_next') || pathname === '/favicon.ico' || /^\/(?:brand\/)?[A-Za-z0-9._-]+\.(svg|png|jpg|jpeg|gif|webp|ico)$/.test(pathname)

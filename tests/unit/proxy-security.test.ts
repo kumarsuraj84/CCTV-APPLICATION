@@ -110,12 +110,15 @@ describe('Content Security Policy on every kind of answer', () => {
     expect(csp(res)).toBe(REDIRECT_CSP)
   })
 
-  it('the old-address redirects of next.config (they never reach the proxy) carry the empty policy, every answer X-Frame-Options DENY', async () => {
-    const rules = (await nextConfig.headers!()) as { source: string; headers: { key: string; value: string }[] }[]
-    for (const source of ['/stores', '/stores/:id', '/admin/stores']) {
-      const rule = rules.find((r) => r.source === source)
-      expect(rule?.headers.find((h) => h.key === 'Content-Security-Policy')?.value, source).toBe(REDIRECT_CSP)
+  it('the old-address redirects are the proxy’s own (permanent, the empty policy); every answer X-Frame-Options DENY', async () => {
+    // Built-server finding: a next.config redirect is sent with no security header at all, so they moved into the proxy.
+    for (const p of ['/stores', '/stores/abc?x=1', '/admin/stores']) {
+      const res = await run(p)
+      expect(res.status, p).toBe(308)
+      expect(csp(res), p).toBe(REDIRECT_CSP)
     }
+    expect(nextConfig.redirects).toBeUndefined()
+    const rules = (await nextConfig.headers!()) as { source: string; headers: { key: string; value: string }[] }[]
     const all = rules.find((r) => r.source === '/:path*')
     expect(all?.headers.find((h) => h.key === 'X-Frame-Options')?.value).toBe('DENY')
     expect(all?.headers.some((h) => h.key === 'Content-Security-Policy')).toBe(false) // pages get theirs, with the nonce, from the proxy

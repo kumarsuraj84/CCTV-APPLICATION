@@ -32,6 +32,14 @@ describe('top bar', () => {
   })
 })
 
+describe('sidebar', () => {
+  it('stays in view at full height while a long page scrolls (it ended after one screen, seen on the users page)', async () => {
+    const { Sidebar } = await import('@/components/layout/Sidebar')
+    const html = renderToStaticMarkup(<Sidebar items={[]} />)
+    expect(html).toMatch(/<aside[^>]*class="[^"]*\bsticky\b[^"]*\btop-0\b[^"]*\bh-dvh\b/)
+  })
+})
+
 describe('where you are', () => {
   it('breadcrumbs are a named navigation with the current page marked', async () => {
     const { PageHeader } = await import('@/components/ui/PageHeader')
