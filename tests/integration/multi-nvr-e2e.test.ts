@@ -235,8 +235,9 @@ describe('a location with several NVRs, end to end', () => {
     // b2 ("Till B") is moved from B channel 2 to A channel 4.
     expect((await admin().rpc('camera_remap', { p_org: orgId, p_camera: b2, p_recorder: recA, p_channel: 4 })).error).toBeNull()
     const clients = { admin: admin(), rls: administrator.client }
-    // A now lists channel 4 (the moved camera) and channel 5 named like B's other camera: the first is matched by its mapping, the
-    // second is NOT created — it is listed for an administrator to reconcile.
+    // A now lists channel 4 (the moved camera) and channel 5 named like B's other camera: the first is matched by its mapping (recorder
+    // + channel). The second is A's own new camera: B's "Door B" is still mapped to B, and a camera of another NVR is never taken
+    // (review round 1, I-2; before, it was listed as a possible move and nothing was made, which left A's channel 5 without a camera).
     const nvr = () => ({
       channelStatus: async () => new Map<number, boolean>(),
       channels: async () => [
@@ -245,19 +246,28 @@ describe('a location with several NVRs, end to end', () => {
       ],
     })
     const r = await discoverRecorderCameras(clients, adminActor, recA, { nvr })
-    expect(r).toMatchObject({ ok: true, created: 0, updated: 4 })
+    expect(r).toMatchObject({ ok: true, created: 1, updated: 4 })
     if (!r.ok) return
-    expect(r.reconciliation).toEqual([
-      { kind: 'renamed', channel: 4, cameraId: b2, from: 'Till B', to: 'Till B moved' },
-      { kind: 'possible_move', channel: 5, reportedName: 'Door B', cameraId: b1, cameraName: 'Door B', because: 'same_name' },
-    ])
-    expect((await admin().from('cameras').select('id').eq('location_id', loc).eq('name', 'Door B')).data).toHaveLength(1)
+    expect(r.reconciliation).toEqual([{ kind: 'renamed', channel: 4, cameraId: b2, from: 'Till B', to: 'Till B moved' }])
+    const doors = (await admin().from('cameras').select('id, recorder_id, channel').eq('location_id', loc).eq('name', 'Door B').order('recorder_id')).data!
+    expect(doors.find((c) => c.id === b1)).toEqual({ id: b1, recorder_id: recB, channel: 1 })
+    expect(doors.filter((c) => c.id !== b1).map((c) => [c.recorder_id, c.channel])).toEqual([[recA, 5]])
     // Same id, same group, same history row; viewer access unchanged (location grant), and live now goes through A.
     expect((await admin().from('camera_group_items').select('camera_id').eq('group_id', group)).data).toEqual([{ camera_id: b2 }])
-    expect((await admin().from('check_state').select('id').eq('target_id', b2).maybeSingle()).data?.id ?? history.id).toBe(history.id)
+    // Review I-5: the row must still be there (a remap that deleted the camera's state must fail this).
+    const kept = (await admin().from('check_state').select('id').eq('target_id', b2).maybeSingle()).data
+    expect(kept).not.toBeNull()
+    expect(kept!.id).toBe(history.id)
     const res = await openStreams({ admin: admin(), rls: viewer.client, go2rtc: go2rtc.client, env: {} }, { id: viewer.id, orgId }, [b2], 'main')
     expect(res.ok && res.streams.map((s) => [s.cameraId, s.channel])).toEqual([[b2, 4]])
     expect(go2rtc.seen[0]).toMatchObject({ name: `cam_${b2}_main`, src: `rtsp://viewer:pass-a@127.0.0.1:${rtspA.port}/Streaming/Channels/401` })
+    // Review I-5: playback after the move goes to A as well: A's address and login, channel 4, A's clock offset (the default, 30 min).
+    const start = new Date(Math.floor((shownNowMs(Date.now()) - 2 * 3600_000) / 1000) * 1000)
+    const pb = await openPlayback({ admin: admin(), rls: viewer.client, go2rtc: go2rtc.client, env: {} }, { id: viewer.id, orgId }, b2, start, 10, 30)
+    expect(pb.ok).toBe(true)
+    const src = go2rtc.seen.find((s) => pb.ok && s.name === pb.name)!.src!
+    const nvrTime = (d: Date) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
+    expect(src).toContain(`rtsp://viewer:pass-a@127.0.0.1:${rtspA.port}/Streaming/tracks/401?starttime=${nvrTime(new Date(start.getTime() - 30 * 60_000))}`)
   })
 
   it('"discover all recorders": every NVR of the organisation, bounded, with progress; the switched-off one is skipped without contact', async () => {

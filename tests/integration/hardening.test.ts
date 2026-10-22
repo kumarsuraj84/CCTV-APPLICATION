@@ -42,7 +42,9 @@ describe('database hardening', () => {
     expect((await createDevice(admin(), actor, { name: 'Five', type: 'server', ip: '192.0.2.50', tcp_port: 8443 })).ok).toBe(true)
   })
 
-  it('refuses an empty NVR password and copes with a stale vault pointer', async () => {
+  // Review M-10: the title said "copes with a stale vault pointer", which this never set up (a stale pointer cannot be planted: see
+  // below). It proves what its title now says.
+  it('refuses an empty NVR password, refuses a planted vault pointer, and a second save replaces the password', async () => {
     const empty = await admin().rpc('recorder_store_credential', { p_recorder: recorderId, p_secret: '' })
     expect(empty.error).not.toBeNull()
 
@@ -50,7 +52,7 @@ describe('database hardening', () => {
     expect((await admin().rpc('recorder_store_credential', { p_recorder: recorderId, p_secret: first })).error).toBeNull()
     // The recorder owns the vault pointer and it can only be written by the credential functions (a stale pointer cannot be planted).
     expect((await admin().from('recorders').update({ secret_id: randomUUID() }).eq('id', recorderId)).error?.code).toBe('42501')
-    // A pointer to a vault row that no longer exists (as after a partial failure) is replaced by a new secret.
+    // The pointer the first save left; a second save replaces the password behind it.
     const pointer = (await admin().from('recorders').select('secret_id').eq('id', recorderId).single()).data!.secret_id
     expect(pointer).not.toBeNull()
     const second = `Nvr-${randomUUID()}`

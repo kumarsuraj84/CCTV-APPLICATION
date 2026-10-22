@@ -30,7 +30,7 @@ export class MemoryDb implements MonitorDb {
   async recordGap(from: Date, to: Date) { this.gaps.push({ from, to }) }
   async markRound(kind: 'devices' | 'cameras', at: Date) { this.rounds.push({ kind, at }) }
   async applyResults(orgId: string, results: CheckResult[], threshold: number) { this.applied.push({ orgId, results, threshold }) }
-  async saveCameraIps(orgId: string, rows: { cameraId: string; ip: string }[]) { this.ipsSaved.push({ orgId, rows }) }
+  async saveCameraIps(orgId: string, rows: { cameraId: string; ip: string; recorderId: string }[]) { this.ipsSaved.push({ orgId, rows }) }
   async touchHeartbeat(now: Date) { this.heartbeats.push(now) }
   async recordStartupGap(now?: Date, maxSilenceMs?: number) { void now; void maxSilenceMs; return this.gapRecorded }
   async readRequest() { return this.request }

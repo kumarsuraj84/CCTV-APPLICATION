@@ -169,7 +169,10 @@ describe('SupabaseMonitorDb (per recorder)', () => {
     await db.applyResults(orgId, [{ type: 'camera', id: camIds[0], ok: true, at: new Date().toISOString() }], 2)
     const { data } = await admin().from('check_state').select('status').eq('target_id', camIds[0]).single()
     expect(data?.status).toBe('up')
-    await db.saveCameraIps(orgId, [{ cameraId: camIds[0], ip: '192.0.2.77' }])
+    await db.saveCameraIps(orgId, [{ cameraId: camIds[0], ip: '192.0.2.77', recorderId }])
+    expect((await admin().from('cameras').select('camera_ip').eq('id', camIds[0]).single()).data?.camera_ip).toBe('192.0.2.77')
+    // Review M-3: an address reported by an NVR the camera is no longer on is not saved.
+    await db.saveCameraIps(orgId, [{ cameraId: camIds[0], ip: '192.0.2.78', recorderId: '00000000-0000-4000-8000-000000000000' }])
     expect((await admin().from('cameras').select('camera_ip').eq('id', camIds[0]).single()).data?.camera_ip).toBe('192.0.2.77')
     // A database that refuses the call is an error the caller sees (here a client whose call fails).
     const refusing = { rpc: async () => ({ data: null, error: { message: 'boom' } }) } as unknown as SupabaseClient<Database>

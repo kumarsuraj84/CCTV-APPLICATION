@@ -5,18 +5,23 @@ import { adminClient, cleanupOrg, createOrg, createSite } from '../setup/fixture
 
 const admin = () => adminClient()
 
-/** Every source file of the application (not the tests, not the generated types, not node_modules). */
+/**
+ * Every source file of the application, the generated database types and the top-level request proxy (not the tests, not
+ * node_modules). Review M-10: `proxy.ts`, `agent/` and `types/` were not scanned before.
+ */
 function sources(): { file: string; text: string }[] {
   const out: { file: string; text: string }[] = []
+  const add = (full: string) => out.push({ file: full.replaceAll('\\', '/'), text: readFileSync(full, 'utf8') })
   const walk = (dir: string) => {
     for (const name of readdirSync(dir)) {
       if (name === 'node_modules' || name.startsWith('.')) continue
       const full = path.join(dir, name)
       if (statSync(full).isDirectory()) walk(full)
-      else if (/\.(ts|tsx|mjs|js)$/.test(name)) out.push({ file: full.replaceAll('\\', '/'), text: readFileSync(full, 'utf8') })
+      else if (/\.(ts|tsx|mjs|js)$/.test(name)) add(full)
     }
   }
-  for (const root of ['lib', 'app', 'components', 'services', 'scripts']) walk(root)
+  for (const root of ['lib', 'app', 'components', 'services', 'scripts', 'agent', 'types']) walk(root)
+  add('proxy.ts')
   return out
 }
 
@@ -75,7 +80,8 @@ describe('P2-5b contract: no legacy store shape left', () => {
       ['legacy NVR column', /\bnvr_ip\b|\bnvr_username\b|\bnvr_secret_id\b/],
       ['location-keyed credential wrapper', /\bnvr_(store|read|delete)_credential\b/],
       ['seam helper', /\blegacyReachable\b|\brecorder_seam_of\b|\brecorder_ensure_primary\b|\binventory_migration_snapshot\b|\bisDemoStore\b|\bloadStoreJobs\b|\bStoreJob\b/],
-      ['target kind nvr', /(target_type|type|kind)['"]?\s*(===|==|:|=)\s*['"]nvr['"](?!\s+as const)|['"]nvr['"]\s*\?\s*'NVR'|getStates\([^)]*['"]nvr['"]/],
+      // A word boundary before the name: `device_type: "nvr" | …` (the asset type of the generated types) is not the target kind.
+    ['target kind nvr', /\b(target_type|type|kind)['"]?\s*(===|==|:|=)\s*['"]nvr['"](?!\s+as const)|['"]nvr['"]\s*\?\s*'NVR'|getStates\([^)]*['"]nvr['"]/],
       ['NVR ports or channels on a location', /from\('locations'\)[^\n]*\b(rtsp_port|http_port|expected_channels)\b|locations!?[\w!]*\([^)]*\b(rtsp_port|http_port|expected_channels)\b/],
     ]
     const hits: string[] = []
@@ -85,5 +91,7 @@ describe('P2-5b contract: no legacy store shape left', () => {
       })
     }
     expect(hits).toEqual([])
+    expect(sources().some((s) => s.file === 'proxy.ts')).toBe(true)
+    expect(sources().some((s) => s.file === 'types/database.ts')).toBe(true)
   })
 })

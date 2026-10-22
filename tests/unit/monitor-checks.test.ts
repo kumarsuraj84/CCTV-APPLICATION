@@ -164,7 +164,8 @@ describe('checkCameras', () => {
     expect(rtspCalls.sort()).toEqual([2, 3])
     expect(db.results().map((r) => [r.id, r.ok, r.method])).toEqual([['c1', true, 'isapi+rtsp'], ['c2', true, 'isapi+rtsp'], ['c3', false, 'isapi+rtsp']])
     expect(db.results()[2].error).toBe('The camera did not answer.')
-    expect(db.ipsSaved[0].rows).toEqual([{ cameraId: 'c1', ip: '192.0.2.1' }, { cameraId: 'c2', ip: '192.0.2.2' }])
+    // Review M-3: each address is saved for the NVR that reported it.
+    expect(db.ipsSaved[0].rows).toEqual([{ cameraId: 'c1', ip: '192.0.2.1', recorderId: 's1' }, { cameraId: 'c2', ip: '192.0.2.2', recorderId: 's1' }])
   })
 
   it('does not use RTSP when the NVR says every camera is online', async () => {
@@ -240,7 +241,7 @@ describe('checkCameras', () => {
     await checkCameras(deps(db, {
       nvr: () => ({ channelStatus: async () => new Map([[1, true]]), channels: async () => [{ channel: 1, name: 'A', ip: '192.0.2.1' }] }),
     }), (d, t) => progress.push([d, t]))
-    expect(db.ipsSaved.flatMap((i) => i.rows)).toEqual([{ cameraId: 'c9', ip: '192.0.2.1' }])
+    expect(db.ipsSaved.flatMap((i) => i.rows)).toEqual([{ cameraId: 'c9', ip: '192.0.2.1', recorderId: 's2' }])
     expect(progress).toEqual([[1, 2], [2, 2]])
   })
 
@@ -258,7 +259,7 @@ describe('checkCameras', () => {
         ],
       }),
     }))
-    expect(db.ipsSaved.flatMap((i) => i.rows)).toEqual([{ cameraId: 'c4', ip: '2001:db8::5' }])
+    expect(db.ipsSaved.flatMap((i) => i.rows)).toEqual([{ cameraId: 'c4', ip: '2001:db8::5', recorderId: 's1' }])
   })
 
   it('an NVR address that cannot be used fails its cameras without probing anything', async () => {

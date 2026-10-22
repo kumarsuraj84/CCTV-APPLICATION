@@ -77,6 +77,20 @@ describe('status queries', () => {
     expect(d.recentOutages.map((o) => o.kind)).not.toContain('device')
   })
 
+  it('review I-5: a CCTV-only viewer at a store whose NVR is down sees its camera down and listed, but no NVR, no NVR outage', async () => {
+    const atDown = await createUser(orgId, 'user')
+    await grant(orgId, atDown.id, CCTV_VIEW, atLocation(s2))
+    const d = await getDashboard(atDown.client)
+    expect(d.stores.total).toBe(1)
+    expect(d.cameras).toEqual({ total: 1, live: 0, down: 1, unknown: 0, stale: 0 })
+    expect(d.stores.nvrDown).toEqual([])
+    expect(d.stores.nvrStale).toBe(0)
+    // Nothing is grouped under an NVR outage the person cannot see: the camera's own outage is listed.
+    expect(d.recentOutages.map((o) => `${o.kind}:${o.label}:${o.store}`)).toEqual(['camera:D1:ST2'])
+    expect((await getStates(atDown.client, 'camera', [cam2])).get(cam2)).toMatchObject({ status: 'down' })
+    expect((await getStates(atDown.client, 'recorder', [r2])).size).toBe(0)
+  })
+
   it('lists the status of each store and of individual targets', async () => {
     const stores = await listStoreStatus(viewer.client)
     expect([...stores.keys()]).toEqual([s1])
@@ -130,6 +144,52 @@ describe('status queries: a location with two NVRs, one down (P2-5b)', () => {
     expect(labels).not.toContain('camera:L1')
     const row = (await manager.client.from('location_status').select('recorders_total, recorders_up, recorders_down, nvr_status').eq('location_id', loc).single()).data
     expect(row).toEqual({ recorders_total: 2, recorders_up: 1, recorders_down: 1, nvr_status: 'down' })
+  })
+})
+
+describe('status queries: an archived NVR, and one stale NVR next to a fresh one (review I-5)', () => {
+  let orgId: string
+  let manager: TestUser
+  let loc: string, fresh: string, stale: string, spare: string
+
+  beforeAll(async () => {
+    orgId = await createOrg()
+    const a = admin()
+    loc = await createLocation(orgId, { code: 'TRIO', name: 'Trio' })
+    fresh = await createRecorder(orgId, loc, { name: 'Fresh', host: '127.0.0.1' })
+    stale = await createRecorder(orgId, loc, { name: 'Stale', host: '127.0.0.1', httpPort: 8080, rtspPort: 8554 })
+    spare = await createRecorder(orgId, loc, { name: 'Spare', host: '127.0.0.1', httpPort: 8081, rtspPort: 8555 })
+    await createCamera(orgId, { locationId: loc, recorderId: fresh, channel: 1, name: 'F1' })
+    await createCamera(orgId, { locationId: loc, recorderId: stale, channel: 1, name: 'S1' })
+    const apply = (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: 1 })
+    await apply([
+      { type: 'recorder', id: fresh, ok: true, at: ago(1) },
+      { type: 'recorder', id: stale, ok: true, at: ago(STALE_AFTER_MINUTES + 5) },
+      { type: 'recorder', id: spare, ok: false, at: ago(10) },
+    ])
+    manager = await createUser(orgId, 'manager')
+    await grant(orgId, manager.id, READ_EVERYTHING)
+  })
+  afterAll(() => cleanupOrg(orgId))
+
+  it('counts the stale NVR as stale and the fresh one as fresh, each on its own', async () => {
+    const rows = (await manager.client.from('recorder_status').select('name, status, stale').eq('location_id', loc).order('name')).data
+    expect(rows).toEqual([{ name: 'Fresh', status: 'up', stale: false }, { name: 'Spare', status: 'down', stale: false }, { name: 'Stale', status: 'up', stale: true }])
+    expect((await getDashboard(manager.client)).stores.nvrStale).toBe(1)
+  })
+
+  it('an archived NVR leaves location_status, recorder_status and the dashboard, and its open outage is closed', async () => {
+    const before = await getDashboard(manager.client)
+    expect(before.stores.nvrDown.map((s) => s.recorder)).toEqual(['Spare'])
+    expect(before.recentOutages.map((o) => o.label)).toContain('Spare')
+    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'recorder', p_id: spare })).error).toBeNull()
+    const d = await getDashboard(manager.client)
+    expect(d.stores.nvrDown).toEqual([])
+    expect(d.recentOutages.map((o) => o.label)).not.toContain('Spare')
+    expect((await manager.client.from('recorder_status').select('recorder_id').eq('recorder_id', spare)).data).toEqual([])
+    const row = (await manager.client.from('location_status').select('recorders_total, recorders_down, recorders_up').eq('location_id', loc).single()).data
+    expect(row).toEqual({ recorders_total: 2, recorders_down: 0, recorders_up: 2 })
+    expect((await admin().from('outages').select('ended_at').eq('target_id', spare).single()).data?.ended_at).not.toBeNull()
   })
 })
 

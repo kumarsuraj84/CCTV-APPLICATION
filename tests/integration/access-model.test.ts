@@ -768,6 +768,9 @@ describe('capability access model (P2-1)', () => {
       inventory_refresh_statistics: server,
       monitor_stop_targets: server,
       monitor_stop_target: server,
+      // P2-5b review round 1 (20261021000025): one discovery saved in one transaction; NVR assets switched on with their location.
+      discovery_apply: server,
+      locations_recorders_on: [],
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)
@@ -827,6 +830,7 @@ describe('capability access model (P2-1)', () => {
       ['report_effective_asset_ids', { p_user: someone.id, p_cap: 'it.inventory.view' }],
       // P2-5b.
       ['recorder_save', { p_org: orgA, p_location: L1, p_recorder: null, p_host: '192.0.2.99', p_http_port: 80, p_rtsp_port: 554, p_username: 'x' }],
+      ['discovery_apply', { p_org: orgA, p_recorder: randomUUID(), p_ops: [] }],
     ]
     for (const [fn, args] of calls) {
       expect((await anon.rpc(fn, args as never)).error?.code, `anon ${fn}`).toBe('42501')

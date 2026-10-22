@@ -37,6 +37,7 @@ export async function startFakeGo2rtc(): Promise<FakeGo2rtc> {
       return void res.end('boom')
     }
     if (req.method === 'PUT' && name && fake.applies) streams.set(name, u.searchParams.get('src') ?? '')
+    if (req.method === 'DELETE' && fake.applies) streams.delete(u.searchParams.get('src') ?? '')
     res.statusCode = 400
     res.end('read-only')
   })

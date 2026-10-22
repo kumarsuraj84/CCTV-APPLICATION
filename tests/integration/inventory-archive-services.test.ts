@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Actor } from '@/lib/admin/types'
 import { archiveInventory, restoreInventory } from '@/lib/inventory/archive'
+import { startFakeGo2rtc } from '../helpers/fake-go2rtc'
 import { adminClient, atCamera, atRecorder, cleanupOrg, createCamera, createLocation, createOrg, createRecorder, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
@@ -69,6 +70,28 @@ describe('archive and restore services', () => {
     expect(await archiveInventory(clients(me), actor, 'location', loc)).toEqual({ ok: false, error: 'Not found.' })
     expect(await restoreInventory(clients(me), actor, 'location', loc)).toEqual({ ok: true })
     expect((await admin().from('locations').select('archived_at, is_active').eq('id', loc).single()).data).toEqual({ archived_at: null, is_active: true })
+  })
+
+  it('review M-4: archiving a camera, or a location with its cameras, removes their live video streams from the video server', async () => {
+    const site = await createLocation(orgId, { code: 'ARCS' })
+    const nvr = await createRecorder(orgId, site, { host: '10.77.0.2' })
+    const one = await createCamera(orgId, { locationId: site, recorderId: nvr, channel: 1 })
+    const two = await createCamera(orgId, { locationId: site, recorderId: nvr, channel: 2 })
+    const go2rtc = await startFakeGo2rtc()
+    try {
+      for (const id of [one, two, cam]) for (const kind of ['sub', 'main']) go2rtc.streams.set(`cam_${id}_${kind}`, `rtsp://old/${id}`)
+      expect(await archiveInventory({ ...clients(me), go2rtc: go2rtc.client }, actor, 'camera', one)).toEqual({ ok: true })
+      expect([...go2rtc.streams.keys()].filter((n) => n.includes(one))).toEqual([])
+      expect(go2rtc.streams.has(`cam_${two}_main`)).toBe(true)
+      expect(await archiveInventory({ ...clients(me), go2rtc: go2rtc.client }, actor, 'location', site)).toEqual({ ok: true })
+      expect([...go2rtc.streams.keys()].sort()).toEqual([`cam_${cam}_main`, `cam_${cam}_sub`])
+      // The video server not answering never undoes or fails the archive (the stream ends with the token anyway).
+      go2rtc.failAll = true
+      const three = await createCamera(orgId, { locationId: loc, recorderId: rec, channel: 3 })
+      expect(await archiveInventory({ ...clients(me), go2rtc: go2rtc.client }, actor, 'camera', three)).toEqual({ ok: true })
+    } finally {
+      await go2rtc.close()
+    }
   })
 
   it('only administrators with admin.inventory, only their own organisation, only real kinds and ids', async () => {
