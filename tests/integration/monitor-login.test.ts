@@ -34,7 +34,7 @@ describe('a wrong NVR password in the database', () => {
       (await a.from('cameras').insert([1, 2].map((n) => ({ org_id: orgId, store_id: store, channel: n, name: `C${n}` }))).select('id, channel').order('channel')).data!.map((c) => c.id)
     wrongCams = await cams(wrongStore)
     downCams = await cams(downStore)
-    deps = { db: new SupabaseMonitorDb(admin()), probes: realProbes, cfg: loadMonitorConfig({}), clock: () => new Date() }
+    deps = { db: new SupabaseMonitorDb(admin(), { orgId }), probes: realProbes, cfg: loadMonitorConfig({}), clock: () => new Date() }
   })
 
   afterAll(async () => {

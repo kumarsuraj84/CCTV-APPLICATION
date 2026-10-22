@@ -3,6 +3,7 @@ import { mapLimit } from '@/lib/async/pool'
 import type { Database, Json } from '@/types/database'
 import { logger } from '@/lib/observability/logger'
 import { fetchAll } from '@/lib/supabase/fetch-all'
+import { isNvrKnownDown } from '@/lib/monitor/nvr-state'
 import type { CheckResult, DeviceJob, MonitorDb, NvrJob, StoreJob, WorkerRequest } from '@/lib/monitor/types'
 
 type Admin = SupabaseClient<Database>
@@ -11,16 +12,18 @@ const ID_CHUNK = 100
 const chunks = <T>(list: T[], size: number): T[][] => Array.from({ length: Math.ceil(list.length / size) }, (_, i) => list.slice(i * size, (i + 1) * size))
 
 const TARGET_TYPES = new Set(['camera', 'device', 'nvr'])
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
  * What monitor_apply_results is given. The function trusts its caller, so this is the last gate: every element carries all four of
- * type, id, ok and at (never null), and no target appears twice in one batch (the last result for it wins).
+ * type (a known one), id (a UUID: one bad id would otherwise fail the whole batch), ok and at (never null), and no target appears
+ * twice in one batch (the last result for it wins).
  */
-function cleanResults(results: CheckResult[]): Json[] {
+export function cleanResults(results: CheckResult[]): Json[] {
   const byTarget = new Map<string, Json>()
   for (const r of results) {
     const valid =
-      r !== null && typeof r === 'object' && TARGET_TYPES.has(r.type) && typeof r.id === 'string' && r.id !== '' &&
+      r !== null && typeof r === 'object' && TARGET_TYPES.has(r.type) && typeof r.id === 'string' && UUID.test(r.id) &&
       typeof r.ok === 'boolean' && typeof r.at === 'string' && !Number.isNaN(Date.parse(r.at))
     if (!valid) continue
     const element: { [key: string]: Json } = { type: r.type, id: r.id, ok: r.ok, at: r.at }
@@ -33,18 +36,33 @@ function cleanResults(results: CheckResult[]): Json[] {
   return [...byTarget.values()]
 }
 
+export type SupabaseMonitorDbOptions = {
+  /** Only look at this organisation (tests use it so that they never touch other data in the database). The worker leaves it out: it serves all. */
+  orgId?: string
+}
+
 /** MonitorDb on the service-role client. NVR passwords are read from the vault one store at a time and only held in memory. */
 export class SupabaseMonitorDb implements MonitorDb {
-  constructor(private admin: Admin) {}
+  private orgId: string | undefined
+
+  constructor(private admin: Admin, opts: SupabaseMonitorDbOptions = {}) {
+    this.orgId = opts.orgId
+  }
 
   loadDevices(): Promise<DeviceJob[]> {
-    return fetchAll((from, to) => this.admin.from('devices').select('id, org_id, ip, tcp_port').eq('enabled', true).order('id').range(from, to))
+    return fetchAll((from, to) => {
+      let q = this.admin.from('devices').select('id, org_id, ip, tcp_port').eq('enabled', true).order('id')
+      if (this.orgId) q = q.eq('org_id', this.orgId)
+      return q.range(from, to)
+    })
   }
 
   loadNvrs(): Promise<NvrJob[]> {
-    return fetchAll((from, to) =>
-      this.admin.from('stores').select('id, org_id, nvr_ip, rtsp_port').eq('is_active', true).order('id').range(from, to),
-    ).then((rows) => rows.map((r) => ({ id: r.id, org_id: r.org_id, ip: r.nvr_ip, rtsp_port: r.rtsp_port })))
+    return fetchAll((from, to) => {
+      let q = this.admin.from('stores').select('id, org_id, nvr_ip, rtsp_port').eq('is_active', true).order('id')
+      if (this.orgId) q = q.eq('org_id', this.orgId)
+      return q.range(from, to)
+    }).then((rows) => rows.map((r) => ({ id: r.id, org_id: r.org_id, ip: r.nvr_ip, rtsp_port: r.rtsp_port })))
   }
 
   async loadStoreJobs(storeIds?: string[], staleBefore?: Date): Promise<StoreJob[]> {
@@ -55,6 +73,7 @@ export class SupabaseMonitorDb implements MonitorDb {
       stores.push(
         ...(await fetchAll((from, to) => {
           let q = this.admin.from('stores').select('id, org_id, code, nvr_ip, rtsp_port, http_port, nvr_username').eq('is_active', true).order('id')
+          if (this.orgId) q = q.eq('org_id', this.orgId)
           if (part) q = q.in('id', part)
           return q.range(from, to)
         })),
@@ -62,6 +81,7 @@ export class SupabaseMonitorDb implements MonitorDb {
       cameras.push(
         ...(await fetchAll((from, to) => {
           let q = this.admin.from('cameras').select('id, store_id, channel, camera_ip').eq('is_active', true).order('store_id').order('channel')
+          if (this.orgId) q = q.eq('org_id', this.orgId)
           if (part) q = q.in('store_id', part)
           return q.range(from, to)
         })),
@@ -69,9 +89,11 @@ export class SupabaseMonitorDb implements MonitorDb {
     }
     if (stores.length === 0) return []
     const wanted = new Set(stores.map((s) => s.id))
-    const states = await fetchAll((from, to) =>
-      this.admin.from('check_state').select('target_id, status, last_checked_at').eq('target_type', 'nvr').order('target_id').range(from, to),
-    )
+    const states = await fetchAll((from, to) => {
+      let q = this.admin.from('check_state').select('target_id, status, last_checked_at').eq('target_type', 'nvr').order('target_id')
+      if (this.orgId) q = q.eq('org_id', this.orgId)
+      return q.range(from, to)
+    })
     const nvrState = new Map(states.map((s) => [s.target_id, { status: s.status as 'up' | 'down' | 'unknown', checkedAt: s.last_checked_at }]))
     const byStore = new Map<string, StoreJob['cameras']>()
     for (const c of cameras) {
@@ -84,12 +106,13 @@ export class SupabaseMonitorDb implements MonitorDb {
     const jobs = await mapLimit(stores, 10, async (s): Promise<StoreJob | null> => {
       const state = nvrState.get(s.id)
       const cameras = byStore.get(s.id) ?? []
+      // The one place that decides whether the NVR is known to be down: the checks use the answer as it is.
+      const knownDown = isNvrKnownDown(state?.status, state?.checkedAt, staleBefore)
       const job = (password: string): StoreJob => ({
         id: s.id, org_id: s.org_id, code: s.code, ip: s.nvr_ip, rtsp_port: s.rtsp_port, http_port: s.http_port,
-        username: s.nvr_username, password, nvr_status: state?.status ?? 'unknown', nvr_checked_at: state?.checkedAt ?? null, cameras,
+        username: s.nvr_username, password, nvr_status: state?.status ?? 'unknown', nvr_checked_at: state?.checkedAt ?? null, knownDown, cameras,
       })
       // Nothing needs the password when there are no cameras, or when the NVR is known to be down (its cameras are then marked down without logging in).
-      const knownDown = state?.status === 'down' && (staleBefore === undefined || (!!state.checkedAt && Date.parse(state.checkedAt) >= staleBefore.getTime()))
       if (cameras.length === 0 || knownDown) return job('')
       const { data, error } = await this.admin.rpc('nvr_read_credential', { p_store: s.id })
       if (error) {
@@ -128,13 +151,26 @@ export class SupabaseMonitorDb implements MonitorDb {
     let recorded = false
     const last = data.last_heartbeat ? new Date(data.last_heartbeat) : null
     if (last && now.getTime() - last.getTime() > maxSilenceMs) {
-      const { error: gapError } = await this.admin.from('monitor_gaps').insert({ started_at: last.toISOString(), ended_at: now.toISOString() })
-      // The heartbeat is left as it was, so the next start-up tries to record the same period again.
-      if (gapError) throw new Error(`recording the gap failed: ${gapError.message}`)
+      // The heartbeat is left as it was if this fails, so the next start-up tries to record the same period again.
+      await this.recordGap(last, now)
       recorded = true
     }
     await this.touchHeartbeat(now)
     return recorded
+  }
+
+  async recordGap(from: Date, to: Date): Promise<void> {
+    const { error } = await this.admin.from('monitor_gaps').insert({ started_at: from.toISOString(), ended_at: to.toISOString() })
+    if (error) throw new Error(`recording the gap failed: ${error.message}`)
+  }
+
+  async markRound(kind: 'devices' | 'cameras', at: Date): Promise<void> {
+    const time = at.toISOString()
+    const { error } = await this.admin
+      .from('worker_state')
+      .update(kind === 'devices' ? { last_devices_round_at: time } : { last_cameras_round_at: time })
+      .eq('id', 1)
+    if (error) throw new Error(`saving the time of the ${kind} round failed: ${error.message}`)
   }
 
   async readRequest(): Promise<WorkerRequest> {

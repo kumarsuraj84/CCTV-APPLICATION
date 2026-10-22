@@ -18,7 +18,8 @@ export const COOLDOWN_MS = 30_000
  * someone who has just fixed a password in the middle of a run needs. Within COOLDOWN_MS after a run finished a request is refused.
  * When the worker is not running a new request is recorded, because an old waiting request would otherwise hide that someone asked again.
  * The checker is one for the whole system, so the request is not about one organisation; the audit entry names the organisation of the asker.
- * `clock` is the time used for these decisions (tests pass their own).
+ * `clock` is the time used for these decisions (tests pass their own). The request itself is stamped by the database (monitor_request_check),
+ * never by the clock of the web server.
  */
 export async function requestCheckNow(admin: AdminClient, actor: Actor, clock: () => number = Date.now): Promise<Result<{ alreadyOnTheWay?: true }>> {
   if (!canRunChecks(actor.role)) return { ok: false, error: 'You are not allowed to start a check.' }
@@ -45,7 +46,8 @@ export async function requestCheckNow(admin: AdminClient, actor: Actor, clock: (
   if (alive && waiting) return { ok: true, alreadyOnTheWay: true }
   if (justFinished) return { ok: false, error: 'A check just finished. Try again in a moment.' }
 
-  const { error } = await admin.from('worker_state').update({ check_requested_at: new Date().toISOString() }).eq('id', 1)
+  // The database stamps the request with its own clock: the times it is compared with (run start and finish) come from there too.
+  const { error } = await admin.rpc('monitor_request_check')
   if (error) return fail(error)
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'check_requested' })
   return { ok: true }

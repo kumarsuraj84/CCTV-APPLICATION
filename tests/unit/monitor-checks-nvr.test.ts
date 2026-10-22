@@ -74,10 +74,10 @@ describe('a wrong or missing NVR password never makes cameras look down', () => 
     const spy = quietLog()
     await checkCameras(deps(db, {
       nvr: () => ({ channelStatus: async () => { throw new NvrError('timeout', 'x') }, channels: async () => { throw new NvrError('timeout', 'x') } }),
-      rtsp: async (t) => ({ code: [200, 401, 0][t.channel - 1] }),
+      rtsp: async (t) => ({ code: [200, 404, 0][t.channel - 1] }),
     }))
     expect(db.results().map((r) => [r.id, r.ok])).toEqual([['c1', true], ['c2', false], ['c3', false]])
-    expect(db.results()[1].error).toBe('The recorder refused the login.')
+    expect(db.results()[1].error).toBe('The camera gave an answer this app does not expect.')
     expect(db.results()[2].error).toBe('The NVR took too long to answer.')
     expect(loginLines(spy)).toHaveLength(0)
   })

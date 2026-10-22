@@ -14,7 +14,7 @@ const quietLog = () => vi.spyOn(console, 'log').mockImplementation(() => {})
 const lines = (spy: ReturnType<typeof quietLog>, text: string) => spy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes(text))
 
 /** A fake clock the test moves by hand, and a store whose NVR refuses (or fails) the login. */
-function setup(kind: NvrErrorKind = 'auth') {
+function setup(kind: NvrErrorKind = 'auth', rtspCode = 401) {
   const db = new MemoryDb()
   db.stores = [store()]
   const time = { now: START }
@@ -26,7 +26,7 @@ function setup(kind: NvrErrorKind = 'auth') {
       if (ep.username !== 'viewer') return { channelStatus: async () => new Map([[1, true]]), channels: async () => [] }
       return { channelStatus: async () => { throw new NvrError(kind, 'x') }, channels: async () => { throw new NvrError(kind, 'x') } }
     },
-    rtsp: async () => { counts.rtsp++; return { code: 401 } },
+    rtsp: async () => { counts.rtsp++; return { code: rtspCode } },
   }, () => new Date(time.now))
   return { db, time, counts, d, round: (ids?: string[]) => checkCameras(d, undefined, ids) }
 }
@@ -40,7 +40,7 @@ describe('after a refused NVR login the recorder is left alone for a while (back
       time.now += sec(60)
     }
     expect(counts.nvr).toBe(1)
-    expect(counts.rtsp).toBe(3) // the three cameras, in the first round only
+    expect(counts.rtsp).toBe(1) // one camera, in the first round only: after its refused login the others are not tried
     expect(db.results()).toHaveLength(0)
     expect(lines(spy, 'NVR login problem for store S1')).toHaveLength(1)
   })
@@ -55,7 +55,7 @@ describe('after a refused NVR login the recorder is left alone for a while (back
     time.now = START + sec(900)
     await round()
     expect(counts.nvr).toBe(2)
-    expect(counts.rtsp).toBe(6)
+    expect(counts.rtsp).toBe(2) // one try per window
     expect(lines(spy, 'NVR login problem for store S1')).toHaveLength(2)
     time.now += sec(300)
     await round()
@@ -77,13 +77,13 @@ describe('after a refused NVR login the recorder is left alone for a while (back
     await round()
     await round(['s1'])
     expect(counts.nvr).toBe(1)
-    expect(counts.rtsp).toBe(3)
+    expect(counts.rtsp).toBe(1)
   })
 
-  it('a timeout or an unreachable NVR is not a login problem: no back-off', async () => {
+  it('a timeout or an unreachable NVR, with nothing refused at the video port, is not a login problem: no back-off', async () => {
     quietLog()
     for (const kind of ['timeout', 'unreachable'] as const) {
-      const { d, time, counts, round } = setup(kind)
+      const { d, time, counts, round } = setup(kind, 0) // the video port does not answer either
       for (let i = 0; i < 3; i++) {
         await round()
         time.now += sec(60)

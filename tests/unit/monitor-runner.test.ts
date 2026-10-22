@@ -48,7 +48,7 @@ describe('MonitorRunner', () => {
 
   it('reports progress per store, and a run that cannot read or start is not reported finished', async () => {
     const db = new MemoryDb()
-    db.stores = [{ id: 's1', org_id: 'o', code: 'S1', ip: '127.0.0.1', rtsp_port: 554, http_port: 80, username: 'u', password: 'p', nvr_status: 'up', nvr_checked_at: null, cameras: [{ id: 'c1', channel: 1, camera_ip: null }] }]
+    db.stores = [{ id: 's1', org_id: 'o', code: 'S1', ip: '127.0.0.1', rtsp_port: 554, http_port: 80, username: 'u', password: 'p', nvr_status: 'up', nvr_checked_at: null, knownDown: false, cameras: [{ id: 'c1', channel: 1, camera_ip: null }] }]
     await runnerFor(db).runFull()
     expect(db.progress).toEqual([[1, 1]])
     expect(db.finished).toHaveLength(1)

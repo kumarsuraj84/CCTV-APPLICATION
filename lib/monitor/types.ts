@@ -10,8 +10,10 @@ export type NvrJob = { id: string; org_id: string; ip: string; rtsp_port: number
 export type StoreJob = {
   id: string; org_id: string; code: string; ip: string; rtsp_port: number; http_port: number; username: string; password: string
   nvr_status: 'up' | 'down' | 'unknown'
-  /** When the NVR's own reachability check last ran (ISO time); null if never. A "down" older than a few device intervals is not trusted. */
+  /** When the NVR's own reachability check last ran (ISO time); null if never. */
   nvr_checked_at: string | null
+  /** The NVR is known to be down right now (its "down" is recent enough to trust): its cameras are down for the same reason and its password was not read. Decided once, by the data layer. */
+  knownDown: boolean
   cameras: { id: string; channel: number; camera_ip: string | null }[]
 }
 export type WorkerRequest = {
@@ -32,6 +34,10 @@ export interface MonitorDb {
   applyResults(orgId: string, results: CheckResult[], threshold: number): Promise<void>
   saveCameraIps(orgId: string, rows: { cameraId: string; ip: string }[]): Promise<void>
   touchHeartbeat(now: Date): Promise<void>
+  /** Remembers a period when the worker was not running (it is left out of uptime). */
+  recordGap(from: Date, to: Date): Promise<void>
+  /** Remembers when a scheduled round of this kind (devices and NVRs, or cameras) last finished. */
+  markRound(kind: 'devices' | 'cameras', at: Date): Promise<void>
   recordStartupGap(now: Date, maxSilenceMs: number): Promise<boolean>
   readRequest(): Promise<WorkerRequest>
   markRunStarted(at: Date, total: number): Promise<void>

@@ -206,13 +206,16 @@ describe('MonitorRunner schedule', () => {
 describe('MonitorRunner runs left open', () => {
   const stale = (finished: Date | null | undefined) => ({ requestedAt: REQUESTED, runStartedAt: new Date('2026-05-01T07:59:30Z'), runFinishedAt: finished })
 
-  it('start() closes a run that a crash left unfinished', async () => {
+  it('start() runs a run that a crash left unfinished again, and that closes it (it is not just marked finished)', async () => {
     vi.useFakeTimers()
     const db = new MemoryDb()
     db.request = stale(null)
     const r = runnerFor(db)
     await r.start()
+    expect(db.finished).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(6000)
     r.stop()
+    expect(db.started).toHaveLength(1)
     expect(db.finished).toHaveLength(1)
   })
 
@@ -347,7 +350,7 @@ describe('MonitorRunner runs that the database failure leaves open', () => {
     expect(db.started).toHaveLength(1)
   })
 
-  it('(c) closing a run left open by a crash is retried when the first try fails', async () => {
+  it('(c) closing the repeat of a run left open by a crash is retried when the first try fails', async () => {
     vi.useFakeTimers()
     const db = new MemoryDb()
     db.request = { requestedAt: REQUESTED, runStartedAt: new Date('2026-05-01T07:59:30Z'), runFinishedAt: null }
@@ -359,7 +362,7 @@ describe('MonitorRunner runs that the database failure leaves open', () => {
     }
     const r = runnerFor(db)
     await expect(r.start()).resolves.toBeUndefined() // a failed close does not stop the worker
-    await vi.advanceTimersByTimeAsync(6000)
+    await vi.advanceTimersByTimeAsync(11_000)
     expect(db.finished).toHaveLength(1)
     await vi.advanceTimersByTimeAsync(30_000)
     expect(db.finished).toHaveLength(1)

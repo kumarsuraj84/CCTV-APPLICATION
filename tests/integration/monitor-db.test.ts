@@ -39,7 +39,7 @@ describe('SupabaseMonitorDb', () => {
 
   beforeAll(async () => {
     orgId = await createOrg()
-    db = new SupabaseMonitorDb(admin())
+    db = new SupabaseMonitorDb(admin(), { orgId })
     const a = admin()
     storeId = (await a.from('stores').insert({ org_id: orgId, code: 'DB1', name: 'Db1', nvr_ip: '127.0.0.1', rtsp_port: 8554, http_port: 8081, nvr_username: 'viewer' }).select('id').single()).data!.id
     await a.rpc('nvr_store_credential', { p_store: storeId, p_secret: 'secret-pass' })
@@ -85,13 +85,13 @@ describe('SupabaseMonitorDb', () => {
 
   it('leaves a store out of the round when its password cannot be read', async () => {
     const { client, reads } = watched(true)
-    expect(await new SupabaseMonitorDb(client).loadStoreJobs([noPassStoreId])).toEqual([])
+    expect(await new SupabaseMonitorDb(client, { orgId }).loadStoreJobs([noPassStoreId])).toEqual([])
     expect(reads).toEqual([noPassStoreId])
   })
 
   it('does not read the password of a store without cameras or with a recent NVR "down", and still returns it', async () => {
     const { client, reads } = watched(true) // a vault that is down must not matter for these stores
-    const jobs = await new SupabaseMonitorDb(client).loadStoreJobs([storeId, bareStoreId], new Date(Date.now() - 180_000))
+    const jobs = await new SupabaseMonitorDb(client, { orgId }).loadStoreJobs([storeId, bareStoreId], new Date(Date.now() - 180_000))
     expect(reads).toEqual([])
     expect(jobs.map((j) => j.code).sort()).toEqual(['DB1', 'DB2'])
     expect(jobs.find((j) => j.id === storeId)).toMatchObject({ password: '', nvr_status: 'down' })
@@ -100,7 +100,7 @@ describe('SupabaseMonitorDb', () => {
 
   it('reads the password again when the NVR "down" is out of date', async () => {
     const { client, reads } = watched()
-    const [job] = await new SupabaseMonitorDb(client).loadStoreJobs([storeId], new Date(Date.now() + 60_000))
+    const [job] = await new SupabaseMonitorDb(client, { orgId }).loadStoreJobs([storeId], new Date(Date.now() + 60_000))
     expect(reads).toEqual([storeId])
     expect(job).toMatchObject({ password: 'secret-pass', nvr_status: 'down' })
   })
@@ -111,7 +111,9 @@ describe('SupabaseMonitorDb', () => {
     expect(data?.status).toBe('up')
     await db.saveCameraIps(orgId, [{ cameraId: camIds[0], ip: '192.0.2.77' }])
     expect((await admin().from('cameras').select('camera_ip').eq('id', camIds[0]).single()).data?.camera_ip).toBe('192.0.2.77')
-    await expect(db.applyResults(randomUUID(), [{ type: 'camera', id: 'not-a-uuid' as never, ok: true, at: new Date().toISOString() }], 2)).rejects.toThrow('monitor_apply_results failed')
+    // A database that refuses the call is an error the caller sees (here a client whose call fails).
+    const refusing = { rpc: async () => ({ data: null, error: { message: 'boom' } }) } as unknown as SupabaseClient<Database>
+    await expect(new SupabaseMonitorDb(refusing).applyResults(orgId, [{ type: 'camera', id: camIds[0], ok: true, at: new Date().toISOString() }], 2)).rejects.toThrow('monitor_apply_results failed')
   })
 
   it('sends the function only complete results, once per target, the last one winning', async () => {

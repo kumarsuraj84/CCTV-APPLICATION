@@ -5,6 +5,9 @@ import type { MonitorDb } from '@/lib/monitor/types'
 
 const MAX_SILENCE_MS = 30_000
 
+/** Beats are 5 seconds apart. A longer silence between two good beats means the worker was not working, and it is recorded as a gap. */
+export const DEFAULT_BEAT_GAP_MS = MAX_SILENCE_MS
+
 /** How long a "check now" waits for one cycle (an earlier scheduled one, or its own) before it gives up on it. */
 export const DEFAULT_CYCLE_WATCHDOG_MS = 10 * 60_000
 
@@ -50,12 +53,18 @@ export class MonitorRunner {
   private retryNotBefore = 0
   private dbFailures = 0
   private waiting = new DistinctFailures()
+  /** The time of the last heartbeat that was saved (or of start-up); null until there is one. */
+  private lastGoodBeat: Date | null = null
+  /** Silences that were noticed and not yet saved as gaps. Oldest first; none overlaps another. */
+  private pendingGaps: { from: Date; to: Date }[] = []
   private deps: Deps
   private watchdogMs: number
+  private beatGapMs: number
 
-  constructor(deps: Deps, opts: { cycleWatchdogMs?: number } = {}) {
+  constructor(deps: Deps, opts: { cycleWatchdogMs?: number; beatGapMs?: number } = {}) {
     this.deps = { ...deps, db: counting(deps.db, () => (this.dbFailures += 1)) }
     this.watchdogMs = opts.cycleWatchdogMs ?? DEFAULT_CYCLE_WATCHDOG_MS
+    this.beatGapMs = opts.beatGapMs ?? DEFAULT_BEAT_GAP_MS
   }
 
   /** One check of one kind. Callers that only want the schedule kept skip it when one is already running. */
@@ -112,12 +121,37 @@ export class MonitorRunner {
   }
 
   async runDevices(): Promise<void> {
-    await this.scheduled('devices', () => checkDevices(this.deps))
-    await this.scheduled('nvrs', () => checkNvrs(this.deps))
+    const failuresBefore = this.dbFailures
+    let ranDevices = false
+    let ranNvrs = false
+    await this.scheduled('devices', () => {
+      ranDevices = true
+      return checkDevices(this.deps)
+    })
+    await this.scheduled('nvrs', () => {
+      ranNvrs = true
+      return checkNvrs(this.deps)
+    })
+    if (ranDevices && ranNvrs && this.dbFailures === failuresBefore) await this.markRound('devices')
   }
 
   async runCameras(onProgress?: (done: number, total: number) => void): Promise<void> {
-    await this.scheduled('cameras', () => checkCameras(this.deps, onProgress))
+    const failuresBefore = this.dbFailures
+    let ran = false
+    await this.scheduled('cameras', () => {
+      ran = true
+      return checkCameras(this.deps, onProgress)
+    })
+    if (ran && this.dbFailures === failuresBefore) await this.markRound('cameras')
+  }
+
+  /** Saves when a scheduled round finished, for the Home page. Only for a round this call ran whole, without database trouble. Never throws. */
+  private async markRound(kind: 'devices' | 'cameras'): Promise<void> {
+    try {
+      await this.deps.db.markRound(kind, this.deps.clock())
+    } catch (e) {
+      logger.error({ event: 'round_time_not_saved', kind, error: e })
+    }
   }
 
   /** Everything now: devices, NVRs, then every store's cameras, with progress for the Monitoring page. */
@@ -186,12 +220,36 @@ export class MonitorRunner {
     this.runOpen = false
   }
 
-  /** The heartbeat: tells the web app the worker is alive. A failed write is logged and the next beat tries again. */
+  /**
+   * The heartbeat: tells the web app the worker is alive. A failed write is logged and the next beat tries again.
+   * A good beat that comes more than beatGapMs after the previous good one means the worker (or its database) was silent in between,
+   * for whatever reason, without a restart. That time is recorded as a gap, so that it is not counted as downtime. A gap that cannot be
+   * saved is kept and tried again at the next beat.
+   */
   async beat(): Promise<void> {
+    const now = this.deps.clock()
     try {
-      await this.deps.db.touchHeartbeat(this.deps.clock())
+      await this.deps.db.touchHeartbeat(now)
     } catch (e) {
       logger.error({ event: 'heartbeat_failed', error: e })
+      return
+    }
+    const last = this.lastGoodBeat
+    this.lastGoodBeat = now
+    if (last && now.getTime() - last.getTime() > this.beatGapMs) this.pendingGaps.push({ from: last, to: now })
+    await this.flushGaps()
+  }
+
+  private async flushGaps(): Promise<void> {
+    while (this.pendingGaps.length > 0) {
+      const gap = this.pendingGaps[0]
+      try {
+        await this.deps.db.recordGap(gap.from, gap.to)
+      } catch (e) {
+        logger.error({ event: 'gap_not_saved', error: e })
+        return // kept; tried again at the next beat
+      }
+      this.pendingGaps.shift()
     }
   }
 
@@ -249,6 +307,8 @@ export class MonitorRunner {
       return
     }
     this.waiting.clear()
+    // The start-up gap ends here and the heartbeat was set to this moment, so the gaps found by later beats start here and never overlap it.
+    this.lastGoodBeat = clock()
     if (this.stopped) return
     await this.closeStaleRun()
     if (this.stopped) return
@@ -260,15 +320,18 @@ export class MonitorRunner {
     opts.onReady?.()
   }
 
-  /** A previous worker that crashed in the middle of a run left it open, and the page would show it running for ever. */
+  /**
+   * A previous worker that crashed in the middle of a run left it open, and the page would show it running for ever. That run never
+   * finished checking, so it is not marked finished as it is: it is run again (a little later, like any repeat), and that closes it.
+   */
   private async closeStaleRun(): Promise<void> {
     try {
       const req = await this.deps.db.readRequest()
       // runFinishedAt undefined means the data layer cannot say; leave it alone.
       if (req.runStartedAt && req.runFinishedAt !== undefined && (!req.runFinishedAt || req.runFinishedAt < req.runStartedAt)) {
-        this.runOpen = true // from here on every poll retries closing it, if this try fails
-        await this.closeRun()
-        logger.warn({ event: 'stale_run_closed', message: 'A run left open by an earlier worker was marked finished.' })
+        this.runOpen = true
+        this.scheduleRetry()
+        logger.warn({ event: 'stale_run_repeated', message: 'A run left open by an earlier worker will be run again.' })
       }
     } catch (e) {
       logger.error({ event: 'stale_run_check_failed', error: e })

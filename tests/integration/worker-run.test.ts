@@ -43,7 +43,7 @@ describe('the worker against a fake network', () => {
     cams = (await a.from('cameras').insert([1, 2, 3].map((n) => ({ org_id: orgId, store_id: storeId, channel: n, name: `Camera ${n}` }))).select('id, channel').order('channel')).data!.map((c) => c.id)
     devUp = (await a.from('devices').insert({ org_id: orgId, store_id: storeId, type: 'server', name: 'Up', ip: '127.0.0.1', tcp_port: tcp.port }).select('id').single()).data!.id
     devDown = (await a.from('devices').insert({ org_id: orgId, store_id: storeId, type: 'attendance', name: 'Down', ip: '127.0.0.1', tcp_port: downPort }).select('id').single()).data!.id
-    runner = new MonitorRunner({ db: new SupabaseMonitorDb(a), probes: realProbes, cfg: { ...loadMonitorConfig({}), nvrTimeoutMs: 2000 }, clock: () => new Date() })
+    runner = new MonitorRunner({ db: new SupabaseMonitorDb(a, { orgId }), probes: realProbes, cfg: { ...loadMonitorConfig({}), nvrTimeoutMs: 2000 }, clock: () => new Date() })
   })
 
   afterAll(async () => {
@@ -103,5 +103,17 @@ describe('the worker against a fake network', () => {
     await runner.pollOnce()
     const second = (await a.from('worker_state').select('run_started_at').eq('id', 1).single()).data!
     expect(second.run_started_at).toBe(first.run_started_at)
+  })
+  it('saves when the last devices round and the last cameras round finished', async () => {
+    const a = admin()
+    await a.from('worker_state').update({ last_devices_round_at: null, last_cameras_round_at: null }).eq('id', 1)
+    const before = Date.now()
+    await runner.runDevices()
+    let row = (await a.from('worker_state').select('last_devices_round_at, last_cameras_round_at').eq('id', 1).single()).data!
+    expect(new Date(row.last_devices_round_at!).getTime()).toBeGreaterThanOrEqual(before - 1000)
+    expect(row.last_cameras_round_at).toBeNull()
+    await runner.runCameras()
+    row = (await a.from('worker_state').select('last_devices_round_at, last_cameras_round_at').eq('id', 1).single()).data!
+    expect(new Date(row.last_cameras_round_at!).getTime()).toBeGreaterThanOrEqual(before - 1000)
   })
 })
