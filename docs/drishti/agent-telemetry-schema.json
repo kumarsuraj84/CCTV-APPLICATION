@@ -1,0 +1,319 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://drishti.local/schemas/agent-telemetry-1.0.json",
+  "title": "CityKart Drishti endpoint telemetry document",
+  "description": "One document produced by agent/windows/collector/Collect-DrishtiInventory.ps1 (collector version 0.1.x). A section that could not be collected is null and has a status of 'unavailable' or 'error' in collection.items; a single datum that could not be read is the literal 'unavailable' (or null for plain text) and has its own collection.items entry. Values are never invented.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "collected_at", "collector_version", "collection"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "collected_at": { "$ref": "#/definitions/utc" },
+    "collector_version": { "type": "string", "maxLength": 32 },
+    "redacted": { "type": "boolean", "description": "True when -Redact replaced serials, MACs, computer name, domain and user names with stable hashes." },
+    "host": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["computer_name", "join_type"],
+      "properties": {
+        "computer_name": { "$ref": "#/definitions/nstr" },
+        "domain_or_workgroup": { "$ref": "#/definitions/nstr" },
+        "join_type": { "type": "string", "enum": ["domain", "workgroup", "azure_ad", "unknown"] },
+        "azure_ad_joined": { "type": ["boolean", "null"] },
+        "form_factor": { "type": "string", "enum": ["desktop", "laptop", "server", "unknown"] },
+        "manufacturer": { "$ref": "#/definitions/nstr" },
+        "model": { "$ref": "#/definitions/nstr" },
+        "serial_number": { "$ref": "#/definitions/nstr" },
+        "bios_serial": { "$ref": "#/definitions/nstr" },
+        "bios_version": { "$ref": "#/definitions/nstr" },
+        "uuid": { "$ref": "#/definitions/nstr" }
+      }
+    },
+    "os": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["caption", "version", "build"],
+      "properties": {
+        "caption": { "$ref": "#/definitions/nstr" },
+        "version": { "$ref": "#/definitions/nstr" },
+        "build": { "$ref": "#/definitions/nstr" },
+        "display_version": { "$ref": "#/definitions/nstr" },
+        "edition": { "$ref": "#/definitions/nstr" },
+        "architecture": { "$ref": "#/definitions/nstr" },
+        "install_date": { "$ref": "#/definitions/nutc" },
+        "activation_state": {
+          "type": "string",
+          "enum": ["licensed", "unlicensed", "grace_oob", "grace_oot", "grace_non_genuine", "notification", "grace_extended", "unavailable"]
+        },
+        "last_boot_utc": { "$ref": "#/definitions/nutc" },
+        "uptime_s": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "hardware": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["cpu_name", "ram_total_mb", "disks"],
+      "properties": {
+        "cpu_name": { "$ref": "#/definitions/nstr" },
+        "cpu_cores": { "type": ["integer", "null"], "minimum": 0 },
+        "cpu_logical": { "type": ["integer", "null"], "minimum": 0 },
+        "ram_total_mb": { "type": ["integer", "null"], "minimum": 0 },
+        "disks": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["drive", "smart_status"],
+            "properties": {
+              "drive": { "$ref": "#/definitions/str" },
+              "label": { "$ref": "#/definitions/nstr" },
+              "fs": { "$ref": "#/definitions/nstr" },
+              "size_gb": { "type": ["number", "null"], "minimum": 0 },
+              "free_gb": { "type": ["number", "null"], "minimum": 0 },
+              "smart_status": { "type": "string", "enum": ["healthy", "warning", "unhealthy", "unavailable"] }
+            }
+          }
+        },
+        "gpu": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": { "$ref": "#/definitions/nstr" },
+              "driver_version": { "$ref": "#/definitions/nstr" },
+              "adapter_ram_mb": { "type": ["integer", "null"], "minimum": 0 }
+            }
+          }
+        },
+        "macs": { "type": "array", "maxItems": 32, "items": { "$ref": "#/definitions/str" } }
+      }
+    },
+    "network": {
+      "type": ["array", "null"],
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["adapter", "status"],
+        "properties": {
+          "adapter": { "$ref": "#/definitions/nstr" },
+          "status": { "$ref": "#/definitions/str" },
+          "link_speed_mbps": { "type": ["number", "null"], "minimum": 0 },
+          "dhcp": { "type": ["boolean", "null"] },
+          "ipv4": { "$ref": "#/definitions/strlist" },
+          "gateway": { "$ref": "#/definitions/strlist" },
+          "dns": { "$ref": "#/definitions/strlist" }
+        }
+      }
+    },
+    "software": {
+      "type": ["array", "null"],
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": { "$ref": "#/definitions/str" },
+          "version": { "$ref": "#/definitions/nstr" },
+          "publisher": { "$ref": "#/definitions/nstr" },
+          "install_date": { "$ref": "#/definitions/ndate" },
+          "scope": { "type": "string", "enum": ["machine", "user"] }
+        }
+      }
+    },
+    "services": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["required"],
+      "properties": {
+        "required": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "status", "start_type"],
+            "properties": {
+              "name": { "$ref": "#/definitions/str" },
+              "display_name": { "$ref": "#/definitions/nstr" },
+              "status": {
+                "type": "string",
+                "enum": ["running", "stopped", "start_pending", "stop_pending", "paused", "continue_pending", "pause_pending", "not_installed", "unknown"]
+              },
+              "start_type": { "type": "string", "enum": ["automatic", "automatic_delayed", "manual", "disabled", "unavailable"] }
+            }
+          }
+        }
+      }
+    },
+    "security": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "antivirus": {
+          "anyOf": [
+            {
+              "type": "array",
+              "maxItems": 16,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "state"],
+                "properties": {
+                  "name": { "$ref": "#/definitions/nstr" },
+                  "state": { "type": "string", "enum": ["on_up_to_date", "on_out_of_date", "off", "snoozed", "expired", "unknown"] },
+                  "signature_last_updated_utc": { "$ref": "#/definitions/nutc" }
+                }
+              }
+            },
+            { "type": "string", "const": "unavailable" }
+          ]
+        },
+        "firewall_profiles": {
+          "anyOf": [
+            {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["profile", "enabled"],
+                "properties": {
+                  "profile": { "type": "string", "enum": ["domain", "private", "public"] },
+                  "enabled": { "type": ["boolean", "null"] }
+                }
+              }
+            },
+            { "type": "string", "const": "unavailable" }
+          ]
+        },
+        "bitlocker": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["system_drive"],
+          "properties": {
+            "system_drive": { "type": "string", "enum": ["protected", "off", "unavailable"] }
+          }
+        },
+        "tpm": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["present", "version"],
+              "properties": {
+                "present": { "type": "boolean" },
+                "version": { "$ref": "#/definitions/nstr" }
+              }
+            },
+            { "type": "string", "const": "unavailable" }
+          ]
+        },
+        "secure_boot": { "type": "string", "enum": ["on", "off", "unsupported", "unavailable"] }
+      }
+    },
+    "updates": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "pending_reboot": { "type": ["boolean", "null"] },
+        "pending_reboot_sources": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "type": "string", "enum": ["component_servicing", "windows_update", "file_rename", "update_exe"] }
+        },
+        "last_install_utc": { "$ref": "#/definitions/nutc" },
+        "last_scan_utc": { "$ref": "#/definitions/nutc" },
+        "pending_count": {
+          "anyOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "string", "const": "unavailable" }
+          ]
+        },
+        "hotfixes": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": {
+              "id": { "$ref": "#/definitions/str" },
+              "installed_on": { "$ref": "#/definitions/ndate" }
+            }
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "cpu_pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "cpu_samples": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "ram_used_pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "ram_used_mb": { "type": ["integer", "null"], "minimum": 0 },
+        "disks": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["drive", "free_pct"],
+            "properties": {
+              "drive": { "$ref": "#/definitions/str" },
+              "free_pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 }
+            }
+          }
+        }
+      }
+    },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["duration_ms", "items"],
+      "properties": {
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "privilege": { "type": "string", "enum": ["standard", "elevated", "system"] },
+        "powershell_version": { "$ref": "#/definitions/str" },
+        "items": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["section", "status", "reason"],
+            "properties": {
+              "section": { "type": "string", "pattern": "^[a-z_]+(\\.[a-z_0-9]+)?$", "maxLength": 64 },
+              "status": { "type": "string", "enum": ["ok", "unavailable", "error"] },
+              "reason": { "$ref": "#/definitions/nstr" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "str": { "type": "string", "maxLength": 256 },
+    "nstr": { "type": ["string", "null"], "maxLength": 256 },
+    "strlist": { "type": "array", "maxItems": 16, "items": { "type": "string", "maxLength": 256 } },
+    "utc": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" },
+    "nutc": {
+      "anyOf": [
+        { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" },
+        { "type": "null" }
+      ]
+    },
+    "ndate": {
+      "anyOf": [
+        { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        { "type": "null" }
+      ]
+    }
+  }
+}
