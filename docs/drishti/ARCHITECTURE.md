@@ -75,7 +75,7 @@ Conventions applied everywhere (checked in the code named):
 - **Errors**: raw database or device messages never reach the UI (`lib/observability/sanitize-error.ts`); the logger redacts by key name and by pattern (`lib/observability/logger.ts`, `mask.ts`).
 - **Secrets per purpose** (`lib/secrets.ts` `getSecret`, minimum 16 characters, a missing secret turns the feature off). Caveat: the proxy's verified-user header is signed with `SUPABASE_SERVICE_ROLE_KEY` (`lib/auth/verified-user.ts`), so that key serves two purposes.
 - **Database**: numbered forward migrations, each with a rollback in `supabase/rollback/`; closed default privileges and explicit `REVOKE`/`GRANT` on every object; every SECURITY DEFINER function from migration 0009 on uses `SET search_path = ''` with qualified names. Functions from migrations 0001-0006 that were not redefined later still pin `search_path = public` (for example `monitor_apply_results`, `nvr_read_credential`) — fixed in P2-6.
-- **Wording**: plain English, IST times, no jargon; "Location" in user-visible text (ruling T-1; the rename pass has not run yet, so the UI and routes still say "store" — section 11).
+- **Wording**: plain English, IST times, no jargon; "Location" in user-visible text and routes (ruling T-1, done by the T-1 package: `/locations`, `/locations/[id]`, `/admin/locations`; the old `/stores` addresses redirect permanently; code identifiers and tables are renamed by P2-5a). A guard test (`tests/unit/terminology-guard.test.ts`) fails if a string in `app/`, `components/`, `lib/` or `scripts/` says "store" outside its documented allow-list.
 
 ---
 
@@ -272,7 +272,7 @@ Store / zone / home-store / camera grants became explicit `cctv.live` + `cctv.pl
 | Thumbnails | `lib/streams/thumbnail.ts` (choke point only; no thumbnail feature yet) | `cctv.live` per camera | not allowed |
 | Why a target is offline | `getStates` → `status_reasons()` | camera: any CCTV, checker's text only with the IT view; device/NVR: IT view | camera terms ("Recorder not reachable.") |
 | Camera groups: read / change | `lib/queries/groups.ts`; `lib/actions/groups.ts` → `lib/groups/service.ts` | read: any CCTV; change: operator/admin role AND `cctv.live` for every added or removed camera; delete: creator, or admin role AND `admin.inventory` | not listed / plain refusal |
-| Locations list/detail; NVR status, addresses | `app/(app)/stores/**` | any grant inside; IT view for NVR status, addresses and the checker's reason | hidden |
+| Locations list/detail; NVR status, addresses | `app/(app)/locations/**` | any grant inside; IT view for NVR status, addresses and the checker's reason | hidden |
 | Device list and status | `app/(app)/devices/page.tsx` | `it.inventory.view` or `it.monitoring.view` | sent home |
 | Check now | `lib/actions/monitor.ts` → `lib/monitor/check-now.ts` | `it.monitoring.operate` organisation-wide or for a whole location | "You are not allowed to start a check." |
 | Find cameras on an NVR | `lib/actions/admin/monitoring.ts` → `lib/monitor/discovery.ts` | admin role AND `admin.inventory` | plain refusal; no NVR request |
@@ -695,7 +695,7 @@ The requirement-level status is the tracker (`docs/drishti/DELIVERY-STATUS.md`, 
 | P2-1 access model (WP-2.1 DB) | migrations 0008-0012, `e4c6e76`, `ea80ba9` | BUILT, reviewed |
 | P2-2 enforcement | migrations 0013-0014, `34b8809`, `3fe957a` | BUILT, reviewed |
 | P2-3 access administration | migrations 0015-0016, `78fd7d8`, docs `ce55736`, `0a33411` | BUILT; **independent review in progress** |
-| T-1 Store → Location wording and routes | `t1-brief.md` (after P2-3) | PLANNED |
+| T-1 Store → Location wording and routes (+ P2-5c re-review cleanups) | `t1-brief.md`, `.superpowers/sdd/drishti/t1-report.md` | BUILT (see the tracker) |
 | P2-4 session registry, ≤ 60 s revocation (WP-2.2) | `p2-4-brief.md` | PLANNED |
 | P2-5a/b/c locations, assets, recorders, mappings, network definitions, Wi-Fi inventory, import + discover-all (WP-2.3) | `p2-5-brief.md` | PLANNED |
 | P2-6 credential/SQL hardening, service roles, outbound restriction, shared rate limits (WP-2.4, D-11, D-14) | `p2-6-brief.md` | PLANNED |
@@ -729,7 +729,7 @@ Working tree at writing: `docs/drishti/DECISIONS.md` and `DELIVERY-STATUS.md` ha
 11. Group names unique per organisation leak the existence of a hidden group's name (AC-11).
 12. One global playback clock offset; no per-recorder offset or drift (D-17).
 13. Not packaged for production: `tsx` (a dev dependency) runs the worker and gateway; no Windows services, no tested backup/restore.
-14. UI and routes still say "store" (T-1 pending); no reports area, Excel export, tour mode, 5×5 grid, timeline zoom or multi-camera playback (legacy parity LG-*).
+14. No reports area, Excel export, tour mode, 5×5 grid, timeline zoom or multi-camera playback (legacy parity LG-*).
 
 ### 12.2 Behaviour never validated on real hardware
 
@@ -774,8 +774,8 @@ Pilot blockers, each a named package:
 
 ```
 app/(auth)/                      login, forgot-password, reset-password (redirect), change-password; AuthCard, full logo
-app/(app)/                       home, stores, stores/[id], devices, live, playback, groups, groups/[id], error
-app/(app)/admin/                 users, users/[id]/access (access editor), access-review, stores, devices, import, monitoring
+app/(app)/                       home, locations, locations/[id], locations/wifi, devices, live, playback, groups, groups/[id], error
+app/(app)/admin/                 users, users/[id]/access (access editor), access-review, locations (+ discover, [id], nvrs/[nvrId]), regions, assets, reconciliation, devices, import, monitoring
 app/api/                         health, version, vod (fast playback)
 app/auth/callback/               password-reset code exchange
 proxy.ts                         session check, signed user header, exact public allow-list

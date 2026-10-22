@@ -51,7 +51,9 @@ A row is read **whole or not at all**:
   is not in quotes would otherwise shift every column after it;
 - a value with a comma goes in quotes (`"Shop 1, Station Rd"`), and a quote inside a quoted value is written twice (`""`); a quote in
   the middle of an unquoted value is a problem of that row;
-- a value may not contain a line break;
+- a value may not contain a line break. A quote that is opened on one line and closed on a later one holds the lines in between: the check names the
+  first line ("a line break inside the value") **and every line it swallowed** ("Line 3 is part of a value that was opened on line 2 and closed on
+  line 4"), so "Skip the rows with problems" never drops a location without saying so;
 - a text value (display name, city, zone, state, address, NVR name) may not start with `=`, `+`, `-` or `@` (a spreadsheet would read
   it as a formula). Passwords and user names may.
 Such a row is never merged with the next one and never partly imported.
@@ -71,8 +73,8 @@ The first line names the columns (any order, any case; spaces and dashes count a
 
 | Column | Needed | Meaning |
 |---|---|---|
-| `code` | `code` or `name` | The location code (letters, numbers, dashes, up to 50, e.g. `JCL`). Stable: the identity of the location. The code of an **archived** location is refused: restore that location first (no second location with the same code). |
-| `name` | (legacy) | The legacy store file's name column. Used as the code (upper case) when there is no `code` column. |
+| `code` | `code` or `name` | The location code (letters, numbers, dashes, up to 50, e.g. `JCL`). The column may also be called `location_code`, or `store_code` as in older files. Stable: the identity of the location. The code of an **archived** location is refused: restore that location first (no second location with the same code). |
+| `name` | (legacy) | The older file's name column. Used as the code (upper case) when there is no `code` column. |
 | `display_name` | no | The name people see. A new location without one gets **"CODE - City"** (owner ruling). An existing location keeps a name a person edited; one still at its starting value ("CODE" or "CODE - City") follows the ruling. |
 | `kind` | no | `store`, `head office` / `head_office`, `DC` / `distribution centre`, `warehouse`, `other`. New locations default to store. |
 | `city`, `zone`, `state`, `address` | no | Plain attributes. Zone and state are tidied (e.g. `jh` → `Jharkhand`). |
@@ -91,11 +93,13 @@ The first line names the columns (any order, any case; spaces and dashes count a
 rows, but may not contradict the first row (that is a problem on the later row). The same NVR (address + web port) twice at one location
 is a problem.
 
-### The legacy store file keeps working
+### The older one-row-per-location file keeps working
 
 `name, city, zone, ip, port, http_port, user, password, channels` is read as "location + its main NVR + channels": the location by its
 code (the name column), its NVR by address and web port — and when the address changed, the location's main NVR is updated (one row
-per location), never a second NVR made.
+per location), never a second NVR made. That last rule is for a location with **exactly one NVR**. A location with two or more NVRs and one
+row whose address is none of them is **refused**: the message names the addresses and web ports of its NVRs (never a password) so you can
+choose; to add another NVR give a row for each NVR, or add it on the location's page.
 
 ## 3. Identity rules (why importing the same file again changes nothing)
 

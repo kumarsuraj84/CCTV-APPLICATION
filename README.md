@@ -1,7 +1,7 @@
 # CityKart Drishti (CKDRISHTI)
 
 CityKart Drishti (formerly "CityKart Network Monitoring Hub"; the npm package name `cctv-hub` is unchanged). Monitors CCTV cameras, NVRs, servers, attendance machines, footfall counters and any other IP device,
-with live camera feeds and per-user access to stores and cameras. Built on the Citykart Desk stack
+with live camera feeds and per-user access to locations (stores, head office, distribution centres, warehouses) and cameras. Built on the Citykart Desk stack
 (Next.js 16, Supabase/PostgreSQL, shadcn/ui). The app listens on **port 3212**.
 
 - Design: `docs/superpowers/specs/2026-10-21-network-monitoring-hub-design.md`
@@ -26,7 +26,7 @@ The dev admin's e-mail and password are in `.env.local` (`DEV_ADMIN_EMAIL`, `DEV
     npm run test:unit
     npm run test:integration   # needs the local Supabase stack; uses disposable organisations
 
-Integration tests only run against the local stack (port 55321) and never touch a real store.
+Integration tests only run against the local stack (port 55321) and never touch a real location.
 
 ## Monitoring (worker)
 
@@ -45,7 +45,7 @@ The checks run in a separate process, the worker, next to the web app:
 ### Demo without any hardware
 
     npm run fake:nvr                  # pretend NVR, camera port and devices, on 127.0.0.1 only (add --flip, --port=NNNN)
-    npm run demo:seed                 # DEMO organisation: 3 stores, 14 cameras, 4 devices, one demo user per role
+    npm run demo:seed                 # DEMO organisation: 3 locations, 14 cameras, 4 devices, one demo user per role
     npm run worker                    # in another window
     npm run dev
 
@@ -54,7 +54,7 @@ The checks run in a separate process, the worker, next to the web app:
 when you run it and printed **once**, in the terminal; they are not saved anywhere. If you lose them, run `npm run demo:seed -- --fresh` for new ones.
 Everything it creates points at 127.0.0.1 and lives in its own organisation. Stop the worker, then
 `npm run demo:seed -- --reset` removes that organisation and nothing else (`-- --fresh` removes and adds it again).
-Sign in as the demo administrator, press **Find cameras** for DEMO1 on Manage stores, then **Check now** on Monitoring.
+Sign in as the demo administrator, open **Locations and NVRs**, press **Find cameras for all** (or open DEMO1 and its NVR and press **Find cameras**), then **Check now** on Monitoring. The old addresses `/stores`, `/stores/<id>` and `/admin/stores` still work: they redirect to `/locations`, `/locations/<id>` and `/admin/locations` (ruling T-1).
 
 ## Video gateway and go2rtc
 
@@ -80,9 +80,9 @@ shows it (`GATEWAY_HEALTH_URL` overrides the address the web server uses to read
 
 The web app reads `NEXT_PUBLIC_STREAM_GATEWAY_URL` (the gateway address a browser can reach, for example `http://localhost:3412`; it is built into the pages, so restart `npm run dev` or rebuild after changing it). The **Live** page loads the player script from `<that address>/g/video-stream.js` and opens its sockets there, so the web app address must also be in `GATEWAY_ALLOWED_ORIGINS`, exactly as a browser spells it (scheme, host and port, no path). If it is not, tiles say "Video is not available right now."
 
-**Live wall** (`/live`, `/live?store=<id>`, `/live?group=<id>`, `/live?camera=<id>`): the web app asks for the cameras the signed-in person may see (at most 36 per request, 30 requests per person per minute), registers each in go2rtc and hands the browser one signed token per camera; nothing else about the camera, and never its password or RTSP address, reaches the browser. A token opens a socket within 90 seconds and names its own media session; tokens are renewed every minute while the tab is open; pictures stop while the tab is hidden. Needs `STREAM_TOKEN_SECRET`; without it the page says live video is not set up.
+**Live wall** (`/live`, `/live?location=<id>` (the older `?store=<id>` still works), `/live?group=<id>`, `/live?camera=<id>`): the web app asks for the cameras the signed-in person may see (at most 36 per request, 30 requests per person per minute), registers each in go2rtc and hands the browser one signed token per camera; nothing else about the camera, and never its password or RTSP address, reaches the browser. A token opens a socket within 90 seconds and names its own media session; tokens are renewed every minute while the tab is open; pictures stop while the tab is hidden. Needs `STREAM_TOKEN_SECRET`; without it the page says live video is not set up.
 
-**Demo video** (no real cameras): set `DEMO_VIDEO=1` in `.env.local` (development only; it is ignored when `NODE_ENV=production`). A store whose NVR address is this computer (`127.0.0.1`, as the demo stores are) then shows go2rtc's generated test picture instead of a camera. Start go2rtc with `npm run stack:up:demo` (stop it with `npm run stack:down:demo`) instead of `stack:up`: it adds `deploy/go2rtc.demo.yaml`, which has the RTSP listener the generated picture needs (127.0.0.1:8554 inside the container, not published). The normal `deploy/go2rtc.yaml` has no RTSP server.
+**Demo video** (no real cameras): set `DEMO_VIDEO=1` in `.env.local` (development only; it is ignored when `NODE_ENV=production`). A location whose NVR address is this computer (`127.0.0.1`, as the demo locations are) then shows go2rtc's generated test picture instead of a camera. Start go2rtc with `npm run stack:up:demo` (stop it with `npm run stack:down:demo`) instead of `stack:up`: it adds `deploy/go2rtc.demo.yaml`, which has the RTSP listener the generated picture needs (127.0.0.1:8554 inside the container, not published). The normal `deploy/go2rtc.yaml` has no RTSP server.
 
 **Fast playback** (optional, 2x, 4x and 8x on the Playback screen; for now only administrators and platform owners are offered it) needs **ffmpeg** on the machine that runs the web app (not in Docker; go2rtc has its own). Install it so that `ffmpeg -version` works for the account that runs the app and `ffmpeg` is in a full-path entry of `PATH` (empty, `.` and relative `PATH` entries are never searched), or set `FFMPEG` in `.env.local` to the FULL path of the program (one line; a bare name or a relative path is refused with a plain message; it is run directly, never through a shell; on Windows use the `.exe`, not a `.cmd` shim). Without ffmpeg the Playback screen offers an administrator only 1x and says "Fast playback is not set up on this server."; nothing else is affected. The app asks the NVR for the recording (`GET /api/vod`, signed-in administrators only, for cameras they may see), passes it through ffmpeg without re-encoding (ffmpeg may only read from the pipe and only MPEG-PS, MPEG-TS, MP4, H.264 or H.265 streams) and streams the result to a plain video element. Up to 30 minutes per request. A person has one running conversion at a time: starting a new one ends their previous one first. 8 run in all (more is refused with a plain message). A conversion stops when the page is closed, after 30 minutes, or when the NVR has sent no data for 60 seconds while it was being waited for. Whether ffmpeg works is checked when the Playback page opens and remembered for a minute. After installing ffmpeg, reload the Playback page after a minute (restart the app after changing `FFMPEG`).
 
