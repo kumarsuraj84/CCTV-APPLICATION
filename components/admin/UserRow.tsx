@@ -26,9 +26,9 @@ type Listed = { id: string; capabilityLabel: string; scopeLabel: string; lastDay
 
 const BTN = `rounded-md border border-[#7C8795] px-2.5 py-1 text-sm hover:bg-muted disabled:cursor-not-allowed disabled:text-[#5B646F] ${FOCUS}`
 const DANGER = `${BTN} border-red-700 text-red-800 dark:text-red-200`
-// Neutral on purpose (P2-3 brief): open video is not cut off yet when a person is deactivated (that comes with P2-4).
+// P2-4: deactivation ends the person's open video too (the media session registry; within a minute, AC-14).
 export const MSG_DEACTIVATE =
-  'They can no longer sign in, and the sign-ins they have now are ended. Their access is kept and applies again if they are reactivated.'
+  'They can no longer sign in, the sign-ins they have now are ended, and their open video stops within a minute. Their access is kept and applies again if they are reactivated.'
 
 function GrantList({ grants }: { grants: Listed[] }) {
   return (

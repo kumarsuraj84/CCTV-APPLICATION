@@ -5,6 +5,7 @@ import { MSG_MONITORING_OFF, MSG_NOT_MAPPED, readRecorderPassword, resolveCamera
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 import type { Go2rtcClient } from '@/lib/streams/go2rtc'
+import { createMediaSessions } from '@/lib/streams/registry'
 import { buildRtspUrl, demoSource, isDemoRecorder } from '@/lib/streams/source'
 import { signStreamToken, streamName, TOKEN_LIFETIME_SEC } from '@/lib/streams/token'
 
@@ -72,10 +73,23 @@ export async function openStreams(
   const routes = listed.flatMap((a) => (a.kind === 'ok' ? [a.route] : []))
   if (routes.length === 0) return { ok: false, error: listed.some((a) => a.kind === 'off') ? MSG_MONITORING_OFF : MSG_NOT_MAPPED }
 
+  // P2-4 (D-3, AC-14): one media session per stream, made by the database after checking cctv.live for this person once more (the
+  // registry the gateway asks when the socket arrives and every 15 s afterwards). A camera it refuses is left out like any other
+  // camera one may not watch; when it cannot be asked at all nothing is opened and no password is read (fail closed).
+  let sids: Map<string, string>
+  try {
+    sids = await createMediaSessions(deps.admin, { orgId: actor.orgId, userId: actor.id, kind: 'live', cameras: routes.map((r) => ({ id: r.camera.id, stream: streamName({ c: r.camera.id, k: kind }) })) })
+  } catch {
+    logger.error({ event: 'open_streams_sessions_failed' })
+    return { ok: false, error: MSG_FAILED }
+  }
+  const registered = routes.filter((r) => sids.has(r.camera.id))
+  if (registered.length === 0) return { ok: true, streams: [] }
+
   const env = deps.env ?? process.env
   // One password read per recorder, and only for recorders that need one (a demo NVR has no real camera behind it).
   const passwords = new Map<string, string | null>()
-  const recorders = [...new Map(routes.map((r) => [r.recorder.id, r.recorder])).values()]
+  const recorders = [...new Map(registered.map((r) => [r.recorder.id, r.recorder])).values()]
   await mapLimit(recorders, 4, async (rec) => {
     if (isDemoRecorder(rec, env)) return
     const read = await readRecorderPassword(deps.admin, rec.id)
@@ -86,7 +100,7 @@ export async function openStreams(
   const now = deps.now ?? Date.now
   const exp = Math.floor(now() / 1000) + TOKEN_LIFETIME_SEC
   let failed = 0
-  const opened = await mapLimit(routes, REGISTER_PARALLEL, async ({ camera: c, recorder: rec }): Promise<OpenedStream | null> => {
+  const opened = await mapLimit(registered, REGISTER_PARALLEL, async ({ camera: c, recorder: rec }): Promise<OpenedStream | null> => {
     try {
       let src: string
       const demo = isDemoRecorder(rec, env)
@@ -99,7 +113,7 @@ export async function openStreams(
       // The stream is named by the camera, never by the channel: a remapped camera keeps its stream name (and its viewers' tokens).
       const name = streamName({ c: c.id, k: kind })
       await deps.go2rtc.register(name, src, { keepExisting: demo })
-      const token = signStreamToken({ u: actor.id, c: c.id, k: kind, exp }, secret)
+      const token = signStreamToken({ sid: sids.get(c.id)!, u: actor.id, c: c.id, k: kind, exp }, secret)
       return { cameraId: c.id, name: c.name, storeCode: c.code, channel: c.channel, token, kind }
     } catch {
       failed++

@@ -4,7 +4,9 @@
 export const LAYOUTS = [1, 2, 3, 4] as const
 export type Layout = (typeof LAYOUTS)[number]
 
-export const REFRESH_AFTER_MS = 8 * 60_000 // tokens last 10 minutes; new ones are fetched after 8
+// P2-4 (D-3): a token can open a socket for 90 seconds only, so new ones are fetched every minute while the wall is shown (a tile that
+// reconnects always holds one that still works). Each renewal checks cctv.live again and makes new media sessions; unused ones expire.
+export const REFRESH_AFTER_MS = 60_000
 export const RETRY_EVERY_MS = 30_000 // when video is not available, try again this often
 export const QUICK_RETRY_MS = 2_000 // a picture that played and then ended (the gateway ends sessions after 30 minutes) comes back quickly
 

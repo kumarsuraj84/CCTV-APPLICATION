@@ -5,13 +5,16 @@ import { Readable } from 'node:stream'
 import type { ReadableStream as NodeWebStream } from 'node:stream/web'
 import type { AdminClient, Result } from '@/lib/admin/types'
 import { auditAccess } from '@/lib/auth/access-audit'
+import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { MSG_MONITORING_OFF, MSG_NOT_MAPPED } from '@/lib/inventory/recorders'
 import { describeNvrError, MAX_DOWNLOAD_BYTES, MAX_DOWNLOAD_MS, NvrClient, NvrError, type NvrEndpoint } from '@/lib/nvr/client'
 import { clockOffsetMs, findSegments } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
 import { processSingleton } from '@/lib/process-singleton'
 import { findCamera, MSG_CAMERA_NOT_FOUND, MSG_BAD_START, MSG_NO_LOGIN, MSG_RECORDINGS_UNREACHABLE, parsePlaybackOffset, recorderMessage, recorderOffset, startInBounds } from '@/lib/streams/playback'
+import { adminRegistry, createMediaSessions, type RegistryClient } from '@/lib/streams/registry'
 import { MSG_TOO_MANY_REQUESTS, type RequestLimiter } from '@/lib/streams/request-limit'
+import { watchSession, type SessionWatch } from '@/lib/streams/session-watch'
 import { parseStartIso } from '@/lib/streams/timeline'
 
 // Fast playback (2x, 4x, 8x). The NVR sends a recording in one piece, much faster than it plays; ffmpeg rewraps it (no re-encoding) as a
@@ -620,9 +623,15 @@ export type VodDeps = {
   offsetMin?: number
   /** Whether ffmpeg runs: asked before the NVR is asked for the download, and by `probe=1`. Default: the shared check, remembered for a minute (without it when `spawn` is given, where a start that fails is answered the same way). */
   ffmpegAvailable?: (env: Record<string, string | undefined>) => Promise<boolean>
-  /** Test settings. */
-  timing?: { maxMs?: number; transferMs?: number; firstByteMs?: number; idleMs?: number; killGraceMs?: number; maxBytes?: number; supersedeMs?: number }
+  /** The media session registry (default: through `admin`). P2-4: every download is a session of kind vod, re-checked while it runs. */
+  registry?: RegistryClient
+  /** Test settings (validateMs / failClosedMs: the session re-check, default 15 s / 45 s). */
+  timing?: { maxMs?: number; transferMs?: number; firstByteMs?: number; idleMs?: number; killGraceMs?: number; maxBytes?: number; supersedeMs?: number; validateMs?: number; failClosedMs?: number }
 }
+
+/** P2-4 (D-3): how often a running download's media session is re-checked, and how long without an answer before it is cut. */
+export const VOD_VALIDATE_EVERY_MS = 15_000
+export const VOD_FAIL_CLOSED_AFTER_MS = 45_000
 
 const HEADERS = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin' }
 const fail = (status: number, error: string) => Response.json({ error }, { status, headers: HEADERS })
@@ -676,6 +685,35 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
   const limits = deps.conversions ?? conversionLimiter
   const transfer = new AbortController() // ends everything of this request: the NVR transfer and the conversion
   let slot: Extract<ConversionSlot, { ok: true }> | null = null
+
+  // P2-4 (D-3, AC-14, brief item 4): a download is a media session of kind vod (cctv.export AND cctv.playback, checked again by the
+  // database for this person). It is opened at once and re-checked every 15 s while the transfer runs; when it is no longer allowed —
+  // or cannot be checked for 45 s — the NVR transfer is aborted and ffmpeg is stopped. The probe downloads nothing and makes none.
+  const registry = deps.registry ?? adminRegistry(deps.admin)
+  let sid: string | null = null
+  if (!query.probe) {
+    try {
+      sid = (await createMediaSessions(deps.admin, { orgId: actor.orgId, userId: actor.id, kind: 'vod', cameras: [{ id: camera.id, stream: null }], maxSec: Math.ceil(MAX_DOWNLOAD_MS / 1000) + 60 })).get(camera.id) ?? null
+      const opened = sid ? await registry.open(sid, { user: actor.id, camera: camera.id, kind: 'vod', stream: null }) : null
+      if (!opened?.ok) {
+        if (sid) void registry.close(sid)
+        await auditAccess(deps.admin, { orgId: actor.orgId, actorId: actor.id, action: 'cctv_export_denied', capability: 'cctv.export', cameraIds: [camera.id], detail: { reason: 'session' } })
+        return fail(404, MSG_CAMERA_NOT_FOUND)
+      }
+    } catch {
+      logger.error({ event: 'vod_session_failed', location: camera.code })
+      return fail(503, MSG_ACCESS_CHECK_FAILED)
+    }
+  }
+  let watch: SessionWatch | null = null
+  let sessionEnded = false
+  const endSession = () => {
+    if (sessionEnded) return
+    sessionEnded = true
+    watch?.stop()
+    if (sid) void registry.close(sid)
+  }
+
   if (query.probe) {
     const peek = limits.peek(actor.id, { ignoreOwn: true })
     if (!peek.ok) return fail(429, MSG_SERVER_BUSY)
@@ -687,8 +725,18 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
       await limits.supersede(actor.id, deps.timing?.supersedeMs ?? SUPERSEDE_WAIT_MS)
       taken = limits.acquire(actor.id, stop)
     }
-    if (!taken.ok) return fail(429, taken.reason === 'person' ? MSG_ALREADY_RUNNING : MSG_SERVER_BUSY)
+    if (!taken.ok) {
+      endSession()
+      return fail(429, taken.reason === 'person' ? MSG_ALREADY_RUNNING : MSG_SERVER_BUSY)
+    }
     slot = taken
+    watch = watchSession({
+      registry, sid: sid!, everyMs: deps.timing?.validateMs ?? VOD_VALIDATE_EVERY_MS, failClosedAfterMs: deps.timing?.failClosedMs ?? VOD_FAIL_CLOSED_AFTER_MS,
+      onEnd: (reason) => {
+        logger.warn({ event: 'vod_session_ended', reason })
+        transfer.abort() // the NVR transfer stops and ffmpeg is told to stop (and killed after the grace time)
+      },
+    })
   }
 
   // From here on the slot is given back by whoever ends last: this function, or the conversion once it has started.
@@ -753,6 +801,7 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
       signal: transfer.signal,
       onExit: () => {
         signal?.removeEventListener('abort', forward)
+        endSession()
         slot?.release()
         audit.exited = true
         auditEnded()
@@ -779,6 +828,7 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
   } finally {
     if (!handedOver) {
       signal?.removeEventListener('abort', forward)
+      endSession()
       slot?.release()
     }
   }

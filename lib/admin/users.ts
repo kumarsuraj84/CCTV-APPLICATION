@@ -7,6 +7,7 @@ import { auditInParts, MSG_CONFLICT } from '@/lib/admin/access'
 import { logger } from '@/lib/observability/logger'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { assertRefsInOrg } from '@/lib/security/org-scope'
+import { revokeMediaSessions } from '@/lib/streams/registry'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 
 const UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
@@ -138,6 +139,8 @@ export async function updateUser(admin: AdminClient, actor: Actor, userId: strin
     const changed = await admin.rpc('change_person_role', { p_org: actor.orgId, p_actor: actor.id, p_user: userId, p_role: role, p_expected_version: opts.expectedVersion ?? undefined })
     if (changed.error) return { ok: false, error: dbRefusal(changed.error, 'updateUser.role') }
     revoked = ((changed.data as { revoked?: RevokedGrant[] } | null)?.revoked ?? [])
+    // P2-4 (D-3): a role change ends the person's open video at once (the gateway closes the sockets at its next check, ≤ 15 s).
+    await revokeMediaSessions(admin, actor.orgId, userId, 'role_changed')
     if (revoked.length > 0) {
       await auditInParts(admin, {
         orgId: actor.orgId, actorId: actor.id, action: 'access_revoked', entityId: userId,
@@ -167,6 +170,9 @@ export async function updateUser(admin: AdminClient, actor: Actor, userId: strin
         logger.error({ event: 'revoke_sessions_failed', userId, error: ended.error })
         return { ok: false, error: 'The person was deactivated, but their current sign-ins could not be ended. Please try again.' }
       }
+      // P2-4 (D-3): and their open video (the gateway closes the sockets at its next check, ≤ 15 s; the database trigger on profiles
+      // does the same at commit, so a failure here is logged, not fatal).
+      await revokeMediaSessions(admin, actor.orgId, userId, 'deactivated')
     }
   }
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'user_updated', entityType: 'profile', entityId: userId, detail: patch })
@@ -201,6 +207,8 @@ export async function resetUserPassword(admin: AdminClient, actor: Actor, userId
     logger.error({ event: 'revoke_sessions_failed', userId, error: ended.error })
     return { ok: false, error: 'The password was reset, but the current sign-ins could not be ended. Please try again.' }
   }
+  // P2-4 (D-3): and every open video of theirs.
+  await revokeMediaSessions(admin, actor.orgId, userId, 'password_reset')
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'user_password_reset', entityType: 'profile', entityId: userId })
   return { ok: true, oneTimePassword }
 }

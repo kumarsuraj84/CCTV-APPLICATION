@@ -26,10 +26,11 @@ export const ENDPOINT_PURPOSES = ['snmp', 'other'] as const
 export const ENDPOINT_PURPOSE_LABELS: Record<string, string> = { management: 'Management', rtsp: 'Video (RTSP)', snmp: 'SNMP', other: 'Other' }
 
 /**
- * Review I-1: what a move does to video that is ALREADY open. True until the session registry (P2-4) re-checks open sessions; when
- * P2-4 lands, change this sentence (and its unit test) to say that open video stops within a minute.
+ * Review I-1: what a move does to video that is ALREADY open. P2-4: the media session registry re-checks every open video at least
+ * every 15 seconds and the move marks the affected people's sessions at once, so their open video stops within a minute (measured in
+ * tests/integration/media-revocation.test.ts).
  */
-export const MSG_OPEN_VIDEO = 'Video that is already open is not cut off yet: it keeps playing until the person closes it.'
+export const MSG_OPEN_VIDEO = 'Open video for affected people stops within a minute.'
 
 /** "PTN1 - Patna" stays as it is; "Head office, Patna" gets its code in front (review M-12: no "PTN1 · PTN1 - Patna"). */
 export const locationTitle = (code: string, name: string): string => (name.toUpperCase().startsWith(code.toUpperCase()) ? name : `${code} · ${name}`)

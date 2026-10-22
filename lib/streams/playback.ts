@@ -1,6 +1,6 @@
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { IT_VIEW } from '@/lib/auth/capabilities'
-import { cameraFor, recorderFor } from '@/lib/auth/resource'
+import { cameraFor, MSG_ACCESS_CHECK_FAILED, recorderFor } from '@/lib/auth/resource'
 import { MSG_MONITORING_OFF, MSG_NOT_MAPPED, readRecorderPassword, resolveCameraRoutes, type CameraRoute, type Recorder, type RouteAnswer } from '@/lib/inventory/recorders'
 import { describeNvrError, NvrClient, NvrError, type NvrEndpoint } from '@/lib/nvr/client'
 import { findSegments, recordedDays, type ClockOffset } from '@/lib/nvr/playback'
@@ -8,6 +8,7 @@ import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 import type { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { MSG_NOT_SET_UP, MSG_UNAVAILABLE } from '@/lib/streams/open'
+import { createMediaSessions } from '@/lib/streams/registry'
 import { MSG_TOO_MANY_REQUESTS, type RequestLimiter } from '@/lib/streams/request-limit'
 import { buildPlaybackUrl, demoSource, isDemoRecorder } from '@/lib/streams/source'
 import { parseDay, shownNowMs } from '@/lib/streams/timeline'
@@ -237,7 +238,8 @@ export async function listDaySegments(
 /**
  * Starts playback of `minutes` (1 to 60) from a shown-time `start` (not more than 15 minutes ahead of the shown clock, not older than a
  * year): registers `pb_<camera>_<start in seconds>` with go2rtc, pointing at the NVR's playback address (shown time - offsetMin), and signs
- * a 10 minute `pb` token for it. The address with the NVR password stays inside this function.
+ * a `pb` token for it that names its media session and connects within 90 seconds (P2-4). The address with the NVR password stays
+ * inside this function.
  *
  * One go2rtc stream has one running source, and everybody watching it sees the same moment of it. So a request is only given a stream that
  * nobody is using (ruling R19): when the stream of that name already has a viewer or a running source, or its state cannot be read, the
@@ -275,6 +277,16 @@ export async function openPlayback(deps: OpenPlaybackDeps, actor: Who, cameraId:
         if (++unreadable >= MAX_UNREADABLE_IN_A_ROW) return { ok: false, error: MSG_UNAVAILABLE } // go2rtc is not answering at all
       }
       if (busy) continue
+      // P2-4 (D-3, AC-14): this playback's media session, made after the database checked cctv.playback for this person once more;
+      // the gateway opens it when the socket arrives and re-checks it every 15 s. Refused: the same answer as no right at all.
+      let sid: string | undefined
+      try {
+        sid = (await createMediaSessions(deps.admin, { orgId: actor.orgId, userId: actor.id, kind: 'playback', cameras: [{ id: camera.id, stream: name }] })).get(camera.id)
+      } catch {
+        logger.error({ event: 'open_playback_sessions_failed' })
+        return { ok: false, error: MSG_ACCESS_CHECK_FAILED }
+      }
+      if (!sid) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
       const src = demo
         ? demoSource(camera.channel, `${camera.id}:${s}`)
         : buildPlaybackUrl({
@@ -282,7 +294,7 @@ export async function openPlayback(deps: OpenPlaybackDeps, actor: Who, cameraId:
             start: new Date(s * 1000), end: new Date(e * 1000), ...recorderOffset(recorder, offsetMin),
           })
       await deps.go2rtc.register(name, src, { keepExisting: demo })
-      const token = signStreamToken({ u: actor.id, c: camera.id, k: 'pb', exp: Math.floor(now() / 1000) + TOKEN_LIFETIME_SEC, s, e }, secret)
+      const token = signStreamToken({ sid, u: actor.id, c: camera.id, k: 'pb', exp: Math.floor(now() / 1000) + TOKEN_LIFETIME_SEC, s, e }, secret)
       // Streams nobody has watched for a long time are removed from go2rtc (at most once a minute; never waits, never fails the request).
       // (go2rtc's idle clock is the machine clock, so the real time is used here, not the injected one.)
       void deps.go2rtc.prune().catch(() => {})

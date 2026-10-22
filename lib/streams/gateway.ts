@@ -3,26 +3,58 @@ import http from 'node:http'
 import type { Duplex } from 'node:stream'
 import WebSocket, { WebSocketServer, type RawData } from 'ws'
 import { usableSecret } from '@/lib/secrets'
+import type { RegistryClient } from '@/lib/streams/registry'
 import { streamName, verifyStreamToken, type StreamClaims } from '@/lib/streams/token'
 
 // The video gateway: the only video endpoint a browser can reach. A browser opens a WebSocket with a signed stream token; the
-// gateway checks the Origin and the token and then pipes the socket to go2rtc. The go2rtc stream name comes from the signed
-// claims only, so nothing the browser sends can choose a stream, and go2rtc's address and error texts (which can contain camera
-// addresses and passwords) never reach a browser.
+// gateway checks the Origin and the token, opens the token's media session in the registry, and then pipes the socket to go2rtc. The
+// go2rtc stream name comes from the signed claims only, so nothing the browser sends can choose a stream, and go2rtc's address and
+// error texts (which can contain camera addresses and passwords) never reach a browser.
+//
+// P2-4 (decision D-3, directive AC-14): revocation within a minute. Before anything is connected upstream the registry must open the
+// token's session (media_session_open: that person's, that camera, kind and stream, once, within the 90 s connect window, still
+// allowed) — so a token issued before a revocation cannot open a new socket. Every `validateEveryMs` (15 s) ONE batched call
+// (media_sessions_still_valid) re-checks every open socket; a socket that lost access closes with 4403 "Access changed". If the
+// registry cannot be asked, a socket whose last good check is `failClosedAfterMs` (45 s) old is closed with 1013 "Cannot verify
+// access" (fail closed). Worst case for a revocation: 15 s + the 5 s call = 20 s; with the database unreachable: 45 s + 5 s.
 
 export type GatewayEvent = {
   event: 'gateway_session'
-  outcome: 'started' | 'ended' | 'denied_origin' | 'denied_token' | 'denied_message' | 'rate_limited' | 'full' | 'upstream_failed' | 'backpressure' | 'stalled'
+  outcome:
+    | 'started' | 'ended' | 'denied_origin' | 'denied_token' | 'denied_message' | 'rate_limited' | 'full' | 'upstream_failed' | 'backpressure' | 'stalled'
+    | 'denied_session' | 'unverified' | 'revoked' | 'fail_closed' | 'check_failed'
   /** First 8 hex characters of the SHA-256 of the camera id; never the id, the stream name, the person or the token. */
   camera?: string
   kind?: StreamClaims['k']
   durationMs?: number
+  /** The registry's reason code for a refusal or revocation (access_changed, deactivated, …): no personal data. */
+  reason?: string
+  /** How many sockets a check covered, and how long it took. */
+  sessions?: number
+}
+
+export type GatewayHealth = {
+  status: 'ok' | 'not_verifying'
+  registry: 'ok' | 'failing'
+  openSessions: number
+  /** Seconds since the last check that succeeded (or found nothing to check); null before the first one. */
+  lastValidationAgeSec: number | null
+  validateEverySec: number
+  failClosedAfterSec: number
 }
 
 export type GatewayOptions = {
   go2rtcUrl: string
   secret: string
   allowedOrigins: string[]
+  /** The media session registry (required: without it nothing can be verified, so nothing would be allowed). */
+  registry: RegistryClient
+  /** How often every open socket is re-checked (default 15 s). */
+  validateEveryMs?: number
+  /** Sockets whose last good check is this old are closed when the registry cannot be asked (default 45 s). */
+  failClosedAfterMs?: number
+  /** Run the checks on a timer (default true). Tests turn it off and call validateNow() with a fake clock. */
+  autoValidate?: boolean
   /** A session ends after this long (default 30 minutes); the browser asks for a new token and reconnects. */
   maxSessionMs?: number
   /** The clock for token expiry and the rate limit (default Date.now). */
@@ -43,7 +75,20 @@ export type GatewayOptions = {
   log?: (e: GatewayEvent) => void
 }
 
-export type GatewayServer = http.Server & { shutdown(timeoutMs?: number): Promise<void> }
+export type GatewayServer = http.Server & {
+  shutdown(timeoutMs?: number): Promise<void>
+  /** One re-check of every open socket now (the timer calls this every validateEveryMs). */
+  validateNow(): Promise<void>
+  health(): GatewayHealth
+}
+
+export const DEFAULT_VALIDATE_EVERY_MS = 15_000
+export const DEFAULT_FAIL_CLOSED_AFTER_MS = 45_000
+/** The close code for a socket whose access was taken away while it was open. */
+export const CLOSE_ACCESS_CHANGED = 4403
+const CLOSE_CANNOT_VERIFY = 1013
+const MSG_ACCESS_CHANGED = 'Access changed'
+const MSG_CANNOT_VERIFY = 'Cannot verify access'
 
 export const DEFAULT_MAX_SESSION_MS = 30 * 60_000
 export const DEFAULT_MAX_SOCKETS = 300
@@ -163,6 +208,9 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     throw new Error('The video server address is not valid.')
   }
   if (upstreamBase.protocol !== 'http:' && upstreamBase.protocol !== 'https:') throw new Error('The video server address is not valid.')
+  if (!opts.registry || typeof opts.registry.open !== 'function' || typeof opts.registry.stillValid !== 'function') {
+    throw new Error('The gateway needs the media session registry (it verifies every video connection).')
+  }
 
   const secret = opts.secret
   const now = opts.now ?? Date.now
@@ -182,8 +230,64 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
   const origin = upstreamBase.origin
   const wsOrigin = origin.replace(/^http/, 'ws')
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_BROWSER_PAYLOAD, perMessageDeflate: false })
-  const sessions = new Set<{ end: (code: number, reason: string, outcome?: GatewayEvent['outcome']) => void }>()
+  type Session = { sid: string; validatedAt: number; end: (code: number, reason: string, outcome?: GatewayEvent['outcome'], why?: string) => void }
+  /** Sockets whose registry session is open (they are re-checked). */
+  const sessions = new Set<Session>()
+  /** Sockets still waiting for the registry's answer (closed on shutdown). */
+  const pending = new Set<Session>()
   let closing = false
+
+  // ── the registry checks ────────────────────────────────────────────────────
+  const registry = opts.registry
+  const validateEveryMs = opts.validateEveryMs ?? DEFAULT_VALIDATE_EVERY_MS
+  const failClosedAfterMs = opts.failClosedAfterMs ?? DEFAULT_FAIL_CLOSED_AFTER_MS
+  let lastGoodCheck: number | null = null
+  let registryFailing = false
+  let checking: Promise<void> | null = null
+
+  async function check(): Promise<void> {
+    const list = [...sessions]
+    const askedAt = now()
+    if (list.length === 0) {
+      lastGoodCheck = askedAt
+      return
+    }
+    let invalid: Map<string, string>
+    try {
+      invalid = await registry.stillValid(list.map((s) => s.sid))
+    } catch {
+      registryFailing = true
+      log({ event: 'gateway_session', outcome: 'check_failed', sessions: list.length })
+      // Fail closed: a socket that has not been confirmed for failClosedAfterMs is closed.
+      const cutoff = now() - failClosedAfterMs
+      for (const s of list) if (sessions.has(s) && s.validatedAt <= cutoff) s.end(CLOSE_CANNOT_VERIFY, MSG_CANNOT_VERIFY, 'fail_closed')
+      return
+    }
+    registryFailing = false
+    lastGoodCheck = askedAt
+    for (const s of list) {
+      if (!sessions.has(s)) continue
+      const why = invalid.get(s.sid)
+      if (why !== undefined) s.end(CLOSE_ACCESS_CHANGED, MSG_ACCESS_CHANGED, 'revoked', why)
+      else s.validatedAt = askedAt // the time the question was asked: never later than the answer
+    }
+  }
+  /** One check at a time; a call while one runs waits for that one. */
+  const validateNow = (): Promise<void> => {
+    if (!checking) checking = check().finally(() => (checking = null))
+    return checking
+  }
+  const checkTimer = opts.autoValidate === false ? null : setInterval(() => void validateNow().catch(() => {}), validateEveryMs)
+  checkTimer?.unref()
+
+  const health = (): GatewayHealth => ({
+    status: registryFailing ? 'not_verifying' : 'ok',
+    registry: registryFailing ? 'failing' : 'ok',
+    openSessions: sessions.size,
+    lastValidationAgeSec: lastGoodCheck === null ? null : Math.max(0, Math.round((now() - lastGoodCheck) / 1000)),
+    validateEverySec: Math.round(validateEveryMs / 1000),
+    failClosedAfterSec: Math.round(failClosedAfterMs / 1000),
+  })
 
   // ── plain HTTP ─────────────────────────────────────────────────────────────
   const baseHeaders = { 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store' }
@@ -254,7 +358,12 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     if (path === WS_PATH) return sendText(res, 426, 'This address is for video connections only.', { Upgrade: 'websocket', Connection: 'Upgrade' })
     // Anything but GET is 405, including a CORS preflight: the player scripts are simple GETs and need none.
     if (req.method !== 'GET') return sendText(res, 405, 'Method not allowed', { Allow: 'GET' })
-    if (path === '/g/health') return sendText(res, 200, 'ok')
+    if (path === '/g/health') {
+      // P2-4: counts and ages only (no session id, person, camera or address).
+      const body = JSON.stringify(health())
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body), ...baseHeaders })
+      return res.end(body)
+    }
     if (!scriptLimiter.allow(clientAddress(req.socket))) {
       log({ event: 'gateway_session', outcome: 'rate_limited' })
       return sendText(res, 429, 'Too many requests. Try again in a minute.', { 'Retry-After': '60', ...scriptCors(req) })
@@ -341,47 +450,89 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
 
     const camera = shortHash(claims.c)
     const kind = claims.k
+    const sid = claims.sid
     const startedAt = Date.now()
-    const target = new URL(`${wsOrigin}/api/ws`)
-    target.searchParams.set('src', name)
-    const upstream = new WebSocket(target.toString(), {
-      handshakeTimeout: UPSTREAM_CONNECT_MS,
-      maxPayload: MAX_UPSTREAM_PAYLOAD,
-      perMessageDeflate: false,
-      followRedirects: false,
-    })
-    upstream.on('error', () => {})
+    let upstream: WebSocket | null = null
 
     let ended = false
+    let opened = false // the registry opened the session: it is re-checked, and closed in the registry at the end
     let upstreamOpen = false
     let reportedBackpressure = false
     let held: { data: Buffer; isBinary: boolean }[] = []
     let heldBytes = 0
     const stops: (() => void)[] = []
+    let sessionTimer: NodeJS.Timeout | undefined
+    let toUpstream: ((data: Buffer, isBinary: boolean) => void) | null = null
 
-    const sessionTimer = setTimeout(() => end(1000, 'Session ended'), maxSessionMs)
-    const session = { end: (code: number, reason: string, outcome?: GatewayEvent['outcome']) => end(code, reason, outcome) }
-    sessions.add(session)
+    const session: Session = { sid, validatedAt: now(), end: (code, reason, outcome, why) => end(code, reason, outcome, why) }
+    pending.add(session)
 
-    function end(code: number, reason: string, outcome: GatewayEvent['outcome'] = 'ended') {
+    function end(code: number, reason: string, outcome: GatewayEvent['outcome'] = 'ended', why?: string) {
       if (ended) return
       ended = true
       clearTimeout(sessionTimer)
+      pending.delete(session)
       sessions.delete(session)
       held = []
       stops.forEach((s) => s())
       if (outcome === 'stalled') client.terminate() // a client that cannot read cannot be told either
       else closeSocket(client, code, reason)
-      if (upstream.readyState === WebSocket.OPEN) {
+      if (upstream?.readyState === WebSocket.OPEN) {
+        const u = upstream
         try {
-          upstream.close(1000)
+          u.close(1000)
         } catch {
-          upstream.terminate()
+          u.terminate()
         }
-        setTimeout(() => upstream.terminate(), REFUSED_LINGER_MS).unref()
-      } else if (upstream.readyState === WebSocket.CONNECTING) upstream.terminate()
-      log({ event: 'gateway_session', outcome, camera, kind, durationMs: Date.now() - startedAt })
+        setTimeout(() => u.terminate(), REFUSED_LINGER_MS).unref()
+      } else if (upstream?.readyState === WebSocket.CONNECTING) upstream.terminate()
+      if (opened) void registry.close(sid).catch(() => {})
+      log({ event: 'gateway_session', outcome, camera, kind, durationMs: Date.now() - startedAt, ...(why ? { reason: why } : {}) })
     }
+
+    // The browser's side is listened to at once: a player sends its first request as soon as the socket is open, before the registry
+    // has answered; that request is held (and checked) like one that arrives while go2rtc is being reached.
+    client.on('message', (raw: RawData, isBinary: boolean) => {
+      if (ended) return
+      const data = toBuffer(raw)
+      if (!allowedBrowserMessage(data, isBinary)) return end(1008, 'Not allowed', 'denied_message')
+      if (upstreamOpen && toUpstream) return toUpstream(data, isBinary)
+      held.push({ data, isBinary })
+      heldBytes += data.length
+      if (held.length > MAX_HELD_MESSAGES || heldBytes > MAX_HELD_BYTES) end(1008, 'Not allowed')
+    })
+    client.on('close', () => end(1000, ''))
+
+    // The token's own session must open in the registry before anything is connected upstream (P2-4).
+    registry.open(sid, { user: claims.u, camera: claims.c, kind: kind === 'pb' ? 'playback' : 'live', stream: name }).then(
+      (answer) => {
+        if (answer.ok) opened = true
+        if (ended) {
+          // The browser left (or the gateway is stopping) while the registry was asked: nothing upstream; the session is closed.
+          if (opened) void registry.close(sid).catch(() => {})
+          return
+        }
+        pending.delete(session)
+        if (!answer.ok) {
+          log({ event: 'gateway_session', outcome: 'denied_session', reason: answer.reason })
+          ended = true // logged above; close without a second line
+          held = []
+          return closeSocket(client, 1008, 'Not allowed')
+        }
+        session.validatedAt = now()
+        sessions.add(session)
+        sessionTimer = setTimeout(() => end(1000, 'Session ended'), maxSessionMs)
+        connectUpstream()
+      },
+      () => {
+        if (ended) return
+        pending.delete(session)
+        log({ event: 'gateway_session', outcome: 'unverified' })
+        ended = true
+        held = []
+        closeSocket(client, CLOSE_CANNOT_VERIFY, MSG_CANNOT_VERIFY)
+      },
+    )
 
     /** Sends one message across; if the other side falls behind, the source is paused until it catches up, or the session is cut. */
     function makePipe(src: WebSocket, dst: WebSocket, clean: (b: Buffer) => Buffer = (b) => b) {
@@ -413,36 +564,38 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
         }, 50)
       }
     }
-    const toUpstream = makePipe(client, upstream)
-    const toClient = makePipe(upstream, client, cleanUpstreamText)
+    function connectUpstream() {
+      const target = new URL(`${wsOrigin}/api/ws`)
+      target.searchParams.set('src', name)
+      const up = new WebSocket(target.toString(), {
+        handshakeTimeout: UPSTREAM_CONNECT_MS,
+        maxPayload: MAX_UPSTREAM_PAYLOAD,
+        perMessageDeflate: false,
+        followRedirects: false,
+      })
+      upstream = up
+      up.on('error', () => {})
+      const send = makePipe(client, up)
+      toUpstream = send
+      const toClient = makePipe(up, client, cleanUpstreamText)
 
-    client.on('message', (raw: RawData, isBinary: boolean) => {
-      if (ended) return
-      const data = toBuffer(raw)
-      if (!allowedBrowserMessage(data, isBinary)) return end(1008, 'Not allowed', 'denied_message')
-      if (upstreamOpen) return toUpstream(data, isBinary)
-      held.push({ data, isBinary })
-      heldBytes += data.length
-      if (held.length > MAX_HELD_MESSAGES || heldBytes > MAX_HELD_BYTES) end(1008, 'Not allowed')
-    })
-    client.on('close', () => end(1000, ''))
-
-    upstream.on('open', () => {
-      if (ended) return
-      upstreamOpen = true
-      log({ event: 'gateway_session', outcome: 'started', camera, kind })
-      const queue = held
-      held = []
-      for (const m of queue) toUpstream(m.data, m.isBinary)
-    })
-    upstream.on('message', (raw: RawData, isBinary: boolean) => toClient(toBuffer(raw), isBinary))
-    upstream.on('error', () => {
-      if (!upstreamOpen) end(1011, 'The video is not available.', 'upstream_failed')
-    })
-    upstream.on('close', (code) => {
-      if (!upstreamOpen) end(1011, 'The video is not available.', 'upstream_failed')
-      else end(code === 1000 || code === 1001 ? 1000 : 1011, code === 1000 || code === 1001 ? 'Video ended' : 'The video is not available.')
-    })
+      up.on('open', () => {
+        if (ended) return
+        upstreamOpen = true
+        log({ event: 'gateway_session', outcome: 'started', camera, kind })
+        const queue = held
+        held = []
+        for (const m of queue) send(m.data, m.isBinary)
+      })
+      up.on('message', (raw: RawData, isBinary: boolean) => toClient(toBuffer(raw), isBinary))
+      up.on('error', () => {
+        if (!upstreamOpen) end(1011, 'The video is not available.', 'upstream_failed')
+      })
+      up.on('close', (code) => {
+        if (!upstreamOpen) end(1011, 'The video is not available.', 'upstream_failed')
+        else end(code === 1000 || code === 1001 ? 1000 : 1011, code === 1000 || code === 1001 ? 'Video ended' : 'The video is not available.')
+      })
+    }
   }
 
   // ── shutdown ───────────────────────────────────────────────────────────────
@@ -461,9 +614,10 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
         for (const ws of wss.clients) ws.terminate()
         server.closeAllConnections()
       }
+      if (checkTimer) clearInterval(checkTimer)
       server.close(() => finish()) // the callback also runs (with an error) when the server was not listening
       server.closeIdleConnections()
-      for (const s of [...sessions]) s.end(1001, 'Server stopping')
+      for (const s of [...sessions, ...pending]) s.end(1001, 'Server stopping')
       for (const ws of wss.clients) closeSocket(ws, 1001, 'Server stopping')
       timers.push(setTimeout(cutAll, Math.min(1500, timeoutMs / 2)))
       timers.push(
@@ -473,6 +627,8 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
         }, timeoutMs),
       )
     })
+  server.validateNow = validateNow
+  server.health = health
 
   return server
 }

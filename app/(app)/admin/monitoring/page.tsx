@@ -1,3 +1,4 @@
+import { GatewayHealthPanel } from '@/components/admin/GatewayHealthPanel'
 import { AutoRefresh } from '@/components/monitor/AutoRefresh'
 import { CheckNowButton } from '@/components/monitor/CheckNowButton'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
@@ -7,6 +8,7 @@ import { requireAdministration } from '@/lib/auth/profile'
 import { getWorkerStatus } from '@/lib/monitor/health'
 import { describeRounds } from '@/lib/monitor/last-checked'
 import { isStale, nvrLoginProblem, type StateRow } from '@/lib/queries/status'
+import { openVideoSessions, readGatewayHealth } from '@/lib/streams/gateway-health'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import { formatDateTime } from '@/lib/time'
@@ -32,7 +34,7 @@ export default async function MonitoringPage() {
   const admin = createAdminClient()
   const now = new Date()
   const since = new Date(now.getTime() - GAP_DAYS * 86_400_000).toISOString()
-  const [worker, states, stores, cameras, recorders, gapsRead] = await Promise.all([
+  const [worker, states, stores, cameras, recorders, gapsRead, gateway, orgOpen] = await Promise.all([
     getWorkerStatus(admin),
     fetchAll((from, to) =>
       admin.from('check_state').select('target_type, target_id, status, down_since, last_checked_at, last_up_at').eq('org_id', me.org_id).order('id').range(from, to),
@@ -43,6 +45,9 @@ export default async function MonitoringPage() {
     fetchAll((from, to) => admin.from('recorders').select('id, location_id, assets!recorders_asset_fk!inner(name, archived_at)').eq('org_id', me.org_id).is('assets.archived_at', null).order('created_at').order('id').range(from, to)),
     // The gaps are about the whole checker, not one organisation. A failed read only leaves this list out.
     admin.from('monitor_gaps').select('id, started_at, ended_at').gte('ended_at', since).order('started_at', { ascending: false }).limit(GAPS_SHOWN),
+    // P2-4: the video gateway's health (its /g/health counts) and this organisation's open video sessions (the registry).
+    readGatewayHealth(),
+    openVideoSessions(admin, me.org_id),
   ])
   const gaps = gapsRead.error ? null : (gapsRead.data ?? [])
   const rounds = describeRounds(worker)
@@ -113,6 +118,8 @@ export default async function MonitoringPage() {
           </p>
         )}
       </section>
+
+      <GatewayHealthPanel gateway={gateway} orgOpen={orgOpen} />
 
       {loginProblems.length > 0 && (
         <section className="space-y-2">

@@ -9,7 +9,8 @@ import { sanitizeError } from '@/lib/observability/sanitize-error'
 // Moving a location between clusters or a cluster between regions changes access AT ONCE for everybody holding a cluster or region
 // grant (the scopes expand when access is evaluated). The preview (preview_hierarchy_change) shows who gains and who loses what
 // before the move; the move (inventory_move_location / inventory_move_cluster) bumps the access version of the affected people — the
-// signal the session registry of P2-4 uses to re-check open video (P2-4 is not built yet) — and is audited with them.
+// signal the session registry of P2-4 uses to re-check open video (a deferred trigger on profiles ends the sessions that lost
+// access at commit; the gateway closes their sockets within 15 s) — and is audited with them.
 
 export const MSG_CODE = 'Enter a code: letters, numbers and dashes, up to 50.'
 const MSG_NAME = 'Enter a name (up to 200 characters).'

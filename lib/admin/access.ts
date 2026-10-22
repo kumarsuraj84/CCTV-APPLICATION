@@ -10,6 +10,7 @@
 import { createHmac, randomBytes } from 'node:crypto'
 import { processSingleton } from '@/lib/process-singleton'
 import { getSecret } from '@/lib/secrets'
+import { revalidateMediaSessions } from '@/lib/streams/registry'
 import { z } from 'zod'
 import { addAudit } from '@/lib/admin/audit'
 import { canManageRole, type Role } from '@/lib/admin/roles'
@@ -337,6 +338,9 @@ async function applyNormal(admin: AdminClient, actor: Actor, target: Target, nor
     })
   }
   if (revokes.length > 0) {
+    // P2-4 (D-3): re-check this person's open video now; only the sessions the removed grants covered end (the gateway closes those
+    // sockets at its next check, ≤ 15 s). The database trigger on profiles does the same at commit; this is the explicit call.
+    await revalidateMediaSessions(admin, actor.orgId, [target.id])
     await auditInParts(admin, {
       orgId: actor.orgId, actorId: actor.id, action: 'access_revoked', entityId: target.id, detail: { version: res.version },
       grants: revokes.map((n) => {

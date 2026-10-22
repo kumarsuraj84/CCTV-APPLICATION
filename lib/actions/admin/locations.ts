@@ -73,7 +73,7 @@ export async function moveNodeAction(input: MoveInput): Promise<AdminActionState
   const { clients, actor } = await ctx()
   const res = await moveNode(clients, actor, input)
   refresh()
-  // Review I-1 / M-13: the true statement about video already open (P2-4, the session registry, is not built yet).
+  // Review I-1 / M-13: the true statement about video already open (P2-4: the session registry stops it within a minute).
   return done(res, () => ({ ok: true, message: `Moved. Access follows the new place at once. ${MSG_OPEN_VIDEO}` }))
 }
 

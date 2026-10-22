@@ -12,8 +12,8 @@ const RIGHT: Record<string, string> = { 'cctv.live': 'live video', 'cctv.playbac
 /**
  * Moves a location to another cluster, or a cluster to another region (ruling C-1), in two steps: "Check the effect on access" shows
  * who would gain or lose cameras (the database's preview), and only then "Move" saves exactly that move. The change takes effect at
- * once for everybody with a cluster or region grant there. Video already open is NOT cut off yet (review I-1): the session registry
- * (P2-4) will re-check open sessions; when it lands, change MSG_OPEN_VIDEO (lib/inventory/forms.ts) and its unit test.
+ * once for everybody with a cluster or region grant there. Video already open of the people who lose access stops within a minute
+ * (review I-1; P2-4: the move raises their access version, which re-checks their open sessions, and the gateway closes them).
  */
 export function MoveForm({ kind, id, current, options }: { kind: 'location' | 'cluster'; id: string; current: string | null; options: { id: string; label: string }[] }) {
   const router = useRouter()
