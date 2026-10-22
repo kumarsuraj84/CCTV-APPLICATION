@@ -135,6 +135,55 @@ describe('media session registry (P2-4)', () => {
       const r = await person('org').client.rpc('has_capability_for_user', { p_user: person('org').id, p_cap: 'cctv.live', p_kind: 'camera', p_id: cam1 })
       expect(r.error).not.toBeNull()
     })
+
+    // Review m-4: the twin check runs on every suite (not only when 0029 applied), so a later migration that changes
+    // has_capability_for without its twin is caught here.
+    it('the twin is still the twin of has_capability_for (checked in the database on every run)', async () => {
+      const { data, error } = await admin().rpc('access_twin_violations')
+      expect(error).toBeNull()
+      expect(data).toEqual([])
+      expect((await person('org').client.rpc('access_twin_violations')).error).not.toBeNull()
+    })
+
+    it('review m-4: also for IT capabilities on assets, ended and future grants, an archived cluster and another organisation’s grant', async () => {
+      const asset = (await admin().from('assets').insert({ org_id: orgId, location_id: L2, type: 'switch', name: 'Switch', ip: '172.31.7.9' }).select('id').single()).data!.id
+      const archivedCluster = await createCluster(orgId, region)
+      const Lz = await createLocation(orgId, { clusterId: archivedCluster })
+      const Rz = await createRecorder(orgId, Lz, { host: '10.77.11.1' })
+      const camZ = await createCamera(orgId, { locationId: Lz, recorderId: Rz, channel: 1 })
+      const itViewer = await createUser(orgId, 'user')
+      await grant(orgId, itViewer.id, 'it.monitoring.view', atLocation(L2))
+      const ended = await createUser(orgId, 'user')
+      await grant(orgId, ended.id, 'cctv.live', ORG_SCOPE, { validFrom: new Date(Date.now() - 7_200_000).toISOString(), validUntil: new Date(Date.now() - 3_600_000).toISOString() })
+      const future = await createUser(orgId, 'user')
+      await grant(orgId, future.id, 'cctv.live', ORG_SCOPE, { validFrom: new Date(Date.now() + 3_600_000).toISOString() })
+      const clusterHolder = await createUser(orgId, 'user')
+      await grant(orgId, clusterHolder.id, ['cctv.live', 'it.monitoring.view'], atCluster(archivedCluster))
+      const foreigner = await createUser(otherOrg, 'user')
+      await grant(otherOrg, foreigner.id, ['cctv.live', 'it.monitoring.view'], ORG_SCOPE)
+      // A cluster with a location in it cannot be archived (DR007): move the location out, then archive the empty cluster.
+      expect((await admin().rpc('inventory_move_location', { p_org: orgId, p_location: Lz, p_cluster: c1, p_actor: actor.id })).error).toBeNull()
+      expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'cluster', p_id: archivedCluster, p_actor: actor.id })).error).toBeNull()
+      const targets: [string, string][] = [['asset', asset], ['location', L2], ['camera', camZ], ['camera', cam4], ['cluster', archivedCluster], ['location', Lz], ['recorder', Rz]]
+      let compared = 0
+      for (const u of [itViewer, ended, future, clusterHolder, foreigner]) {
+        for (const cap of ['cctv.live', 'it.monitoring.view']) {
+          for (const [kind, id] of targets) {
+            const mine = await u.client.rpc('has_capability_for', { p_cap: cap, p_kind: kind, p_id: id })
+            const server = await admin().rpc('has_capability_for_user', { p_user: u.id, p_cap: cap, p_kind: kind, p_id: id })
+            expect(mine.error).toBeNull()
+            expect(server.data, `${cap} ${kind}`).toBe(mine.data)
+            compared++
+          }
+        }
+      }
+      expect(compared).toBe(5 * 2 * targets.length)
+      // The cases are what they claim to be.
+      expect((await admin().rpc('has_capability_for_user', { p_user: itViewer.id, p_cap: 'it.monitoring.view', p_kind: 'asset', p_id: asset })).data).toBe(true)
+      expect((await admin().rpc('has_capability_for_user', { p_user: ended.id, p_cap: 'cctv.live', p_kind: 'camera', p_id: cam4 })).data).toBe(false)
+      expect((await admin().rpc('has_capability_for_user', { p_user: future.id, p_cap: 'cctv.live', p_kind: 'camera', p_id: cam4 })).data).toBe(false)
+      expect((await admin().rpc('has_capability_for_user', { p_user: foreigner.id, p_cap: 'cctv.live', p_kind: 'camera', p_id: cam4 })).data).toBe(false)
+    })
   })
 
   describe('media_session_create', () => {
@@ -429,6 +478,107 @@ describe('media session registry (P2-4)', () => {
     })
   })
 
+  describe('review round 1', () => {
+    it('m-1: a closed (not revoked) session reopens within its connect window, one socket at a time, at most 3 times', async () => {
+      const sid = await watching(person('camera'), cam1)
+      // A second copy while the first socket is open: refused.
+      expect(await open(sid, person('camera'), cam1)).toMatchObject({ ok: false, reason: 'already_opened' })
+      for (let i = 0; i < 2; i++) {
+        expect((await admin().rpc('media_session_close', { p_sid: sid })).error).toBeNull()
+        expect(await open(sid, person('camera'), cam1)).toMatchObject({ ok: true }) // the tile reconnects with the same token
+        expect((await row(sid)).closed_at).toBeNull()
+      }
+      await admin().rpc('media_session_close', { p_sid: sid })
+      expect(await open(sid, person('camera'), cam1)).toMatchObject({ ok: false, reason: 'closed' }) // third reopen = fourth open: refused
+      // A forged reopen of somebody else's closed session is still a mismatch, and leaves it closed.
+      const other = await watching(person('org'), cam4)
+      await admin().rpc('media_session_close', { p_sid: other })
+      expect(await open(other, person('camera'), cam4)).toMatchObject({ ok: false, reason: 'mismatch' })
+      expect((await row(other)).closed_at).not.toBeNull()
+    })
+
+    it('m-1: a revoked session never reopens, and a closed one does not reopen after its window or once access is gone', async () => {
+      const u = await createUser(orgId, 'user')
+      const [g] = await grant(orgId, u.id, 'cctv.live', atCamera(cam2))
+      const sid = await watching(u, cam2)
+      await admin().rpc('media_session_close', { p_sid: sid })
+      expect((await admin().rpc('revoke_grant', { p_org: orgId, p_user: u.id, p_grant_ids: [g], p_reason: 'test: gone' })).error).toBeNull()
+      expect(await open(sid, u, cam2)).toMatchObject({ ok: false, reason: 'access_changed' })
+      const [{ sid: late }] = await create(person('org'), 'live', [cam4], { connectSec: 1 })
+      expect((await open(late, person('org'), cam4)).ok).toBe(true)
+      await admin().rpc('media_session_close', { p_sid: late })
+      await new Promise((r) => setTimeout(r, 1300))
+      expect(await open(late, person('org'), cam4)).toMatchObject({ ok: false, reason: 'closed' })
+      const revoked = await watching(person('org'), cam4)
+      await admin().rpc('media_sessions_revoke_user', { p_org: orgId, p_user: person('org').id, p_reason: 'test_revoked' })
+      expect(await open(revoked, person('org'), cam4)).toMatchObject({ ok: false, reason: 'test_revoked' })
+    })
+
+    it('I-1 a: access changes re-check only OPENED sessions; a made-but-unused one is left alone and is checked when it is opened', async () => {
+      const u = await createUser(orgId, 'user')
+      const [g] = await grant(orgId, u.id, 'cctv.live', atCamera(cam3))
+      const opened = await watching(u, cam3)
+      const unused = await live(u, cam3)
+      expect((await admin().rpc('revoke_grant', { p_org: orgId, p_user: u.id, p_grant_ids: [g], p_reason: 'test: gone' })).error).toBeNull()
+      expect((await row(opened)).revoke_reason).toBe('access_changed')
+      expect((await row(unused)).revoked_at).toBeNull() // not re-checked at commit (it was before the fix)
+      expect(await open(unused, u, cam3)).toMatchObject({ ok: false, reason: 'access_changed' }) // opening checks it fully
+    })
+
+    it('I-1 a: a never-opened session whose connect window has passed counts as ended (connect_window_passed)', async () => {
+      const [{ sid }] = await create(person('org'), 'live', [cam4], { connectSec: 1 })
+      await new Promise((r) => setTimeout(r, 1300))
+      expect(Object.fromEntries(await stillValid([sid]))).toEqual({ [sid]: 'connect_window_passed' })
+    })
+
+    it('I-1: making sessions clears the person’s own never-opened ones whose window ended more than 5 minutes ago', async () => {
+      const u = await createUser(orgId, 'user')
+      await grant(orgId, u.id, 'cctv.live', ORG_SCOPE)
+      const stale = await live(u, cam4)
+      // Age it by moving its window back (service-role tooling only; the table is not writable through the API).
+      const { error } = await admin().rpc('media_sessions_age_test', { p_sid: stale, p_seconds: 600 })
+      expect(error).toBeNull()
+      await live(u, cam4)
+      expect((await admin().from('media_sessions').select('id').eq('id', stale)).data).toEqual([])
+    })
+
+    it('m-5: moving a cluster to another region ends the old region holders’ sessions', async () => {
+      const r2 = await createRegion(orgId)
+      const cl = await createCluster(orgId, region)
+      const loc = await createLocation(orgId, { clusterId: cl })
+      const rec = await createRecorder(orgId, loc, { host: '10.77.12.1' })
+      const cam = await createCamera(orgId, { locationId: loc, recorderId: rec, channel: 1 })
+      const regionHolder = await createUser(orgId, 'user')
+      await grant(orgId, regionHolder.id, 'cctv.live', atRegion(region))
+      const clusterHolder = await createUser(orgId, 'user')
+      await grant(orgId, clusterHolder.id, 'cctv.live', atCluster(cl))
+      const sr = await watching(regionHolder, cam)
+      const sc = await watching(clusterHolder, cam)
+      expect((await admin().rpc('inventory_move_cluster', { p_org: orgId, p_cluster: cl, p_region: r2, p_actor: actor.id })).error).toBeNull()
+      expect((await row(sr)).revoke_reason).toBe('access_changed')
+      expect((await row(sc)).revoked_at).toBeNull()
+    })
+
+    it('m-5: moving a camera to another location ends the old location holders’ sessions; a recorder with cameras cannot move', async () => {
+      const la = await createLocation(orgId)
+      const lb = await createLocation(orgId)
+      const ra = await createRecorder(orgId, la, { host: '10.77.13.1' })
+      const rb = await createRecorder(orgId, lb, { host: '10.77.13.2' })
+      const cam = await createCamera(orgId, { locationId: la, recorderId: ra, channel: 1 })
+      const aHolder = await createUser(orgId, 'user')
+      await grant(orgId, aHolder.id, 'cctv.live', atLocation(la))
+      const bHolder = await createUser(orgId, 'user')
+      await grant(orgId, bHolder.id, 'cctv.live', atLocation(lb))
+      const sa = await watching(aHolder, cam)
+      // The NVR cannot be moved while a camera is mapped to it (DR006): nothing changes, the session stays.
+      expect((await admin().from('assets').update({ location_id: lb }).eq('id', ra)).error).not.toBeNull()
+      expect((await row(sa)).revoked_at).toBeNull()
+      expect((await admin().from('cameras').update({ location_id: lb, recorder_id: rb, channel: 1 }).eq('id', cam)).error).toBeNull()
+      expect((await row(sa)).revoke_reason).toBe('access_changed')
+      expect((await open(await live(bHolder, cam), bHolder, cam)).ok).toBe(true)
+    })
+  })
+
   describe('retention and privileges', () => {
     it('prunes old finished and never-opened sessions of one organisation', async () => {
       const done = await watching(person('org'), cam4)
@@ -449,13 +599,13 @@ describe('media session registry (P2-4)', () => {
       const { data } = await admin().rpc('function_privileges')
       const by = new Map((data ?? []).map((f) => [f.name, f]))
       const server = ['has_capability_for_user', 'media_session_create', 'media_session_open', 'media_sessions_still_valid', 'media_session_close',
-        'media_sessions_revoke_user', 'media_sessions_revalidate', 'media_sessions_prune']
+        'media_sessions_revoke_user', 'media_sessions_revalidate', 'media_sessions_prune', 'access_twin_violations', 'media_sessions_age_test']
       for (const n of server) {
         expect(by.get(n)?.grantees, n).toEqual(['service_role'])
         expect(by.get(n)?.security_definer, n).toBe(true)
         expect(by.get(n)?.search_path, n).toBe('')
       }
-      for (const n of ['media_session_problem', 'media_session_target_problem', 'media_sessions_profile_changed']) {
+      for (const n of ['media_session_problem', 'media_session_target_problem', 'media_sessions_profile_changed', 'media_sessions_recheck_budget']) {
         expect(by.get(n)?.grantees, n).toEqual([])
         expect(by.get(n)?.search_path, n).toBe('')
       }

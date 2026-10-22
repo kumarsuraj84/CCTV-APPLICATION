@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { NvrClient } from '@/lib/nvr/client'
-import type { RegistryClient } from '@/lib/streams/registry'
+import { adminRegistry, type RegistryClient } from '@/lib/streams/registry'
 import { createConversionLimiter, parseVodQuery, serveVod, VOD_FAIL_CLOSED_AFTER_MS, VOD_VALIDATE_EVERY_MS, type ConversionLimiter, type VodDeps } from '@/lib/streams/vod'
 import { ADMINISTRATOR_SET, adminClient, atLocation, CCTV_VIEW, cleanupOrg, createLocation, createOrg, createRecorder, createUser, grant, type TestUser } from '../setup/fixtures'
 import { startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
@@ -146,6 +146,54 @@ describe('fast playback stops when access goes (P2-4)', () => {
     expect(ms).toBeGreaterThanOrEqual(700) // not before the fail-closed time (1 s here, from the last good check)
     expect(ms).toBeLessThan(4000)
     console.log(JSON.stringify({ vod_fail_closed_ms: { ms, validateMs: 250, failClosedMs: 1000 } }))
+  })
+
+  /** The admin client, counting every NVR login read and every session call it makes. */
+  function counting(over: { create?: 'refuse' | 'fail' } = {}) {
+    const calls: string[] = []
+    const client = new Proxy(admin(), {
+      get(target, prop) {
+        if (prop === 'rpc') {
+          return async (fn: string, args: object) => {
+            calls.push(fn)
+            if (fn === 'media_session_create' && over.create === 'fail') return { data: null, error: { code: '08006', message: 'down' } }
+            const r = await (target.rpc as unknown as (f: string, a: object) => Promise<{ data: unknown; error: unknown }>)(fn, args)
+            return fn === 'media_session_create' && over.create === 'refuse' ? { ...r, data: [] } : r
+          }
+        }
+        const v = Reflect.get(target, prop)
+        return typeof v === 'function' ? v.bind(target) : v
+      },
+    }) as ReturnType<typeof admin>
+    return { client, calls }
+  }
+
+  it('review m-6: no NVR login is read when the registry refuses the download or cannot be asked; with a session it is read after it', async () => {
+    const { u } = await exporter()
+    for (const create of ['refuse', 'fail'] as const) {
+      const c = counting({ create })
+      const res = await get(u, deps(u, { admin: c.client, registry: { open: async () => ({ ok: false, reason: 'x' }), stillValid: async () => new Map(), close: async () => {} } }))
+      expect(res.status, create).toBe(create === 'refuse' ? 404 : 503)
+      expect(c.calls.filter((f) => /credential/.test(f)), create).toEqual([])
+    }
+    const ok = counting()
+    // The registry through a plain client (the counting proxy only answers awaited rpc calls).
+    const res = await get(u, deps(u, { admin: ok.client, registry: adminRegistry(admin()), timing: { maxMs: 300, killGraceMs: 300, validateMs: 250 } }))
+    expect(res.status).toBe(200)
+    await res.arrayBuffer()
+    const i = ok.calls.indexOf('media_session_create')
+    expect(i).toBeGreaterThanOrEqual(0)
+    expect(ok.calls.indexOf('recorder_read_credential')).toBeGreaterThan(i)
+  })
+
+  it('review m-7: a session that was made but could not be opened is closed again', async () => {
+    const { u } = await exporter()
+    const closed: string[] = []
+    const throwing: RegistryClient = { open: async () => { throw new Error('down') }, stillValid: async () => new Map(), close: async (sid) => void closed.push(sid) }
+    const res = await get(u, deps(u, { registry: throwing }))
+    expect(res.status).toBe(503)
+    expect(closed).toHaveLength(1)
+    expect((await sessionsOf(u)).map((r) => r.kind)).toEqual(['vod'])
   })
 
   it('a download the registry will not register is "Camera not found." and nothing is asked of the NVR or started', async () => {

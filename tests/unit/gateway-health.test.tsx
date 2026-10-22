@@ -37,7 +37,9 @@ describe('the Monitoring page panel', () => {
   it('shows the open videos, the organisation’s share and how old the last access check is', () => {
     const t = text(renderToStaticMarkup(<GatewayHealthPanel gateway={{ ok: true, health: ok }} orgOpen={3} />))
     expect(t).toContain('Video gateway')
-    expect(t).toContain('Open videos 12')
+    expect(t).toContain('Checking access')
+    // Review m-9: the gateway's count covers every organisation it serves.
+    expect(t).toContain('On this gateway (all organisations) 12')
     expect(t).toContain('In your organisation 3')
     expect(t).toContain('Last access check 4 seconds ago')
     expect(t).toContain('Open video is checked every 15 seconds')
@@ -47,6 +49,13 @@ describe('the Monitoring page panel', () => {
     const failing = text(renderToStaticMarkup(<GatewayHealthPanel gateway={{ ok: true, health: { ...ok, status: 'not_verifying', registry: 'failing', lastValidationAgeSec: 31 } }} orgOpen={null} />))
     expect(failing).toContain('The gateway cannot check access right now. Open video is closed 45 seconds after the last successful check.')
     expect(failing).toContain('In your organisation Could not be read')
+    expect(failing).not.toContain('Checking access')
+    // Review m-2: a last good check older than two intervals is not green either (the gateway asks even when idle).
+    const stale = text(renderToStaticMarkup(<GatewayHealthPanel gateway={{ ok: true, health: { ...ok, lastValidationAgeSec: 60 } }} orgOpen={0} />))
+    expect(stale).not.toContain('Checking access')
+    expect(stale).toContain('The gateway has not checked access for 60 seconds.')
+    const never = text(renderToStaticMarkup(<GatewayHealthPanel gateway={{ ok: true, health: { ...ok, lastValidationAgeSec: null } }} orgOpen={0} />))
+    expect(never).not.toContain('Checking access')
     const down = text(renderToStaticMarkup(<GatewayHealthPanel gateway={{ ok: false }} orgOpen={0} />))
     expect(down).toContain('The video gateway is not answering.')
     expect(down).toContain('npm run gateway')

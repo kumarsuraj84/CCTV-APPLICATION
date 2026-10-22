@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { MAX_STREAMS_PER_REQUEST, openStreams, type OpenedStream } from '@/lib/streams/open'
+import { MAX_STREAMS_PER_REQUEST, openStreams, renewStreams, type OpenedStream } from '@/lib/streams/open'
 import { verifyStreamToken } from '@/lib/streams/token'
 import { startFakeGo2rtc, type FakeGo2rtc, type Seen } from '../helpers/fake-go2rtc'
 import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createLocation, createOrg, createRecorder, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
@@ -165,6 +165,42 @@ describe('openStreams', () => {
     }
     expect(sids.size).toBe(2)
     expect(streams[0].token).not.toBe(streams[1].token)
+  })
+
+  // P2-4 review m-11: the wall's one-minute renewal only re-checks cctv.live and makes new sessions; no go2rtc or NVR work.
+  it('renewing tokens makes new sessions for the cameras still allowed, without go2rtc requests or NVR login reads', async () => {
+    const first = streamsOf(await open(viewer, [a1, a2]))
+    await new Promise((r) => setTimeout(r, 200)) // the opening's own background prune of go2rtc has run
+    fake.seen.length = 0
+    fake.wholeListReads = 0
+    const rpcs: string[] = []
+    const real = admin()
+    const spy = new Proxy(real, {
+      get(target, prop) {
+        if (prop === 'rpc') return (fn: string, args: object) => { rpcs.push(fn); return (target.rpc as unknown as (f: string, a: object) => unknown)(fn, args) }
+        const v = Reflect.get(target, prop)
+        return typeof v === 'function' ? v.bind(target) : v
+      },
+    }) as ReturnType<typeof admin>
+    const renewed = await renewStreams({ admin: spy, rls: viewer.client, env: {} }, { id: viewer.id, orgId }, [a1, a2, b1, 'nope'], 'sub')
+    if (!renewed.ok) throw new Error(renewed.error)
+    expect(renewed.tokens.map((t) => t.cameraId)).toEqual([a1, a2]) // b1 is not the viewer's
+    expect(fake.seen).toEqual([])
+    expect(fake.wholeListReads).toBe(0)
+    expect(rpcs).toEqual(['media_session_create'])
+    for (const t of renewed.tokens) {
+      const claims = verifyStreamToken(t.token, Date.now(), SECRET)!
+      expect(claims).toMatchObject({ u: viewer.id, c: t.cameraId, k: 'sub' })
+      expect(claims.sid).not.toBe(verifyStreamToken(first.find((s) => s.cameraId === t.cameraId)!.token, Date.now(), SECRET)!.sid)
+    }
+    // A camera of a switched-off NVR is left out at renewal too.
+    const sOff2 = await addStore(orgId, 'ORNW')
+    const off = await addCamera(orgId, sOff2, 1, 'Renewal off')
+    const w = await createUser(orgId, 'user')
+    await grant(orgId, w.id, CCTV_VIEW, [atLocation(sOff2), atLocation(sA)])
+    await admin().rpc('recorder_set_monitoring', { p_org: orgId, p_recorder: recorderOf.get(sOff2)!, p_enabled: false, p_reason: 'test: off' })
+    const r2 = await renewStreams({ admin: admin(), rls: w.client, env: {} }, { id: w.id, orgId }, [off, a1], 'sub')
+    expect(r2.ok && r2.tokens.map((t) => t.cameraId)).toEqual([a1])
   })
 
   it('uses the injected clock for the expiry', async () => {

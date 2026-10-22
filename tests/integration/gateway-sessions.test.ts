@@ -274,6 +274,49 @@ describe('gateway and the session registry (P2-4)', () => {
     console.log(JSON.stringify({ gateway_check_stub: { sockets: 300, calls: s.registry.checks.length, ms: Math.round(ms * 10) / 10 } }))
   }, 60_000)
 
+  it('review m-3: a check that never answers still lets the fail-closed time run out (gateway-side deadline)', async () => {
+    const s = await start({ checkDeadlineMs: 100 })
+    const sockets = [connect(s), connect(s)]
+    await Promise.all(sockets.map((x) => x.opened))
+    await waitFor(() => s.fake.connections.length === 2)
+    s.registry.stillValid = () => new Promise(() => {}) // never settles
+    for (const step of [15_000, 15_000, 15_000]) {
+      s.clock.t += step
+      await s.gateway.validateNow()
+    }
+    const results = await Promise.all(sockets.map((x) => x.closed))
+    for (const r of results) expect(r).toEqual({ code: 1013, reason: 'Cannot verify access' })
+    expect(s.gateway.health()).toMatchObject({ registry: 'failing', openSessions: 0 })
+  })
+
+  it('review m-2: an idle gateway asks the registry too, so a broken key or database shows as failing, and recovers', async () => {
+    const s = await start()
+    await s.gateway.validateNow()
+    expect(s.registry.checks).toHaveLength(1) // a ping, although no socket is open
+    expect(s.gateway.health()).toMatchObject({ status: 'ok', registry: 'ok', lastValidationAgeSec: 0 })
+    s.registry.failCheck = true
+    s.clock.t += 15_000
+    await s.gateway.validateNow()
+    expect(s.gateway.health()).toMatchObject({ status: 'not_verifying', registry: 'failing', lastValidationAgeSec: 15 })
+    s.registry.failCheck = false
+    s.clock.t += 15_000
+    await s.gateway.validateNow()
+    expect(s.gateway.health()).toMatchObject({ registry: 'ok', lastValidationAgeSec: 0 })
+  })
+
+  it('review m-2: a registry that refuses to open sessions (broken key) shows as failing; a good open clears it', async () => {
+    const s = await start()
+    await s.gateway.validateNow()
+    s.registry.failOpen = true
+    expect(await connect(s).closed).toEqual({ code: 1013, reason: 'Cannot verify access' })
+    expect(s.gateway.health()).toMatchObject({ registry: 'failing' })
+    s.registry.failOpen = false
+    const c = connect(s)
+    await c.opened
+    await waitFor(() => s.fake.connections.length === 1)
+    expect(s.gateway.health()).toMatchObject({ registry: 'ok' })
+  })
+
   it('health says how many sessions are open and how old the last check is, and nothing else', async () => {
     const s = await start()
     const c = connect(s)

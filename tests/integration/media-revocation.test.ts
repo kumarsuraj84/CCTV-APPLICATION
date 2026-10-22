@@ -141,6 +141,29 @@ describe('open video stops when access goes (P2-4 acceptance)', () => {
     stillOpen(s4)
   })
 
+  it('review m-1: a tile whose socket dropped reconnects with the same token within its window; a copy beside an open socket is refused', async () => {
+    const { u } = await viewer('user', 'cctv.live', atCamera(cam4))
+    const [s] = await watch(u, [cam4])
+    s.ws.close() // the picture dropped (camera hiccup, watchdog)
+    await s.closed
+    // The gateway closes the session in the registry when the socket ends.
+    const sid = verifyStreamToken(s.token, Date.now(), SECRET)!.sid
+    for (let i = 0; i < 50; i++) {
+      const { data } = await admin().from('media_sessions').select('closed_at').eq('id', sid).single()
+      if (data?.closed_at) break
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    const again = openSocket(`ws://127.0.0.1:${port}/g/ws?token=${encodeURIComponent(s.token)}`, APP)
+    sockets.push(again.ws)
+    expect(await again.opened).toBe(true)
+    await new Promise((r) => setTimeout(r, 300))
+    expect(again.ws.readyState).toBe(WebSocket.OPEN)
+    const copy = openSocket(`ws://127.0.0.1:${port}/g/ws?token=${encodeURIComponent(s.token)}`, APP)
+    sockets.push(copy.ws)
+    expect(await copy.closed).toEqual({ code: 1008, reason: 'Not allowed' })
+    stillOpen(again)
+  })
+
   it('(a) deactivating the person (people screen service) closes every socket of theirs; the app also revokes the sessions itself', async () => {
     const { u } = await viewer('user', 'cctv.live', atLocation(L1))
     const mine = await watch(u, [cam1, cam3])

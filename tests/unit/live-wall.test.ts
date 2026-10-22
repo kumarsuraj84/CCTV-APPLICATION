@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  autoLayout, gatewayBase, gatewayScriptUrl, gatewaySocketUrl, LAYOUTS, layoutLabel, pageCount, pageItems, pageStart, perPage, QUICK_RETRY_MS, REFRESH_AFTER_MS, RETRY_EVERY_MS,
+  autoLayout, gatewayBase, gatewayScriptUrl, gatewaySocketUrl, LAYOUTS, layoutLabel, pageCount, pageItems, pageStart, perPage, QUICK_RETRY_MS, REFRESH_AFTER_MS, renewalKind,
+  REOPEN_AFTER_MS, RETRY_EVERY_MS,
 } from '@/lib/streams/wall'
 import { LIVE_WALL_ENABLED, liveWallHref } from '@/lib/groups/live-wall'
 import { MAX_STREAMS_PER_REQUEST } from '@/lib/streams/open'
@@ -46,6 +47,17 @@ describe('wall timing', () => {
     expect(TOKEN_LIFETIME_SEC * 1000 - REFRESH_AFTER_MS).toBeGreaterThanOrEqual(30_000) // time for the renewal itself to come back
     expect(RETRY_EVERY_MS).toBe(30_000)
     expect(QUICK_RETRY_MS).toBeLessThan(RETRY_EVERY_MS)
+  })
+})
+
+describe('wall renewal (P2-4 review m-11)', () => {
+  it('renews only the tokens every minute and opens everything again every 8 minutes', () => {
+    expect(REOPEN_AFTER_MS).toBe(8 * 60_000)
+    const t = 1_800_000_000_000
+    expect(renewalKind(t + 60_000, t)).toBe('tokens')
+    expect(renewalKind(t + REOPEN_AFTER_MS - 1, t)).toBe('tokens')
+    expect(renewalKind(t + REOPEN_AFTER_MS, t)).toBe('full')
+    expect(renewalKind(t, 0)).toBe('full') // never fully opened
   })
 })
 
