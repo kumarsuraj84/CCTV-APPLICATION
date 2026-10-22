@@ -9,7 +9,7 @@ import { FAST_REFRESH_MS, refreshDelayMs } from '@/lib/monitor/refresh-delay'
  * tab is visible, one timer at a time (never stacked), and it stops when the page is closed. Back in view after a while away, it refreshes
  * once at once and carries on.
  */
-export function AutoRefresh({ busy }: { busy: boolean }) {
+export function AutoRefresh({ busy, everyMs }: { busy: boolean; /** A fixed pace instead of the Monitoring page's (P4-L1: the Live screens, 60 s). */ everyMs?: number }) {
   const router = useRouter()
   const openedAt = useRef<number | null>(null)
   const lastRefresh = useRef(0)
@@ -29,7 +29,7 @@ export function AutoRefresh({ busy }: { busy: boolean }) {
       clear()
       if (document.visibilityState !== 'visible') return
       const openedForMs = openedAt.current === null ? 0 : Date.now() - openedAt.current
-      timer = setTimeout(tick, refreshDelayMs({ busy, openedForMs }))
+      timer = setTimeout(tick, everyMs ?? refreshDelayMs({ busy, openedForMs }))
     }
     function tick() {
       lastRefresh.current = Date.now()
@@ -39,7 +39,7 @@ export function AutoRefresh({ busy }: { busy: boolean }) {
     function onVisibility() {
       clear()
       if (document.visibilityState !== 'visible') return
-      if (Date.now() - lastRefresh.current >= FAST_REFRESH_MS) tick()
+      if (Date.now() - lastRefresh.current >= (everyMs ?? FAST_REFRESH_MS)) tick()
       else schedule()
     }
     document.addEventListener('visibilitychange', onVisibility)
@@ -48,7 +48,7 @@ export function AutoRefresh({ busy }: { busy: boolean }) {
       clear()
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [router, busy])
+  }, [router, busy, everyMs])
 
   return null
 }

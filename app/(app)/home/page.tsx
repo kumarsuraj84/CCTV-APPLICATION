@@ -1,18 +1,20 @@
 import Link from 'next/link'
 import { Inbox } from 'lucide-react'
+import { RollupCards } from '@/components/live/RollupCards'
 import { AutoRefresh } from '@/components/monitor/AutoRefresh'
 import { CheckNowButton } from '@/components/monitor/CheckNowButton'
 import { MonitoringBanner } from '@/components/monitor/MonitoringBanner'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { MSG_ACCESS_UNREADABLE, MSG_NOTHING_ASSIGNED } from '@/lib/auth/capabilities'
+import { holds, MSG_ACCESS_UNREADABLE, MSG_NOTHING_ASSIGNED } from '@/lib/auth/capabilities'
 import { requireProfile } from '@/lib/auth/profile'
 import { DEVICE_TYPE_LABELS, DEVICE_TYPES, type DeviceType } from '@/lib/inventory/device-types'
 import { getWorkerStatus } from '@/lib/monitor/health'
 import { lastCheckedAt } from '@/lib/monitor/last-checked'
 import { getMonitoringState } from '@/lib/monitor/uptime'
 import { homeSections } from '@/lib/nav'
+import { loadHomeRollups } from '@/lib/queries/home-rollups'
 import { getDashboard, type Dashboard } from '@/lib/queries/status'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
@@ -86,12 +88,16 @@ export default async function HomePage() {
   }
 
   const admin = createAdminClient()
-  const [d, monitoring, worker] = await Promise.all([
-    getDashboard(await createClient()),
+  const supabase = await createClient()
+  const [d, monitoring, worker, rollups] = await Promise.all([
+    getDashboard(supabase),
     getMonitoringState(admin),
     // Only the time of the last full check is shown; if it cannot be read, the line is simply left out.
     getWorkerStatus(admin).catch(() => null),
+    // P4-L1: roll-ups per region and cluster (status_rollups as the person: camera words for everybody, NVR figures for the IT view).
+    loadHomeRollups(supabase),
   ])
+  const liveLinks = holds(profile.capabilities, 'cctv.live')
   // The most recent of the last devices round, the last cameras round and the last full check.
   const checkedAt = worker ? lastCheckedAt(worker) : null
   const cameraProblems = d.recentOutages.filter((o) => o.kind === 'camera')
@@ -118,14 +124,18 @@ export default async function HomePage() {
         <section aria-labelledby="home-cctv" className="space-y-4">
           <div className="space-y-2">
             <h2 id="home-cctv" className="font-medium">Cameras</h2>
-            {d.cameras.total === 0 ? (
+            {rollups.cameras.total === 0 ? (
               <p className="text-sm text-muted-foreground">No cameras are assigned to you yet. Ask an administrator for access.</p>
             ) : (
+              // P4-L1 (directive MC-4, LG-19): from the roll-ups — a camera whose NVR cannot be reached is "Recorder not reachable", not
+              // counted as offline; switched-off NVRs' cameras are "Switched off".
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                {tile('cam-live', 'Live', d.cameras.live, '/locations', 'good')}
-                {tile('cam-down', 'Offline', d.cameras.down, '/locations', 'bad')}
-                {d.cameras.stale > 0 && tile('cam-stale', 'Not checked lately', d.cameras.stale, '/locations')}
-                {tile('cam-unknown', 'Not checked yet', d.cameras.unknown, '/locations')}
+                {tile('cam-live', 'Live', rollups.cameras.live, liveLinks ? '/live' : '/locations', 'good')}
+                {tile('cam-down', 'Offline', rollups.cameras.offline, '/locations', 'bad')}
+                {rollups.cameras.recorderUnreachable > 0 && tile('cam-unreachable', 'Recorder not reachable', rollups.cameras.recorderUnreachable, '/locations')}
+                {rollups.cameras.stale > 0 && tile('cam-stale', 'Not checked lately', rollups.cameras.stale, '/locations')}
+                {tile('cam-unknown', 'Not checked yet', rollups.cameras.notChecked, '/locations')}
+                {rollups.cameras.off > 0 && tile('cam-off', 'Switched off', rollups.cameras.off, '/locations')}
                 {tile('locations', 'Locations', d.stores.total, '/locations')}
               </div>
             )}
@@ -134,6 +144,19 @@ export default async function HomePage() {
             <h3 className="text-sm font-medium">Recent camera problems</h3>
             <OutageList items={cameraProblems} empty="No camera problems have been recorded yet." />
           </div>
+        </section>
+      )}
+
+      {(rollups.regions.length > 0 || rollups.clusters.length > 0) && (
+        <section aria-labelledby="home-rollups" className="space-y-4">
+          <div className="space-y-1">
+            <h2 id="home-rollups" className="font-medium">By region and cluster</h2>
+            <p className="text-sm text-muted-foreground">
+              &ldquo;Recorder not reachable&rdquo; means the NVR the cameras are on cannot be reached, so whether the cameras themselves work is not known.
+            </p>
+          </div>
+          <RollupCards title="Regions" level="region" rows={rollups.regions} liveLinks={liveLinks} />
+          <RollupCards title="Clusters" level="cluster" rows={rollups.clusters} liveLinks={liveLinks} />
         </section>
       )}
 

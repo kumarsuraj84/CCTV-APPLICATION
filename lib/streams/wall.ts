@@ -1,8 +1,13 @@
 // Pure helpers for the live wall: layouts, paging and the gateway addresses. No browser or server code here, so they can be tested alone.
 
-/** Tiles per side: 1 (one big picture), 2 by 2, 3 by 3 or 4 by 4. A 6 by 6 wall is not offered: one request opens at most 36 streams. */
-export const LAYOUTS = [1, 2, 3, 4] as const
+/**
+ * Tiles per side: 1 (one big picture), 2 by 2, 3 by 3, 4 by 4 or 5 by 5 (P4-L1, LG-2: the legacy wall's 25). A 6 by 6 wall is not
+ * offered: one request opens at most 36 streams, and 25 is the default number of live streams per person (LIVE_MAX_STREAMS_PER_USER).
+ */
+export const LAYOUTS = [1, 2, 3, 4, 5] as const
 export type Layout = (typeof LAYOUTS)[number]
+/** The biggest wall picked by itself; 5 by 5 only when somebody chooses it. */
+const AUTO_LAYOUTS = [1, 2, 3, 4] as const
 
 // P2-4 (D-3): a token can open a socket for 90 seconds only, so new ones are fetched every minute while the wall is shown (a tile that
 // reconnects always holds one that still works). Each renewal checks cctv.live again and makes new media sessions; unused ones expire.
@@ -18,9 +23,9 @@ export const QUICK_RETRY_MS = 2_000 // a picture that played and then ended (the
 export const perPage = (layout: Layout): number => layout * layout
 export const layoutLabel = (layout: Layout): string => (layout === 1 ? '1' : `${layout}×${layout}`)
 
-/** The layout that shows everything on one page when it can, otherwise the biggest wall. */
+/** The layout that shows everything on one page when it can, otherwise 4 by 4. */
 export function autoLayout(cameraCount: number): Layout {
-  for (const l of LAYOUTS) if (cameraCount <= perPage(l)) return l
+  for (const l of AUTO_LAYOUTS) if (cameraCount <= perPage(l)) return l
   return 4
 }
 

@@ -38,9 +38,11 @@ type State = {
   triedAt: number
   /** A request after the first one failed (the tokens in hand are still good for a while). */
   refreshFailed: boolean
+  /** P4-L1: cameras the server left out because the person's live streams are at their limit (asked for again with the missing ones). */
+  paused: string[]
 }
 
-const fresh = (key: string): State => ({ key, phase: 'loading', streams: {}, error: null, issuedAt: 0, fullAt: 0, triedAt: 0, refreshFailed: false })
+const fresh = (key: string): State => ({ key, phase: 'loading', streams: {}, error: null, issuedAt: 0, fullAt: 0, triedAt: 0, refreshFailed: false, paused: [] })
 
 type Mode = 'open' | 'full' | 'tokens'
 
@@ -91,7 +93,8 @@ export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: bo
           const everyone = which.length === ids.length
           const streams: Record<string, OpenedStream> = everyone ? {} : { ...prev.streams }
           for (const s of res.streams) streams[s.cameraId] = s
-          return { ...prev, phase: 'ready', streams, error: null, triedAt: now, refreshFailed: false, issuedAt: everyone ? now : prev.issuedAt, fullAt: everyone ? now : prev.fullAt }
+          const paused = everyone ? (res.paused ?? []) : [...prev.paused.filter((id) => !which.includes(id)), ...(res.paused ?? [])]
+          return { ...prev, phase: 'ready', streams, error: null, triedAt: now, refreshFailed: false, issuedAt: everyone ? now : prev.issuedAt, fullAt: everyone ? now : prev.fullAt, paused }
         })
       })
       .catch(() => {
@@ -126,5 +129,5 @@ export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: bo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, key, idsText, current.phase, current.issuedAt, current.triedAt, current.refreshFailed, loaded])
 
-  return { phase: current.phase, streams: active ? current.streams : ({} as Record<string, OpenedStream>), error: current.error }
+  return { phase: current.phase, streams: active ? current.streams : ({} as Record<string, OpenedStream>), error: current.error, paused: active ? current.paused : [] }
 }

@@ -6,6 +6,7 @@ import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 import { checkRecorderTarget } from '@/lib/security/targets'
 import type { Go2rtcClient } from '@/lib/streams/go2rtc'
+import { capStreams, maxStreamsPerUser } from '@/lib/streams/concurrency'
 import { createMediaSessions } from '@/lib/streams/registry'
 import { buildRtspUrl, demoSource, isDemoRecorder } from '@/lib/streams/source'
 import { signStreamToken, streamName, TOKEN_LIFETIME_SEC } from '@/lib/streams/token'
@@ -15,6 +16,8 @@ import { signStreamToken, streamName, TOKEN_LIFETIME_SEC } from '@/lib/streams/t
 // password and no address, only the token the browser hands to the gateway.
 
 export type OpenedStream = { cameraId: string; name: string; storeCode: string; channel: number; token: string; kind: 'sub' | 'main' }
+/** `paused`: cameras left out because the person already has LIVE_MAX_STREAMS_PER_USER live streams open (P4-L1); only when any. */
+export type OpenedStreams = { streams: OpenedStream[]; paused?: string[] }
 
 /** The most streams one request may open (a 6 by 6 wall). */
 export const MAX_STREAMS_PER_REQUEST = 36
@@ -82,7 +85,7 @@ export async function openStreams(
   actor: Pick<Actor, 'id' | 'orgId'>,
   cameraIds: string[],
   kind: 'sub' | 'main',
-): Promise<Result<{ streams: OpenedStream[] }>> {
+): Promise<Result<OpenedStreams>> {
   const secret = getSecret('stream_token')
   if (!secret) return { ok: false, error: MSG_NOT_SET_UP }
   if (kind !== 'sub' && kind !== 'main') return { ok: false, error: MSG_FAILED }
@@ -112,8 +115,19 @@ export async function openStreams(
   }
   const listed = wanted.map((id) => answers.get(id)).filter((a): a is RouteAnswer => a !== undefined)
   if (listed.length === 0) return { ok: true, streams: [] }
-  const routes = listed.flatMap((a) => (a.kind === 'ok' ? [a.route] : []))
-  if (routes.length === 0) return { ok: false, error: listed.some((a) => a.kind === 'off') ? MSG_MONITORING_OFF : MSG_NOT_MAPPED }
+  const routable = listed.flatMap((a) => (a.kind === 'ok' ? [a.route] : []))
+  if (routable.length === 0) return { ok: false, error: listed.some((a) => a.kind === 'off') ? MSG_MONITORING_OFF : MSG_NOT_MAPPED }
+
+  const env = deps.env ?? process.env
+  // P4-L1 (bounded concurrency): the person's DIFFERENT open live streams may not go above LIVE_MAX_STREAMS_PER_USER (default 25). The
+  // registry counts the sockets the gateway opened and still checks; streams the person already has open are renewals and count once.
+  // The cameras beyond the limit are answered as `paused` (the wall says "Paused to save bandwidth"): no session, no NVR password read,
+  // no go2rtc call for them. A limit that cannot be read is not a reason to show nothing: the opening goes on and it is logged.
+  const cap = capStreams(routable.map((r) => streamName({ c: r.camera.id, k: kind })), await liveStreamsOpen(deps.admin, actor), maxStreamsPerUser(env))
+  const routes = routable.filter((r) => cap.allowed.has(streamName({ c: r.camera.id, k: kind })))
+  const pausedIds = routable.filter((r) => cap.paused.includes(streamName({ c: r.camera.id, k: kind }))).map((r) => r.camera.id)
+  const withPaused = (streams: OpenedStream[]): OpenedStreams => (pausedIds.length > 0 ? { streams, paused: pausedIds } : { streams })
+  if (routes.length === 0) return { ok: true, ...withPaused([]) }
 
   // P2-4 (D-3, AC-14): one media session per stream, made by the database after checking cctv.live for this person once more (the
   // registry the gateway asks when the socket arrives and every 15 s afterwards). A camera it refuses is left out like any other
@@ -126,9 +140,8 @@ export async function openStreams(
     return { ok: false, error: MSG_FAILED }
   }
   const registered = routes.filter((r) => sids.has(r.camera.id))
-  if (registered.length === 0) return { ok: true, streams: [] }
+  if (registered.length === 0) return { ok: true, ...withPaused([]) }
 
-  const env = deps.env ?? process.env
   // One password read per recorder, and only for recorders that need one (a demo NVR has no real camera behind it). P2-6 (SO-4): first
   // the NVR's address must pass the outbound target check (registered endpoint, no special address, a name pinned); the source given to
   // go2rtc then carries the checked address, so go2rtc never resolves a name. A refused NVR's cameras are left out (nothing is read).
@@ -178,5 +191,15 @@ export async function openStreams(
   void deps.go2rtc.prune({ now: now() }).catch(() => {})
   const streams = opened.filter((s): s is OpenedStream => s !== null)
   if (streams.length === 0 && failed > 0) return { ok: false, error: MSG_UNAVAILABLE }
-  return { ok: true, streams }
+  return { ok: true, ...withPaused(streams) }
+}
+
+/** The person's open live streams (stream names) as the session registry counts them; empty (and logged) when it cannot be asked. */
+async function liveStreamsOpen(admin: AdminClient, actor: Pick<Actor, 'id' | 'orgId'>): Promise<Set<string>> {
+  const { data, error } = await admin.rpc('media_sessions_live_open', { p_org: actor.orgId, p_user: actor.id })
+  if (error) {
+    logger.warn({ event: 'open_streams_count_failed' })
+    return new Set()
+  }
+  return new Set(((data ?? []) as { stream: string }[]).map((r) => r.stream))
 }
