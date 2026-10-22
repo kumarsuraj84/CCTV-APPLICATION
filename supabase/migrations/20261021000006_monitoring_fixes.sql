@@ -23,7 +23,7 @@ $$;
 -- ── The failure / outage rules ───────────────────────────────────────────────
 -- Changes against 0005:
 --  * a result for a switched-off target (inactive store or camera, disabled device) is ignored;
---  * after a worker stop (a monitor_gaps row that ended after the last check) a run of failures from before the stop does not count:
+--  * after a worker stop (a monitor_gaps row that overlaps the time between the last check and this result) a run of failures from before the stop does not count:
 --    the run starts again, so an outage can never be dated before the stop.
 CREATE OR REPLACE FUNCTION public.monitor_apply_results(p_org uuid, p_results jsonb, p_threshold integer DEFAULT 2) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
@@ -81,7 +81,7 @@ BEGIN
       s.error := v_error;
       -- A run of failures that began before the worker was stopped is not continued: nobody knows what happened during the stop.
       IF s.consecutive_failures > 0 AND s.status <> 'down' AND v_prev_checked IS NOT NULL
-         AND EXISTS (SELECT 1 FROM monitor_gaps g WHERE g.ended_at > v_prev_checked) THEN
+         AND EXISTS (SELECT 1 FROM monitor_gaps g WHERE g.ended_at > v_prev_checked AND g.started_at < v_at) THEN
         s.consecutive_failures := 0;
         s.first_failure_at := NULL;
       END IF;

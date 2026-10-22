@@ -254,6 +254,8 @@ async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
   if (unconfirmed.length > 0) {
     // After the first refused video login no other camera is tried: every try with a wrong password counts against the recorder's account.
     let stopRtsp = false
+    let sawRefusal = false
+    let loginProven = false
     // The camera is asked through the NVR (its video port, the camera's channel), never at an address the NVR reported.
     const probe = async (c: StoreJob['cameras'][number]): Promise<void> => {
       if (stopRtsp) {
@@ -262,17 +264,22 @@ async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
       }
       try {
         const { code } = await deps.probes.rtsp({ host: s.ip, port: s.rtsp_port, username: s.username, password: s.password, channel: c.channel })
-        if (code === 401 && (loginProblem || !verified)) {
-          // The login to the recorder is what failed. That says nothing about this camera: no result, no false down, no false up.
-          // Without a working web login to back it up, this is the first sign of a wrong password: start the back-off.
-          if (!loginProblem) {
-            loginProblem = true
-            if (s.password !== '') refused = true
-          }
+        if (code === 401 && loginProblem) {
+          // The web login was already refused (or there is no password): this says nothing about the camera. No result, no false down, no false up.
           stopRtsp = true
           skipped.add(c.channel)
           return
         }
+        if (code === 401 && !verified && !loginProven) {
+          // Nothing has proven the login yet, and the recorder refused it: stop trying other cameras. Whether this is a login problem is
+          // decided below, once every answer is in: any answer that is not a refusal proves the login works.
+          sawRefusal = true
+          stopRtsp = true
+          skipped.add(c.channel)
+          return
+        }
+        // Any answer from a camera other than "nothing" or "refused" shows the saved login is accepted. A refusal after that is that camera's own.
+        if (code !== 0 && code !== 401) loginProven = true
         rtspCode.set(c.channel, code)
         online.set(c.channel, code === 200)
       } catch (e) {
@@ -288,6 +295,11 @@ async function runStoreCameras(deps: Deps, s: StoreJob): Promise<void> {
       await mapLimit(rest, deps.cfg.rtspPerStore, probe)
     }
     method = method === 'isapi' ? 'isapi+rtsp' : 'rtsp'
+    // A refusal with no proof anywhere in this round that the login works is the first sign of a wrong password: start the back-off.
+    if (sawRefusal && !loginProven) {
+      loginProblem = true
+      if (s.password !== '') refused = true
+    }
   }
 
   if (refused) {

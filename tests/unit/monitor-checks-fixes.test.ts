@@ -49,6 +49,45 @@ describe('a wrong password cannot be tried again and again through the video por
     expect(loginBackoffCount(d.db)).toBe(0)
   })
 
+  describe('the back-off needs a refused login that nothing in the round contradicts', () => {
+    const webPortDown = () => ({ channelStatus: async () => { throw new NvrError('unreachable', 'x') }, channels: async () => { throw new NvrError('unreachable', 'x') } })
+    const run = async (codes: number[]) => {
+      quietLog()
+      const db = new MemoryDb()
+      db.stores = [store({ cameras: codes.map((_, i) => ({ id: `c${i + 1}`, channel: i + 1, camera_ip: null })) })]
+      const asked: number[] = []
+      const d = deps(db, { nvr: webPortDown, rtsp: async (t) => { asked.push(t.channel); return { code: codes[t.channel - 1] } } })
+      await checkCameras(d)
+      return { db, d, asked }
+    }
+
+    it('a live camera first: a later refusal is only that camera failing, every camera is tried, no back-off', async () => {
+      const { db, d, asked } = await run([200, 401, 200, 0])
+      expect(asked.sort()).toEqual([1, 2, 3, 4])
+      expect(loginBackoffCount(d.db)).toBe(0)
+      expect(db.results().map((r) => [r.id, r.ok])).toEqual([['c1', true], ['c2', false], ['c3', true], ['c4', false]])
+      expect(db.results()[1].error).toBe('The recorder refused the login.')
+    })
+
+    it('a refusal first, with nothing live before it: the other cameras are not tried, the back-off starts, nothing is recorded', async () => {
+      const { db, d, asked } = await run([401, 200, 200, 200])
+      expect(asked).toEqual([1])
+      expect(loginBackoffCount(d.db)).toBe(1)
+      expect(db.results()).toHaveLength(0)
+    })
+
+    it('a camera that does not answer first does not prove anything: a refusal after it still starts the back-off', async () => {
+      const { d, db } = await run([0, 401, 401, 401])
+      expect(loginBackoffCount(d.db)).toBe(1)
+      expect(db.results().map((r) => r.id)).toEqual(['c1']) // the one that did not answer is a plain failure; refusals say nothing
+    })
+
+    it('a refusal alongside a live answer in the same round does not start the back-off', async () => {
+      const { d } = await run([0, 401, 200, 200])
+      expect(loginBackoffCount(d.db)).toBe(0)
+    })
+  })
+
   it('a first camera that answers normally does not stop the others', async () => {
     quietLog()
     const db = new MemoryDb()

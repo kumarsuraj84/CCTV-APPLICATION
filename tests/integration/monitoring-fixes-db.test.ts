@@ -27,6 +27,9 @@ describe('monitoring fixes in the database', () => {
   beforeAll(async () => {
     orgId = await createOrg()
     manager = await createUser(orgId, 'manager')
+    // Gaps are global and real ones are routine (the worker records silences). A real, recent gap must not disturb anything below.
+    const { data } = await admin().from('monitor_gaps').insert({ started_at: ago(180), ended_at: ago(120) }).select('id').single()
+    gapIds.push(data!.id)
   })
   afterAll(async () => {
     if (gapIds.length) await admin().from('monitor_gaps').delete().in('id', gapIds)
@@ -74,6 +77,25 @@ describe('monitoring fixes in the database', () => {
       await apply(orgId, [{ type: 'camera', id: cam, ok: false, at: at(220) }])
       await apply(orgId, [{ type: 'camera', id: cam, ok: false, at: at(225) }])
       expect(new Date((await outagesOf('camera', cam))[0].started_at).toISOString()).toBe(at(220))
+    })
+
+    it('a gap that began after the result was taken does not reset the run of failures', async () => {
+      const cam = await makeCamera(await makeStore('LATEGAP'), 1)
+      await apply(orgId, [{ type: 'camera', id: cam, ok: false, at: at(600) }])
+      await gap(610, 620) // ended after the last check, but began after this result
+      await apply(orgId, [{ type: 'camera', id: cam, ok: false, at: at(605) }])
+      const o = await outagesOf('camera', cam)
+      expect(o).toHaveLength(1)
+      expect(new Date(o[0].started_at).toISOString()).toBe(at(600))
+    })
+
+    it('a real, recent gap (any time, in the present) does not affect results from long ago', async () => {
+      const { data } = await admin().from('monitor_gaps').insert({ started_at: ago(10), ended_at: ago(1) }).select('id').single()
+      gapIds.push(data!.id)
+      const cam = await makeCamera(await makeStore('REALGAP'), 1)
+      await apply(orgId, [{ type: 'camera', id: cam, ok: false, at: at(700) }])
+      await apply(orgId, [{ type: 'camera', id: cam, ok: false, at: at(705) }])
+      expect(new Date((await outagesOf('camera', cam))[0].started_at).toISOString()).toBe(at(700))
     })
 
     it('a target that is already down stays down, with the same outage, across a stop', async () => {

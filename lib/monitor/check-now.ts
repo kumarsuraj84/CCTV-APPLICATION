@@ -46,7 +46,8 @@ export async function requestCheckNow(admin: AdminClient, actor: Actor, clock: (
   if (alive && waiting) return { ok: true, alreadyOnTheWay: true }
   if (justFinished) return { ok: false, error: 'A check just finished. Try again in a moment.' }
 
-  // The database stamps the request with its own clock: the times it is compared with (run start and finish) come from there too.
+  // The request time is the database's clock. The run start and finish times are written by the worker with its own clock; the two are the
+  // same clock in practice (both machines keep time in sync), so comparing them is harmless, but they are not guaranteed to be.
   const { error } = await admin.rpc('monitor_request_check')
   if (error) return fail(error)
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'check_requested' })
