@@ -83,25 +83,30 @@ describe('stream actions', () => {
     expect(deps.admin).toEqual({ tag: 'admin' })
   })
 
-  it('allows 10 requests a minute per person (both actions share the count), then asks them to wait', async () => {
+  it('allows 30 requests a minute per person (both actions share the count), then asks them to wait', async () => {
     requireProfile.mockResolvedValue(person('u1'))
     const { openStreamsAction, refreshStreamTokensAction } = await import('@/lib/actions/streams')
-    for (let i = 0; i < 10; i++) expect((i % 2 ? await refreshStreamTokensAction(['c'], 'sub') : await openStreamsAction(['c'], 'sub')).ok).toBe(true)
-    const eleventh = await openStreamsAction(['c'], 'sub')
-    expect(eleventh).toEqual({ ok: false, error: 'Too many video requests. Please wait a minute and try again.' })
-    expect(openStreams).toHaveBeenCalledTimes(10)
+    for (let i = 0; i < 30; i++) expect((i % 2 ? await refreshStreamTokensAction(['c'], 'sub') : await openStreamsAction(['c'], 'sub')).ok).toBe(true)
+    const overLimit = await openStreamsAction(['c'], 'sub')
+    expect(overLimit).toEqual({ ok: false, error: 'Too many video requests. Please wait a minute and try again.' })
+    expect(openStreams).toHaveBeenCalledTimes(30)
     // Somebody else is not affected.
     requireProfile.mockResolvedValue(person('u2'))
     expect((await openStreamsAction(['c'], 'sub')).ok).toBe(true)
   })
 
-  it('an unexpected failure becomes the plain message, without the cause', async () => {
+  it('an unexpected failure becomes the plain message, without the cause, and the log holds only the kind of error', async () => {
     requireProfile.mockResolvedValue(person('u1'))
-    openStreams.mockRejectedValue(new Error('connect ECONNREFUSED rtsp://viewer:secret@10.0.0.5'))
+    openStreams.mockRejectedValue(Object.assign(new TypeError('connect ECONNREFUSED rtsp://viewer:planted-secret@10.0.0.5'), { cause: new Error('planted-secret') }))
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     const { openStreamsAction } = await import('@/lib/actions/streams')
     const res = await openStreamsAction(['c'], 'sub')
     expect(res).toEqual({ ok: false, error: 'The video server is not available.' })
-    expect(JSON.stringify(res)).not.toContain('secret')
+    expect(JSON.stringify(res)).not.toContain('planted-secret')
+    const output = logged.mock.calls.map((c) => c.map(String).join(' ')).join('\n')
+    expect(output).toContain('open_streams_action_failed')
+    expect(output).toContain('TypeError')
+    for (const needle of ['planted-secret', 'rtsp://', 'viewer', '10.0.0.5', 'ECONNREFUSED']) expect(output, needle).not.toContain(needle)
   })
 
   it('an answer from openStreams is passed on as it is', async () => {

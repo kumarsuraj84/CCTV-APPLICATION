@@ -10,8 +10,9 @@ import { createClient } from '@/lib/supabase/server'
 
 export type OpenStreamsState = { ok: true; streams: OpenedStream[] } | { ok: false; error: string }
 
-/** 10 requests per person per minute (this process only; a shared store would be needed if the app ran as several copies). */
-const limiter = createWindowLimiter(10, 60_000)
+/** Requests per person per minute (ruling R17: 30, up from 10, because paging, layout changes and returning to the tab each ask once). This process only; a shared store would be needed if the app ran as several copies. */
+const STREAM_REQUESTS_PER_MINUTE = 30
+const limiter = createWindowLimiter(STREAM_REQUESTS_PER_MINUTE, 60_000)
 const TOO_MANY = 'Too many video requests. Please wait a minute and try again.'
 
 async function run(cameraIds: string[], kind: 'sub' | 'main', route: string): Promise<OpenStreamsState> {
@@ -22,7 +23,8 @@ async function run(cameraIds: string[], kind: 'sub' | 'main', route: string): Pr
     const res = await openStreams({ admin: createAdminClient(), rls: await createClient(), go2rtc }, { id: p.id, orgId: p.org_id }, Array.isArray(cameraIds) ? cameraIds : [], kind)
     return res.ok ? { ok: true, streams: res.streams } : { ok: false, error: res.error }
   } catch (error) {
-    logger.error({ event: 'open_streams_action_failed', route, error })
+    // The kind of error only, never its message: it can carry an address or a camera password.
+    logger.error({ event: 'open_streams_action_failed', route, errorName: error instanceof Error ? error.name : typeof error })
     return { ok: false, error: MSG_UNAVAILABLE }
   }
 }

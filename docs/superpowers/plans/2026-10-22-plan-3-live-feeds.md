@@ -16,7 +16,7 @@
 - Camera credentials never reach a browser, a log or an API response. The RTSP URL with credentials exists only in the server-to-go2rtc call.
 - A stream token names one person, one camera and one kind (`sub`, `main` or `pb` for playback), is signed with the `stream_token` secret (HMAC-SHA256), and lives **10 minutes**. The gateway derives the go2rtc stream name from the token only; the browser cannot choose it. A missing secret turns live video off with a plain message.
 - Cameras a person may not see are silently left out of any request; asking for them never reveals that they exist.
-- At most **36** streams are opened per request (a 6 by 6 wall). Rate limit: 10 stream requests per person per minute.
+- At most **36** streams are opened per request (a 6 by 6 wall). Rate limit: 30 stream requests per person per minute (ruling R17, was 10).
 - Stream names: `cam_<cameraId>_sub`, `cam_<cameraId>_main`, `pb_<cameraId>_<startEpoch>`.
 - Camera groups: any signed-in person sees a group only if they may see at least one camera in it (or created it, or sees everything); `agent`, `admin` and `platform_owner` may create, change and delete groups; they may only add cameras they can see themselves.
 - Playback time zone: the NVR's clock offset in minutes is `PLAYBACK_OFFSET_MIN` (default 0).
