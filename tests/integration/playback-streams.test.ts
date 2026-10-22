@@ -6,7 +6,7 @@ import { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { createWindowLimiter } from '@/lib/streams/limiter'
 import { listDaySegments, listRecordedDays, openPlayback } from '@/lib/streams/playback'
 import { verifyStreamToken } from '@/lib/streams/token'
-import { adminClient, cleanupOrg, createOrg, createUser, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 import { closedPort, startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
 
 const SECRET = 'integration-test-stream-secret-0123456789'
@@ -123,8 +123,8 @@ describe('playback streams', () => {
     viewer = await createUser(orgId, 'user')
     nobody = await createUser(orgId, 'user')
     manager = await createUser(orgId, 'manager')
-    const { error } = await admin().rpc('replace_user_access', { p_user: viewer.id, p_stores: [sA, sNoPass, sDown, sWrong], p_zones: [], p_cameras: [] })
-    if (error) throw new Error(error.message)
+    await grant(orgId, manager.id, READ_EVERYTHING) // AC-8 (P2-1): sees every store only through explicit grants
+    await grant(orgId, viewer.id, CCTV_VIEW, [sA, sNoPass, sDown, sWrong].map(atLocation)) // store grants as live + playback (P2-1)
   })
   afterAll(async () => {
     if (savedSecret === undefined) delete process.env.STREAM_TOKEN_SECRET
@@ -185,8 +185,7 @@ describe('playback streams', () => {
 
     it('somebody with a grant for one camera only can play back that camera and not another camera of the same store', async () => {
       const cameraOnly = await createUser(orgId, 'user')
-      const { error } = await admin().rpc('replace_user_access', { p_user: cameraOnly.id, p_stores: [], p_zones: [], p_cameras: [a1] })
-      expect(error).toBeNull()
+      await grant(orgId, cameraOnly.id, CCTV_VIEW, atCamera(a1))
       const start = new Date(SHOWN_NOW - 3_600_000)
       expect(await days(cameraOnly, a1)).toEqual({ ok: true, days: [20, 21, 22] })
       expect((await segments(cameraOnly, a1, '2026-10-20')).ok).toBe(true)
@@ -201,8 +200,19 @@ describe('playback streams', () => {
       expect(fake.seen).toHaveLength(1)
     })
 
-    it('a manager, who sees every store, can look at a camera in any store of the organisation', async () => {
+    it('a manager with organisation-wide playback grants can look at a camera in any store (AC-8: the grants, not the role)', async () => {
       expect((await days(manager, b1)).ok).toBe(true)
+    })
+
+    // AC-2 (P2-1): recordings need cctv.playback. Live video rights for the same cameras do not open the calendar, the list or playback.
+    it('a person with live video only gets "Camera not found." for every recording request, and the NVR is never asked', async () => {
+      const liveOnly = await createUser(orgId, 'user')
+      await grant(orgId, liveOnly.id, 'cctv.live', atLocation(sA))
+      expect(await days(liveOnly, a1)).toEqual({ ok: false, error: 'Camera not found.' })
+      expect(await segments(liveOnly, a1, '2026-10-20')).toEqual({ ok: false, error: 'Camera not found.' })
+      expect(await play(liveOnly, a1, new Date(SHOWN_NOW - 3_600_000))).toEqual({ ok: false, error: 'Camera not found.' })
+      expect(nvr.requests).toHaveLength(0)
+      expect(fake.seen).toHaveLength(0)
     })
 
     it('reads the NVR password through the service-role RPC only, once, and only for a camera that is visible', async () => {

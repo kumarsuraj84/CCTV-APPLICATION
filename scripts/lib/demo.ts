@@ -67,8 +67,6 @@ export type DemoStorePlan = {
   httpPort: number
   rtspPort: number
   cameras: number
-  /** Which people (by role) may see this store; managers and administrators see everything anyway. */
-  viewers: ('user' | 'agent')[]
 }
 export type DemoDevicePlan = { type: 'server' | 'attendance' | 'footfall'; name: string; storeCode: string | null; port: number }
 
@@ -82,10 +80,10 @@ export function demoPlan(nvrPort: number = DEFAULT_NVR_PORT, dead: DeadPorts = D
   }
   return {
     stores: [
-      { code: 'DEMO1', name: 'Demo Store Patna', city: 'Patna', zone: 'BR', httpPort: nvr, rtspPort: FAKE_RTSP_PORT, cameras: 6, viewers: ['user', 'agent'] },
+      { code: 'DEMO1', name: 'Demo Store Patna', city: 'Patna', zone: 'BR', httpPort: nvr, rtspPort: FAKE_RTSP_PORT, cameras: 6 },
       // Nothing listens on these two ports: the NVR is down.
-      { code: 'DEMO2', name: 'Demo Store Ranchi', city: 'Ranchi', zone: 'Jharkhand', httpPort: dead.nvrHttp, rtspPort: dead.nvrRtsp, cameras: 4, viewers: ['user', 'agent'] },
-      { code: 'DEMO3', name: 'Demo Store Gaya', city: 'Gaya', zone: 'BR', httpPort: nvr, rtspPort: FAKE_RTSP_PORT, cameras: 4, viewers: ['agent'] },
+      { code: 'DEMO2', name: 'Demo Store Ranchi', city: 'Ranchi', zone: 'Jharkhand', httpPort: dead.nvrHttp, rtspPort: dead.nvrRtsp, cameras: 4 },
+      { code: 'DEMO3', name: 'Demo Store Gaya', city: 'Gaya', zone: 'BR', httpPort: nvr, rtspPort: FAKE_RTSP_PORT, cameras: 4 },
     ],
     devices: [
       { type: 'server', name: 'Demo ERP server', storeCode: null, port: FAKE_ERP_PORT },
@@ -104,15 +102,45 @@ export function makePassword(): string {
   }
 }
 
-export const DEMO_ROLES = ['user', 'agent', 'manager', 'admin', 'platform_owner'] as const
-export const DEMO_ROLE_LABELS: Record<(typeof DEMO_ROLES)[number], string> = {
+export const DEMO_ROLES = ['user', 'operator', 'manager', 'admin', 'platform_owner'] as const
+export type DemoRole = (typeof DEMO_ROLES)[number]
+export const DEMO_ROLE_LABELS: Record<DemoRole, string> = {
   user: 'Viewer',
-  agent: 'Operator',
+  operator: 'Operator',
   manager: 'Manager',
   admin: 'Administrator',
   platform_owner: 'Platform owner',
 }
-export const demoEmail = (role: (typeof DEMO_ROLES)[number]) => `demo.${role.replace('_', '-')}@demo.example.test`
+export const demoEmail = (role: DemoRole) => `demo.${role.replace('_', '-')}@demo.example.test`
+
+/** One grant line of the demo: these capabilities at these stores (by code), or for the whole demo organisation. */
+export type DemoGrant = { capabilities: string[]; scope: 'organization' | { stores: string[] } }
+
+/** What administrators get: the same set the migration gives existing administrators (P2-1, migrated:admin). */
+export const ADMIN_BASELINE = [
+  'cctv.live', 'cctv.playback', 'cctv.export', 'it.inventory.view', 'it.monitoring.view', 'it.monitoring.operate', 'wifi.inventory.view',
+  'wifi.config.view_redacted', 'admin.users', 'admin.access', 'admin.inventory', 'admin.alerts', 'admin.audit.read',
+]
+
+/**
+ * The demo people's access, all as explicit grants (P2-1): no role gives access by itself. The viewer watches and plays back DEMO1 and
+ * DEMO2; the operator also sees the IT side of all three stores and may start checks; the manager covers the BR zone stores (DEMO1,
+ * DEMO3), CCTV and IT read, not the whole organisation; administrators get the administrator set for the organisation.
+ */
+export function demoGrants(role: DemoRole, storeCodes: readonly string[]): DemoGrant[] {
+  const pick = (...codes: string[]) => ({ stores: codes.filter((c) => storeCodes.includes(c)) })
+  switch (role) {
+    case 'user':
+      return [{ capabilities: ['cctv.live', 'cctv.playback'], scope: pick('DEMO1', 'DEMO2') }]
+    case 'operator':
+      return [{ capabilities: ['cctv.live', 'cctv.playback', 'it.inventory.view', 'it.monitoring.view', 'it.monitoring.operate'], scope: pick('DEMO1', 'DEMO2', 'DEMO3') }]
+    case 'manager':
+      return [{ capabilities: ['cctv.live', 'cctv.playback', 'it.inventory.view', 'it.monitoring.view'], scope: pick('DEMO1', 'DEMO3') }]
+    case 'admin':
+    case 'platform_owner':
+      return [{ capabilities: [...ADMIN_BASELINE], scope: 'organization' }]
+  }
+}
 
 /** Reset deletes an organisation only when it is the demo one: the exact slug and a name that says DEMO. */
 export const isDemoOrg = (o: { slug: string; name: string }): boolean => o.slug === DEMO_SLUG && o.name.startsWith('DEMO')

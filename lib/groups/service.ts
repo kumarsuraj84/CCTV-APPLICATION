@@ -22,6 +22,12 @@ const NOT_AVAILABLE = 'Some of those cameras are not available to you.'
 const MAX_PER_REQUEST = 500 // at most this many cameras are added in one go
 const CHUNK = 100 // ids per lookup, so the request address stays short
 const MALFORMED_ID = '22P02' // Postgres: "invalid input syntax" (for example an id that is not a uuid)
+const DUPLICATE = '23505'
+/**
+ * The answer when a group name is taken (P2-1, directive AC-11). Names are unique in the organisation, and the group holding the name may
+ * be one the person cannot see, so the answer is the same in every case and never says whose group or that it "exists".
+ */
+export const MSG_NAME_TAKEN = 'That name cannot be used. Choose a different name.'
 
 function cleanName(name: unknown): { ok: true; name: string } | { ok: false; error: string } {
   const trimmed = typeof name === 'string' ? name.trim() : ''
@@ -51,6 +57,7 @@ export async function createGroup(deps: GroupDeps, actor: Actor, name: string): 
   const n = cleanName(name)
   if (!n.ok) return n
   const { data, error } = await deps.admin.from('camera_groups').insert({ org_id: actor.orgId, name: n.name, created_by: actor.id }).select('id').single()
+  if (error?.code === DUPLICATE) return { ok: false, error: MSG_NAME_TAKEN }
   if (error || !data) return { ok: false, error: sanitizeError(error, { route: 'createGroup', fallback: 'Could not create the group.' }) }
   await addAudit(deps.admin, { orgId: actor.orgId, actorId: actor.id, action: 'group_created', entityType: 'camera_group', entityId: data.id, detail: { name: n.name } })
   return { ok: true, groupId: data.id }
@@ -63,6 +70,7 @@ export async function renameGroup(deps: GroupDeps, actor: Actor, groupId: string
   const found = await findGroup(deps, actor, groupId)
   if (!found.ok) return found
   const { error } = await deps.admin.from('camera_groups').update({ name: n.name }).eq('id', groupId).eq('org_id', actor.orgId)
+  if (error?.code === DUPLICATE) return { ok: false, error: MSG_NAME_TAKEN }
   if (error) return { ok: false, error: sanitizeError(error, { route: 'renameGroup', fallback: 'Could not rename the group.' }) }
   await addAudit(deps.admin, { orgId: actor.orgId, actorId: actor.id, action: 'group_renamed', entityType: 'camera_group', entityId: groupId, detail: { from: found.group.name, to: n.name } })
   return { ok: true }

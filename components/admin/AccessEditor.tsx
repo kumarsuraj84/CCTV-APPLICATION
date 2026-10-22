@@ -44,8 +44,9 @@ export function AccessEditor(props: {
   return (
     <div className="space-y-6">
       <p className="text-sm text-muted-foreground">
-        A person sees all cameras of the stores and zones you tick. If you also tick individual cameras inside a store, they see only those cameras in that store.
-        Cameras ticked on their own are visible even when the store is not ticked.
+        The person can watch live video and play back recordings of every camera of the stores you tick, including cameras added later.
+        Ticking a zone ticks the stores that are in it now. Individual cameras add to that; they never take anything away.
+        This list gives no IT devices and no other rights.
       </p>
 
       <section className="space-y-2">

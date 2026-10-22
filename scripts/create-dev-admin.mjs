@@ -29,4 +29,17 @@ if (pErr) {
   console.error('Could not create the profile: ' + pErr.message)
   process.exit(1)
 }
+// No role gives access by itself (P2-1): the dev admin gets the administrator set as explicit organisation-wide grants, the same set the
+// migration gives existing administrators (keep in step with ADMIN_BASELINE in scripts/lib/demo.ts).
+const ADMIN_BASELINE = [
+  'cctv.live', 'cctv.playback', 'cctv.export', 'it.inventory.view', 'it.monitoring.view', 'it.monitoring.operate', 'wifi.inventory.view',
+  'wifi.config.view_redacted', 'admin.users', 'admin.access', 'admin.inventory', 'admin.alerts', 'admin.audit.read',
+]
+const { error: gErr } = await admin.rpc('grant_access', {
+  p_org: org.id, p_user: data.user.id, p_grants: ADMIN_BASELINE.map((capability) => ({ capability, scope_kind: 'organization' })), p_reason: 'Dev admin',
+})
+if (gErr) {
+  console.error('The dev admin was created, but its access could not be granted: ' + gErr.message)
+  process.exit(1)
+}
 console.log('Dev admin created. Its e-mail and password are in .env.local (DEV_ADMIN_EMAIL, DEV_ADMIN_PASSWORD).')

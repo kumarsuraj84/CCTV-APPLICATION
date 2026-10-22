@@ -23,7 +23,95 @@ export type Database = {
           }
         },"public": {
           Tables: {
-            "admin_audit_log": {
+            "access_grants": {
+                  Row: {
+                    "asset_id": string | null,"camera_id": string | null,"capability": string,"granted_at": string,"granted_by": string | null,"id": string,"location_id": string | null,"needs_review": boolean,"org_id": string,"reason": string | null,"revoke_reason": string | null,"revoked_at": string | null,"revoked_by": string | null,"scope_id": string | null,"scope_kind": string,"source": string,"user_id": string,"valid_from": string,"valid_until": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "asset_id"?: string | null,"camera_id"?: string | null,"capability": string,"granted_at"?: string,"granted_by"?: string | null,"id"?: string,"location_id"?: string | null,"needs_review"?: boolean,"org_id": string,"reason"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"revoked_by"?: string | null,"scope_id"?: string | null,"scope_kind": string,"source"?: string,"user_id": string,"valid_from"?: string,"valid_until"?: string | null
+                  }
+                  Update: {
+                    "asset_id"?: string | null,"camera_id"?: string | null,"capability"?: string,"granted_at"?: string,"granted_by"?: string | null,"id"?: string,"location_id"?: string | null,"needs_review"?: boolean,"org_id"?: string,"reason"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"revoked_by"?: string | null,"scope_id"?: string | null,"scope_kind"?: string,"source"?: string,"user_id"?: string,"valid_from"?: string,"valid_until"?: string | null
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "access_grants_asset_fk"
+      columns: ["asset_id","org_id"]
+isOneToOne: false
+      referencedRelation: "devices"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "access_grants_camera_fk"
+      columns: ["camera_id","org_id"]
+isOneToOne: false
+      referencedRelation: "camera_endpoints"
+      referencedColumns: ["camera_id","org_id"]
+    },{
+      foreignKeyName: "access_grants_camera_fk"
+      columns: ["camera_id","org_id"]
+isOneToOne: false
+      referencedRelation: "cameras"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "access_grants_capability_fkey"
+      columns: ["capability"]
+isOneToOne: false
+      referencedRelation: "capabilities"
+      referencedColumns: ["key"]
+    },{
+      foreignKeyName: "access_grants_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "store_nvr_endpoints"
+      referencedColumns: ["store_id","org_id"]
+    },{
+      foreignKeyName: "access_grants_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "store_status"
+      referencedColumns: ["store_id","org_id"]
+    },{
+      foreignKeyName: "access_grants_location_fk"
+      columns: ["location_id","org_id"]
+isOneToOne: false
+      referencedRelation: "stores"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "access_grants_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "access_grants_user_fk"
+      columns: ["user_id","org_id"]
+isOneToOne: false
+      referencedRelation: "profiles"
+      referencedColumns: ["id","org_id"]
+    }
+                  ]
+                },"access_migration_report": {
+                  Row: {
+                    "created_at": string,"id": string,"new_grants": NonNullable<Json>,"note": string | null,"old_model": NonNullable<Json>,"org_id": string,"run_id": string,"user_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_at"?: string,"id"?: string,"new_grants": NonNullable<Json>,"note"?: string | null,"old_model": NonNullable<Json>,"org_id": string,"run_id": string,"user_id": string
+                  }
+                  Update: {
+                    "created_at"?: string,"id"?: string,"new_grants"?: NonNullable<Json>,"note"?: string | null,"old_model"?: NonNullable<Json>,"org_id"?: string,"run_id"?: string,"user_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "access_migration_report_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"admin_audit_log": {
                   Row: {
                     "action": string,"actor_id": string | null,"created_at": string,"detail": NonNullable<Json>,"entity_id": string | null,"entity_type": string | null,"id": string,"org_id": string
                   }
@@ -56,6 +144,12 @@ isOneToOne: false
                   }
                   Relationships: [
                     {
+      foreignKeyName: "camera_group_items_camera_id_org_id_fkey"
+      columns: ["camera_id","org_id"]
+isOneToOne: false
+      referencedRelation: "camera_endpoints"
+      referencedColumns: ["camera_id","org_id"]
+    },{
       foreignKeyName: "camera_group_items_camera_id_org_id_fkey"
       columns: ["camera_id","org_id"]
 isOneToOne: false
@@ -111,6 +205,12 @@ isOneToOne: false
       foreignKeyName: "cameras_store_fk"
       columns: ["store_id","org_id"]
 isOneToOne: false
+      referencedRelation: "store_nvr_endpoints"
+      referencedColumns: ["store_id","org_id"]
+    },{
+      foreignKeyName: "cameras_store_fk"
+      columns: ["store_id","org_id"]
+isOneToOne: false
       referencedRelation: "store_status"
       referencedColumns: ["store_id","org_id"]
     },{
@@ -120,6 +220,20 @@ isOneToOne: false
       referencedRelation: "stores"
       referencedColumns: ["id","org_id"]
     }
+                  ]
+                },"capabilities": {
+                  Row: {
+                    "area": string,"description": string,"key": string,"requires_mfa": boolean,"risk": string,"scope_kinds": (string)[]
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "area": string,"description": string,"key": string,"requires_mfa": boolean,"risk": string,"scope_kinds": (string)[]
+                  }
+                  Update: {
+                    "area"?: string,"description"?: string,"key"?: string,"requires_mfa"?: boolean,"risk"?: string,"scope_kinds"?: (string)[]
+                  }
+                  Relationships: [
+                    
                   ]
                 },"check_state": {
                   Row: {
@@ -159,6 +273,12 @@ isOneToOne: false
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
+    },{
+      foreignKeyName: "devices_store_fk"
+      columns: ["store_id","org_id"]
+isOneToOne: false
+      referencedRelation: "store_nvr_endpoints"
+      referencedColumns: ["store_id","org_id"]
     },{
       foreignKeyName: "devices_store_fk"
       columns: ["store_id","org_id"]
@@ -223,14 +343,14 @@ isOneToOne: false
                   ]
                 },"profiles": {
                   Row: {
-                    "created_at": string,"email": string,"full_name": string,"id": string,"is_active": boolean,"must_reset_password": boolean,"org_id": string,"role": Database["public"]['Enums']["user_role"],"store_id": string | null,"updated_at": string
+                    "access_version": number,"created_at": string,"email": string,"full_name": string,"id": string,"is_active": boolean,"must_reset_password": boolean,"org_id": string,"role": Database["public"]['Enums']["user_role"],"store_id": string | null,"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "created_at"?: string,"email": string,"full_name"?: string,"id": string,"is_active"?: boolean,"must_reset_password"?: boolean,"org_id": string,"role"?: Database["public"]['Enums']["user_role"],"store_id"?: string | null,"updated_at"?: string
+                    "access_version"?: number,"created_at"?: string,"email": string,"full_name"?: string,"id": string,"is_active"?: boolean,"must_reset_password"?: boolean,"org_id": string,"role"?: Database["public"]['Enums']["user_role"],"store_id"?: string | null,"updated_at"?: string
                   }
                   Update: {
-                    "created_at"?: string,"email"?: string,"full_name"?: string,"id"?: string,"is_active"?: boolean,"must_reset_password"?: boolean,"org_id"?: string,"role"?: Database["public"]['Enums']["user_role"],"store_id"?: string | null,"updated_at"?: string
+                    "access_version"?: number,"created_at"?: string,"email"?: string,"full_name"?: string,"id"?: string,"is_active"?: boolean,"must_reset_password"?: boolean,"org_id"?: string,"role"?: Database["public"]['Enums']["user_role"],"store_id"?: string | null,"updated_at"?: string
                   }
                   Relationships: [
                     {
@@ -239,6 +359,12 @@ isOneToOne: false
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
+    },{
+      foreignKeyName: "profiles_store_fk"
+      columns: ["store_id","org_id"]
+isOneToOne: false
+      referencedRelation: "store_nvr_endpoints"
+      referencedColumns: ["store_id","org_id"]
     },{
       foreignKeyName: "profiles_store_fk"
       columns: ["store_id","org_id"]
@@ -289,6 +415,12 @@ isOneToOne: false
       foreignKeyName: "user_camera_access_camera_id_org_id_fkey"
       columns: ["camera_id","org_id"]
 isOneToOne: false
+      referencedRelation: "camera_endpoints"
+      referencedColumns: ["camera_id","org_id"]
+    },{
+      foreignKeyName: "user_camera_access_camera_id_org_id_fkey"
+      columns: ["camera_id","org_id"]
+isOneToOne: false
       referencedRelation: "cameras"
       referencedColumns: ["id","org_id"]
     },{
@@ -323,6 +455,12 @@ isOneToOne: false
 isOneToOne: false
       referencedRelation: "organizations"
       referencedColumns: ["id"]
+    },{
+      foreignKeyName: "user_store_access_store_id_org_id_fkey"
+      columns: ["store_id","org_id"]
+isOneToOne: false
+      referencedRelation: "store_nvr_endpoints"
+      referencedColumns: ["store_id","org_id"]
     },{
       foreignKeyName: "user_store_access_store_id_org_id_fkey"
       columns: ["store_id","org_id"]
@@ -386,7 +524,65 @@ isOneToOne: false
                 }
           }
           Views: {
-            "store_status": {
+            "camera_endpoints": {
+                  Row: {
+                    "camera_id": string | null,"camera_ip": string | null,"org_id": string | null,"store_id": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                           "camera_id"?: string | null,"camera_ip"?: string | null,"org_id"?: string | null,"store_id"?: string | null
+                         }
+                        Update: {
+                           "camera_id"?: string | null,"camera_ip"?: string | null,"org_id"?: string | null,"store_id"?: string | null
+                         }
+                        Relationships: [
+                    {
+      foreignKeyName: "cameras_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "cameras_store_fk"
+      columns: ["store_id","org_id"]
+isOneToOne: false
+      referencedRelation: "store_nvr_endpoints"
+      referencedColumns: ["store_id","org_id"]
+    },{
+      foreignKeyName: "cameras_store_fk"
+      columns: ["store_id","org_id"]
+isOneToOne: false
+      referencedRelation: "store_status"
+      referencedColumns: ["store_id","org_id"]
+    },{
+      foreignKeyName: "cameras_store_fk"
+      columns: ["store_id","org_id"]
+isOneToOne: false
+      referencedRelation: "stores"
+      referencedColumns: ["id","org_id"]
+    }
+                  ]
+                },"store_nvr_endpoints": {
+                  Row: {
+                    "http_port": number | null,"nvr_ip": string | null,"nvr_username": string | null,"org_id": string | null,"rtsp_port": number | null,"store_id": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                           "http_port"?: number | null,"nvr_ip"?: string | null,"nvr_username"?: string | null,"org_id"?: string | null,"rtsp_port"?: number | null,"store_id"?: string | null
+                         }
+                        Update: {
+                           "http_port"?: number | null,"nvr_ip"?: string | null,"nvr_username"?: string | null,"org_id"?: string | null,"rtsp_port"?: number | null,"store_id"?: string | null
+                         }
+                        Relationships: [
+                    {
+      foreignKeyName: "stores_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"store_status": {
                   Row: {
                     "cameras_down": number | null,"cameras_live": number | null,"cameras_stale": number | null,"cameras_total": number | null,"cameras_unknown": number | null,"nvr_checked_at": string | null,"nvr_down_since": string | null,"nvr_stale": boolean | null,"nvr_status": string | null,"org_id": string | null,"store_id": string | null
                   }
@@ -403,16 +599,120 @@ isOneToOne: false
                 }
           }
           Functions: {
-            "current_org_id":
+            "access_bump_version":
+{ Args: { "p_user": string }; Returns: number
+                           },
+"access_caller_aal2":
+{ Args: Record<PropertyKey, never>; Returns: boolean
+                           },
+"access_camera_set":
+{ Args: { "p_cameras": (string)[],"p_locations": (string)[],"p_org": string,"p_org_wide": boolean }; Returns: string[]
+                           },
+"access_cameras_for":
+{ Args: { "p_aal2": boolean,"p_at": string,"p_caps": (string)[],"p_ignore_status": boolean,"p_user": string }; Returns: string[]
+                           },
+"access_check_spec":
+{ Args: { "p_org": string,"p_spec": Json }; Returns: undefined
+                           },
+"access_device_set":
+{ Args: { "p_assets": (string)[],"p_locations": (string)[],"p_org": string,"p_org_wide": boolean }; Returns: string[]
+                           },
+"access_devices_for":
+{ Args: { "p_aal2": boolean,"p_at": string,"p_caps": (string)[],"p_ignore_status": boolean,"p_user": string }; Returns: string[]
+                           },
+"access_effective_camera_ids":
+{ Args: { "p_at"?: string,"p_cap": string,"p_ignore_status"?: boolean,"p_user": string }; Returns: string[]
+                           },
+"access_effective_device_ids":
+{ Args: { "p_at"?: string,"p_cap": string,"p_ignore_status"?: boolean,"p_user": string }; Returns: string[]
+                           },
+"access_expiring":
+{ Args: { "p_within": string }; Returns: {
+              "capability": string,"grant_id": string,"org_id": string,"scope_id": string,"scope_kind": string,"user_id": string,"valid_until": string
+            }[]
+                           },
+"access_grants_of":
+{ Args: { "p_aal2": boolean,"p_at": string,"p_ignore_status": boolean,"p_user": string }; Returns: {
+              "area": string,"capability": string,"org_id": string,"scope_id": string,"scope_kind": string
+            }[]
+                           },
+"access_items":
+{ Args: { "p_at": string,"p_cap": string,"p_org": string,"p_specs": Json }; Returns: {
+              "item_id": string,"label": string
+            }[]
+                           },
+"access_legacy_camera_ids":
+{ Args: { "p_ignore_status"?: boolean,"p_user": string }; Returns: string[]
+                           },
+"access_legacy_device_ids":
+{ Args: { "p_ignore_status"?: boolean,"p_user": string }; Returns: string[]
+                           },
+"access_legacy_store_grants":
+{ Args: { "p_ignore_status": boolean,"p_user": string }; Returns: string[]
+                           },
+"access_lock_person":
+{ Args: { "p_expected": number,"p_org": string,"p_user": string }; Returns: number
+                           },
+"access_migrate_legacy":
+{ Args: { "p_run": string,"p_users"?: (string)[] }; Returns: number
+                           },
+"access_put_grant":
+{ Args: { "p_actor": string,"p_needs_review": boolean,"p_org": string,"p_reason": string,"p_source": string,"p_spec": Json,"p_user": string }; Returns: Record<string, unknown>
+                           },
+"access_store_set":
+{ Args: { "p_locations": (string)[],"p_org": string,"p_org_wide": boolean }; Returns: string[]
+                           },
+"access_stores_for":
+{ Args: { "p_aal2": boolean,"p_at": string,"p_caps": (string)[],"p_ignore_status": boolean,"p_user": string }; Returns: string[]
+                           },
+"any_cctv_camera_ids":
+{ Args: Record<PropertyKey, never>; Returns: string[]
+                           },
+"any_grant_store_ids":
+{ Args: Record<PropertyKey, never>; Returns: string[]
+                           },
+"cameras_with_capability":
+{ Args: { "p_cap": string,"p_ids": (string)[] }; Returns: string[]
+                           },
+"capability_camera_ids":
+{ Args: { "p_cap": string }; Returns: string[]
+                           },
+"capability_device_ids":
+{ Args: { "p_cap": string }; Returns: string[]
+                           },
+"capability_store_ids":
+{ Args: { "p_cap": string }; Returns: string[]
+                           },
+"cctv_visible_group_ids":
+{ Args: Record<PropertyKey, never>; Returns: string[]
+                           },
+"current_org_id":
 { Args: Record<PropertyKey, never>; Returns: string
                            },
 "current_user_role":
 { Args: Record<PropertyKey, never>; Returns: Database["public"]['Enums']["user_role"]
                            },
-"granted_store_ids":
+"function_privileges":
+{ Args: Record<PropertyKey, never>; Returns: {
+              "args": string,"grantees": (string)[],"name": string,"search_path": string,"security_definer": boolean
+            }[]
+                           },
+"grant_access":
+{ Args: { "p_actor"?: string,"p_expected_version"?: number,"p_grants": Json,"p_org": string,"p_reason"?: string,"p_user": string }; Returns: Json
+                           },
+"has_capability":
+{ Args: { "p_cap": string }; Returns: boolean
+                           },
+"has_capability_for":
+{ Args: { "p_cap": string,"p_id": string,"p_kind": string }; Returns: boolean
+                           },
+"it_view_device_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },
-"is_staff_all":
+"it_view_store_ids":
+{ Args: Record<PropertyKey, never>; Returns: string[]
+                           },
+"mfa_enforced":
 { Args: Record<PropertyKey, never>; Returns: boolean
                            },
 "monitor_apply_results":
@@ -436,11 +736,17 @@ isOneToOne: false
 "nvr_store_credential":
 { Args: { "p_secret": string,"p_store": string }; Returns: string
                            },
+"preview_access_change":
+{ Args: { "p_at"?: string,"p_changes": Json,"p_sample"?: number,"p_user": string }; Returns: Json
+                           },
 "privilege_violations":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },
-"replace_user_access":
-{ Args: { "p_cameras": (string)[],"p_stores": (string)[],"p_user": string,"p_zones": (string)[] }; Returns: undefined
+"replace_user_grants":
+{ Args: { "p_actor"?: string,"p_capabilities": (string)[],"p_expected_version"?: number,"p_grants": Json,"p_org": string,"p_reason"?: string,"p_scope_kinds": (string)[],"p_user": string }; Returns: Json
+                           },
+"revoke_grant":
+{ Args: { "p_actor"?: string,"p_expected_version"?: number,"p_grant_ids": (string)[],"p_org": string,"p_reason"?: string,"p_user": string }; Returns: Json
                            },
 "revoke_user_sessions":
 { Args: { "p_user": string }; Returns: undefined
@@ -449,19 +755,10 @@ isOneToOne: false
 { Args: { "p_ids": (string)[],"p_now"?: string,"p_org": string,"p_type": string,"p_window": string }; Returns: {
               "target_id": string,"uptime_pct": number
             }[]
-                           },
-"visible_camera_ids":
-{ Args: Record<PropertyKey, never>; Returns: string[]
-                           },
-"visible_device_ids":
-{ Args: Record<PropertyKey, never>; Returns: string[]
-                           },
-"visible_store_ids":
-{ Args: Record<PropertyKey, never>; Returns: string[]
                            }
           }
           Enums: {
-            "device_type": "nvr"|"server"|"attendance"|"footfall"|"other","user_role": "user"|"agent"|"manager"|"admin"|"platform_owner"
+            "device_type": "nvr"|"server"|"attendance"|"footfall"|"other","user_role": "user"|"operator"|"manager"|"admin"|"platform_owner"
           }
           CompositeTypes: {
             [_ in never]: never
@@ -581,7 +878,7 @@ export const Constants = {
           }
         },"public": {
           Enums: {
-            "device_type": ["nvr", "server", "attendance", "footfall", "other"],"user_role": ["user", "agent", "manager", "admin", "platform_owner"]
+            "device_type": ["nvr", "server", "attendance", "footfall", "other"],"user_role": ["user", "operator", "manager", "admin", "platform_owner"]
           }
         }
 } as const

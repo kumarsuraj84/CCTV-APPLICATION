@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
+import { ADMIN_BASELINE } from '../../scripts/lib/demo'
 
 export type Role = Database['public']['Enums']['user_role']
 export type TestUser = { id: string; email: string; password: string; client: SupabaseClient<Database> }
@@ -55,13 +56,51 @@ export async function createUser(orgId: string, role: Role, o: { storeId?: strin
   }
 }
 
+// ── Capability grants (P2-1, directive AC-1/AC-5) ────────────────────────────
+// Access is only ever given by explicit grants: a capability at a scope. No role gives data access by itself.
+export type GrantScope = { kind: 'organization' } | { kind: 'location' | 'camera' | 'asset'; id: string }
+export const ORG_SCOPE: GrantScope = { kind: 'organization' }
+export const atLocation = (id: string): GrantScope => ({ kind: 'location', id })
+export const atCamera = (id: string): GrantScope => ({ kind: 'camera', id })
+export const atAsset = (id: string): GrantScope => ({ kind: 'asset', id })
+/** Live video and recordings: what a store or camera grant meant before the capability model (D-2). */
+export const CCTV_VIEW = ['cctv.live', 'cctv.playback'] as const
+/** What a manager used to read across the organisation (D-2a, migrated:manager): now only as explicit grants. */
+export const READ_EVERYTHING = ['cctv.live', 'cctv.playback', 'it.inventory.view', 'it.monitoring.view'] as const
+/** What an administrator gets as organisation-wide grants (the migration's migrated:admin set; the dev admin and the demo get it too). */
+export const ADMINISTRATOR_SET: readonly string[] = ADMIN_BASELINE
+
+/**
+ * Grants every capability at every scope given (one grant row each) through the server-only grant_access function.
+ * Returns the ids of the grants, in the order capability × scope. An identical active grant is not added twice.
+ */
+export async function grant(
+  orgId: string,
+  userId: string,
+  capabilities: string | readonly string[],
+  scopes: GrantScope | readonly GrantScope[] = ORG_SCOPE,
+  o: { validFrom?: string; validUntil?: string } = {},
+): Promise<string[]> {
+  const caps: readonly string[] = typeof capabilities === 'string' ? [capabilities] : capabilities
+  const list: readonly GrantScope[] = 'kind' in scopes ? [scopes as GrantScope] : (scopes as readonly GrantScope[])
+  const p_grants = caps.flatMap((capability) =>
+    list.map((s) => ({ capability, scope_kind: s.kind, scope_id: s.kind === 'organization' ? null : s.id, valid_from: o.validFrom, valid_until: o.validUntil })),
+  )
+  const { data, error } = await adminClient().rpc('grant_access', { p_org: orgId, p_user: userId, p_grants, p_reason: 'test fixture' })
+  if (error) throw new Error(`grant failed: ${error.message}`)
+  return (data as { grant_ids: string[] }).grant_ids
+}
+
 // Child tables first. Add new organisation-scoped tables here.
+// access_grants and access_migration_report are not listed: nobody may delete them (append-only history). Grants go with their
+// person (profiles cascade) and report rows with their organisation (organizations cascade).
 export const ORG_TABLES_IN_DELETE_ORDER: string[] = [
   'camera_group_items',
   'camera_groups',
   'outages',
   'check_state',
   'admin_audit_log',
+  // Retired grant tables of the old model (P2-1): read by nothing, kept one release for the migration report and its test.
   'user_camera_access',
   'user_zone_access',
   'user_store_access',

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { adminClient, cleanupOrg, createOrg, createUser, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 const T0 = new Date('2026-03-10T10:00:00Z')
@@ -34,7 +34,8 @@ describe('monitoring in the database', () => {
     foreignCam = (await a.from('cameras').insert({ org_id: otherOrg, store_id: otherStore, channel: 1, name: 'F' }).select('id').single()).data!.id
     viewer = await createUser(orgId, 'user')
     manager = await createUser(orgId, 'manager')
-    await a.rpc('replace_user_access', { p_user: viewer.id, p_stores: [], p_zones: [], p_cameras: [cam1] })
+    await grant(orgId, manager.id, READ_EVERYTHING) // AC-8 (P2-1): sees everything only through explicit grants
+    await grant(orgId, viewer.id, CCTV_VIEW, atCamera(cam1)) // a camera grant (P2-1)
   })
 
   afterAll(async () => {

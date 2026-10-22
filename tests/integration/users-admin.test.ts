@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createUser, getUserAccess, listCamerasForAccess, listStoresForAccess, listUsers, resetUserPassword, setUserAccess, updateUser } from '@/lib/admin/users'
 import type { Actor } from '@/lib/admin/types'
-import { adminClient, cleanupOrg, createOrg, createUser as makeUser } from '../setup/fixtures'
+import { adminClient, cleanupOrg, createOrg, createUser as makeUser, grant } from '../setup/fixtures'
 
 const admin = () => adminClient()
 
@@ -73,7 +73,7 @@ describe('user administration', () => {
     const email = `${crypto.randomUUID()}@example.test`
     const made = await createUser(admin(), plainAdmin, { email, full_name: 'Change Me', role: 'user' })
     if (!made.ok) throw new Error('setup failed')
-    expect((await updateUser(admin(), plainAdmin, made.userId, { role: 'agent' })).ok).toBe(true)
+    expect((await updateUser(admin(), plainAdmin, made.userId, { role: 'operator' })).ok).toBe(true) // 'agent' before P2-1 (AC-15)
     expect((await updateUser(admin(), plainAdmin, plainAdmin.id, { role: 'user' })).ok).toBe(false)
     expect((await updateUser(admin(), plainAdmin, owner.id, { is_active: false })).ok).toBe(false)
 
@@ -111,11 +111,36 @@ describe('user administration', () => {
     expect((await setUserAccess(admin(), plainAdmin, made.userId, { storeIds: [storeId], zones: [], cameraIds: [] })).ok).toBe(true)
     const all = await client.from('cameras').select('id')
     expect((all.data ?? []).length).toBe(3)
+    // P2-1: the list is saved as explicit live + playback grants; a removed camera grant is revoked, not deleted (history).
+    const { data: grants } = await admin().from('access_grants').select('capability, scope_kind, scope_id, revoked_at').eq('user_id', made.userId)
+    const live = (grants ?? []).filter((g) => g.revoked_at === null).map((g) => `${g.capability}:${g.scope_kind}:${g.scope_id}`).sort()
+    expect(live).toEqual([`cctv.live:location:${storeId}`, `cctv.playback:location:${storeId}`])
+    expect((grants ?? []).filter((g) => g.revoked_at !== null)).toHaveLength(4)
+    expect(await getUserAccess(admin(), orgId, made.userId)).toEqual({ storeIds: [storeId], zones: [], cameraIds: [] })
   })
 
-  it('refuses an access list for a role that sees everything, and for stores of another organisation', async () => {
+  // AC-6 (P2-1): this used to be "camera grants inside a store narrow it". Now they only add.
+  it('a camera ticked next to its store adds nothing and takes nothing away, and a zone becomes its stores', async () => {
+    const viewer = await makeUser(orgId, 'user')
+    expect((await setUserAccess(admin(), plainAdmin, viewer.id, { storeIds: [storeId], zones: [], cameraIds: [cameraIds[0]] })).ok).toBe(true)
+    expect(((await viewer.client.from('cameras').select('id')).data ?? []).length).toBe(3)
+    const zoned = await makeUser(orgId, 'user')
+    expect((await setUserAccess(admin(), plainAdmin, zoned.id, { storeIds: [], zones: ['BR'], cameraIds: [] })).ok).toBe(true)
+    expect(((await zoned.client.from('cameras').select('id')).data ?? []).length).toBe(3)
+    expect(await getUserAccess(admin(), orgId, zoned.id)).toEqual({ storeIds: [storeId], zones: [], cameraIds: [] })
+    // The editor leaves other grants alone: an IT grant given elsewhere survives a save.
+    await grant(orgId, zoned.id, 'it.inventory.view')
+    expect((await setUserAccess(admin(), plainAdmin, zoned.id, { storeIds: [], zones: [], cameraIds: [] })).ok).toBe(true)
+    expect(((await zoned.client.from('cameras').select('id')).data ?? []).length).toBe(0)
+    expect((await zoned.client.rpc('has_capability', { p_cap: 'it.inventory.view' })).data).toBe(true)
+  })
+
+  // AC-8 (P2-1): this used to refuse a manager ("sees everything"). A manager now gets an access list like everyone else.
+  it('gives a manager an access list like anyone else, and refuses stores of another organisation', async () => {
     const manager = await makeUser(orgId, 'manager')
-    expect((await setUserAccess(admin(), plainAdmin, manager.id, { storeIds: [storeId], zones: [], cameraIds: [] })).ok).toBe(false)
+    expect(((await manager.client.from('cameras').select('id')).data ?? []).length).toBe(0)
+    expect((await setUserAccess(admin(), plainAdmin, manager.id, { storeIds: [storeId], zones: [], cameraIds: [] })).ok).toBe(true)
+    expect(((await manager.client.from('cameras').select('id')).data ?? []).length).toBe(3)
     const otherOrg = await createOrg()
     const { data: other } = await admin().from('stores').insert({ org_id: otherOrg, code: 'O1', name: 'Other', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()
     const viewer = await makeUser(orgId, 'user')

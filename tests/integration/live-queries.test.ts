@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { getLiveScope } from '@/lib/queries/live'
-import { adminClient, cleanupOrg, createOrg, createUser, type TestUser } from '../setup/fixtures'
+import { adminClient, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 
@@ -42,11 +42,13 @@ describe('getLiveScope', () => {
     foreign = await camera(otherOrg, await store(otherOrg, 'LX'), 1, 'Other organisation')
     viewer = await createUser(orgId, 'user')
     manager = await createUser(orgId, 'manager')
+    // AC-8 (P2-1): the manager sees everything here only because of these explicit organisation-wide grants.
+    await grant(orgId, manager.id, READ_EVERYTHING)
     nobody = await createUser(orgId, 'user')
     const g = await admin().from('camera_groups').insert({ org_id: orgId, name: 'Doors', created_by: manager.id }).select('id').single()
     group = g.data!.id
     await admin().from('camera_group_items').insert([a1, b1].map((camera_id) => ({ org_id: orgId, group_id: group, camera_id })))
-    await admin().rpc('replace_user_access', { p_user: viewer.id, p_stores: [sA], p_zones: [], p_cameras: [] })
+    await grant(orgId, viewer.id, CCTV_VIEW, atLocation(sA)) // a store grant, as explicit live + playback grants (P2-1)
     await setState(a1, 'up', 1)
     await setState(a2, 'down', 1)
     await setState(b1, 'up', 60)

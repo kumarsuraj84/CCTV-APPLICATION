@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { getVisibleStore, listVisibleDevices, listVisibleStores } from '@/lib/queries/inventory'
 import { getDashboard } from '@/lib/queries/status'
-import { adminClient, cleanupOrg, createOrg, createUser, type TestUser } from '../setup/fixtures'
+import { adminClient, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 describe('viewer queries respect access', () => {
   let orgId: string
@@ -25,7 +25,8 @@ describe('viewer queries respect access', () => {
     ])
     viewer = await createUser(orgId, 'user')
     manager = await createUser(orgId, 'manager')
-    await admin.rpc('replace_user_access', { p_user: viewer.id, p_stores: [storeA], p_zones: [], p_cameras: [] })
+    await grant(orgId, manager.id, READ_EVERYTHING) // AC-8 (P2-1): sees everything only through explicit grants
+    await grant(orgId, viewer.id, CCTV_VIEW, atLocation(storeA)) // a CCTV store grant (P2-1)
   })
   afterAll(() => cleanupOrg(orgId))
 
@@ -39,15 +40,21 @@ describe('viewer queries respect access', () => {
     expect((await listVisibleStores(manager.client, '%,()')).length).toBe(2)
   })
 
-  it('shows a store with its cameras and devices only when it is visible', async () => {
+  // AC-4 (P2-1): a CCTV store grant shows the store's cameras but not its IT devices, nor the camera addresses.
+  it('shows a store with its cameras only when it is visible, and its devices and addresses only with the IT view', async () => {
     const ok = await getVisibleStore(viewer.client, storeA)
     expect(ok?.cameras.map((c) => c.channel)).toEqual([1, 2])
-    expect(ok?.devices.map((d) => d.name)).toEqual(['A server'])
+    expect(ok?.devices).toEqual([])
+    expect(ok?.showsAddresses).toBe(false)
     expect(await getVisibleStore(viewer.client, storeB)).toBeNull()
+    const asManager = await getVisibleStore(manager.client, storeA)
+    expect(asManager?.devices.map((d) => d.name)).toEqual(['A server'])
+    expect(asManager?.showsAddresses).toBe(true)
   })
 
   it('lists visible devices and can filter by type', async () => {
-    expect((await listVisibleDevices(viewer.client)).map((d) => d.name)).toEqual(['A server'])
+    expect(await listVisibleDevices(viewer.client)).toEqual([]) // AC-4
+    expect((await listVisibleDevices(manager.client)).map((d) => d.name).sort()).toEqual(['A server', 'B counter'])
     expect((await listVisibleDevices(manager.client, 'footfall')).map((d) => d.name)).toEqual(['B counter'])
   })
 
@@ -61,7 +68,7 @@ describe('viewer queries respect access', () => {
     const ins = await admin.from('devices').insert(rows)
     expect(ins.error).toBeNull()
     const reader = await createUser(orgId, 'user')
-    await admin.rpc('replace_user_access', { p_user: reader.id, p_stores: [big], p_zones: [], p_cameras: [] })
+    await grant(orgId, reader.id, READ_EVERYTHING, atLocation(big)) // CCTV and IT read for the store (P2-1: devices need IT, AC-4)
     const list = await listVisibleDevices(reader.client)
     expect(list.length).toBe(1001)
     expect(new Set(list.map((d) => d.id)).size).toBe(1001)
@@ -91,6 +98,7 @@ describe('viewer queries leave out what is switched off, page, and do not hide e
       { org_id: orgId, store_id: live, type: 'server', name: 'Disabled', ip: '127.0.0.1', tcp_port: 2, enabled: false },
     ])
     manager = await createUser(orgId, 'manager')
+    await grant(orgId, manager.id, READ_EVERYTHING) // AC-8 (P2-1): sees everything only through explicit grants
   })
   afterAll(() => cleanupOrg(orgId))
 

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { getDashboard, getStates, listStoreStatus, STALE_AFTER_MINUTES } from '@/lib/queries/status'
 import { uptimeFor } from '@/lib/monitor/uptime'
-import { adminClient, cleanupOrg, createOrg, createUser, type TestUser } from '../setup/fixtures'
+import { adminClient, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
@@ -37,8 +37,9 @@ describe('status queries', () => {
     await apply([{ type: 'nvr', id: s2, ok: false, at: ago(8) }], 1)
     await apply([{ type: 'camera', id: cam2, ok: false, at: ago(8), cause: 'nvr_down' }], 1)
     manager = await createUser(orgId, 'manager')
+    await grant(orgId, manager.id, READ_EVERYTHING) // AC-8 (P2-1): sees everything only through explicit grants
     viewer = await createUser(orgId, 'user')
-    await a.rpc('replace_user_access', { p_user: viewer.id, p_stores: [s1], p_zones: [], p_cameras: [] })
+    await grant(orgId, viewer.id, CCTV_VIEW, atLocation(s1)) // a CCTV store grant (P2-1)
   })
   afterAll(() => cleanupOrg(orgId))
 
@@ -59,12 +60,17 @@ describe('status queries', () => {
     expect(d.stores.total).toBe(1)
     expect(d.stores.nvrDown).toEqual([])
     expect(d.recentOutages.map((o) => o.label)).not.toContain('Store ST2')
+    // AC-4 (P2-1): a CCTV-only viewer sees no IT devices and no device outages.
+    expect(d.devices).toEqual({})
+    expect(d.recentOutages.map((o) => o.kind)).not.toContain('device')
   })
 
   it('lists the status of each store and of individual targets', async () => {
     const stores = await listStoreStatus(viewer.client)
     expect([...stores.keys()]).toEqual([s1])
-    expect(stores.get(s1)).toMatchObject({ cameras_total: 3, cameras_live: 1, cameras_down: 1, cameras_unknown: 1, nvr_status: 'up' })
+    // AC-4 (P2-1): camera availability yes; the NVR's status is IT monitoring data (it.monitoring.view), so it is not shown.
+    expect(stores.get(s1)).toMatchObject({ cameras_total: 3, cameras_live: 1, cameras_down: 1, cameras_unknown: 1, nvr_status: null })
+    expect((await listStoreStatus(manager.client)).get(s1)).toMatchObject({ nvr_status: 'up' })
     const states = await getStates(viewer.client, 'camera', [...cams1, cam2])
     expect(states.get(cams1[1])).toMatchObject({ status: 'down' })
     expect(states.has(cam2)).toBe(false) // not visible to the viewer
@@ -106,6 +112,7 @@ describe('status queries: outages of cameras whose NVR was down', () => {
     await apply([{ type: 'camera', id: flaky, ok: true, at: ago(60) }])
     await apply([{ type: 'camera', id: flaky, ok: false, at: ago(30) }])
     manager = await createUser(orgId, 'manager')
+    await grant(orgId, manager.id, READ_EVERYTHING) // AC-8 (P2-1): sees everything only through explicit grants
   })
   afterAll(() => cleanupOrg(orgId))
 
@@ -159,6 +166,7 @@ describe('status queries: which camera outages hide under an NVR outage', () => 
     await apply([{ type: 'nvr', id: nrm, ok: false, at: ago(30) }])
     await apply([{ type: 'camera', id: camNrm, ok: false, at: ago(29), cause: 'nvr_down' }])
     manager = await createUser(orgId, 'manager')
+    await grant(orgId, manager.id, READ_EVERYTHING) // AC-8 (P2-1): sees everything only through explicit grants
   })
   afterAll(() => cleanupOrg(orgId))
 
@@ -183,6 +191,7 @@ describe('status queries: a capped scan of grouped outages', () => {
     await apply([{ type: 'nvr', id: store, ok: false, at: ago(60) }])
     await apply(cams.map((id, i) => ({ type: 'camera', id, ok: false, at: ago(50 - i), cause: 'nvr_down' })))
     manager = await createUser(orgId, 'manager')
+    await grant(orgId, manager.id, READ_EVERYTHING) // AC-8 (P2-1): sees everything only through explicit grants
   })
   afterAll(() => cleanupOrg(orgId))
 
@@ -214,6 +223,7 @@ describe('status queries: grouping uses the time an outage was recorded (I5)', (
     await apply([{ type: 'nvr', id: store, ok: false, at: ago(30) }])
     await apply([{ type: 'camera', id: cam, ok: false, at: ago(31), cause: 'nvr_down' }])
     manager = await createUser(orgId, 'manager')
+    await grant(orgId, manager.id, READ_EVERYTHING) // AC-8 (P2-1): sees everything only through explicit grants
   })
   afterAll(() => cleanupOrg(orgId))
 
@@ -259,6 +269,7 @@ describe('status queries: stale and switched-off targets', () => {
     await apply([{ type: 'nvr', id: off, ok: false, at: minutesAgo(8) }], 1)
     await apply([{ type: 'camera', id: offCam, ok: false, at: minutesAgo(8), cause: 'nvr_down' }], 1)
     manager = await createUser(orgId, 'manager')
+    await grant(orgId, manager.id, READ_EVERYTHING) // AC-8 (P2-1): sees everything only through explicit grants
   })
   afterAll(() => cleanupOrg(orgId))
 

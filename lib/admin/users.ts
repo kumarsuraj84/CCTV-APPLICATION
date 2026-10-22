@@ -1,7 +1,7 @@
 import { randomInt } from 'node:crypto'
 import { z } from 'zod'
 import { addAudit } from '@/lib/admin/audit'
-import { canManageRole, ROLES, SEES_EVERYTHING } from '@/lib/admin/roles'
+import { canManageRole, ROLES } from '@/lib/admin/roles'
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { logger } from '@/lib/observability/logger'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
@@ -150,22 +150,46 @@ export async function resetUserPassword(admin: AdminClient, actor: Actor, userId
   return { ok: true, oneTimePassword }
 }
 
+// The interim access editor (until P2-3 brings the full one with modes, expiry and preview) edits exactly one thing: a person's live
+// video and recordings (cctv.live + cctv.playback) for whole stores and single cameras. It is saved as explicit grants (P2-1, D-1):
+// grants only add (a camera never narrows a store, AC-6), a zone is turned into grants for the stores in it now, and every other grant
+// of the person (other capabilities, organisation-wide grants) is left as it is. Managers get access lists like everyone else (AC-8).
+const EDITOR_CAPABILITIES = ['cctv.live', 'cctv.playback'] as const
+const EDITOR_SCOPES = ['location', 'camera'] as const
+
 export async function setUserAccess(admin: AdminClient, actor: Actor, userId: string, input: unknown): Promise<Result<object>> {
   const parsed = accessSchema.safeParse(input)
   if (!parsed.success) return { ok: false, error: firstIssue(parsed.error) }
   const target = await loadTarget(admin, actor, userId)
   if (!target) return { ok: false, error: 'User not found.' }
   if (!canManageRole(actor.role, target.role)) return { ok: false, error: 'You are not allowed to change this user.' }
-  if (SEES_EVERYTHING.includes(target.role)) return { ok: false, error: 'This role already sees everything, so it needs no access list.' }
   const a = parsed.data
-  const { error } = await admin.rpc('replace_user_access', { p_user: userId, p_stores: a.storeIds, p_zones: a.zones, p_cameras: a.cameraIds })
+  let zoneStores: string[] = []
+  if (a.zones.length > 0) {
+    try {
+      zoneStores = (await fetchAll((from, to) => admin.from('stores').select('id').eq('org_id', actor.orgId).in('zone', a.zones).order('id').range(from, to))).map((s) => s.id)
+    } catch (e) {
+      return { ok: false, error: sanitizeError(e, { route: 'setUserAccess.zones', fallback: 'Could not save the access list.' }) }
+    }
+  }
+  const stores = [...new Set([...a.storeIds, ...zoneStores].map((id) => id.toLowerCase()))]
+  const cameras = [...new Set(a.cameraIds.map((id) => id.toLowerCase()))]
+  const grants = EDITOR_CAPABILITIES.flatMap((capability) => [
+    ...stores.map((id) => ({ capability, scope_kind: 'location', scope_id: id })),
+    ...cameras.map((id) => ({ capability, scope_kind: 'camera', scope_id: id })),
+  ])
+  const { data, error } = await admin.rpc('replace_user_grants', {
+    p_org: actor.orgId, p_user: userId, p_capabilities: [...EDITOR_CAPABILITIES], p_scope_kinds: [...EDITOR_SCOPES], p_grants: grants,
+    p_actor: actor.id, p_reason: 'Access list saved by an administrator.',
+  })
   if (error) {
     const msg = error.message.includes('outside organisation') ? 'One of the stores or cameras was not found.' : sanitizeError(error, { route: 'setUserAccess', fallback: 'Could not save the access list.' })
     return { ok: false, error: msg }
   }
+  const result = data as { added?: number; revoked?: number } | null
   await addAudit(admin, {
     orgId: actor.orgId, actorId: actor.id, action: 'user_access_set', entityType: 'profile', entityId: userId,
-    detail: { stores: a.storeIds.length, zones: a.zones.length, cameras: a.cameraIds.length },
+    detail: { stores: stores.length, zones: a.zones.length, cameras: cameras.length, grants_added: result?.added ?? 0, grants_revoked: result?.revoked ?? 0 },
   })
   return { ok: true }
 }
@@ -176,17 +200,22 @@ export async function listUsers(admin: AdminClient, orgId: string) {
   )
 }
 
+/** What the interim editor shows: the stores and cameras of the person's live (not revoked) live-video and recording grants. Zones are no grants any more. */
 export async function getUserAccess(admin: AdminClient, orgId: string, userId: string) {
-  const [stores, zones, cameras] = await Promise.all([
-    fetchAll((from, to) => admin.from('user_store_access').select('store_id').eq('org_id', orgId).eq('user_id', userId).order('store_id').range(from, to)),
-    fetchAll((from, to) => admin.from('user_zone_access').select('zone').eq('org_id', orgId).eq('user_id', userId).order('zone').range(from, to)),
-    fetchAll((from, to) => admin.from('user_camera_access').select('camera_id').eq('org_id', orgId).eq('user_id', userId).order('camera_id').range(from, to)),
-  ])
-  return {
-    storeIds: stores.map((r) => r.store_id),
-    zones: zones.map((r) => r.zone),
-    cameraIds: cameras.map((r) => r.camera_id),
-  }
+  const rows = await fetchAll((from, to) =>
+    admin
+      .from('access_grants')
+      .select('id, scope_kind, scope_id')
+      .eq('org_id', orgId)
+      .eq('user_id', userId)
+      .is('revoked_at', null)
+      .in('capability', [...EDITOR_CAPABILITIES])
+      .in('scope_kind', [...EDITOR_SCOPES])
+      .order('id')
+      .range(from, to),
+  )
+  const of = (kind: string) => [...new Set(rows.filter((r) => r.scope_kind === kind && r.scope_id).map((r) => r.scope_id as string))].sort()
+  return { storeIds: of('location'), zones: [] as string[], cameraIds: of('camera') }
 }
 
 export async function listStoresForAccess(admin: AdminClient, orgId: string) {

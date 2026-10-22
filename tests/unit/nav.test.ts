@@ -12,7 +12,7 @@ describe('navigation per role', () => {
   })
 
   it('an operator and a manager see the same pages as a viewer', () => {
-    expect(hrefs('agent')).toEqual(hrefs('user'))
+    expect(hrefs('operator')).toEqual(hrefs('user'))
     expect(hrefs('manager')).toEqual(hrefs('user'))
   })
 
@@ -39,7 +39,7 @@ describe('navigation per role', () => {
   })
 
   it('nobody below an admin sees the Monitoring page', () => {
-    for (const role of ['user', 'agent', 'manager'] as const) expect(hrefs(role)).not.toContain('/admin/monitoring')
+    for (const role of ['user', 'operator', 'manager'] as const) expect(hrefs(role)).not.toContain('/admin/monitoring')
   })
 
   it('a platform owner sees what an admin sees', () => {
@@ -64,7 +64,7 @@ describe('navigation per role', () => {
 
 describe('mobile navigation', () => {
   it('shows only the pages everybody uses, taken from the same list as the sidebar: Live is on the small bar, Groups is not', () => {
-    for (const role of ['user', 'agent', 'manager', 'admin', 'platform_owner'] as const) {
+    for (const role of ['user', 'operator', 'manager', 'admin', 'platform_owner'] as const) {
       expect(mobileNavFor(role).map((i) => i.href)).toEqual(['/home', '/stores', '/devices', '/live'])
     }
   })

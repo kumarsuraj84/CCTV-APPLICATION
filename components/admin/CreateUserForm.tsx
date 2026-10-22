@@ -7,10 +7,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
+// A role says what a person may administer, never what they may see: that comes only from the access they are given (P2-1, AC-8).
 const ROLE_LABELS: Record<string, string> = {
-  user: 'Viewer (sees only what is granted)',
-  agent: 'Operator (viewer who can also start checks)',
-  manager: 'Manager (sees everything, read-only)',
+  user: 'Viewer',
+  operator: 'Operator (can also start checks)',
+  manager: 'Manager',
   admin: 'Administrator',
   platform_owner: 'Platform owner',
 }
@@ -41,9 +42,9 @@ export function CreateUserForm({ allowedRoles, stores }: { allowedRoles: string[
             </select>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="store_id">Store login (optional)</Label>
+            <Label htmlFor="store_id">Home store (optional, for information: gives no access)</Label>
             <select id="store_id" name="store_id" defaultValue={state.values?.store_id ?? ''} className="h-8 w-full rounded-lg border bg-background px-2 text-sm">
-              <option value="">Not a store login</option>
+              <option value="">No home store</option>
               {stores.map((s) => (
                 <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
               ))}

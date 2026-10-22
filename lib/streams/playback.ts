@@ -10,8 +10,9 @@ import { buildPlaybackUrl, demoSource, isDemoStore } from '@/lib/streams/source'
 import { parseDay, shownNowMs } from '@/lib/streams/timeline'
 import { signStreamToken, streamName, TOKEN_LIFETIME_SEC } from '@/lib/streams/token'
 
-// Playback by day and time. Which cameras may be looked at is decided by the person's own client (row-level security); the NVR password is
-// read with the service-role call only for a camera that passed that check, is used for this one call and goes nowhere else.
+// Playback by day and time. Which cameras may be looked at is decided by the person's own client (cctv.playback, checked by the database
+// as the person); the NVR address, login and password are read with the service role only for a camera that passed that check, are
+// used for this one call and go nowhere else.
 //
 // TIMES (ruling R13). Every time that comes back from here, and the start that goes in, is a "shown time": a plain instant whose UTC clock
 // fields are the wall clock people see (India time). It is NVR time + `offsetMin`, so it is NOT the real UTC instant unless the offset is 0
@@ -88,13 +89,33 @@ export function parsePlaybackOffset(raw: string | undefined): number {
 
 export type Found = { camera: CameraRow & { stores: StoreRow }; password: string | null; demo: boolean }
 
-/** The camera if this person may see it (and it and its store are switched on), and the NVR password unless it is not needed. */
-export async function findCamera(deps: PlaybackDeps, cameraId: string, o: { password: 'always' | 'unless-demo'; env?: Record<string, string | undefined> }): Promise<Result<Found>> {
+/** What looking at recordings needs: cctv.playback (search, calendar, 1x playback) or cctv.export (fast playback is a savable file, D-6a). */
+export type RecordingCapability = 'cctv.playback' | 'cctv.export'
+
+/**
+ * The camera if this person holds the capability for it (and it and its store are switched on), and the NVR password unless it is not
+ * needed. Without the capability the answer is "Camera not found.", the same as for a camera that does not exist (P2-1, AC-2).
+ */
+export async function findCamera(
+  deps: PlaybackDeps,
+  cameraId: string,
+  o: { password: 'always' | 'unless-demo'; env?: Record<string, string | undefined>; capability: RecordingCapability; orgId: string },
+): Promise<Result<Found>> {
   if (typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
-  const found = await deps.rls
+  const id = cameraId.toLowerCase()
+  // The person's own client answers whether they may use this camera for recordings.
+  const allowed = await deps.rls.rpc('has_capability_for', { p_cap: o.capability, p_kind: 'camera', p_id: id })
+  if (allowed.error) {
+    logger.error({ event: 'playback_camera_check_failed', errorCode: allowed.error.code })
+    return { ok: false, error: MSG_READ_CAMERA }
+  }
+  if (allowed.data !== true) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
+  // Only then the NVR address and login, with the service role: signed-in people cannot read them any more (AC-10).
+  const found = await deps.admin
     .from('cameras')
     .select('id, name, channel, store_id, stores!inner(code, nvr_ip, http_port, rtsp_port, nvr_username, is_active)')
-    .eq('id', cameraId.toLowerCase())
+    .eq('id', id)
+    .eq('org_id', o.orgId)
     .eq('is_active', true)
     .eq('stores.is_active', true)
     .maybeSingle()
@@ -133,7 +154,7 @@ const defaultNvr = (ep: NvrEndpoint) => new NvrClient(ep)
 export async function listRecordedDays(deps: LookupDeps, actor: Who, cameraId: string, year: number, month: number, offsetMin: number): Promise<Result<{ days: number[] }>> {
   if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12 || !validOffset(offsetMin)) return { ok: false, error: MSG_BAD_REQUEST }
   if (deps.limiter && !deps.limiter.allow(actor.id)) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
-  const c = await findCamera(deps, cameraId, { password: 'always' })
+  const c = await findCamera(deps, cameraId, { password: 'always', capability: 'cctv.playback', orgId: actor.orgId })
   if (!c.ok) return c
   const { camera, password } = c
   try {
@@ -158,7 +179,7 @@ export async function listDaySegments(
 ): Promise<Result<{ segments: { start: string; end: string }[]; truncated: boolean; skipped: number }>> {
   if (!parseDay(day) || !validOffset(offsetMin)) return { ok: false, error: MSG_BAD_REQUEST }
   if (deps.limiter && !deps.limiter.allow(actor.id)) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
-  const c = await findCamera(deps, cameraId, { password: 'always' })
+  const c = await findCamera(deps, cameraId, { password: 'always', capability: 'cctv.playback', orgId: actor.orgId })
   if (!c.ok) return c
   const { camera, password } = c
   try {
@@ -198,7 +219,7 @@ export async function openPlayback(deps: OpenPlaybackDeps, actor: Who, cameraId:
   const length = Math.min(MAX_PLAY_MINUTES, Math.max(MIN_PLAY_MINUTES, Math.round(minutes)))
   const wanted = Math.floor(start.getTime() / 1000)
 
-  const c = await findCamera(deps, cameraId, { password: 'unless-demo', env: deps.env })
+  const c = await findCamera(deps, cameraId, { password: 'unless-demo', env: deps.env, capability: 'cctv.playback', orgId: actor.orgId })
   if (!c.ok) return c
   const { camera, password, demo } = c
   const store = camera.stores

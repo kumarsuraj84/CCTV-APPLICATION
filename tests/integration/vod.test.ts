@@ -6,7 +6,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { NvrClient } from '@/lib/nvr/client'
 import { createWindowLimiter } from '@/lib/streams/limiter'
 import { buildFfmpegArgs, createConversionLimiter, parseVodQuery, serveVod, type ConversionLimiter, type VodDeps } from '@/lib/streams/vod'
-import { adminClient, cleanupOrg, createOrg, createUser, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
+
+const WITH_EXPORT = [...CCTV_VIEW, 'cctv.export']
 import { closedPort, FAKE_DOWNLOAD_BYTES, startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
 import { fakeSpawn, isAlive } from '../helpers/fake-spawn'
 
@@ -103,10 +105,9 @@ describe('fast playback (/api/vod)', () => {
     u1 = await createUser(orgId, 'user')
     u2 = await createUser(orgId, 'user')
     u3 = await createUser(orgId, 'user')
-    for (const u of [viewer, u1, u2, u3]) {
-      const { error } = await admin().rpc('replace_user_access', { p_user: u.id, p_stores: [sA, sNoPass, sDown, sWrong, sXml, sEnd, sHostile], p_zones: [], p_cameras: [] })
-      if (error) throw new Error(error.message)
-    }
+    // P2-1: fast playback is a savable file, so it needs cctv.export (decision D-6a), given here with live and playback for the stores.
+    for (const u of [viewer, u1, u2, u3]) await grant(orgId, u.id, WITH_EXPORT, [sA, sNoPass, sDown, sWrong, sXml, sEnd, sHostile].map(atLocation))
+    await grant(orgId, manager.id, [...READ_EVERYTHING, 'cctv.export']) // AC-8: the grants, not the manager role
   })
   afterAll(async () => {
     await Promise.all([nvr.close(), nvrXml.close(), nvrEnd.close(), nvrHostile.close()])
@@ -148,7 +149,7 @@ describe('fast playback (/api/vod)', () => {
     return p.query
   }
   const get = (user: TestUser, camera: string, o: { start?: string; minutes?: number; more?: string; deps?: Partial<VodDeps>; signal?: AbortSignal } = {}) =>
-    serveVod(deps(user, o.deps), { id: user.id }, query(camera, o.start, o.minutes, o.more), o.signal)
+    serveVod(deps(user, o.deps), { id: user.id, orgId }, query(camera, o.start, o.minutes, o.more), o.signal)
   const errorOf = async (res: Response) => ((await res.json()) as { error: string }).error
 
   describe('the video', () => {
@@ -233,12 +234,23 @@ describe('fast playback (/api/vod)', () => {
 
     it('somebody with a grant for one camera only can fast-play that camera and no other of its store', async () => {
       const cameraOnly = await createUser(orgId, 'user')
-      const { error } = await admin().rpc('replace_user_access', { p_user: cameraOnly.id, p_stores: [], p_zones: [], p_cameras: [a1] })
-      expect(error).toBeNull()
+      await grant(orgId, cameraOnly.id, WITH_EXPORT, atCamera(a1))
       expect((await get(cameraOnly, a2)).status).toBe(404)
       const ok = await get(cameraOnly, a1)
       expect(ok.status).toBe(200)
       await readAll(ok)
+    })
+
+    // AC-2 / D-6a (P2-1): live and playback rights are not enough for fast playback; it needs cctv.export.
+    it('somebody with live and playback but no export gets "Camera not found." (404), and the NVR is never asked', async () => {
+      const spawn = fakeSpawn('copy')
+      const noExport = await createUser(orgId, 'user')
+      await grant(orgId, noExport.id, CCTV_VIEW, atLocation(sA))
+      const res = await get(noExport, a1, { deps: { spawn } })
+      expect(res.status).toBe(404)
+      expect(await errorOf(res)).toBe('Camera not found.')
+      expect(nvr.requests).toHaveLength(0)
+      expect(spawn.calls).toHaveLength(0)
     })
   })
 
@@ -275,7 +287,7 @@ describe('fast playback (/api/vod)', () => {
     it('a missing ffmpeg is a plain 500 "ffmpeg is not installed on the server", before the NVR is asked for the download', async () => {
       const res = await serveVod(
         { rls: viewer.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: { FFMPEG: path.resolve('definitely-not-an-installed-program-xyz') } },
-        { id: viewer.id },
+        { id: viewer.id, orgId },
         query(a1),
       )
       expect(res.status).toBe(500)
@@ -301,7 +313,7 @@ describe('fast playback (/api/vod)', () => {
     it('a FFMPEG setting that is not a full path on one line is refused with a plain message and nothing is run or asked of the NVR', async () => {
       const spawn = fakeSpawn('copy')
       for (const bad of ['ffmpeg', './ffmpeg', '../ffmpeg', 'bin/ffmpeg', '/opt/ffmpeg\n-i evil']) {
-        const res = await serveVod({ rls: viewer.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: { FFMPEG: bad }, spawn }, { id: viewer.id }, query(a1))
+        const res = await serveVod({ rls: viewer.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: { FFMPEG: bad }, spawn }, { id: viewer.id, orgId }, query(a1))
         expect(res.status, bad).toBe(500)
         expect(await errorOf(res)).toBe('FFMPEG must be the full path of the ffmpeg program.')
       }
@@ -317,7 +329,7 @@ describe('fast playback (/api/vod)', () => {
       const found = path.join(tools, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
       const res = await serveVod(
         { rls: viewer.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: { PATH: ['.', '', 'bin', tools].join(path.delimiter) }, spawn, lookup },
-        { id: viewer.id },
+        { id: viewer.id, orgId },
         query(a1),
       )
       expect(res.status).toBe(500)
@@ -327,7 +339,7 @@ describe('fast playback (/api/vod)', () => {
       // and when it is there, it is that full path that is started
       const ok = await serveVod(
         { rls: viewer.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: { PATH: ['.', tools].join(path.delimiter) }, spawn, lookup: { exists: () => true } },
-        { id: viewer.id },
+        { id: viewer.id, orgId },
         query(a1),
       )
       expect(ok.status).toBe(200)
@@ -665,9 +677,8 @@ describe('fast playback (/api/vod)', () => {
         const store = await addStore(orgId, 'VR', { port: real.port })
         await savePassword(store, NVR_PASSWORD)
         const cam = await addCamera(orgId, store, 1, 'Real ffmpeg')
-        const { error } = await admin().rpc('replace_user_access', { p_user: u1.id, p_stores: [store], p_zones: [], p_cameras: [] })
-        expect(error).toBeNull()
-        const res = await serveVod({ rls: u1.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: { PATH: process.env.PATH } }, { id: u1.id }, query(cam))
+        await grant(orgId, u1.id, WITH_EXPORT, atLocation(store))
+        const res = await serveVod({ rls: u1.client, admin: admin(), nvr: nvrClient, conversions: limits, now: () => NOW, env: { PATH: process.env.PATH } }, { id: u1.id, orgId }, query(cam))
         expect(res.status).toBe(200)
         expect(res.headers.get('content-type')).toBe('video/mp4')
         const bytes = await readAll(res)

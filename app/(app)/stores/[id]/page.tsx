@@ -88,7 +88,8 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
                   <span className="min-w-0 break-words font-medium">{c.channel} · {c.name}</span>
                   <StatusBadge status={st?.status} stale={stale(st)} />
                 </div>
-                <div className="text-muted-foreground">{c.camera_ip ?? 'Address not known yet'}</div>
+                {/* Camera addresses are for people with the IT view of this store only (P2-1). */}
+                {store.showsAddresses && <div className="text-muted-foreground">{c.camera_ip ?? 'Address not known yet'}</div>}
                 <Since state={st} />
                 <div className="text-muted-foreground">
                   {u24 == null && u7 == null ? 'Uptime: no data yet' : `Uptime 24h ${formatUptime(u24)} · 7d ${formatUptime(u7)}${uptimeSuffix(monitoring)}`}

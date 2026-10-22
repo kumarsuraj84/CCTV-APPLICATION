@@ -2,11 +2,14 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { passwordSchema } from '@/lib/validation/password'
 import {
+  ADMIN_BASELINE,
   DEFAULT_NVR_PORT,
   DEMO_ORG_NAME,
+  DEMO_ROLES,
   DEMO_SLUG,
   LOOPBACK,
   demoEmail,
+  demoGrants,
   demoPlan,
   isDemoOrg,
   makePassword,
@@ -144,7 +147,41 @@ describe('demo accounts and reset', () => {
   })
 
   it('demo e-mail addresses cannot belong to a real person', () => {
-    for (const r of ['user', 'agent', 'manager', 'admin', 'platform_owner'] as const) expect(demoEmail(r)).toMatch(/^demo\.[a-z-]+@demo\.example\.test$/)
+    for (const r of DEMO_ROLES) expect(demoEmail(r)).toMatch(/^demo\.[a-z-]+@demo\.example\.test$/)
+  })
+
+  // P2-1: the demo operator is demo.operator (AC-15), and every demo person's access is explicit grants (AC-1, AC-8).
+  it('the demo people are user, operator, manager, admin and platform owner', () => {
+    expect(DEMO_ROLES).toEqual(['user', 'operator', 'manager', 'admin', 'platform_owner'])
+    expect(demoEmail('operator')).toBe('demo.operator@demo.example.test')
+  })
+
+  it('each demo person gets explicit grants: the viewer CCTV only, the manager scoped, administrators the organisation', () => {
+    const plan = demoPlan()
+    const codes = plan.stores.map((s) => s.code)
+    const of = (role: (typeof DEMO_ROLES)[number]) => demoGrants(role, codes)
+    expect(of('user')).toEqual([{ capabilities: ['cctv.live', 'cctv.playback'], scope: { stores: ['DEMO1', 'DEMO2'] } }])
+    const op = of('operator')
+    expect(op.flatMap((g) => g.capabilities)).toEqual(expect.arrayContaining(['cctv.live', 'it.monitoring.operate']))
+    expect(op.every((g) => g.scope !== 'organization')).toBe(true)
+    const manager = of('manager')
+    expect(manager.every((g) => g.scope !== 'organization')).toBe(true) // a manager is not global any more
+    expect(manager.flatMap((g) => g.capabilities)).toEqual(expect.arrayContaining(['cctv.live', 'cctv.playback', 'it.inventory.view', 'it.monitoring.view']))
+    for (const r of ['admin', 'platform_owner'] as const) {
+      expect(of(r).every((g) => g.scope === 'organization')).toBe(true)
+      expect(of(r).flatMap((g) => g.capabilities)).toEqual(expect.arrayContaining(['cctv.live', 'cctv.playback', 'cctv.export', 'admin.users', 'admin.access']))
+    }
+    // The viewer never gets IT access, and nobody gets the high-risk IT capabilities.
+    expect(of('user').flatMap((g) => g.capabilities).some((c) => c.startsWith('it.'))).toBe(false)
+    for (const r of DEMO_ROLES) for (const g of of(r)) for (const c of g.capabilities) expect(['it.remote.control', 'it.script.run', 'it.credentials.admin']).not.toContain(c)
+    // Every store named exists in the plan.
+    for (const r of DEMO_ROLES) for (const g of of(r)) if (g.scope !== 'organization') for (const s of g.scope.stores) expect(codes).toContain(s)
+  })
+
+  it('the dev admin script grants the same administrator set (source check)', () => {
+    const src = readFileSync('scripts/create-dev-admin.mjs', 'utf8')
+    for (const c of ADMIN_BASELINE) expect(src, c).toContain(`'${c}'`)
+    expect(src).toContain("rpc('grant_access'")
   })
 
   it('reset recognises only the demo organisation', () => {

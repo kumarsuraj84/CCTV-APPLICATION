@@ -1,7 +1,7 @@
 import { CreateUserForm } from '@/components/admin/CreateUserForm'
 import { UserRow } from '@/components/admin/UserRow'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { canManageRole, ROLES, SEES_EVERYTHING } from '@/lib/admin/roles'
+import { canManageRole, ROLES } from '@/lib/admin/roles'
 import { listStoresForAccess, listUsers } from '@/lib/admin/users'
 import { requireAdmin } from '@/lib/auth/profile'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -29,7 +29,7 @@ export default async function UsersPage() {
             {users.map((u) => (
               <UserRow
                 key={u.id}
-                u={{ ...u, manageable: canManageRole(me.role, u.role), sees_everything: SEES_EVERYTHING.includes(u.role), is_self: u.id === me.id }}
+                u={{ ...u, manageable: canManageRole(me.role, u.role), is_self: u.id === me.id }}
               />
             ))}
           </tbody>

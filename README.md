@@ -50,7 +50,7 @@ The checks run in a separate process, the worker, next to the web app:
     npm run dev
 
 `demo:seed` works on the local stack only. It creates one demo person for each role, with the e-mail
-`demo.<role>@demo.example.test` (`demo.user`, `demo.agent`, `demo.manager`, `demo.admin`, `demo.platform-owner`). Their passwords are made up
+`demo.<role>@demo.example.test` (`demo.user`, `demo.operator`, `demo.manager`, `demo.admin`, `demo.platform-owner`). Their passwords are made up
 when you run it and printed **once**, in the terminal; they are not saved anywhere. If you lose them, run `npm run demo:seed -- --fresh` for new ones.
 Everything it creates points at 127.0.0.1 and lives in its own organisation. Stop the worker, then
 `npm run demo:seed -- --reset` removes that organisation and nothing else (`-- --fresh` removes and adds it again).

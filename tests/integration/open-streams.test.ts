@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { MAX_STREAMS_PER_REQUEST, openStreams, type OpenedStream } from '@/lib/streams/open'
 import { verifyStreamToken } from '@/lib/streams/token'
-import { adminClient, cleanupOrg, createOrg, createUser, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const SECRET = 'integration-test-stream-secret-0123456789'
 const PASSWORD = 'p@ss:w/rd#1!'
@@ -89,8 +89,8 @@ describe('openStreams', () => {
     viewer = await createUser(orgId, 'user')
     nobody = await createUser(orgId, 'user')
     manager = await createUser(orgId, 'manager')
-    const { error } = await admin().rpc('replace_user_access', { p_user: viewer.id, p_stores: [sA, sNoPass], p_zones: [], p_cameras: [] })
-    if (error) throw new Error(error.message)
+    await grant(orgId, manager.id, READ_EVERYTHING) // AC-8 (P2-1): sees every store only through explicit grants
+    await grant(orgId, viewer.id, CCTV_VIEW, [atLocation(sA), atLocation(sNoPass)]) // store grants as live + playback (P2-1)
   })
   afterAll(async () => {
     if (savedSecret === undefined) delete process.env.STREAM_TOKEN_SECRET
@@ -164,16 +164,23 @@ describe('openStreams', () => {
 
   it('a viewer with a camera grant only (no store grant) gets only that camera, even from a store they are not granted', async () => {
     const cameraOnly = await createUser(orgId, 'user')
-    const { error } = await admin().rpc('replace_user_access', { p_user: cameraOnly.id, p_stores: [], p_zones: [], p_cameras: [b1] })
-    expect(error).toBeNull()
+    await grant(orgId, cameraOnly.id, CCTV_VIEW, atCamera(b1))
     const res = await open(cameraOnly, [a1, a2, b1])
     expect(streamsOf(res).map((s) => s.cameraId)).toEqual([b1])
     expect(fake.seen.map((s) => s.name)).toEqual([`cam_${b1}_sub`])
     expect(verifyStreamToken(streamsOf(res)[0].token, Date.now(), SECRET)).toMatchObject({ u: cameraOnly.id, c: b1 })
-    // Cameras of a store where someone has individual camera grants: only the granted ones, also for a store grant holder.
+    // A single camera grant in a store gives that camera only.
     const mixed = await createUser(orgId, 'user')
-    await admin().rpc('replace_user_access', { p_user: mixed.id, p_stores: [], p_zones: [], p_cameras: [a2] })
+    await grant(orgId, mixed.id, CCTV_VIEW, atCamera(a2))
     expect(streamsOf(await open(mixed, [a1, a2])).map((s) => s.cameraId)).toEqual([a2])
+  })
+
+  // AC-2 (P2-1): live video needs cctv.live; playback or export rights for the camera do not open live video.
+  it('a person with playback and export but not live gets no live stream', async () => {
+    const noLive = await createUser(orgId, 'user')
+    await grant(orgId, noLive.id, ['cctv.playback', 'cctv.export'], atLocation(sA))
+    expect(await open(noLive, [a1, a2])).toEqual({ ok: true, streams: [] })
+    expect(fake.seen).toHaveLength(0)
   })
 
   it('the answer holds no password and no RTSP address', async () => {
@@ -217,7 +224,7 @@ describe('openStreams', () => {
     expect(fake.seen).toHaveLength(0)
   })
 
-  it('a manager, who sees every store, gets cameras of both stores', async () => {
+  it('a manager with organisation-wide live grants gets cameras of both stores (AC-8: the grants, not the role)', async () => {
     expect(streamsOf(await open(manager, [a1, b1])).map((s) => s.cameraId)).toEqual([a1, b1])
   })
 

@@ -63,13 +63,13 @@ describe('group actions check the caller first', () => {
 })
 
 describe('group actions for an operator', () => {
-  beforeEach(() => requireProfile.mockResolvedValue(person('agent')))
+  beforeEach(() => requireProfile.mockResolvedValue(person('operator')))
 
   it('create passes the person and both clients to the service and refreshes the group pages', async () => {
     service.createGroup.mockResolvedValue({ ok: true, groupId: 'g1' })
     const res = await createGroupAction({}, form('Doors'))
     expect(res).toMatchObject({ ok: true, groupId: 'g1' })
-    expect(service.createGroup).toHaveBeenCalledWith({ admin: { tag: 'admin' }, rls: { tag: 'rls' } }, { id: 'u1', orgId: 'o1', role: 'agent' }, 'Doors')
+    expect(service.createGroup).toHaveBeenCalledWith({ admin: { tag: 'admin' }, rls: { tag: 'rls' } }, { id: 'u1', orgId: 'o1', role: 'operator' }, 'Doors')
     expect(revalidatePath).toHaveBeenCalledWith('/groups')
   })
 

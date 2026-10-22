@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createGroup, addCameras } from '@/lib/groups/service'
 import { getVisibleGroup, listStoreCamerasForGroups, listVisibleGroups } from '@/lib/queries/groups'
-import { adminClient, cleanupOrg, createOrg, createUser, type TestUser } from '../setup/fixtures'
+import { ADMINISTRATOR_SET, adminClient, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant as grantTo, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 
@@ -15,16 +15,14 @@ async function addCamera(orgId: string, storeId: string, channel: number, name: 
   if (error || !data) throw new Error(`addCamera: ${error?.message}`)
   return data.id
 }
-async function grant(userId: string, stores: string[]) {
-  const { error } = await admin().rpc('replace_user_access', { p_user: userId, p_stores: stores, p_zones: [], p_cameras: [] })
-  if (error) throw new Error(`grant: ${error.message}`)
-}
+// P2-1: a store grant is now explicit live + playback grants for the store (AC-1, AC-5).
+const grant = (orgId: string, userId: string, stores: string[]) => grantTo(orgId, userId, CCTV_VIEW, stores.map(atLocation))
 
 describe('group queries', () => {
   let orgId: string, otherOrg: string
   let sA: string, sB: string, sOff: string
   let a1: string, a2: string, b1: string, offCam: string, offStoreCam: string
-  let adminUser: TestUser, viewerA: TestUser, viewerNone: TestUser, outsider: TestUser, agent: TestUser
+  let adminUser: TestUser, viewerA: TestUser, viewerNone: TestUser, outsider: TestUser, operator: TestUser
   let wide: string, empty: string
 
   beforeAll(async () => {
@@ -39,12 +37,14 @@ describe('group queries', () => {
     offCam = await addCamera(orgId, sA, 3, 'Switched off', false)
     offStoreCam = await addCamera(orgId, sOff, 1, 'Closed store camera')
     adminUser = await createUser(orgId, 'admin')
-    agent = await createUser(orgId, 'agent')
+    // AC-8: an administrator sees cameras (and empty groups of others, admin.inventory) only through grants, here the administrator set.
+    await grantTo(orgId, adminUser.id, ADMINISTRATOR_SET)
+    operator = await createUser(orgId, 'operator') // 'agent' before P2-1 (AC-15)
     viewerA = await createUser(orgId, 'user')
     viewerNone = await createUser(orgId, 'user')
     outsider = await createUser(otherOrg, 'admin')
-    await grant(viewerA.id, [sA, sOff])
-    await grant(agent.id, [sA])
+    await grant(orgId, viewerA.id, [sA, sOff])
+    await grant(orgId, operator.id, [sA])
     const actor = { id: adminUser.id, orgId, role: 'admin' as const }
     const deps = { admin: admin(), rls: adminUser.client }
     const g = await createGroup(deps, actor, 'Wide')
@@ -52,7 +52,7 @@ describe('group queries', () => {
     wide = g.groupId
     const add = await addCameras(deps, actor, wide, [a1, a2, b1, offCam, offStoreCam])
     if (!add.ok) throw new Error(add.error)
-    const e = await createGroup({ admin: admin(), rls: agent.client }, { id: agent.id, orgId, role: 'agent' }, 'Empty one')
+    const e = await createGroup({ admin: admin(), rls: operator.client }, { id: operator.id, orgId, role: 'operator' }, 'Empty one')
     if (!e.ok) throw new Error(e.error)
     empty = e.groupId
   })
@@ -63,13 +63,13 @@ describe('group queries', () => {
 
   it('lists the groups a person may see with the number of working cameras they can see', async () => {
     expect(await listVisibleGroups(adminUser.client)).toEqual([
-      { id: empty, name: 'Empty one', created_by: agent.id, camera_count: 0 },
+      { id: empty, name: 'Empty one', created_by: operator.id, camera_count: 0 }, // empty group of another person: admin.inventory
       { id: wide, name: 'Wide', created_by: adminUser.id, camera_count: 3 }, // switched-off camera and closed store left out
     ])
     // Store A only: the viewer also holds the closed store, whose camera is not counted.
     expect(await listVisibleGroups(viewerA.client)).toEqual([{ id: wide, name: 'Wide', created_by: adminUser.id, camera_count: 2 }])
     // An operator sees the group they made while it is still empty, and the wide group through store A.
-    expect((await listVisibleGroups(agent.client)).map((g) => [g.name, g.camera_count])).toEqual([['Empty one', 0], ['Wide', 2]])
+    expect((await listVisibleGroups(operator.client)).map((g) => [g.name, g.camera_count])).toEqual([['Empty one', 0], ['Wide', 2]])
     expect(await listVisibleGroups(viewerNone.client)).toEqual([])
     expect(await listVisibleGroups(outsider.client)).toEqual([])
   })
@@ -81,7 +81,7 @@ describe('group queries', () => {
     expect(asAdmin?.cameras.map((c) => c.id)).toEqual([a2, a1, b1])
     const asViewer = await getVisibleGroup(viewerA.client, wide)
     expect(asViewer?.cameras.map((c) => c.id)).toEqual([a2, a1])
-    expect((await getVisibleGroup(agent.client, empty))?.cameras).toEqual([])
+    expect((await getVisibleGroup(operator.client, empty))?.cameras).toEqual([])
     expect(await getVisibleGroup(viewerNone.client, wide)).toBeNull()
     expect(await getVisibleGroup(outsider.client, wide)).toBeNull()
     expect(await getVisibleGroup(adminUser.client, 'not-a-uuid')).toBeNull()
@@ -89,13 +89,13 @@ describe('group queries', () => {
   })
 
   it('lists the visible, working cameras of one store, marking the ones already in the group', async () => {
-    const list = await listStoreCamerasForGroups(agent.client, sA, wide)
+    const list = await listStoreCamerasForGroups(operator.client, sA, wide)
     expect(list?.map((c) => [c.channel, c.name, c.in_group])).toEqual([[1, 'Door', true], [2, 'Till', true]])
-    const other = await listStoreCamerasForGroups(agent.client, sA, empty)
+    const other = await listStoreCamerasForGroups(operator.client, sA, empty)
     expect(other?.map((c) => c.in_group)).toEqual([false, false])
     // A store the person cannot see, a switched-off store and a bad id give nothing, not an error.
-    expect(await listStoreCamerasForGroups(agent.client, sB, wide)).toBeNull()
+    expect(await listStoreCamerasForGroups(operator.client, sB, wide)).toBeNull()
     expect(await listStoreCamerasForGroups(viewerA.client, sOff, wide)).toBeNull()
-    expect(await listStoreCamerasForGroups(agent.client, 'nope', wide)).toBeNull()
+    expect(await listStoreCamerasForGroups(operator.client, 'nope', wide)).toBeNull()
   })
 })

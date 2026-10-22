@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { STALE_AFTER_MINUTES } from '@/lib/queries/status'
-import { adminClient, cleanupOrg, createOrg, createUser, type TestUser } from '../setup/fixtures'
+import { adminClient, cleanupOrg, createOrg, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
 
 const admin = () => adminClient()
 
@@ -27,6 +27,7 @@ describe('monitoring fixes in the database', () => {
   beforeAll(async () => {
     orgId = await createOrg()
     manager = await createUser(orgId, 'manager')
+    await grant(orgId, manager.id, READ_EVERYTHING) // AC-8 (P2-1): sees everything only through explicit grants
     // Gaps are global and real ones are routine (the worker records silences). A real, recent gap must not disturb anything below.
     const { data } = await admin().from('monitor_gaps').insert({ started_at: ago(180), ended_at: ago(120) }).select('id').single()
     gapIds.push(data!.id)

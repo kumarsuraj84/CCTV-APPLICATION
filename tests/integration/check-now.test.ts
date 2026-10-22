@@ -27,8 +27,8 @@ describe('check now', () => {
     expect((await adminClient().from('admin_audit_log').select('id').eq('org_id', orgId)).data).toEqual([])
 
     const before = (await state()).check_requested_at
-    const person = await createUser(orgId, 'agent')
-    const res = await requestCheckNow(adminClient(), { id: person.id, orgId, role: 'agent' })
+    const person = await createUser(orgId, 'operator')
+    const res = await requestCheckNow(adminClient(), { id: person.id, orgId, role: 'operator' })
     expect(res.ok).toBe(true)
     const after = (await state()).check_requested_at
     expect(after).not.toBe(before)
@@ -91,7 +91,7 @@ describe('check now', () => {
   it('refuses a request for 30 seconds after a run finished, by the clock it is given', async () => {
     const finished = new Date('2026-01-01T00:00:10.000Z')
     const row = { last_heartbeat: finished.toISOString(), check_requested_at: '2026-01-01T00:00:00.000Z', run_started_at: '2026-01-01T00:00:05.000Z', run_finished_at: finished.toISOString() }
-    const actor = { id: crypto.randomUUID(), orgId, role: 'agent' as const }
+    const actor = { id: crypto.randomUUID(), orgId, role: 'operator' as const }
     await adminClient().from('worker_state').update(row).eq('id', 1)
     const refused = await requestCheckNow(adminClient(), actor, () => finished.getTime() + 10_000)
     expect(refused).toEqual({ ok: false, error: 'A check just finished. Try again in a moment.' })

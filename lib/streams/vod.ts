@@ -19,7 +19,7 @@ import { parseStartIso } from '@/lib/streams/timeline'
 //
 // What is trusted: nothing that comes from the NVR. Its playback address (`playbackURI`) is only ever put, escaped and capped, into the
 // body of ONE request to the SAME NVR; it is never fetched, logged or sent to a browser. What the browser sends (camera, start, minutes)
-// is checked before anything else happens, and the camera must be one the person may see (row-level security).
+// is checked before anything else happens, and the camera must be one the person may export (cctv.export, checked by the database).
 
 /** Longest clip. */
 export const VOD_MAX_MINUTES = 30
@@ -635,8 +635,9 @@ function cameraFailure(error: string): Response {
  * The answer to GET /api/vod for a signed-in person (the route has already checked who they are). Either a JSON error with a plain
  * message, or `video/mp4` that is streamed while it is made. `signal` is the request's own: it aborts when the person goes away.
  *
- * Order: the input is checked; the person's count of video requests; the camera (row-level security: a camera they may not see is
- * the same "not found" as one that does not exist); the NVR password (service-role call, only for a visible camera); a place in the
+ * Order: the input is checked; the person's count of video requests; the camera (cctv.export for it, checked by the database as the
+ * person: a camera they may not export is the same "not found" as one that does not exist); the NVR address and password (service-role
+ * calls, only for a camera that passed); a place in the
  * conversion limits (a person's own earlier conversion is ended first, waiting at most 3 seconds, so starting a new one never fails
  * because of the old one); the NVR's recording list (the first recording that covers the start); then ffmpeg and the download. A JSON
  * error is possible until the first byte of video exists; after that a failure just ends the video.
@@ -645,13 +646,14 @@ function cameraFailure(error: string): Response {
  * or the same JSON error: the Playback screen uses it to find out why a video did not play, because a <video> element cannot read the
  * reason. It takes no place and ignores the person's own running conversion.
  */
-export async function serveVod(deps: VodDeps, actor: { id: string }, query: VodQuery, signal?: AbortSignal): Promise<Response> {
+export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string }, query: VodQuery, signal?: AbortSignal): Promise<Response> {
   const env = deps.env ?? process.env
   const now = deps.now ?? Date.now
   if (!startInBounds(query.start.getTime(), now())) return fail(400, MSG_BAD_START)
   if (deps.limiter && !deps.limiter.allow(actor.id)) return fail(429, MSG_TOO_MANY_REQUESTS)
 
-  const c = await findCamera(deps, query.camera, { password: 'always' })
+  // Fast playback hands over a savable MP4, so it needs cctv.export for the camera (decision D-6a; P2-1).
+  const c = await findCamera(deps, query.camera, { password: 'always', capability: 'cctv.export', orgId: actor.orgId })
   if (!c.ok) return cameraFailure(c.error)
   const { camera, password } = c
   const store = camera.stores

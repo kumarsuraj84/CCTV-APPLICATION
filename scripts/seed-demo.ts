@@ -26,6 +26,7 @@ import {
   FAKE_RTSP_PORT,
   LOOPBACK,
   demoEmail,
+  demoGrants,
   demoPlan,
   isDemoOrg,
   makePassword,
@@ -151,12 +152,16 @@ async function addDemo(admin: Admin, nvrPort: number): Promise<void> {
         .from('profiles')
         .insert({ id, org_id: orgId, email, full_name: `Demo ${DEMO_ROLE_LABELS[role]}`, role, must_reset_password: false })
       if (profile.error) throw new Error(`profile ${role}: ${profile.error.message}`)
-      // Viewers and operators see only the stores they are given; managers and administrators see everything.
-      const mine = plan.stores.filter((s) => (role === 'user' || role === 'agent') && s.viewers.includes(role))
-      if (mine.length) {
-        const grants = await admin.from('user_store_access').insert(mine.map((s) => ({ org_id: orgId, user_id: id, store_id: storeIds[s.code] })))
-        if (grants.error) throw new Error(`access for ${role}: ${grants.error.message}`)
-      }
+      // Everybody's access is explicit grants (P2-1): no role sees anything by itself.
+      const p_grants = demoGrants(role, plan.stores.map((s) => s.code)).flatMap((g) =>
+        g.capabilities.flatMap((capability) =>
+          g.scope === 'organization'
+            ? [{ capability, scope_kind: 'organization' }]
+            : g.scope.stores.map((code) => ({ capability, scope_kind: 'location', scope_id: storeIds[code] })),
+        ),
+      )
+      const grants = await admin.rpc('grant_access', { p_org: orgId, p_user: id, p_grants, p_reason: 'Demo data' })
+      if (grants.error) throw new Error(`access for ${role}: ${grants.error.message}`)
       passwords.push({ role, email, password })
     }
   } catch (e) {

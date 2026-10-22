@@ -28,7 +28,7 @@ export async function GET(request: Request) {
     const parsed = parseVodQuery(new URL(request.url).searchParams)
     if (!parsed.ok) return error(parsed.error === 'Camera not found.' ? 404 : 400, parsed.error)
 
-    return await serveVod({ rls: await createClient(), admin: createAdminClient(), limiter: streamRequestLimiter }, { id: profile.id }, parsed.query, request.signal)
+    return await serveVod({ rls: await createClient(), admin: createAdminClient(), limiter: streamRequestLimiter }, { id: profile.id, orgId: profile.org_id }, parsed.query, request.signal)
   } catch (e) {
     // The kind of error only: its text can carry an address or a password.
     logger.error({ event: 'vod_route_failed', errorName: e instanceof Error ? e.name : typeof e })

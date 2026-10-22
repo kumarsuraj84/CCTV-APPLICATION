@@ -82,7 +82,7 @@ describe('finding cameras on the NVR', () => {
 
   it('is for administrators only and only for stores of the own organisation', async () => {
     const asked = nvr.requests.length
-    for (const role of ['agent', 'manager', 'user'] as const) {
+    for (const role of ['operator', 'manager', 'user'] as const) { // 'operator' was 'agent' before P2-1 (AC-15)
       expect((await discoverStoreCameras(admin(), { ...actor, role }, storeId)).ok).toBe(false)
     }
     expect(nvr.requests.length).toBe(asked)

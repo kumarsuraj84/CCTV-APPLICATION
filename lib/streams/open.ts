@@ -6,7 +6,7 @@ import type { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { buildRtspUrl, demoSource, isDemoStore } from '@/lib/streams/source'
 import { signStreamToken, streamName, TOKEN_LIFETIME_SEC } from '@/lib/streams/token'
 
-// Opens live streams for the cameras a person may see: registers each in go2rtc under its stream name and signs a token for it.
+// Opens live streams for the cameras a person may watch live: registers each in go2rtc under its stream name and signs a token for it.
 // The RTSP address (with the camera password) exists only inside this function, on its way to go2rtc. What comes back holds no
 // password and no address, only the token the browser hands to the gateway.
 
@@ -27,7 +27,7 @@ type CameraRow = { id: string; name: string; channel: number; store_id: string; 
 
 export type OpenDeps = {
   admin: AdminClient
-  /** The person's own signed-in client: whatever it can read is what they may see. */
+  /** The person's own signed-in client: it answers which cameras they may watch live. */
   rls: AdminClient
   go2rtc: Go2rtcClient
   env?: Record<string, string | undefined>
@@ -51,11 +51,21 @@ export async function openStreams(
   const wanted = [...new Set(cameraIds.filter((id): id is string => typeof id === 'string' && UUID.test(id)).map((id) => id.toLowerCase()))]
   if (wanted.length === 0) return { ok: false, error: MSG_NONE }
 
-  // Only what the person's own client can read: a camera they may not see simply does not come back.
-  const found = await deps.rls
+  // The person's own client decides which cameras they may watch live (cctv.live; P2-1, directive AC-2): a camera they may not watch
+  // simply does not come back. Only for those, the NVR address and login are read with the service role (they are not readable by
+  // signed-in people any more, AC-10), and only in the person's own organisation.
+  const allowed = await deps.rls.rpc('cameras_with_capability', { p_cap: 'cctv.live', p_ids: wanted })
+  if (allowed.error) {
+    logger.error({ event: 'open_streams_check_failed', errorCode: allowed.error.code })
+    return { ok: false, error: MSG_FAILED }
+  }
+  const mayWatch = (allowed.data as unknown as string[] | null) ?? []
+  if (mayWatch.length === 0) return { ok: true, streams: [] }
+  const found = await deps.admin
     .from('cameras')
     .select('id, name, channel, store_id, stores!inner(code, nvr_ip, rtsp_port, nvr_username, is_active)')
-    .in('id', wanted)
+    .eq('org_id', actor.orgId)
+    .in('id', mayWatch)
     .eq('is_active', true)
     .eq('stores.is_active', true)
   if (found.error) {

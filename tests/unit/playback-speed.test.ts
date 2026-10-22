@@ -51,7 +51,7 @@ describe('the interim rule for fast playback', () => {
     const { canUseFastPlaybackInterim } = await import('@/lib/streams/speed')
     expect(canUseFastPlaybackInterim('admin')).toBe(true)
     expect(canUseFastPlaybackInterim('platform_owner')).toBe(true)
-    for (const role of ['user', 'agent', 'manager'] as const) expect(canUseFastPlaybackInterim(role)).toBe(false)
+    for (const role of ['user', 'operator', 'manager'] as const) expect(canUseFastPlaybackInterim(role)).toBe(false)
   })
 })
 
