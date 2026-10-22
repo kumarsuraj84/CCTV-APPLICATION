@@ -9,7 +9,9 @@ const CAM = '9a1d4e7c-2b36-4f58-8e0a-6c5d3b2a1f09'
 const NOW = Date.UTC(2026, 2, 10, 10, 0, 0)
 const nowSec = Math.floor(NOW / 1000)
 
-const live = (over: Partial<StreamClaims> = {}): StreamClaims => ({ u: USER, c: CAM, k: 'sub', exp: nowSec + TOKEN_LIFETIME_SEC, ...over })
+// P2-4 (D-3, AC-14): every token names its media session (sid); the gateway opens exactly that session in the registry.
+const SID = '5e0c1d2b-7a3f-4b9e-8c6d-1f2e3a4b5c6d'
+const live = (over: Partial<StreamClaims> = {}): StreamClaims => ({ sid: SID, u: USER, c: CAM, k: 'sub', exp: nowSec + TOKEN_LIFETIME_SEC, ...over })
 const b64 = (s: string) => Buffer.from(s).toString('base64url')
 /** Builds a correctly signed token around any payload text, so tests can reach the shape checks. */
 const forge = (payload: unknown, secret = SECRET) => {
@@ -27,7 +29,18 @@ beforeEach(() => KEYS.forEach((k) => delete process.env[k]))
 afterEach(() => KEYS.forEach((k) => delete process.env[k]))
 
 describe('stream tokens', () => {
-  it('lives ten minutes', () => expect(TOKEN_LIFETIME_SEC).toBe(600))
+  // P2-4 (D-3, AC-14): the connect window drops from 10 minutes to 90 seconds. A token only opens a socket; it is not needed afterwards.
+  it('has a 90 second connect window', () => expect(TOKEN_LIFETIME_SEC).toBe(90))
+
+  it('rejects a token without a session id (the old shape), and a malformed one', () => {
+    const old: Record<string, unknown> = { ...live() }
+    delete old.sid
+    expect(verifyStreamToken(forge(old), NOW, SECRET)).toBeNull()
+    for (const sid of ['', 'x', SID.toUpperCase(), `${SID}x`, 5, null, [SID]]) {
+      expect(verifyStreamToken(forge({ ...live(), sid }), NOW, SECRET), String(sid)).toBeNull()
+    }
+    expect(verifyStreamToken(signStreamToken(live({ k: 'pb', s: nowSec - 60, e: nowSec }), SECRET), NOW, SECRET)?.sid).toBe(SID)
+  })
 
   it('round-trips the claims', () => {
     const claims = live()
@@ -107,11 +120,12 @@ describe('stream tokens', () => {
     const base = live()
     const cases: Record<string, unknown> = {
       extra: { ...base, admin: true },
-      proto: JSON.parse(`{"u":"${USER}","c":"${CAM}","k":"sub","exp":${base.exp},"__proto__":{"x":1}}`),
-      noU: { c: CAM, k: 'sub', exp: base.exp },
-      noC: { u: USER, k: 'sub', exp: base.exp },
-      noK: { u: USER, c: CAM, exp: base.exp },
-      noExp: { u: USER, c: CAM, k: 'sub' },
+      proto: JSON.parse(`{"sid":"${SID}","u":"${USER}","c":"${CAM}","k":"sub","exp":${base.exp},"__proto__":{"x":1}}`),
+      noU: { sid: SID, c: CAM, k: 'sub', exp: base.exp },
+      noC: { sid: SID, u: USER, k: 'sub', exp: base.exp },
+      noK: { sid: SID, u: USER, c: CAM, exp: base.exp },
+      noExp: { sid: SID, u: USER, c: CAM, k: 'sub' },
+      noSid: { u: USER, c: CAM, k: 'sub', exp: base.exp },
       uNumber: { ...base, u: 5 },
       cNull: { ...base, c: null },
       kNumber: { ...base, k: 1 },
@@ -138,8 +152,8 @@ describe('stream tokens', () => {
 
   it('rejects non-finite or negative exp', () => {
     // JSON cannot carry NaN or Infinity, so these arrive as null or as an out-of-range literal that parses to Infinity.
-    expect(verifyStreamToken(forge(`{"u":"${USER}","c":"${CAM}","k":"sub","exp":1e999}`), NOW, SECRET)).toBeNull()
-    expect(verifyStreamToken(forge(`{"u":"${USER}","c":"${CAM}","k":"sub","exp":-1e999}`), NOW, SECRET)).toBeNull()
+    expect(verifyStreamToken(forge(`{"sid":"${SID}","u":"${USER}","c":"${CAM}","k":"sub","exp":1e999}`), NOW, SECRET)).toBeNull()
+    expect(verifyStreamToken(forge(`{"sid":"${SID}","u":"${USER}","c":"${CAM}","k":"sub","exp":-1e999}`), NOW, SECRET)).toBeNull()
     expect(verifyStreamToken(signStreamToken(live({ exp: Number.NaN }), SECRET), NOW, SECRET)).toBeNull()
     expect(verifyStreamToken(signStreamToken(live({ exp: Infinity }), SECRET), NOW, SECRET)).toBeNull()
     expect(verifyStreamToken(signStreamToken(live({ exp: -5 }), SECRET), NOW, SECRET)).toBeNull()
@@ -173,8 +187,8 @@ describe('stream tokens', () => {
       eString: { ...pb, s: nowSec - 60, e: String(nowSec) },
       sNull: { ...pb, s: null, e: nowSec },
       eNull: { ...pb, s: nowSec - 60, e: null },
-      sInfinity: JSON.parse(`{"u":"${USER}","c":"${CAM}","k":"pb","exp":${pb.exp},"s":-1e999,"e":${nowSec}}`),
-      eInfinity: JSON.parse(`{"u":"${USER}","c":"${CAM}","k":"pb","exp":${pb.exp},"s":${nowSec - 60},"e":1e999}`),
+      sInfinity: JSON.parse(`{"sid":"${SID}","u":"${USER}","c":"${CAM}","k":"pb","exp":${pb.exp},"s":-1e999,"e":${nowSec}}`),
+      eInfinity: JSON.parse(`{"sid":"${SID}","u":"${USER}","c":"${CAM}","k":"pb","exp":${pb.exp},"s":${nowSec - 60},"e":1e999}`),
       sNegative: { ...pb, s: -10, e: 50 },
       equal: { ...pb, s: nowSec, e: nowSec },
       inverted: { ...pb, s: nowSec, e: nowSec - 60 },
@@ -225,12 +239,13 @@ describe('stream tokens', () => {
     expect(verifyStreamToken(forge(live(), 'a'.repeat(15)), NOW)).toBeNull()
   })
 
-  it('enforces the token lifetime: a token valid for longer than 10 minutes (plus a minute of clock difference) is rejected', () => {
+  // P2-4 (AC-14): was 10 minutes + 1; now the 90 second connect window + a minute of clock difference.
+  it('enforces the token lifetime: a token valid for longer than 90 seconds (plus a minute of clock difference) is rejected', () => {
     const at = (exp: number) => verifyStreamToken(signStreamToken(live({ exp }), SECRET), NOW, SECRET)
-    expect(at(nowSec + 600)).not.toBeNull()
-    expect(at(nowSec + 660)).not.toBeNull()
-    expect(at(nowSec + 661)).toBeNull()
-    expect(at(nowSec + 601 + 60)).toBeNull()
+    expect(at(nowSec + 90)).not.toBeNull()
+    expect(at(nowSec + 150)).not.toBeNull()
+    expect(at(nowSec + 151)).toBeNull()
+    expect(at(nowSec + 600)).toBeNull()
     expect(at(nowSec + 86_400)).toBeNull()
     expect(at(nowSec * 1000)).toBeNull() // milliseconds by mistake
   })

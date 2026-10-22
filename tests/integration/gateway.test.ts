@@ -1,8 +1,10 @@
+import { randomUUID } from 'node:crypto'
 import http from 'node:http'
 import net, { type AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import WebSocket, { WebSocketServer } from 'ws'
 import { BROWSER_MESSAGE_TYPES, createGateway, DEFAULT_MAX_SOCKETS, DEFAULT_MAX_SOCKETS_PER_IP, DEFAULT_MAX_UPGRADES_PER_MINUTE, type GatewayEvent, type GatewayOptions, type GatewayServer } from '@/lib/streams/gateway'
+import type { RegistryClient } from '@/lib/streams/registry'
 import { signStreamToken, streamName, type StreamClaims } from '@/lib/streams/token'
 
 // Everything runs on loopback: a fake go2rtc (http + WebSocket), the gateway on port 0 and a ws client. Never a real camera.
@@ -91,6 +93,12 @@ async function startFakeGo2rtc(): Promise<FakeGo2rtc> {
   return fake
 }
 
+const allowAll: RegistryClient = {
+  open: async (_sid, expect) => ({ ok: true, kind: expect.kind, stream: expect.stream }),
+  stillValid: async () => new Map(),
+  close: async () => {},
+}
+
 type Started = { gateway: GatewayServer; port: number; events: GatewayEvent[]; clock: { t: number } }
 
 async function startGateway(go2rtcUrl: string, extra: Partial<GatewayOptions> = {}): Promise<Started> {
@@ -102,6 +110,10 @@ async function startGateway(go2rtcUrl: string, extra: Partial<GatewayOptions> = 
     allowedOrigins: [APP],
     now: () => clock.t,
     log: (e) => events.push(e),
+    // P2-4: every socket's session must open in the registry; these tests are about everything else, so it allows every session
+    // (the registry's own rules: tests/integration/gateway-sessions.test.ts and media-revocation.test.ts).
+    registry: allowAll,
+    autoValidate: false,
     ...extra,
   })
   const port = await new Promise<number>((resolve) => gateway.listen(0, '127.0.0.1', () => resolve((gateway.address() as AddressInfo).port)))
@@ -109,8 +121,9 @@ async function startGateway(go2rtcUrl: string, extra: Partial<GatewayOptions> = 
   return { gateway, port, events, clock }
 }
 
+// P2-4: tokens name their media session (sid) and connect within 90 seconds.
 const tokenFor = (clock: { t: number }, over: Partial<StreamClaims> = {}, secret = SECRET) =>
-  signStreamToken({ u: USER, c: CAM, k: 'sub', exp: Math.floor(clock.t / 1000) + 600, ...over }, secret)
+  signStreamToken({ sid: randomUUID(), u: USER, c: CAM, k: 'sub', exp: Math.floor(clock.t / 1000) + 90, ...over }, secret)
 
 type Outcome = { code: number; reason: string } | { error: string }
 
@@ -197,7 +210,9 @@ describe('gateway: plain HTTP', () => {
     const { port } = await startGateway(fake.url)
     const r = await get(port, '/g/health')
     expect(r.status).toBe(200)
-    expect(r.body).toBe('ok')
+    // P2-4 (brief item 3): health is JSON with the open sessions and the age of the last access check (was the text "ok").
+    expect(r.headers['content-type']).toContain('application/json')
+    expect(JSON.parse(r.body)).toMatchObject({ status: 'ok', openSessions: 0 })
     expect(r.headers['x-content-type-options']).toBe('nosniff')
     expect(r.headers['cache-control']).toBe('no-store')
   })
@@ -413,9 +428,9 @@ describe('gateway: who may connect', () => {
   })
 
   it('refuses to start without a usable secret or with a bad go2rtc address', () => {
-    expect(() => createGateway({ go2rtcUrl: 'http://127.0.0.1:1984', secret: 'short', allowedOrigins: [APP] })).toThrow(/secret/)
-    expect(() => createGateway({ go2rtcUrl: 'not a url', secret: SECRET, allowedOrigins: [APP] })).toThrow(/address/)
-    expect(() => createGateway({ go2rtcUrl: 'ftp://127.0.0.1', secret: SECRET, allowedOrigins: [APP] })).toThrow(/address/)
+    expect(() => createGateway({ go2rtcUrl: 'http://127.0.0.1:1984', secret: 'short', allowedOrigins: [APP], registry: allowAll })).toThrow(/secret/)
+    expect(() => createGateway({ go2rtcUrl: 'not a url', secret: SECRET, allowedOrigins: [APP], registry: allowAll })).toThrow(/address/)
+    expect(() => createGateway({ go2rtcUrl: 'ftp://127.0.0.1', secret: SECRET, allowedOrigins: [APP], registry: allowAll })).toThrow(/address/)
   })
 })
 

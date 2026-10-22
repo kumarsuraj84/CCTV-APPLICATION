@@ -142,12 +142,13 @@ describe('the preview, the people list, the create form and the review', () => {
     expect(html).toContain('the changes apply once they can sign in')
   })
 
-  it('the users list shows the role label (Super administrator), the access summary, and neutral deactivation text', () => {
+  it('the users list shows the role label (Super administrator), the access summary, and the deactivation text', () => {
     const html = renderToStaticMarkup(<table><tbody><UserRow showSummary u={{ id: 'u1', email: 'e@x.test', full_name: 'Owner', role: 'platform_owner', is_active: true, must_reset_password: false, manageable: true, is_self: false, summary: 'Live: 3 locations, Playback: 3 locations, IT: none' }} /></tbody></table>)
     expect(html).toContain('Super administrator')
     expect(html).toContain('Live: 3 locations, Playback: 3 locations, IT: none')
     expect(html).toContain('Deactivate…')
-    expect(MSG_DEACTIVATE).not.toMatch(/video|minute|stream/i)
+    // P2-3 kept this neutral until P2-4 closed open video; now it is true (AC-14, tests/integration/media-revocation.test.ts).
+    expect(MSG_DEACTIVATE).toBe('They can no longer sign in, the sign-ins they have now are ended, and their open video stops within a minute. Their access is kept and applies again if they are reactivated.')
     expect(unnamed(html)).toEqual([])
   })
 

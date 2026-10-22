@@ -449,7 +449,29 @@ describe('playback streams', () => {
       expect(src).toBe(`rtsp://${NVR_USER}:${NVR_PASSWORD}@127.0.0.1:554/Streaming/tracks/101?starttime=20261022T090000Z&endtime=20261022T091000Z`)
       expect(rtsp(fake.seen[0]).pathname).toBe('/Streaming/tracks/101')
       const claims = verifyStreamToken(res.token, NOW, SECRET)
-      expect(claims).toEqual({ u: viewer.id, c: a1, k: 'pb', exp: NOW / 1000 + 600, s, e: s + 600 })
+      // P2-4 (D-3, AC-14): the token names its own media session (kind playback, that stream) and connects within 90 s (was 600).
+      expect(claims).toEqual({ sid: expect.any(String), u: viewer.id, c: a1, k: 'pb', exp: NOW / 1000 + 90, s, e: s + 600 })
+      const { data: row } = await admin().from('media_sessions').select('user_id, camera_id, kind, capability, stream').eq('id', claims!.sid).single()
+      expect(row).toEqual({ user_id: viewer.id, camera_id: a1, kind: 'playback', capability: 'cctv.playback', stream: `pb_${a1}_${s}` })
+    })
+
+    it('a camera the registry refuses at the last moment is "Camera not found."; registry trouble is the plain access-check failure; nothing is registered', async () => {
+      const proxy = (answer: (r: { data: unknown; error: unknown }) => { data: unknown; error: unknown }) => new Proxy(admin(), {
+        get(target, prop) {
+          if (prop === 'rpc') {
+            return async (fn: string, args: object) => {
+              const r = (await (target.rpc as unknown as (f: string, a: object) => Promise<{ data: unknown; error: unknown }>)(fn, args))
+              return fn === 'media_session_create' ? answer(r) : r
+            }
+          }
+          const v = Reflect.get(target, prop)
+          return typeof v === 'function' ? v.bind(target) : v
+        },
+      }) as ReturnType<typeof admin>
+      expect(await play(viewer, a1, START, 10, 0, { adminClient: proxy((r) => ({ ...r, data: [] })) })).toEqual({ ok: false, error: 'Camera not found.' })
+      expect(await play(viewer, a1, START, 10, 0, { adminClient: proxy(() => ({ data: null, error: { code: '08006', message: 'down' } })) }))
+        .toEqual({ ok: false, error: 'Could not check your access. Please try again.' })
+      expect(fake.seen.filter((x) => x.method === 'PUT')).toHaveLength(0)
     })
 
     it('with no offset the NVR is asked for the time as shown, and a later camera channel uses its own track', async () => {
@@ -513,7 +535,7 @@ describe('playback streams', () => {
         expect(fake.streams.get(second.name)).toContain('starttime=20261022T143001Z&endtime=20261022T144001Z')
         expect(fake.streams.get(first.name)).toContain('starttime=20261022T143000Z&endtime=20261022T144000Z') // the first viewer's stream is untouched
         expect(fake.seen.filter((x) => x.method === 'PUT').map((x) => x.name)).toEqual([first.name, second.name])
-        expect(verifyStreamToken(second.token, NOW, SECRET)).toEqual({ u: manager.id, c: a1, k: 'pb', exp: NOW / 1000 + 600, s: S + 1, e: S + 1 + 600 })
+        expect(verifyStreamToken(second.token, NOW, SECRET)).toEqual({ sid: expect.any(String), u: manager.id, c: a1, k: 'pb', exp: NOW / 1000 + 90, s: S + 1, e: S + 1 + 600 })
         // And a third while both are watched moves on again.
         fake.watched.add(second.name)
         expect(secondsOf(okOf(await play(viewer, a1, START, 10)).name)).toBe(S + 2)
@@ -658,8 +680,12 @@ describe('playback streams', () => {
           return typeof v === 'function' ? v.bind(target) : v
         },
       })
-      okOf(await play(viewer, a1, START, 10, 0, { adminClient: spy }))
-      expect(calls).toEqual([{ name: 'recorder_read_credential', args: { p_recorder: recorderOf.get(sA) } }])
+      const res = okOf(await play(viewer, a1, START, 10, 0, { adminClient: spy }))
+      // P2-4: and the one call that registers this playback's media session (person, camera, kind, stream; nothing secret).
+      expect(calls).toEqual([
+        { name: 'recorder_read_credential', args: { p_recorder: recorderOf.get(sA) } },
+        { name: 'media_session_create', args: { p_org: orgId, p_user: viewer.id, p_kind: 'playback', p_cameras: [a1], p_streams: [res.name] } },
+      ])
     })
 
     it('with DEMO_VIDEO=1 and a loopback store the source is the generated test picture, and no password is read', async () => {
@@ -673,7 +699,7 @@ describe('playback streams', () => {
         },
       })
       const res = okOf(await play(viewer, n1, START, 10, 0, { env: { DEMO_VIDEO: '1', NODE_ENV: 'development' }, adminClient: spy }))
-      expect(calls).toEqual([])
+      expect(calls).toEqual(['media_session_create']) // no password read; only the media session (P2-4)
       expect(fake.seen[0].name).toBe(res.name)
       expect(fake.seen[0].src).toMatch(/^ffmpeg:virtual\?video=\w+&size=640x360&duration=86400\.\d+#video=h264$/)
       expect(fake.seen[0].src).not.toMatch(/exec:|rtsp:\/\//)

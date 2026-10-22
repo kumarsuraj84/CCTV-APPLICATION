@@ -39,8 +39,11 @@ describe('wall layouts', () => {
 
 describe('wall timing', () => {
   it('renews tokens before they expire, and retries every 30 seconds', () => {
-    expect(REFRESH_AFTER_MS).toBe(8 * 60_000)
+    // P2-4 (D-3, AC-14): the connect window is 90 seconds (it was 10 minutes, renewed after 8), so the wall renews every minute and a
+    // tile that reconnects (the gateway ends a socket after 30 minutes) always holds a token that can still connect.
+    expect(REFRESH_AFTER_MS).toBe(60_000)
     expect(REFRESH_AFTER_MS).toBeLessThan(TOKEN_LIFETIME_SEC * 1000)
+    expect(TOKEN_LIFETIME_SEC * 1000 - REFRESH_AFTER_MS).toBeGreaterThanOrEqual(30_000) // time for the renewal itself to come back
     expect(RETRY_EVERY_MS).toBe(30_000)
     expect(QUICK_RETRY_MS).toBeLessThan(RETRY_EVERY_MS)
   })

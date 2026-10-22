@@ -102,10 +102,11 @@ describe('P2-5c-1 screens: every field has a visible label and the wording is pl
     const t = text(renderToStaticMarkup(<MoveForm kind="location" id={L} current={C} options={[{ id: C, label: 'PAT · Patna' }]} />))
     expect(t).toContain('Check the effect on access')
     expect(t).toContain('No cluster')
-    // Review I-1: until the session registry (P2-4) lands, the screen must not promise that open video is re-checked.
+    // Review I-1, now true with the session registry (P2-4, AC-14): open video of people who lose access stops within a minute
+    // (tests/integration/media-revocation.test.ts measures it). The P2-5c-1 sentence "not cut off yet" is replaced, not kept.
     expect(t).toContain(MSG_OPEN_VIDEO)
-    expect(MSG_OPEN_VIDEO).toBe('Video that is already open is not cut off yet: it keeps playing until the person closes it.')
-    expect(t).not.toMatch(/checked again/i)
+    expect(MSG_OPEN_VIDEO).toBe('Open video for affected people stops within a minute.')
+    expect(t).not.toMatch(/not cut off/i)
   })
 
   it('review I-5: the reconciliation list never merges or links on one click (each asks first)', () => {

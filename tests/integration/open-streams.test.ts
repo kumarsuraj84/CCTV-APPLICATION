@@ -149,22 +149,64 @@ describe('openStreams', () => {
     expect(Object.keys(JSON.parse(text).streams[0]).sort()).toEqual(['cameraId', 'channel', 'kind', 'name', 'storeCode', 'token'])
   })
 
-  it('tokens verify and name this person, this camera and this kind, for ten minutes', async () => {
+  // P2-4 (D-3, AC-14): was "for ten minutes" without a session; now each token names its own media session and connects within 90 s.
+  it('tokens verify and name this person, this camera, this kind and its own media session, for 90 seconds', async () => {
     const t = Date.now()
     const streams = streamsOf(await open(viewer, [a1, a2]))
+    const sids = new Set<string>()
     for (const s of streams) {
       const claims = verifyStreamToken(s.token, Date.now(), SECRET)
       expect(claims).toMatchObject({ u: viewer.id, c: s.cameraId, k: 'sub' })
-      expect(Math.abs(claims!.exp - (Math.floor(t / 1000) + 600))).toBeLessThanOrEqual(3)
-      expect(verifyStreamToken(s.token, Date.now() + 601_000, SECRET)).toBeNull() // gone after ten minutes
+      expect(Math.abs(claims!.exp - (Math.floor(t / 1000) + 90))).toBeLessThanOrEqual(3)
+      expect(verifyStreamToken(s.token, Date.now() + 91_000, SECRET)).toBeNull() // gone after 90 seconds
+      const { data: row } = await admin().from('media_sessions').select('org_id, user_id, camera_id, kind, capability, stream, opened_at').eq('id', claims!.sid).single()
+      expect(row).toEqual({ org_id: orgId, user_id: viewer.id, camera_id: s.cameraId, kind: 'live', capability: 'cctv.live', stream: `cam_${s.cameraId}_sub`, opened_at: null })
+      sids.add(claims!.sid)
     }
+    expect(sids.size).toBe(2)
     expect(streams[0].token).not.toBe(streams[1].token)
   })
 
   it('uses the injected clock for the expiry', async () => {
     const at = Date.UTC(2026, 9, 22, 6, 0, 0)
     const streams = streamsOf(await open(viewer, [a1], 'sub', { now: () => at }))
-    expect(verifyStreamToken(streams[0].token, at, SECRET)).toMatchObject({ exp: at / 1000 + 600 })
+    expect(verifyStreamToken(streams[0].token, at, SECRET)).toMatchObject({ exp: at / 1000 + 90 })
+  })
+
+  it('a camera the registry refuses at the last moment is left out, and nothing is registered for it (P2-4)', async () => {
+    const real = admin()
+    const dropping = new Proxy(real, {
+      get(target, prop) {
+        if (prop === 'rpc') {
+          return async (fn: string, args: { p_cameras?: string[] }) => {
+            if (fn !== 'media_session_create') return (target.rpc as (f: string, a: object) => unknown)(fn, args)
+            const r = (await target.rpc(fn, args as never)) as { data: { camera_id: string }[] | null; error: unknown }
+            return { ...r, data: (r.data ?? []).filter((x) => x.camera_id !== a2) } // as if access to a2 ended just now
+          }
+        }
+        const v = Reflect.get(target, prop)
+        return typeof v === 'function' ? v.bind(target) : v
+      },
+    }) as ReturnType<typeof admin>
+    expect(streamsOf(await open(viewer, [a1, a2], 'sub', { adminClient: dropping })).map((s) => s.cameraId)).toEqual([a1])
+    expect(fake.seen.map((s) => s.name)).toEqual([`cam_${a1}_sub`])
+  })
+
+  it('when the registry cannot be asked nothing opens (fail closed), with a plain message', async () => {
+    const real = admin()
+    const failing = new Proxy(real, {
+      get(target, prop) {
+        if (prop === 'rpc') {
+          return (fn: string, args: object) => fn === 'media_session_create'
+            ? Promise.resolve({ data: null, error: { code: '08006', message: 'connection failure' } })
+            : (target.rpc as (f: string, a: object) => unknown)(fn, args)
+        }
+        const v = Reflect.get(target, prop)
+        return typeof v === 'function' ? v.bind(target) : v
+      },
+    }) as ReturnType<typeof admin>
+    expect(await open(viewer, [a1, a2], 'sub', { adminClient: failing })).toEqual({ ok: false, error: 'Could not open the video. Please try again.' })
+    expect(fake.seen).toEqual([])
   })
 
   it('main uses the 01 stream and a main stream name', async () => {
@@ -259,8 +301,9 @@ describe('openStreams', () => {
       },
     })
     streamsOf(await open(manager, [a1, a2, b1], 'sub', { adminClient: spy }))
-    expect(calls.map((c) => c.name)).toEqual(['recorder_read_credential', 'recorder_read_credential'])
-    expect(calls.map((c) => (c.args as { p_recorder: string }).p_recorder).sort()).toEqual([rA, rB].sort())
+    // P2-4: first the one call that registers the media sessions of the streams (no password is read for a refused one).
+    expect(calls.map((c) => c.name)).toEqual(['media_session_create', 'recorder_read_credential', 'recorder_read_credential'])
+    expect(calls.slice(1).map((c) => (c.args as { p_recorder: string }).p_recorder).sort()).toEqual([rA, rB].sort())
   })
 
   it('with DEMO_VIDEO=1 and a loopback store the source is the generated test picture and no password is read', async () => {
@@ -275,7 +318,7 @@ describe('openStreams', () => {
     })
     const streams = streamsOf(await open(viewer, [a1, n1], 'sub', { env: { DEMO_VIDEO: '1', NODE_ENV: 'development' }, adminClient: spy }))
     expect(streams.map((s) => s.cameraId)).toEqual([a1, n1]) // the store without a password works too: there is no real camera
-    expect(calls).toEqual([])
+    expect(calls).toEqual(['media_session_create']) // no password read; only the media sessions (P2-4)
     const src = fake.seen.find((s) => s.name === `cam_${a1}_sub`)!.src!
     expect(src).toMatch(/^ffmpeg:virtual\?video=\w+&size=640x360&duration=86400\.\d+#video=h264$/)
     const other = fake.seen.find((s) => s.name === `cam_${n1}_sub`)!.src!
