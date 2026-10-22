@@ -671,14 +671,14 @@ isOneToOne: false
                   ]
                 },"media_sessions": {
                   Row: {
-                    "aal2": boolean,"asset_id": string | null,"camera_id": string | null,"capability": string,"closed_at": string | null,"connect_by": string,"created_at": string,"expires_at": string,"id": string,"kind": string,"last_validated_at": string | null,"opened_at": string | null,"org_id": string,"revoke_reason": string | null,"revoked_at": string | null,"stream": string | null,"user_id": string,"media_session_problem": string | null
+                    "aal2": boolean,"asset_id": string | null,"camera_id": string | null,"capability": string,"closed_at": string | null,"connect_by": string,"created_at": string,"expires_at": string,"id": string,"kind": string,"last_validated_at": string | null,"open_count": number,"opened_at": string | null,"org_id": string,"revoke_reason": string | null,"revoked_at": string | null,"stream": string | null,"user_id": string,"media_session_problem": string | null
                   }
                   ComputedFields: "media_session_problem"
                   Insert: {
-                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability": string,"closed_at"?: string | null,"connect_by": string,"created_at"?: string,"expires_at": string,"id"?: string,"kind": string,"last_validated_at"?: string | null,"opened_at"?: string | null,"org_id": string,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"user_id": string
+                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability": string,"closed_at"?: string | null,"connect_by": string,"created_at"?: string,"expires_at": string,"id"?: string,"kind": string,"last_validated_at"?: string | null,"open_count"?: number,"opened_at"?: string | null,"org_id": string,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"user_id": string
                   }
                   Update: {
-                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability"?: string,"closed_at"?: string | null,"connect_by"?: string,"created_at"?: string,"expires_at"?: string,"id"?: string,"kind"?: string,"last_validated_at"?: string | null,"opened_at"?: string | null,"org_id"?: string,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"user_id"?: string
+                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability"?: string,"closed_at"?: string | null,"connect_by"?: string,"created_at"?: string,"expires_at"?: string,"id"?: string,"kind"?: string,"last_validated_at"?: string | null,"open_count"?: number,"opened_at"?: string | null,"org_id"?: string,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"user_id"?: string
                   }
                   Relationships: [
                     {
@@ -1293,6 +1293,9 @@ isOneToOne: false
 "access_teardown_test_org_people":
 { Args: { "p_org": string }; Returns: number
                            },
+"access_twin_violations":
+{ Args: Record<PropertyKey, never>; Returns: string[]
+                           },
 "address_space_global":
 { Args: { "p_org": string }; Returns: string
                            },
@@ -1465,8 +1468,14 @@ isOneToOne: false
 "media_session_target_problem":
 { Args: { "p_aal2": boolean,"p_asset": string,"p_camera": string,"p_kind": string,"p_org": string,"p_user": string }; Returns: string
                            },
+"media_sessions_age_test":
+{ Args: { "p_seconds": number,"p_sid": string }; Returns: undefined
+                           },
 "media_sessions_prune":
 { Args: { "p_keep"?: string,"p_org"?: string,"p_unopened_keep"?: string }; Returns: number
+                           },
+"media_sessions_recheck_budget":
+{ Args: Record<PropertyKey, never>; Returns: number
                            },
 "media_sessions_revalidate":
 { Args: { "p_org": string,"p_users": (string)[] }; Returns: number
