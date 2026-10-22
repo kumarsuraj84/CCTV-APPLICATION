@@ -7,8 +7,8 @@ import { dayLabel, daysInMonth, dayString, monthGrid, monthLabel, shiftMonth, WE
 import { cn } from '@/lib/utils'
 
 /**
- * A month to pick a day from. Days the NVR marks as having recordings get a dot and "has recordings" in their name, but they are only a
- * hint (the NVR's days can differ from the days shown, near midnight), so every day can be opened. Arrow keys move between days and carry on
+ * A month to pick a day from. Days that may have recordings get a dot and "has recordings" in their name (P4-L2: shown days, with the
+ * recorder's clock offset applied on the server), but they are only a hint, so every day can be opened. Arrow keys move between days and carry on
  * into the previous or next month at the edges; Page Up and Page Down change the month. The month buttons are marked unavailable at the
  * ends of the range that can be shown (the parent says which).
  */
@@ -144,7 +144,7 @@ export function DayCalendar({
         </tbody>
       </table>
       <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
-        <span aria-hidden="true" className="size-1.5 rounded-full bg-primary" /> Days with recordings, as marked by the NVR. You can open any day.
+        <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-primary" /> Days with recordings (India time, the NVR&rsquo;s own clock offset applied). The marks are a guide: you can open any day.
       </p>
     </div>
   )

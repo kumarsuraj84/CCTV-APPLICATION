@@ -10,9 +10,11 @@ import { logger } from '@/lib/observability/logger'
 //
 // Actions written here:
 //   cctv_live_opened       capability cctv.live, cameraIds (opened), kind sub|main
-//   cctv_playback_searched capability cctv.playback, cameraIds [camera], what: calendar|day, plus month or day
-//   cctv_playback_opened   capability cctv.playback, cameraIds [camera], minutes
-//   cctv_export_started    capability cctv.export, cameraIds [camera], minutes (fast playback / VOD)
+//   cctv_playback_searched capability cctv.playback, cameraIds [camera], what: calendar|day|oldest, plus month or day
+//   cctv_playback_opened   capability cctv.playback, cameraIds [camera], minutes (P4-L2: and speed for fast playback 2x-16x)
+//   cctv_fast_playback_started / _ended / _denied   P4-L2 (D-L1): the fast playback stream, capability cctv.playback, cameraIds [camera];
+//                          started: minutes; denied: reason token|token_person|camera|session (never the token itself)
+//   cctv_export_started    capability cctv.export, cameraIds [camera], minutes (the saveable file, /api/vod)
 //   cctv_export_ended      capability cctv.export, cameraIds [camera]
 //   cctv_export_denied     capability cctv.export, cameraIds [camera] when well-formed, reason
 //   check_requested        capability it.monitoring.operate (lib/monitor/check-now.ts)

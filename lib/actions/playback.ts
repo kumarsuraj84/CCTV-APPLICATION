@@ -7,8 +7,10 @@ import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { logger } from '@/lib/observability/logger'
 import { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { MSG_UNAVAILABLE } from '@/lib/streams/open'
-import { listDaySegments, listRecordedDays, openPlayback, parsePlaybackOffset } from '@/lib/streams/playback'
+import { MSG_BAD_SPEED, openFastPlayback } from '@/lib/streams/fast'
+import { listDaySegments, listOldestRecording, listRecordedDays, openPlayback, parsePlaybackOffset } from '@/lib/streams/playback'
 import { lookupRequestLimiter, playbackRequestLimiter } from '@/lib/streams/request-limit'
+import { isFastSpeed } from '@/lib/streams/speed'
 import { parseDay, parseStartIso } from '@/lib/streams/timeline'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
@@ -22,6 +24,8 @@ import { createMediaClient } from '@/lib/supabase/service-clients'
 export type RecordedDaysState = { ok: true; days: number[] } | { ok: false; error: string }
 export type DaySegmentsState = { ok: true; segments: { start: string; end: string }[]; truncated: boolean; skipped: number } | { ok: false; error: string }
 export type OpenPlaybackState = { ok: true; token: string; name: string } | { ok: false; error: string }
+export type OpenFastPlaybackState = { ok: true; token: string; minutes: number } | { ok: false; error: string }
+export type OldestRecordingState = { ok: true; oldest: string | null } | { ok: false; error: string }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const NOT_FOUND = 'Camera not found.'
@@ -96,5 +100,43 @@ export async function openPlaybackAction(cameraId: string, startIso: string, min
     return res
   } catch (error) {
     return failed('open_playback_action_failed', 'openPlaybackAction', error, MSG_UNAVAILABLE)
+  }
+}
+
+/**
+ * P4-L2 (decision D-L1): fast playback 2x-16x from `startIso` for `minutes` (1 to 30). cctv.playback for the camera is enough (export is
+ * not needed); the answer is a short-lived token for the stream path (/api/playback/stream), never a file address. Counted with the
+ * playback openings and audited like a 1x opening, with the speed.
+ */
+export async function openFastPlaybackAction(cameraId: string, startIso: string, minutes: number, speed: number): Promise<OpenFastPlaybackState> {
+  const who = await playbackPerson()
+  if (!who.ok) return who
+  const { p } = who
+  if (typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: NOT_FOUND }
+  const start = typeof startIso === 'string' ? parseStartIso(startIso) : null
+  if (!start) return { ok: false, error: 'Choose a start time.' }
+  if (!Number.isInteger(minutes)) return { ok: false, error: 'Choose how long to play.' }
+  if (!isFastSpeed(speed)) return { ok: false, error: MSG_BAD_SPEED }
+  try {
+    const res = await openFastPlayback({ rls: await createClient(), admin: createMediaClient(), limiter: playbackRequestLimiter, offsetMin: offset() }, { id: p.id, orgId: p.org_id }, cameraId, start, minutes, speed)
+    if (res.ok) await auditAccess(createAdminClient(), { orgId: p.org_id, actorId: p.id, action: 'cctv_playback_opened', capability: 'cctv.playback', cameraIds: [cameraId.toLowerCase()], detail: { minutes, speed } })
+    return res
+  } catch (error) {
+    return failed('open_fast_playback_action_failed', 'openFastPlaybackAction', error, MSG_UNAVAILABLE)
+  }
+}
+
+/** P4-L2 (LG-9): when the oldest recording of this camera starts (a shown time), or null when the NVR has none in the last 400 days. */
+export async function oldestRecordingAction(cameraId: string): Promise<OldestRecordingState> {
+  const who = await playbackPerson()
+  if (!who.ok) return who
+  const { p } = who
+  if (typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: NOT_FOUND }
+  try {
+    const res = await listOldestRecording({ rls: await createClient(), admin: createMediaClient(), limiter: lookupRequestLimiter }, { id: p.id, orgId: p.org_id }, cameraId, offset())
+    if (res.ok) await auditAccess(createAdminClient(), { orgId: p.org_id, actorId: p.id, action: 'cctv_playback_searched', capability: 'cctv.playback', cameraIds: [cameraId.toLowerCase()], detail: { what: 'oldest' } })
+    return res
+  } catch (error) {
+    return failed('playback_oldest_action_failed', 'oldestRecordingAction', error, FAILED)
   }
 }

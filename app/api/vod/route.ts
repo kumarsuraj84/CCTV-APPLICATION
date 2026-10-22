@@ -6,16 +6,18 @@ import { getCurrentProfile, mfaGateOf } from '@/lib/auth/profile'
 import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { logger } from '@/lib/observability/logger'
 import { exportRequestLimiter, MSG_TOO_MANY_REQUESTS } from '@/lib/streams/request-limit'
-import { FAST_PLAYBACK_CAPABILITY, MSG_FAST_NOT_FOR_YOU } from '@/lib/streams/speed'
+import { EXPORT_CAPABILITY, MSG_EXPORT_NOT_FOR_YOU } from '@/lib/streams/speed'
 import { MSG_VOD_BAD_REQUEST, parseVodQuery, serveVod } from '@/lib/streams/vod'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { createMediaClient } from '@/lib/supabase/service-clients'
 
-// Fast playback: GET /api/vod?camera=<id>&start=<yyyy-mm-ddThh:mm:ssZ>&minutes=<1..30> answers with video/mp4 made from the NVR's recording
-// by ffmpeg (see lib/streams/vod.ts). It needs a signed-in person (the proxy sends everybody else to the sign-in page; this checks again)
-// who holds cctv.export (D-6a, P2-2; the camera itself is checked by the service as the person), and changes nothing, so it is a GET,
-// counted with the export count. Only the query is read: no body, no cookies of its own.
+// A SAVEABLE recording file: GET /api/vod?camera=<id>&start=<yyyy-mm-ddThh:mm:ssZ>&minutes=<1..30> answers with video/mp4 made from the
+// NVR's recording by the remux adapter (see lib/streams/vod.ts). Decision D-L1 (P4-L2): this is the EXPORT path only — fast playback on the
+// Playback screen moved to the stream path (/api/playback/stream, cctv.playback); this route needs cctv.export AND cctv.playback (ruling
+// M-3), and only administrators may hold cctv.export (ruling E-1), so a viewer with playback alone can never download a file here. It needs
+// a signed-in person (the proxy sends everybody else to the sign-in page; this checks again), a fresh sign-in (D-10 "exports"), and
+// changes nothing, so it is a GET, counted with the export count. Only the query is read: no body, no cookies of its own.
 // A failure before the video starts is JSON `{ "error": "..." }`; after that a failure just ends the video.
 
 export const dynamic = 'force-dynamic'
@@ -33,15 +35,15 @@ export async function GET(request: Request) {
     if (mfaGateOf(profile) !== 'ok') return error(403, MSG_CODE_FIRST)
     // cctv.export somewhere, or nothing else is read or asked (it also covers ?probe=1). The refusal is recorded (counted first, so a
     // flood of refusals cannot flood the log).
-    // Fast playback is a recording: cctv.export AND cctv.playback (fix M-3). An unreadable summary is the plain access-check failure (M-4).
+    // A recording file: cctv.export AND cctv.playback (fix M-3). An unreadable summary is the plain access-check failure (M-4).
     const failedCheck = profile.capabilities.failed
-    if (failedCheck || !holds(profile.capabilities, FAST_PLAYBACK_CAPABILITY) || !holds(profile.capabilities, 'cctv.playback')) {
+    if (failedCheck || !holds(profile.capabilities, EXPORT_CAPABILITY) || !holds(profile.capabilities, 'cctv.playback')) {
       if (!(await exportRequestLimiter.allow(profile.id))) return error(429, MSG_TOO_MANY_REQUESTS)
-      await auditAccess(createAdminClient(), { orgId: profile.org_id, actorId: profile.id, action: 'cctv_export_denied', capability: FAST_PLAYBACK_CAPABILITY, detail: { reason: failedCheck ? 'access_check_failed' : 'no_capability' } })
-      return failedCheck ? error(503, MSG_ACCESS_CHECK_FAILED) : error(403, MSG_FAST_NOT_FOR_YOU)
+      await auditAccess(createAdminClient(), { orgId: profile.org_id, actorId: profile.id, action: 'cctv_export_denied', capability: EXPORT_CAPABILITY, detail: { reason: failedCheck ? 'access_check_failed' : 'no_capability' } })
+      return failedCheck ? error(503, MSG_ACCESS_CHECK_FAILED) : error(403, MSG_EXPORT_NOT_FOR_YOU)
     }
 
-    // P3-1 review I-3 (D-10 "exports"): fast playback is a downloadable recording, so it goes through the fresh-sign-in guard too.
+    // P3-1 review I-3 (D-10 "exports"): a downloadable recording, so it goes through the fresh-sign-in guard too.
     const stale = requireFreshFor(profile)
     if (stale) return error(403, stale)
 

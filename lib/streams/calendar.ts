@@ -47,3 +47,48 @@ export function monthInBounds(year: number, month: number, today: string): boole
 
 /** The day if its month can be shown, else today. */
 export const clampDay = (day: string, today: string): string => (monthInBounds(Number(day.slice(0, 4)), Number(day.slice(5, 7)), today) ? day : today)
+
+/**
+ * P4-L2 (LG-9): a month may be shown when it is inside the 12 months back to this month AND not before the month of the oldest recording
+ * (`oldestDay`, `yyyy-mm-dd` on the shown clock, or null when it is not known).
+ */
+export function monthAllowed(year: number, month: number, today: string, oldestDay: string | null): boolean {
+  if (!monthInBounds(year, month, today)) return false
+  if (oldestDay === null) return true
+  return monthIndex(year, month) >= monthIndex(Number(oldestDay.slice(0, 4)), Number(oldestDay.slice(5, 7)))
+}
+
+// ── P4-L2 brief item 2: the recorder's clock offset on the calendar ────────────────────────────────────────────────────────────────────
+// The NVR's calendar marks ITS days. Shown time = NVR time + offset, so NVR day d covers the shown span [d 00:00 + offset, d+1 00:00 +
+// offset): with an offset it touches two shown days. Every shown day such a span touches is marked: a hint that there may be recordings
+// that day (a few seconds of skew can mark the next day for the last seconds before the NVR's midnight). Any day can still be opened.
+
+const DAY_MS = 86_400_000
+const MAX_OFFSET_MS = DAY_MS
+
+/** The NVR months whose days can reach into this shown month: the month itself, plus the month before (offset > 0) or after (offset < 0). */
+export function nvrMonthsFor(year: number, month: number, offsetMs: number): { year: number; month: number }[] {
+  const self = { year, month }
+  if (!Number.isFinite(offsetMs) || offsetMs === 0) return [self]
+  return offsetMs > 0 ? [shiftMonth(year, month, -1), self] : [self, shiftMonth(year, month, 1)]
+}
+
+/** The days (1 to 31) of the SHOWN month `year`-`month` that the NVR days of `nvr` reach into, with the recorder's offset in milliseconds. */
+export function shownRecordedDays(nvr: readonly { year: number; month: number; days: readonly number[] }[], offsetMs: number, year: number, month: number): number[] {
+  if (!Number.isFinite(offsetMs) || Math.abs(offsetMs) > MAX_OFFSET_MS) return []
+  const first = Date.UTC(year, month - 1, 1)
+  const after = Date.UTC(year, month, 1)
+  const out = new Set<number>()
+  for (const m of nvr) {
+    const length = daysInMonth(m.year, m.month)
+    for (const d of m.days) {
+      if (!Number.isInteger(d) || d < 1 || d > length) continue
+      const from = Date.UTC(m.year, m.month - 1, d) + offsetMs
+      const to = from + DAY_MS // exclusive
+      for (let t = Math.floor(from / DAY_MS) * DAY_MS; t < to; t += DAY_MS) {
+        if (t >= first && t < after) out.add(new Date(t).getUTCDate())
+      }
+    }
+  }
+  return [...out].sort((a, b) => a - b)
+}

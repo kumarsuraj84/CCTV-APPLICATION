@@ -3,7 +3,7 @@ import { IT_VIEW } from '@/lib/auth/capabilities'
 import { cameraFor, MSG_ACCESS_CHECK_FAILED, recorderFor } from '@/lib/auth/resource'
 import { MSG_MONITORING_OFF, MSG_NOT_MAPPED, readRecorderPassword, resolveCameraRoutes, type CameraRoute, type Recorder, type RouteAnswer } from '@/lib/inventory/recorders'
 import { describeNvrError, NvrClient, NvrError, type NvrEndpoint } from '@/lib/nvr/client'
-import { findSegments, recordedDays, type ClockOffset } from '@/lib/nvr/playback'
+import { clockOffsetMs, findOldestRecording, findSegments, recordedDays, type ClockOffset } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 import { checkRecorderTarget } from '@/lib/security/targets'
@@ -12,7 +12,8 @@ import { MSG_NOT_SET_UP, MSG_UNAVAILABLE } from '@/lib/streams/open'
 import { createMediaSessions } from '@/lib/streams/registry'
 import { MSG_TOO_MANY_REQUESTS, type RequestLimiter } from '@/lib/streams/request-limit'
 import { buildPlaybackUrl, demoSource, isDemoRecorder } from '@/lib/streams/source'
-import { parseDay, shownNowMs } from '@/lib/streams/timeline'
+import { nvrMonthsFor, shownRecordedDays } from '@/lib/streams/calendar'
+import { isPlayableStart, parseDay, PLAYABLE_FUTURE_SLACK_MS, shownNowMs } from '@/lib/streams/timeline'
 import { signStreamToken, streamName, TOKEN_LIFETIME_SEC } from '@/lib/streams/token'
 
 // Playback by day and time. Which cameras may be looked at is decided by the person's own client (cctv.playback, checked by the database
@@ -29,18 +30,15 @@ export const MIN_PLAY_MINUTES = 1
 export const MAX_PLAY_MINUTES = 60
 /**
  * The newest start allowed is this far ahead of the shown clock (15 minutes: NVR clocks often run fast, and a recording can then end
- * "in the future" by the shown clock), the oldest is MAX_AGE_MS behind it.
+ * "in the future" by the shown clock), the oldest is a year behind it. P4-L2: the rule lives in lib/streams/timeline.ts (isPlayableStart),
+ * so the Playback screen's jumps and edge use the same one.
  */
-export const FUTURE_SLACK_MS = 15 * 60_000
+export const FUTURE_SLACK_MS = PLAYABLE_FUTURE_SLACK_MS
 /** How many one-second shifts of the start are tried to find a stream nobody is watching (ruling R19). */
 export const MAX_START_SHIFTS = 20
-const MAX_AGE_MS = 365 * 86_400_000
 
 /** True when a start (a shown-time instant) is not more than 15 minutes ahead of the shown clock and not older than a year. `nowMs` is the real clock. */
-export function startInBounds(startMs: number, nowMs: number): boolean {
-  const shownNow = shownNowMs(nowMs)
-  return Number.isFinite(startMs) && startMs <= shownNow + FUTURE_SLACK_MS && startMs >= shownNow - MAX_AGE_MS
-}
+export const startInBounds = (startMs: number, nowMs: number): boolean => isPlayableStart(startMs, nowMs)
 
 export const MSG_CAMERA_NOT_FOUND = 'Camera not found.'
 // P2-5b: the login is the recorder's own (a location may have several NVRs).
@@ -106,7 +104,10 @@ export function recorderOffset(recorder: Pick<Recorder, 'clock_offset_sec'>, def
   return recorder.clock_offset_sec === null ? { offsetMin: defaultMin } : { offsetSec: recorder.clock_offset_sec }
 }
 
-/** What looking at recordings needs: cctv.playback (search, calendar, 1x playback) or cctv.export (fast playback is a savable file, D-6a). */
+/**
+ * What looking at recordings needs: cctv.playback (search, calendar, 1x and — decision D-L1 — fast playback as a stream), together with
+ * cctv.export for a saveable file (/api/vod).
+ */
 export type RecordingCapability = 'cctv.playback' | 'cctv.export'
 
 /**
@@ -215,8 +216,10 @@ async function nvrFailure(e: unknown, event: string, rls: AdminClient, recorderI
 const defaultNvr = (ep: NvrEndpoint) => new NvrClient(ep)
 
 /**
- * Days of the month that the NVR's own calendar marks as having recordings for this camera (1 to 31). These are NVR days, not days as
- * shown (they differ by the offset near midnight), so they are only a hint: a screen may mark them but must let people open any day.
+ * Days of the SHOWN month that may have recordings for this camera (1 to 31). P4-L2 (brief item 2): the NVR's own calendar marks NVR
+ * days; with the recorder's clock offset (its own `clock_offset_sec`, else `offsetMin`) an NVR day reaches into one or two shown days,
+ * so every shown day it touches is marked (lib/streams/calendar.ts shownRecordedDays; with an offset, the neighbouring NVR month is read
+ * too). Still a hint: a screen may mark them but must let people open any day.
  */
 export async function listRecordedDays(deps: LookupDeps, actor: Who, cameraId: string, year: number, month: number, offsetMin: number): Promise<Result<{ days: number[] }>> {
   if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12 || !validOffset(offsetMin)) return { ok: false, error: MSG_BAD_REQUEST }
@@ -226,9 +229,32 @@ export async function listRecordedDays(deps: LookupDeps, actor: Who, cameraId: s
   const { camera, recorder, password } = c
   try {
     const client = (deps.nvr ?? defaultNvr)({ host: recorder.host!, port: recorder.http_port, username: recorder.username, password: password! })
-    return { ok: true, days: await recordedDays(client, { channel: camera.channel, year, month }) }
+    const shift = clockOffsetMs(recorderOffset(recorder, offsetMin)) ?? 0
+    const months = nvrMonthsFor(year, month, shift).filter((m) => m.year >= 2000 && m.year <= 2100)
+    const nvrDays: { year: number; month: number; days: number[] }[] = []
+    for (const m of months) nvrDays.push({ ...m, days: await recordedDays(client, { channel: camera.channel, year: m.year, month: m.month }) })
+    return { ok: true, days: shownRecordedDays(nvrDays, shift, year, month) }
   } catch (e) {
     return await nvrFailure(e, 'playback_days_failed', deps.rls, recorder.id)
+  }
+}
+
+/**
+ * P4-L2 (LG-9): the start of the oldest recording of this camera as a shown time (ISO), or null when the NVR has none in the last 400 days.
+ * The recorder's own clock offset applies like everywhere else.
+ */
+export async function listOldestRecording(deps: LookupDeps & { now?: () => number }, actor: Who, cameraId: string, offsetMin: number): Promise<Result<{ oldest: string | null }>> {
+  if (!validOffset(offsetMin)) return { ok: false, error: MSG_BAD_REQUEST }
+  if (deps.limiter && !(await deps.limiter.allow(actor.id))) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
+  const c = await findCamera(deps, cameraId, { password: 'always', capability: 'cctv.playback', orgId: actor.orgId, actorId: actor.id })
+  if (!c.ok) return c
+  const { camera, recorder, password } = c
+  try {
+    const client = (deps.nvr ?? defaultNvr)({ host: recorder.host!, port: recorder.http_port, username: recorder.username, password: password! })
+    const oldest = await findOldestRecording(client, { channel: camera.channel, nowShownMs: shownNowMs((deps.now ?? Date.now)()), ...recorderOffset(recorder, offsetMin) })
+    return { ok: true, oldest: oldest ? oldest.toISOString() : null }
+  } catch (e) {
+    return await nvrFailure(e, 'playback_oldest_failed', deps.rls, recorder.id)
   }
 }
 

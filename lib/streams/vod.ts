@@ -1,463 +1,61 @@
-import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { accessSync, constants, statSync } from 'node:fs'
-import path from 'node:path'
-import { Readable } from 'node:stream'
-import type { ReadableStream as NodeWebStream } from 'node:stream/web'
 import type { AdminClient, Result } from '@/lib/admin/types'
 import { auditAccess } from '@/lib/auth/access-audit'
 import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
-import { MSG_MONITORING_OFF, MSG_NOT_MAPPED } from '@/lib/inventory/recorders'
+import { MSG_MONITORING_OFF, MSG_NOT_MAPPED, type CameraRoute } from '@/lib/inventory/recorders'
 import { describeNvrError, MAX_DOWNLOAD_BYTES, MAX_DOWNLOAD_MS, NvrClient, NvrError, type NvrEndpoint } from '@/lib/nvr/client'
 import { clockOffsetMs, findSegments } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
 import { processSingleton } from '@/lib/process-singleton'
+import { MSG_NO_FFMPEG, videoFamily, type ProgramLookup, type SpawnFn } from '@/lib/streams/ffmpeg'
 import { findCamera, readRecorderLogin, MSG_CAMERA_NOT_FOUND, MSG_BAD_START, MSG_NO_LOGIN, MSG_RECORDINGS_UNREACHABLE, parsePlaybackOffset, recorderMessage, recorderOffset, startInBounds } from '@/lib/streams/playback'
 import { adminRegistry, createMediaSessions, type RegistryClient } from '@/lib/streams/registry'
+import { ffmpegRemux, type RemuxAdapter } from '@/lib/streams/remux'
 import { MSG_TOO_MANY_REQUESTS, type RequestLimiter } from '@/lib/streams/request-limit'
 import { watchSession, type SessionWatch } from '@/lib/streams/session-watch'
 import { parseStartIso } from '@/lib/streams/timeline'
 
-// Fast playback (2x, 4x, 8x). The NVR sends a recording in one piece, much faster than it plays; ffmpeg rewraps it (no re-encoding) as a
-// fragmented MP4, and the browser plays that with a plain <video> element at a higher speed. ffmpeg is an OPTIONAL program on the server.
+// A recording from the NVR as a fragmented MP4. The NVR sends a recording in one piece, much faster than it plays; the remux adapter
+// (lib/streams/remux.ts: ffmpeg `-c:v copy`, no re-encoding) rewraps it as a fragmented MP4 while it arrives.
 //
-//   browser <-- video/mp4 -- this process <-- bytes -- ffmpeg (stdin <- the NVR's download)
+// Two ways out, one core (`deliverRecording`, shared with lib/streams/fast.ts):
+//   GET /api/vod (this file's serveVod)            a SAVEABLE video/mp4: needs cctv.export AND cctv.playback for the camera (ruling M-3;
+//                                                  decision D-L1 keeps it for export only, ruling E-1: administrators only). The Playback
+//                                                  screen no longer uses it.
+//   GET /api/playback/stream (lib/streams/fast.ts) fast playback 2x-16x for cctv.playback (D-L1): a token-bound stream, not a file.
 //
 // What is trusted: nothing that comes from the NVR. Its playback address (`playbackURI`) is only ever put, escaped and capped, into the
 // body of ONE request to the SAME NVR; it is never fetched, logged or sent to a browser. What the browser sends (camera, start, minutes)
-// is checked before anything else happens, and the camera must be one the person may export (cctv.export, checked by the database).
+// is checked before anything else happens, and the camera must be one the person may use (checked by the database as the person).
+
+// The ffmpeg program moved to lib/streams/ffmpeg.ts (P4-L2); everything is still available from here.
+export {
+  AVAILABILITY_TTL_MS, buildFfmpegArgs, classifyFfmpegFailure, createFfmpegCheck, createSpawn, defaultSpawn, fastPlaybackAvailable, FIRST_BYTE_MS,
+  FORMAT_WHITELIST, KILL_GRACE_MS, MSG_FFMPEG_PATH, MSG_NO_FFMPEG, resolveFfmpeg, sanitizeStderr, SOURCE_IDLE_MS, startConversion, STDERR_CAP_BYTES,
+  videoFamily, VOD_MAX_MS,
+} from '@/lib/streams/ffmpeg'
+export type { ConversionFailure, ConversionOptions, ConversionResult, FfmpegProgram, ProgramLookup, SpawnFn } from '@/lib/streams/ffmpeg'
 
 /** Longest clip. */
 export const VOD_MAX_MINUTES = 30
 export const VOD_MIN_MINUTES = 1
-/** Running conversions: this many per person and this many in all. */
+/** Running conversions: this many per person and this many in all (export and fast playback share them). */
 export const MAX_CONVERSIONS_PER_PERSON = 1
 export const MAX_CONVERSIONS_TOTAL = 8
-/** The longest a conversion runs: a little less than the longest NVR transfer, so the video ends cleanly before the transfer's own deadline cuts it. */
-export const VOD_MAX_MS = MAX_DOWNLOAD_MS - 30_000
-/** A conversion that has not produced its first byte after this long is given up. */
-export const FIRST_BYTE_MS = 30_000
-/** After asking ffmpeg to stop (SIGTERM), this long passes before it is killed outright (SIGKILL). */
-export const KILL_GRACE_MS = 3_000
-/** The most of ffmpeg's error output that is kept. */
-export const STDERR_CAP_BYTES = 8 * 1024
 /** The longest playback address that is passed on to the NVR. */
 export const MAX_PLAYBACK_URI = 512
-/** A conversion ends when the NVR has sent nothing for this long while it was being waited for (not while the viewer is slow). */
-export const SOURCE_IDLE_MS = 60_000
 /** A person's new conversion waits at most this long for their previous one to end. */
 export const SUPERSEDE_WAIT_MS = 3_000
-/** How long "ffmpeg works" is remembered. */
-export const AVAILABILITY_TTL_MS = 60_000
 
-export const MSG_NO_FFMPEG = 'ffmpeg is not installed on the server'
 export const MSG_VOD_BAD_REQUEST = 'That request is not valid.'
 export const MSG_VOD_BAD_LENGTH = `Choose how long to play, from ${VOD_MIN_MINUTES} to ${VOD_MAX_MINUTES} minutes.`
 export const MSG_NO_RECORDING = 'There is no recording at that time.'
 export const MSG_NOT_DOWNLOADABLE = 'This recording cannot be played at a faster speed.'
 export const MSG_ALREADY_RUNNING = 'You already have a fast playback running. Stop it first, then try again.'
 export const MSG_SERVER_BUSY = 'The server is busy with other fast playbacks. Try again in a moment.'
-export const MSG_FFMPEG_PATH = 'FFMPEG must be the full path of the ffmpeg program.'
 export const MSG_FORMAT_UNSUPPORTED = "This recording's format is not supported for fast playback."
 const MSG_NVR_FAILED = 'Could not read the recordings. Please try again.'
 const MSG_CONVERT_FAILED = 'The recording could not be converted for fast playback.'
 const DOWNLOAD_PATH = '/ISAPI/ContentMgmt/download'
-
-// ── ffmpeg ───────────────────────────────────────────────────────────────────
-
-/**
- * The input formats ffmpeg is allowed to recognise (`-format_whitelist`, demuxer names). Hikvision NVRs send a download as MPEG program
- * stream ("mpeg": the usual one), MPEG transport stream ("mpegts"), MP4 ("mov" is ffmpeg's name for the mov/mp4 reader) or, on some
- * firmware, a bare H.264 / H.265 stream ("h264", "hevc"). Anything else, such as a playlist or a container that can name other files,
- * is refused instead of being probed. This is the list that is believed right for those NVRs; if a real NVR sends something else the
- * answer is "This recording's format is not supported for fast playback." and the list is the place to add it.
- */
-export const FORMAT_WHITELIST = 'mpeg,mpegts,mov,mp4,h264,hevc'
-
-/**
- * The arguments of ffmpeg: no keyboard reading, only errors reported, only the `pipe` protocol (so no input can make it open a file or
- * a network address) and only the formats of FORMAT_WHITELIST (both are input options, so they come before `-i`), read the recording from
- * standard input, drop sound, copy the picture (tagged `hvc1` when it is H.265, which is what browsers expect), write a fragmented MP4 to
- * standard output. `-xerror` is left out on purpose: a recording with one damaged frame should still play.
- */
-export function buildFfmpegArgs(o: { hevc?: boolean } = {}): string[] {
-  return [
-    '-nostdin',
-    '-loglevel', 'error',
-    '-protocol_whitelist', 'pipe',
-    '-format_whitelist', FORMAT_WHITELIST,
-    '-i', 'pipe:0',
-    '-an',
-    '-c:v', 'copy',
-    ...(o.hevc ? ['-tag:v', 'hvc1'] : []),
-    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-    '-flush_packets', '1',
-    '-f', 'mp4',
-    'pipe:1',
-  ]
-}
-
-/** The family of a video format name as an NVR writes it ("H.264-BP", "H.265", "HEVC"), or null when it is not one of these. */
-export function videoFamily(name: string | undefined): 'h264' | 'h265' | null {
-  if (name === undefined) return null
-  if (/265|hevc/i.test(name)) return 'h265'
-  if (/264|avc/i.test(name)) return 'h264'
-  return null
-}
-
-let warnedFfmpeg = false
-const CONTROL = /[\u0000-\u001f\u007f]/
-export type FfmpegProgram = { ok: true; path: string } | { ok: false; error: string }
-export type ProgramLookup = {
-  /** Is there a runnable file at this path? (default: the real file system) */
-  exists?: (file: string) => boolean
-  /** Which system's path rules apply (default: this one). */
-  platform?: NodeJS.Platform
-}
-
-function isRunnableFile(file: string): boolean {
-  try {
-    if (!statSync(file).isFile()) return false
-    if (process.platform !== 'win32') accessSync(file, constants.X_OK)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/** A full path: a drive letter or a share on Windows, a leading / elsewhere. Not relative, not "rooted on the current drive". */
-function isFullPath(value: string, platform: NodeJS.Platform): boolean {
-  if (platform === 'win32') return path.win32.isAbsolute(value) && /^(?:[A-Za-z]:[\\/]|\\\\[^\\/])/.test(value)
-  return path.posix.isAbsolute(value)
-}
-
-/**
- * The program to run. The FFMPEG setting (set by whoever runs the server; never from a browser) must be a FULL path on one line; anything
- * else is refused with a plain message, so a program is never found through the current folder or a relative search path. When it is not
- * set, `ffmpeg` (`ffmpeg.exe` on Windows) is looked for in the full-path entries of PATH only: empty entries, "." and relative entries are
- * skipped. The program is then run directly, never through a shell.
- */
-export function resolveFfmpeg(env: Record<string, string | undefined> = process.env, lookup: ProgramLookup = {}): FfmpegProgram {
-  const platform = lookup.platform ?? process.platform
-  const value = (env.FFMPEG ?? '').trim()
-  if (value !== '') {
-    if (value.length <= 1024 && !CONTROL.test(value) && isFullPath(value, platform)) return { ok: true, path: value }
-    if (!warnedFfmpeg) {
-      warnedFfmpeg = true
-      logger.warn({ event: 'ffmpeg_setting_invalid', note: 'FFMPEG must be the full path of the ffmpeg program on one line; fast playback is off' })
-    }
-    return { ok: false, error: MSG_FFMPEG_PATH }
-  }
-  const exists = lookup.exists ?? isRunnableFile
-  const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH')
-  const list = pathKey === undefined ? '' : (env[pathKey] ?? '')
-  const win = platform === 'win32'
-  for (const entry of list.split(win ? ';' : ':')) {
-    const dir = entry.trim().replace(/^"(.*)"$/, '$1')
-    if (dir === '' || dir.length > 1024 || CONTROL.test(dir) || !isFullPath(dir, platform)) continue
-    const file = (win ? path.win32 : path.posix).join(dir, win ? 'ffmpeg.exe' : 'ffmpeg')
-    if (exists(file)) return { ok: true, path: file }
-  }
-  return { ok: false, error: MSG_NO_FFMPEG }
-}
-
-/** ffmpeg's error output as one short line for the log: addresses and paths-with-schemes hidden, control characters and runs of space removed, at most 200 characters. */
-export function sanitizeStderr(text: string): string {
-  return String(text)
-    .replace(/[a-z][a-z0-9+.-]*:\/\/\S*/gi, '[address]')
-    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 200)
-}
-
-type Child = Pick<ChildProcessWithoutNullStreams, 'stdin' | 'stdout' | 'stderr' | 'kill' | 'on' | 'once'>
-/** Starts a program with these arguments (the arguments are a list: no shell, no quoting). Tests give a different one. */
-export type SpawnFn = (command: string, args: string[]) => Child
-/** A SpawnFn on top of child_process.spawn (or a stand-in): never through a shell, three pipes, no console window. */
-export const createSpawn =
-  (impl: typeof nodeSpawn = nodeSpawn): SpawnFn =>
-  (command, args) =>
-    impl(command, args, { shell: false, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
-export const defaultSpawn: SpawnFn = createSpawn()
-
-const isMissing = (e: unknown) => ['ENOENT', 'EACCES', 'EPERM', 'EINVAL', 'ENOTDIR'].includes((e as { code?: string } | null)?.code ?? '')
-
-export type ConversionOptions = {
-  spawn?: SpawnFn
-  /** The program (see resolveFfmpeg). */
-  ffmpeg: string
-  /** The recording is H.265: the picture is tagged `hvc1`. */
-  hevc?: boolean
-  /** The NVR's bytes. */
-  source: ReadableStream<Uint8Array>
-  /** Ends the NVR transfer (called at most once per ending; safe to call again). */
-  abortSource: () => void
-  /** Aborted when the person goes away. */
-  signal?: AbortSignal
-  /** Called once, when the program is gone (or was never there): the place to give a slot back. */
-  onExit?: () => void
-  /** Longest total time (default VOD_MAX_MS, 29.5 minutes), time to the first byte (30 s), time without NVR data (60 s) and wait before the kill (3 s). */
-  maxMs?: number
-  firstByteMs?: number
-  idleMs?: number
-  killGraceMs?: number
-  /** Makes the node stream that is piped into ffmpeg (default `Readable.fromWeb`). Tests give one that fails. */
-  toNodeStream?: (source: ReadableStream<Uint8Array>) => Readable
-}
-export type ConversionFailure = 'missing' | 'failed' | 'format' | 'timeout' | 'cancelled'
-export type ConversionResult = { ok: true; body: ReadableStream<Uint8Array> } | { ok: false; reason: ConversionFailure }
-
-const FORMAT_PROBLEM =
-  /unsupported codec|invalid data found|whitelist|could not find codec parameters|moov atom not found|(?:unknown|no) (?:decoder|encoder)|codec not currently supported|unsupported (?:pixel format|profile)/i
-
-/** 'format' when ffmpeg's last words say it did not understand the recording (or the format is not on the whitelist), else 'failed'. */
-export function classifyFfmpegFailure(stderr: string): 'format' | 'failed' {
-  return FORMAT_PROBLEM.test(stderr) ? 'format' : 'failed'
-}
-
-const nodeStreamOf = (source: ReadableStream<Uint8Array>): Readable => Readable.fromWeb(source as unknown as NodeWebStream<Uint8Array>)
-
-/**
- * Pipes `source` through ffmpeg and gives back its output as a stream, once the FIRST BYTE of output exists (so a failure before that is
- * still an error the caller can answer in JSON). After that the stream ends with an error if ffmpeg fails.
- *
- * The pace is the reader's: output is read from ffmpeg only while the reader keeps up, which stops ffmpeg, which stops the pipe, which
- * stops the download. Nothing is buffered beyond a few chunks. Whenever the stream is cancelled (the person closes the page), the
- * `signal` aborts, the total time runs out, the NVR sends nothing for `idleMs` (the clock only runs while the NVR is being waited for, not
- * while the viewer is slow), the NVR transfer fails or ffmpeg ends, then: the NVR transfer is aborted, ffmpeg's input is closed and
- * ffmpeg is told to stop (SIGTERM), and killed (SIGKILL) if it is still there after the grace time. `onExit` runs once the program is
- * really gone, so a slot is never given back while a process is still running. If anything in the set-up after the program was started
- * throws, that is an ending too (`failed`), so the program is stopped and the slot is given back.
- */
-export function startConversion(o: ConversionOptions): Promise<ConversionResult> {
-  const grace = o.killGraceMs ?? KILL_GRACE_MS
-  const idleMs = o.idleMs ?? SOURCE_IDLE_MS
-  return new Promise<ConversionResult>((resolve) => {
-    let child: Child
-    try {
-      child = (o.spawn ?? defaultSpawn)(o.ffmpeg, buildFfmpegArgs({ hevc: o.hevc }))
-    } catch (e) {
-      o.abortSource()
-      o.onExit?.()
-      resolve({ ok: false, reason: isMissing(e) ? 'missing' : 'failed' })
-      return
-    }
-
-    let started = false // the first byte of output has been passed on: the answer is on its way
-    let done = false // the ending has begun (only one ending ever runs)
-    let exited = false
-    let spawned = false
-    let stderr = ''
-    let killTimer: ReturnType<typeof setTimeout> | undefined
-    let startTimer: ReturnType<typeof setTimeout> | undefined
-    let totalTimer: ReturnType<typeof setTimeout> | undefined
-    let idleTimer: ReturnType<typeof setTimeout> | undefined
-    let controller: ReadableStreamDefaultController<Uint8Array> | undefined
-    let output: ReadableStream<Uint8Array> | undefined
-    let source: Readable | undefined
-
-    const exitOnce = () => {
-      if (exited) return
-      exited = true
-      clearTimeout(killTimer)
-      o.onExit?.()
-    }
-    // Everything that is not the output stream itself. Safe to run more than once.
-    const stop = () => {
-      clearTimeout(startTimer)
-      clearTimeout(totalTimer)
-      clearTimeout(idleTimer)
-      o.signal?.removeEventListener('abort', onAbort)
-      o.abortSource()
-      if (source) {
-        source.unpipe()
-        source.destroy()
-      }
-      child.stdin.destroy()
-      if (!exited) {
-        try {
-          child.kill('SIGTERM')
-        } catch {
-          // already gone
-        }
-        killTimer = setTimeout(() => {
-          if (exited) return
-          try {
-            child.kill('SIGKILL')
-          } catch {
-            // already gone
-          }
-        }, grace)
-        killTimer.unref?.()
-      }
-    }
-    // Ends the conversion. `how` is what the output stream does: nothing (the reader has gone), an end, or an error.
-    const end = (how: 'quiet' | 'close' | 'error', reason: ConversionFailure) => {
-      if (done) return
-      done = true
-      stop()
-      if (!started) {
-        resolve({ ok: false, reason })
-        return
-      }
-      try {
-        if (how === 'close') controller?.close()
-        else if (how === 'error') controller?.error(new Error('The conversion stopped.'))
-      } catch {
-        // the reader has already gone
-      }
-    }
-    function onAbort() {
-      end('error', 'cancelled')
-    }
-
-    // The program's side first, so that whatever goes wrong in the rest of the set-up still sees it end.
-    child.stdin.on('error', () => {}) // ffmpeg stopped reading: the end of the process says why
-    child.stdout.on('error', () => end('error', 'failed'))
-    child.stderr.on('error', () => {})
-    child.stderr.on('data', (chunk: Buffer) => {
-      if (stderr.length < STDERR_CAP_BYTES) stderr += chunk.toString('utf8').slice(0, STDERR_CAP_BYTES - stderr.length)
-    })
-    child.once('spawn', () => {
-      spawned = true
-    })
-    child.on('error', (e) => {
-      // The program could not be started (or, rarely, not be stopped).
-      if (!spawned) {
-        exitOnce()
-        end('error', isMissing(e) ? 'missing' : 'failed')
-      }
-    })
-    child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
-      exitOnce()
-      if (done) return
-      // ffmpeg ended by itself: everything it wrote has been passed on already.
-      if (code !== 0 || (!started && signal === null)) logger.warn({ event: 'vod_ffmpeg_ended', exitCode: code, signal, line: sanitizeStderr(stderr) })
-      end(code === 0 && started ? 'close' : 'error', !started ? classifyFfmpegFailure(stderr) : 'failed')
-    })
-    child.stdout.on('data', (chunk: Buffer) => {
-      if (done || !output || !controller) return
-      if (!started) {
-        started = true
-        clearTimeout(startTimer)
-        resolve({ ok: true, body: output })
-      }
-      try {
-        controller.enqueue(chunk)
-      } catch {
-        return
-      }
-      if ((controller.desiredSize ?? 0) <= 0) child.stdout.pause()
-    })
-
-    try {
-      output = new ReadableStream<Uint8Array>(
-        {
-          start(c) {
-            controller = c
-          },
-          pull() {
-            child.stdout.resume()
-          },
-          cancel() {
-            end('quiet', 'cancelled')
-          },
-        },
-        { highWaterMark: 4 },
-      )
-
-      source = (o.toNodeStream ?? nodeStreamOf)(o.source)
-      // The NVR is "being waited for" while the stream flows; when ffmpeg is slow to take the bytes (or the viewer is slow to take
-      // ffmpeg's) the pipe pauses the stream and the clock stops.
-      const armIdle = () => {
-        clearTimeout(idleTimer)
-        idleTimer = setTimeout(() => end('error', 'timeout'), idleMs)
-      }
-      source.on('error', () => end('error', 'failed'))
-      source.on('data', armIdle)
-      source.on('resume', armIdle)
-      source.on('pause', () => clearTimeout(idleTimer))
-      source.on('end', () => clearTimeout(idleTimer))
-      source.pipe(child.stdin)
-
-      startTimer = setTimeout(() => end('error', 'timeout'), o.firstByteMs ?? FIRST_BYTE_MS)
-      // The longest total time: the picture just ends (a clip is never longer than this).
-      totalTimer = setTimeout(() => end('close', 'timeout'), o.maxMs ?? VOD_MAX_MS)
-      armIdle()
-      if (o.signal?.aborted) onAbort()
-      else o.signal?.addEventListener('abort', onAbort, { once: true })
-    } catch {
-      end('error', 'failed')
-    }
-  })
-}
-
-// ── is ffmpeg there? ─────────────────────────────────────────────────────────
-
-/**
- * A check that the program runs (`ffmpeg -version` ends with 0 within a few seconds). The answer is remembered for a minute per program,
- * and a check that is already running is shared. Used to decide what the Playback screen offers.
- */
-export function createFfmpegCheck(o: { spawn?: SpawnFn; now?: () => number; ttlMs?: number; timeoutMs?: number; lookup?: ProgramLookup } = {}) {
-  const run = o.spawn ?? defaultSpawn
-  const now = o.now ?? Date.now
-  const ttl = o.ttlMs ?? AVAILABILITY_TTL_MS
-  const timeout = o.timeoutMs ?? 5_000
-  const known = new Map<string, { at: number; ok: boolean }>()
-  const running = new Map<string, Promise<boolean>>()
-  const probe = (exe: string) =>
-    new Promise<boolean>((resolve) => {
-      let child: Child
-      try {
-        child = run(exe, ['-version'])
-      } catch {
-        resolve(false)
-        return
-      }
-      const timer = setTimeout(() => finish(false), timeout)
-      timer.unref?.()
-      function finish(ok: boolean) {
-        clearTimeout(timer)
-        if (!ok) {
-          try {
-            child.kill('SIGKILL')
-          } catch {
-            // already gone
-          }
-        }
-        resolve(ok)
-      }
-      for (const s of [child.stdout, child.stderr]) {
-        s.on('error', () => {})
-        s.resume()
-      }
-      child.stdin.on('error', () => {})
-      child.stdin.end()
-      child.once('error', () => finish(false))
-      child.once('close', (code: number | null) => finish(code === 0))
-    })
-  return async function available(env: Record<string, string | undefined> = process.env): Promise<boolean> {
-    const found = resolveFfmpeg(env, o.lookup)
-    if (!found.ok) return false
-    const exe = found.path
-    const hit = known.get(exe)
-    if (hit && now() - hit.at < ttl) return hit.ok
-    let p = running.get(exe)
-    if (!p) {
-      p = probe(exe).then((ok) => {
-        if (known.size >= 8) known.clear()
-        known.set(exe, { at: now(), ok })
-        running.delete(exe)
-        return ok
-      })
-      running.set(exe, p)
-    }
-    return p
-  }
-}
-
-/** Whether fast playback can work on this server (ffmpeg runs), remembered for a minute. */
-export const fastPlaybackAvailable = processSingleton('cctv.fastPlaybackAvailable', () => createFfmpegCheck())
 
 // ── limits ───────────────────────────────────────────────────────────────────
 
@@ -612,6 +210,8 @@ export type VodDeps = {
   limiter?: RequestLimiter
   conversions?: ConversionLimiter
   nvr?: (ep: NvrEndpoint) => NvrClient
+  /** The remux step (P4-L2, lib/streams/remux.ts). Default: ffmpeg with `spawn`, `lookup` and `ffmpegAvailable` below. */
+  remux?: RemuxAdapter
   spawn?: SpawnFn
   /** Settings (default process.env): FFMPEG, PATH and PLAYBACK_OFFSET_MIN. */
   env?: Record<string, string | undefined>
@@ -633,10 +233,11 @@ export type VodDeps = {
 export const VOD_VALIDATE_EVERY_MS = 15_000
 export const VOD_FAIL_CLOSED_AFTER_MS = 45_000
 
-const HEADERS = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin' }
-const fail = (status: number, error: string) => Response.json({ error }, { status, headers: HEADERS })
+export const VOD_HEADERS = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin' }
+const fail = (status: number, error: string) => Response.json({ error }, { status, headers: VOD_HEADERS })
 
-function cameraFailure(error: string): Response {
+/** The answer for a camera that could not be used, in the status the brief and the reviews fixed. */
+export function cameraFailure(error: string): Response {
   if (error === MSG_CAMERA_NOT_FOUND) return fail(404, error)
   if (error === MSG_NO_LOGIN) return fail(409, error)
   if (error === MSG_RECORDINGS_UNREACHABLE) return fail(502, error) // camera terms: no status that tells login trouble apart (fix I-2)
@@ -649,25 +250,19 @@ function cameraFailure(error: string): Response {
  * The answer to GET /api/vod for a signed-in person (the route has already checked who they are). Either a JSON error with a plain
  * message, or `video/mp4` that is streamed while it is made. `signal` is the request's own: it aborts when the person goes away.
  *
- * Order: the input is checked; the person's count of video requests; the camera (cctv.export for it, checked by the database as the
- * person: a camera they may not export is the same "not found" as one that does not exist); the NVR address and password (service-role
- * calls, only for a camera that passed); a place in the
- * conversion limits (a person's own earlier conversion is ended first, waiting at most 3 seconds, so starting a new one never fails
- * because of the old one); the NVR's recording list (the first recording that covers the start); then ffmpeg and the download. A JSON
- * error is possible until the first byte of video exists; after that a failure just ends the video.
+ * Order: the input is checked; the person's count of video requests; the camera (cctv.export AND cctv.playback for it, checked by the
+ * database as the person: a camera they may not export is the same "not found" as one that does not exist); the media session (kind vod);
+ * then the shared core (deliverRecording).
  *
- * `probe=1` does everything except start ffmpeg and the download, and answers `{ ok: true, codec }` (codec: 'h264', 'h265' or null)
- * or the same JSON error: the Playback screen uses it to find out why a video did not play, because a <video> element cannot read the
- * reason. It takes no place and ignores the person's own running conversion.
+ * `probe=1` does everything except start the remux and the download, and answers `{ ok: true, codec }` (codec: 'h264', 'h265' or null)
+ * or the same JSON error. It takes no place and ignores the person's own running conversion.
  */
 export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string; aal2?: boolean }, query: VodQuery, signal?: AbortSignal): Promise<Response> {
-  const env = deps.env ?? process.env
   const now = deps.now ?? Date.now
   if (!startInBounds(query.start.getTime(), now())) return fail(400, MSG_BAD_START)
   if (deps.limiter && !(await deps.limiter.allow(actor.id))) return fail(429, MSG_TOO_MANY_REQUESTS)
 
-  // Fast playback hands over a savable MP4 of a recording, so it needs cctv.export AND cctv.playback for the camera (decision D-6a;
-  // P2-2 fix M-3: export alone gets the same refusal as no right at all).
+  // A saveable MP4 of a recording: cctv.export AND cctv.playback for the camera (ruling M-3; D-L1 keeps this rule for the file only).
   // P2-4 review m-6: the NVR login is read only after the download's media session exists (fail closed before touching secrets).
   const c = await findCamera(deps, query.camera, { password: 'later', capability: ['cctv.export', 'cctv.playback'], orgId: actor.orgId })
   if (!c.ok) {
@@ -675,21 +270,11 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
     if (c.error === MSG_CAMERA_NOT_FOUND) await auditAccess(deps.admin, { orgId: actor.orgId, actorId: actor.id, action: 'cctv_export_denied', capability: 'cctv.export', cameraIds: [query.camera], detail: { reason: 'camera' } })
     return cameraFailure(c.error)
   }
-  const exported = { orgId: actor.orgId, actorId: actor.id, capability: 'cctv.export' as const, cameraIds: [c.camera.id] }
-  // "ended" is written only after "started", and only for a conversion that started (the process can end before this code goes on).
-  const audit = { started: null as Promise<void> | null, exited: false }
-  const auditEnded = () => void audit.started?.then(() => auditAccess(deps.admin, { ...exported, action: 'cctv_export_ended' }))
-  // P2-5b: the recorder of the camera's active mapping, with its own address, login and clock offset.
   const { camera, recorder } = c
   if (signal?.aborted) return new Response(null, { status: 499 })
 
-  const limits = deps.conversions ?? conversionLimiter
-  const transfer = new AbortController() // ends everything of this request: the NVR transfer and the conversion
-  let slot: Extract<ConversionSlot, { ok: true }> | null = null
-
   // P2-4 (D-3, AC-14, brief item 4): a download is a media session of kind vod (cctv.export AND cctv.playback, checked again by the
-  // database for this person). It is opened at once and re-checked every 15 s while the transfer runs; when it is no longer allowed —
-  // or cannot be checked for 45 s — the NVR transfer is aborted and ffmpeg is stopped. The probe downloads nothing and makes none.
+  // database for this person), opened at once and re-checked while the transfer runs. The probe downloads nothing and makes none.
   const registry = deps.registry ?? adminRegistry(deps.admin)
   let sid: string | null = null
   if (!query.probe) {
@@ -708,6 +293,58 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
       return fail(503, MSG_ACCESS_CHECK_FAILED)
     }
   }
+  const exported = { orgId: actor.orgId, actorId: actor.id, capability: 'cctv.export' as const, cameraIds: [camera.id] }
+  return deliverRecording({
+    deps, actorId: actor.id, route: { camera, recorder }, startMs: query.start.getTime(), minutes: query.minutes, probe: query.probe, signal, sid, registry,
+    loginPurpose: 'vod',
+    audit: {
+      start: () => auditAccess(deps.admin, { ...exported, action: 'cctv_export_started', detail: { minutes: query.minutes } }),
+      end: () => auditAccess(deps.admin, { ...exported, action: 'cctv_export_ended' }),
+    },
+    headers: () => ({ 'Content-Type': 'video/mp4' }),
+  })
+}
+
+export type DeliverOptions = {
+  deps: VodDeps
+  actorId: string
+  /** The camera and the recorder of its ACTIVE mapping (findCamera with password 'later'). */
+  route: Pick<CameraRoute, 'camera' | 'recorder'>
+  /** The shown-time start (ruling R13) and the length wanted. */
+  startMs: number
+  minutes: number
+  probe: boolean
+  signal?: AbortSignal
+  /** The media session (already opened in the registry), or null for the probe. */
+  sid: string | null
+  registry: RegistryClient
+  /** The purpose the NVR login is read for (P2-6, logged in vault_reads). */
+  loginPurpose: 'vod' | 'playback'
+  /** Audit rows: `start` when the first byte is on its way, `end` once the work is over (only after a start). */
+  audit: { start: () => Promise<void>; end: () => Promise<void> }
+  /** The headers of a successful answer, for the video format read from the recording list. */
+  headers: (family: 'h264' | 'h265' | null) => Record<string, string>
+}
+
+/**
+ * The shared core of /api/vod and the fast playback stream, after the camera was allowed and its media session opened: the NVR login (read
+ * only now), a place in the conversion limits (a person's own earlier conversion is ended first, waiting at most 3 seconds), the session
+ * watch (re-checked every 15 s; gone or unverifiable for 45 s: the NVR transfer is aborted and the remux stopped), the NVR's recording list
+ * (the first recording that covers the start, in that recorder's own clock offset), the remux adapter (asked whether it can work before the
+ * NVR is asked for the download), the download, the remux. A JSON error is possible until the first byte exists; after that a failure just
+ * ends the stream. Whatever happens, the slot is given back and the session closed exactly once.
+ */
+export async function deliverRecording(o: DeliverOptions): Promise<Response> {
+  const { deps, route, registry, sid, signal } = o
+  const { camera, recorder } = route
+  const env = deps.env ?? process.env
+  const limits = deps.conversions ?? conversionLimiter
+  const transfer = new AbortController() // ends everything of this request: the NVR transfer and the conversion
+  let slot: Extract<ConversionSlot, { ok: true }> | null = null
+  // "ended" is written only after "started", and only for a conversion that started (the process can end before this code goes on).
+  const audit = { started: null as Promise<void> | null, exited: false }
+  const auditEnded = () => void audit.started?.then(() => o.audit.end())
+
   let watch: SessionWatch | null = null
   let sessionEnded = false
   const endSession = () => {
@@ -716,36 +353,38 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
     watch?.stop()
     if (sid) void registry.close(sid)
   }
-  const login = await readRecorderLogin(deps, { camera, recorder, demo: false }, { purpose: 'vod', actorId: actor.id })
+  const login = await readRecorderLogin(deps, { camera, recorder, demo: false }, { purpose: o.loginPurpose, actorId: o.actorId })
   if (!login.ok) {
     endSession()
     return cameraFailure(login.error)
   }
   const password = login.password
 
-  if (query.probe) {
-    const peek = limits.peek(actor.id, { ignoreOwn: true })
+  if (o.probe) {
+    const peek = limits.peek(o.actorId, { ignoreOwn: true })
     if (!peek.ok) return fail(429, MSG_SERVER_BUSY)
   } else {
     const stop = () => transfer.abort()
-    let taken = limits.acquire(actor.id, stop)
+    let taken = limits.acquire(o.actorId, stop)
     if (!taken.ok && taken.reason === 'person') {
       // The person started something new: their earlier conversion is ended first, then this one goes ahead.
-      await limits.supersede(actor.id, deps.timing?.supersedeMs ?? SUPERSEDE_WAIT_MS)
-      taken = limits.acquire(actor.id, stop)
+      await limits.supersede(o.actorId, deps.timing?.supersedeMs ?? SUPERSEDE_WAIT_MS)
+      taken = limits.acquire(o.actorId, stop)
     }
     if (!taken.ok) {
       endSession()
       return fail(429, taken.reason === 'person' ? MSG_ALREADY_RUNNING : MSG_SERVER_BUSY)
     }
     slot = taken
-    watch = watchSession({
-      registry, sid: sid!, everyMs: deps.timing?.validateMs ?? VOD_VALIDATE_EVERY_MS, failClosedAfterMs: deps.timing?.failClosedMs ?? VOD_FAIL_CLOSED_AFTER_MS,
-      onEnd: (reason) => {
-        logger.warn({ event: 'vod_session_ended', reason })
-        transfer.abort() // the NVR transfer stops and ffmpeg is told to stop (and killed after the grace time)
-      },
-    })
+    if (sid) {
+      watch = watchSession({
+        registry, sid, everyMs: deps.timing?.validateMs ?? VOD_VALIDATE_EVERY_MS, failClosedAfterMs: deps.timing?.failClosedMs ?? VOD_FAIL_CLOSED_AFTER_MS,
+        onEnd: (reason) => {
+          logger.warn({ event: 'vod_session_ended', reason })
+          transfer.abort() // the NVR transfer stops and the remux is told to stop (ffmpeg is killed after the grace time)
+        },
+      })
+    }
   }
 
   // From here on the slot is given back by whoever ends last: this function, or the conversion once it has started.
@@ -759,16 +398,16 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
     const client = (deps.nvr ?? ((ep) => new NvrClient(ep)))({ host: recorder.host!, port: recorder.http_port, username: recorder.username, password: password! })
 
     // Shown time (ruling R13): the NVR is asked for shown time - offset.
-    const startMs = query.start.getTime()
+    const startMs = o.startMs
     let uri: string
     let family: 'h264' | 'h265' | null
     try {
-      const found = await findSegments(client, { channel: camera.channel, day: query.start.toISOString().slice(0, 10), ...offset })
+      const found = await findSegments(client, { channel: camera.channel, day: new Date(startMs).toISOString().slice(0, 10), ...offset })
       const segment = found.segments.find((s) => s.start.getTime() <= startMs && startMs < s.end.getTime())
       if (!segment) return fail(404, MSG_NO_RECORDING)
       if (segment.uri === undefined) return fail(404, MSG_NOT_DOWNLOADABLE)
       const shift = clockOffsetMs(offset) ?? 0
-      const to = Math.min(startMs + query.minutes * 60_000, segment.end.getTime())
+      const to = Math.min(startMs + o.minutes * 60_000, segment.end.getTime())
       const clipped = clipPlaybackUri(segment.uri, new Date(startMs - shift), new Date(to - shift))
       if (clipped === null) return fail(404, MSG_NOT_DOWNLOADABLE) // no starttime / endtime to narrow the download: not used
       uri = clipped
@@ -785,12 +424,11 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
       return fail(404, MSG_NOT_DOWNLOADABLE) // an address that is not safe to pass on is not used
     }
 
-    // Is there an ffmpeg at all? Asked before the NVR is bothered with a download that nothing could use.
-    const program = resolveFfmpeg(env, deps.lookup)
-    if (!program.ok) return fail(500, program.error)
-    const available = deps.ffmpegAvailable ?? (deps.spawn ? async () => true : (e: Record<string, string | undefined>) => fastPlaybackAvailable(e))
-    if (!(await available(env))) return fail(500, MSG_NO_FFMPEG)
-    if (query.probe) return Response.json({ ok: true, codec: family }, { headers: HEADERS })
+    // Can the remux work at all? Asked before the NVR is bothered with a download that nothing could use.
+    const remux = deps.remux ?? ffmpegRemux({ spawn: deps.spawn, lookup: deps.lookup, available: deps.ffmpegAvailable })
+    const ready = await remux.check(env, { recorderHost: recorder.host })
+    if (!ready.ok) return fail(500, ready.error)
+    if (o.probe) return Response.json({ ok: true, codec: family }, { headers: VOD_HEADERS })
 
     let source: ReadableStream<Uint8Array>
     try {
@@ -801,9 +439,8 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
     }
 
     handedOver = true
-    const converted = await startConversion({
-      spawn: deps.spawn,
-      ffmpeg: program.path,
+    const converted = await remux.start({
+      env,
       hevc: family === 'h265',
       source,
       abortSource: () => transfer.abort(),
@@ -830,10 +467,10 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
       if (converted.reason === 'format') return fail(502, MSG_FORMAT_UNSUPPORTED)
       return fail(502, MSG_CONVERT_FAILED)
     }
-    audit.started = auditAccess(deps.admin, { ...exported, action: 'cctv_export_started', detail: { minutes: query.minutes } })
+    audit.started = o.audit.start()
     if (audit.exited) auditEnded()
     await audit.started
-    return new Response(converted.body, { status: 200, headers: { ...HEADERS, 'Content-Type': 'video/mp4' } })
+    return new Response(converted.body, { status: 200, headers: { ...VOD_HEADERS, ...o.headers(family) } })
   } finally {
     if (!handedOver) {
       signal?.removeEventListener('abort', forward)

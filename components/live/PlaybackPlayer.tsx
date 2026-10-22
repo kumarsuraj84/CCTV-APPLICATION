@@ -33,6 +33,7 @@ export function PlaybackPlayer({
   label,
   onStop,
   onContinue,
+  onProgress,
 }: {
   token: string
   /** The length that was asked for. */
@@ -42,10 +43,16 @@ export function PlaybackPlayer({
   onStop: () => void
   /** Called with the seconds of the recording that were played, to carry on from there. */
   onContinue: (playedSeconds: number) => void
+  /** P4-L2: seconds played so far (the timeline shows where the picture is, and the jumps start from there). */
+  onProgress?: (seconds: number) => void
 }) {
   const host = useRef<HTMLDivElement>(null)
   const playedAt = useRef(0)
   const video = useRef<HTMLVideoElement | null>(null)
+  const progress = useRef(onProgress)
+  useEffect(() => {
+    progress.current = onProgress
+  })
   // P3-1: derived from the page's own address when NEXT_PUBLIC_STREAM_GATEWAY_URL is unset, `auto` or a path (undefined until hydrated).
   const GATEWAY = useGatewayBase()
   const [playerState, setState] = useState<State>('connecting')
@@ -59,9 +66,11 @@ export function PlaybackPlayer({
     let stop: (() => void) | undefined
     let watchdog: ReturnType<typeof setTimeout> | undefined
     let endTimer: ReturnType<typeof setTimeout> | undefined
+    let tick: ReturnType<typeof setInterval> | undefined
     const halt = () => {
       clearTimeout(watchdog)
       clearTimeout(endTimer)
+      clearInterval(tick)
       stop?.()
       stop = undefined
     }
@@ -86,6 +95,11 @@ export function PlaybackPlayer({
             if (playedAt.current === 0) {
               playedAt.current = Date.now()
               endTimer = setTimeout(() => done('timer'), minutes * 60_000 + END_GRACE_MS)
+              tick = setInterval(() => {
+                const shown = video.current?.currentTime
+                const seconds = typeof shown === 'number' && Number.isFinite(shown) && shown > 0 ? shown : (Date.now() - playedAt.current) / 1000
+                progress.current?.(Math.min(minutes * 60, Math.floor(seconds)))
+              }, 1000)
             }
             setState('playing')
           },

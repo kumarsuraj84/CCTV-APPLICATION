@@ -219,6 +219,26 @@ export async function findSegments(client: NvrClient, o: { channel: number; day:
   }
 }
 
+/** How far back the oldest-recording search looks: a little more than the year the Playback screen can show. */
+export const OLDEST_SEARCH_DAYS = 400
+
+/**
+ * P4-L2 (LG-9): the start of the OLDEST recording of camera `channel`, as a shown time (NVR time + offset), or null when there is none in
+ * the last 400 days. One search over the whole span asking for one result: the NVR lists matches in time order, earliest first (the fake
+ * NVR does; a real NVR's order is to be confirmed with hardware). `nowShownMs` is the shown clock now.
+ */
+export async function findOldestRecording(client: NvrClient, o: { channel: number; nowShownMs: number } & ClockOffset): Promise<Date | null> {
+  const offset = clockOffsetMs(o)
+  if (!isChannel(o.channel) || offset === null || !Number.isFinite(o.nowShownMs)) throw new Error(BAD_INPUT)
+  const nvrNow = o.nowShownMs - offset
+  const start = new Date(nvrNow - OLDEST_SEARCH_DAYS * 86_400_000)
+  const end = new Date(nvrNow + 86_400_000)
+  const p = parsePage(await client.post(SEARCH_PATH, buildSearchBody({ channel: o.channel, start, end, position: 0, limit: 1, searchId: randomUUID() }), client.deadline()))
+  if (!p.valid) throw new NvrError('bad_response', 'no search result in the answer')
+  const first = p.segments[0]
+  return first ? new Date(first.start.getTime() + offset) : null
+}
+
 /**
  * Days of the month (1 to 31) that the NVR's own calendar marks as having recordings for camera `channel`, ascending. These are NVR days
  * (the NVR's clock), not days as shown to people (which differ by the playback offset), so the marks are only a HINT: a screen may

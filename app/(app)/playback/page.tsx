@@ -6,15 +6,12 @@ import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { buttonVariants } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { holds } from '@/lib/auth/capabilities'
 import { requireCapability } from '@/lib/auth/profile'
-import { cameraFor } from '@/lib/auth/resource'
 import { storesForCapability } from '@/lib/queries/access'
 import { getLiveScope } from '@/lib/queries/live'
 import { pickLocationParam } from '@/lib/queries/location-param'
+import { remuxFromEnv } from '@/lib/streams/remux'
 import { parseDay, shownToday } from '@/lib/streams/timeline'
-import { FAST_PLAYBACK_CAPABILITY } from '@/lib/streams/speed'
-import { fastPlaybackAvailable } from '@/lib/streams/vod'
 import { createClient } from '@/lib/supabase/server'
 import { cn } from '@/lib/utils'
 
@@ -38,10 +35,10 @@ export default async function PlaybackPage({ searchParams }: { searchParams: Pro
     const camera = scope?.cameras[0]
     if (!scope || !camera) notFound()
     const day = one(sp.day)
-    // Fast playback (2x, 4x, 8x) is a savable file: offered only with cctv.export for this camera (D-6a), and it needs ffmpeg on the
-    // server (the answer is remembered for a minute). Everybody else sees 1x and nothing about ffmpeg.
-    const exportable = holds(profile.capabilities, FAST_PLAYBACK_CAPABILITY) ? await cameraFor(supabase, FAST_PLAYBACK_CAPABILITY, camera.id) : null
-    const fastPlayback = !(exportable?.ok && exportable.allowed) ? 'hidden' : (await fastPlaybackAvailable()) ? 'available' : 'not-set-up'
+    // Decision D-L1 (P4-L2): fast playback 2x-16x is part of cctv.playback, which the person holds for this camera (the list above holds
+    // only such cameras), delivered as a stream, never as a file. It is offered when this server can remux recordings (ffmpeg; the answer
+    // is remembered for a minute), else the screen says it is not set up here.
+    const fastPlayback = (await remuxFromEnv().check(process.env)).ok ? 'available' : 'not-set-up'
     return (
       <div className="space-y-4">
         <PageHeader
