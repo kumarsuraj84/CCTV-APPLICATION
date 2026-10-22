@@ -669,6 +669,38 @@ isOneToOne: false
       referencedColumns: ["id","org_id"]
     }
                   ]
+                },"media_sessions": {
+                  Row: {
+                    "aal2": boolean,"asset_id": string | null,"camera_id": string | null,"capability": string,"closed_at": string | null,"connect_by": string,"created_at": string,"expires_at": string,"id": string,"kind": string,"last_validated_at": string | null,"opened_at": string | null,"org_id": string,"revoke_reason": string | null,"revoked_at": string | null,"stream": string | null,"user_id": string,"media_session_problem": string | null
+                  }
+                  ComputedFields: "media_session_problem"
+                  Insert: {
+                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability": string,"closed_at"?: string | null,"connect_by": string,"created_at"?: string,"expires_at": string,"id"?: string,"kind": string,"last_validated_at"?: string | null,"opened_at"?: string | null,"org_id": string,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"user_id": string
+                  }
+                  Update: {
+                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability"?: string,"closed_at"?: string | null,"connect_by"?: string,"created_at"?: string,"expires_at"?: string,"id"?: string,"kind"?: string,"last_validated_at"?: string | null,"opened_at"?: string | null,"org_id"?: string,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"user_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "media_sessions_capability_fkey"
+      columns: ["capability"]
+isOneToOne: false
+      referencedRelation: "capabilities"
+      referencedColumns: ["key"]
+    },{
+      foreignKeyName: "media_sessions_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "media_sessions_user_id_fkey"
+      columns: ["user_id"]
+isOneToOne: false
+      referencedRelation: "profiles"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"monitor_gaps": {
                   Row: {
                     "ended_at": string,"id": string,"started_at": string
@@ -1350,6 +1382,9 @@ isOneToOne: false
 "has_capability_for":
 { Args: { "p_cap": string,"p_id": string,"p_kind": string }; Returns: boolean
                            },
+"has_capability_for_user":
+{ Args: { "p_aal2"?: boolean,"p_cap": string,"p_id": string,"p_kind": string,"p_user": string }; Returns: boolean
+                           },
 "inventory_affected_people":
 { Args: { "p_id": string,"p_kind": string,"p_org": string }; Returns: (string)[]
                            },
@@ -1410,6 +1445,39 @@ isOneToOne: false
                            },
 "it_view_recorder_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
+                           },
+"media_session_close":
+{ Args: { "p_sid": string }; Returns: boolean
+                           },
+"media_session_create":
+{ Args: { "p_aal2"?: boolean,"p_cameras": (string)[],"p_connect_sec"?: number,"p_kind": string,"p_max_sec"?: number,"p_org": string,"p_streams"?: (string)[],"p_user": string }; Returns: {
+              "camera_id": string,"sid": string
+            }[]
+                           },
+"media_session_open":
+{ Args: { "p_camera": string,"p_kind": string,"p_sid": string,"p_stream": string,"p_user": string }; Returns: {
+              "expires_at": string,"kind": string,"ok": boolean,"reason": string,"stream": string
+            }[]
+                           },
+"media_session_problem":
+{ Args: { "m": Omit<Database["public"]['Tables']["media_sessions"]['Row'], Database["public"]['Tables']["media_sessions"]['ComputedFields']> }; Returns: string
+                           },
+"media_session_target_problem":
+{ Args: { "p_aal2": boolean,"p_asset": string,"p_camera": string,"p_kind": string,"p_org": string,"p_user": string }; Returns: string
+                           },
+"media_sessions_prune":
+{ Args: { "p_keep"?: string,"p_org"?: string,"p_unopened_keep"?: string }; Returns: number
+                           },
+"media_sessions_revalidate":
+{ Args: { "p_org": string,"p_users": (string)[] }; Returns: number
+                           },
+"media_sessions_revoke_user":
+{ Args: { "p_org": string,"p_reason": string,"p_user": string }; Returns: number
+                           },
+"media_sessions_still_valid":
+{ Args: { "p_sids": (string)[] }; Returns: {
+              "reason": string,"sid": string
+            }[]
                            },
 "mfa_enforced":
 { Args: Record<PropertyKey, never>; Returns: boolean
