@@ -32,6 +32,28 @@ describe('CSP violation reports', () => {
     expect(summariseReport({ 'csp-report': { 'effective-directive': 'script-src', 'blocked-uri': 'eval' } })).toEqual([{ directive: 'script-src', blocked: 'eval', page: null, disposition: null }])
   })
 
+  it('review M-8: a body is never read in full: a declared length over 8 KB is refused at once, an endless body after 8 KB', async () => {
+    // An endless body: reading it whole (request.text()) would never finish.
+    const endless = () => new ReadableStream({ pull(c) { c.enqueue(new Uint8Array(1024).fill(32)) } })
+    const declared = new Request('http://localhost:3212/api/csp-report', { method: 'POST', headers: { 'content-length': '20000' }, body: endless(), duplex: 'half' } as RequestInit)
+    expect((await POST(declared)).status).toBe(413)
+    const undeclared = new Request('http://localhost:3212/api/csp-report', { method: 'POST', body: endless(), duplex: 'half' } as RequestInit)
+    expect((await POST(undeclared)).status).toBe(413)
+  }, 5_000)
+
+  it('review M-8: the count is per client address behind a trusted proxy, so one sender cannot drown the others', async () => {
+    vi.stubEnv('TRUSTED_PROXY_HOPS', '1')
+    const from = (ip: string) => new Request('http://localhost:3212/api/csp-report', {
+      method: 'POST', headers: { 'content-type': 'application/csp-report', 'x-forwarded-for': ip },
+      body: JSON.stringify({ 'csp-report': { 'effective-directive': 'connect-src', 'blocked-uri': 'ws://x:1/' } }),
+    })
+    for (let i = 0; i < 130; i++) await POST(from('10.9.9.1'))
+    const before = logged.length
+    await POST(from('10.9.9.2'))
+    expect(logged.length).toBe(before + 1)
+    vi.unstubAllEnvs()
+  })
+
   it('ignores junk and anything too large', async () => {
     expect((await POST(req('not json'))).status).toBe(204)
     expect((await POST(req('x'.repeat(20_000)))).status).toBe(413)

@@ -11,10 +11,14 @@ const mocks = vi.hoisted(() => ({
 const SOME = { organization: false, locations: ['l1'], cameras: [], assets: [] }
 const caps = (...list: string[]) => ({ failed: false, grants: Object.fromEntries(list.map((c) => [c, SOME])) })
 
-vi.mock('@/lib/auth/profile', () => ({
+// P3-1 review round 1: the route also asks the sign-in gate (mfaGateOf, the real one) and the fresh-sign-in guard; a person here has
+// finished signing in just now unless a test says otherwise (`session`).
+const freshSession = () => ({ mfaEnforced: false, privileged: false, aal2: false, hasFactor: false, sessionId: 's', signedInAt: Math.floor(Date.now() / 1000) - 60, lastAuthAt: Math.floor(Date.now() / 1000) - 60 })
+vi.mock('@/lib/auth/profile', async (orig) => ({
+  ...(await orig<typeof import('@/lib/auth/profile')>()),
   getCurrentProfile: async () => {
     mocks.profileCalls++
-    return mocks.profile
+    return mocks.profile ? { session: freshSession(), ...mocks.profile } : null
   },
 }))
 vi.mock('@/lib/supabase/server', () => ({
@@ -174,6 +178,23 @@ describe('GET /api/vod', () => {
     expect(res.status).toBe(405)
     expect(res.headers.get('allow')).toBe('GET')
     expect(mocks.profileCalls).toBe(0)
+    expect(mocks.serve).not.toHaveBeenCalled()
+  })
+
+  it('review M-1: a person with an authenticator app who has not entered its code (aal1) is refused, switched on or not', async () => {
+    mocks.profile = { ...mocks.profile!, session: { ...freshSession(), hasFactor: true, aal2: false } } as never
+    const res = await GET(request(VALID))
+    expect(res.status).toBe(403)
+    expect(((await res.json()) as { error: string }).error).toMatch(/code/)
+    expect(mocks.serve).not.toHaveBeenCalled()
+  })
+
+  it('review I-3: a download of a recording needs a fresh sign-in (D-10 "exports"): 403 with the confirm words after 10 minutes', async () => {
+    const old = Math.floor(Date.now() / 1000) - 11 * 60
+    mocks.profile = { ...mocks.profile!, session: { ...freshSession(), signedInAt: old, lastAuthAt: old } } as never
+    const res = await GET(request(VALID))
+    expect(res.status).toBe(403)
+    expect(((await res.json()) as { error: string }).error).toMatch(/Confirm it’s you/)
     expect(mocks.serve).not.toHaveBeenCalled()
   })
 })

@@ -18,6 +18,8 @@ const m = vi.hoisted(() => ({
   setAll: [] as { name: string; value: string; options: Record<string, unknown> }[],
   signedOut: 0,
   events: [] as { event: string; userId?: string | null }[],
+  revoked: [] as { org: string; user: string; reason: string }[],
+  roleReads: 0,
 }))
 
 vi.mock('@supabase/ssr', () => ({
@@ -35,9 +37,12 @@ vi.mock('@supabase/ssr', () => ({
         return { error: null }
       },
     },
-    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: m.role ? { role: m.role } : null }) }) }) }),
+    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => { m.roleReads++; return { data: m.role ? { role: m.role, org_id: 'org-1' } : null } } }) }) }),
   }),
 }))
+// Review M-3: an ended sign-in also ends the person's open video.
+vi.mock('@/lib/streams/registry', () => ({ revokeMediaSessions: async (_a: unknown, org: string, user: string, reason: string) => { m.revoked.push({ org, user, reason }); return true } }))
+vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => ({ tag: 'admin' }) }))
 vi.mock('@/lib/auth/auth-events', () => ({
   recordAuthEvent: async (e: { event: string; userId?: string | null }) => {
     m.events.push(e)
@@ -72,8 +77,34 @@ beforeEach(() => {
   m.setAll = []
   m.signedOut = 0
   m.events = []
+  m.revoked = []
+  m.roleReads = 0
 })
 afterEach(() => vi.unstubAllEnvs())
+
+describe('P3-1 review round 1 in the proxy', () => {
+  it('M-3: an ended sign-in also ends the person’s open video', async () => {
+    signedIn({ signedInAgo: 13 * 3600 })
+    await run('/live', { cookie: activity(5, 60) })
+    expect(m.revoked).toEqual([{ org: 'org-1', user: m.user!.id, reason: 'session_expired' }])
+  })
+
+  it('M-6: each renewal of the activity record reads the role again (a person made administrator gets the shorter limit)', async () => {
+    signedIn({ signedInAgo: 3 * 3600, role: 'admin' })
+    const res = await run('/home', { cookie: activity(120, 480) })
+    expect(m.roleReads).toBe(1)
+    expect(res.cookies.get(ACTIVITY_COOKIE)?.value).toMatch(/^v1\.sess-1\.\d+\.60\./)
+  })
+
+  it('M-7: in production the policy and the sign-in redirect use the configured app address, not the Host the request names', async () => {
+    vi.stubEnv('DRISHTI_ENV', 'production')
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://drishti.citykart.local')
+    const page = await run('/api/health', { host: 'evil.example:3212' })
+    expect(parseCsp(csp(page))['connect-src']).toEqual(["'self'", 'https://drishti.citykart.local:3412', 'wss://drishti.citykart.local:3412'])
+    const redirect = await run('/admin/users', { host: 'evil.example:3212' })
+    expect(new URL(redirect.headers.get('location')!).host).toBe('drishti.citykart.local')
+  })
+})
 
 describe('Content Security Policy on every kind of answer', () => {
   it('a page: the policy with a fresh nonce, which Next.js also receives in the request', async () => {
@@ -207,5 +238,11 @@ describe('session hygiene (idle timeout and absolute lifetime)', () => {
     signedIn()
     const res = await run('/home', { cookie: activity(10, 60) })
     expect(res.cookies.get('sb-localhost-auth-token')?.httpOnly).toBe(true)
+    // Review I-1: the same rule as the cookie client: SameSite=Lax, Secure on https.
+    expect(res.cookies.get('sb-localhost-auth-token')?.sameSite).toBe('lax')
+    expect(res.cookies.get('sb-localhost-auth-token')?.secure).toBeFalsy()
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://drishti.citykart.local')
+    const tls = await run('/home', { cookie: activity(10, 60) })
+    expect(tls.cookies.get('sb-localhost-auth-token')?.secure).toBe(true)
   })
 })

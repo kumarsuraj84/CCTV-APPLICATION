@@ -18,7 +18,8 @@ const h = vi.hoisted(() => ({
     duplicatePlace: 'JCL · Ground, channel 2', duplicateLinked: true, peopleLosing: 0,
   })),
 }))
-vi.mock('@/lib/auth/profile', () => ({ requireAdministration: async () => h.me }))
+// P3-1 review I-3: the merge goes through the fresh-sign-in guard; this administrator signed in just now.
+vi.mock('@/lib/auth/profile', () => ({ requireAdministration: async () => ({ ...h.me, session: { lastAuthAt: Math.floor(Date.now() / 1000) } }) }))
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => ({}) }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => ({}) }))

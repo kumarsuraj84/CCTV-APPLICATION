@@ -20,6 +20,27 @@ const headersFor = async (appUrl: string) => {
   return rules.find((r) => r.source === '/:path*')!.headers
 }
 
+describe('a build beside the running dev server (P3-1 review round 1)', () => {
+  it('NEXT_DIST_DIR puts a build in its own folder (a build in .next knocked over the dev server on 3212); default .next', async () => {
+    vi.resetModules()
+    vi.stubEnv('NEXT_DIST_DIR', '.next-p31')
+    expect((await import('../../next.config')).default.distDir).toBe('.next-p31')
+    vi.resetModules()
+    vi.stubEnv('NEXT_DIST_DIR', '')
+    expect((await import('../../next.config')).default.distDir).toBe('.next')
+    vi.resetModules()
+    vi.stubEnv('NEXT_DIST_DIR', '.next/build-p31')
+    expect((await import('../../next.config')).default.distDir).toBe('.next/build-p31')
+    vi.resetModules()
+    // Never the dev server's own folder, never outside the project.
+    for (const bad of ['../x', '/abs', 'a b', 'node_modules', '.next/dev', '.next/a/b']) {
+      vi.stubEnv('NEXT_DIST_DIR', bad)
+      expect((await import('../../next.config')).default.distDir, bad).toBe('.next')
+      vi.resetModules()
+    }
+  })
+})
+
 describe('TLS readiness', () => {
   it('HSTS only when the site is served over https', async () => {
     expect((await headersFor('https://drishti.citykart.local')).find((h) => h.key === 'Strict-Transport-Security')?.value).toBe('max-age=31536000')

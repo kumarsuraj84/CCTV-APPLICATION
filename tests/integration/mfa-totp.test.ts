@@ -2,7 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Database } from '@/types/database'
 import { adminClient, cleanupOrg, createOrg, createUser, grant, type TestUser } from '../setup/fixtures'
-import { mfaClient, totpCode, totpEnabled } from '../helpers/totp'
+import { mfaClient, totpCode, totpEnabled, totpSuiteMode, TOTP_SKIP_REASON } from '../helpers/totp'
 
 // P3-1 brief item 1, the real authenticator flow: set-up with QR code and key, confirming with a code, the sign-in step, the shared count
 // of codes, "Confirm it's you" with a code and with the password, the super administrator's reset (audited, every sign-in ended, a new
@@ -58,14 +58,25 @@ const setup = await (async () => {
   const org = await createOrg()
   const probe = await createUser(org, 'user')
   const enabled = await totpEnabled(await mfaClient(probe.email, probe.password))
-  if (!enabled) await cleanupOrg(org) // nothing will run; leave nothing behind
-  return { org, enabled }
+  // Review I-6: without TOTP the file skips with the reason PRINTED, or fails when MULTI_FACTOR_TEST=required.
+  const mode = totpSuiteMode(process.env, enabled)
+  if (mode === 'skip') {
+    console.warn(TOTP_SKIP_REASON)
+    await cleanupOrg(org) // nothing will run; leave nothing behind
+  }
+  return { org, enabled, mode }
 })()
 
-describe.skipIf(!setup.enabled)('two-step sign-in with an authenticator app (P3-1, real auth server)', () => {
+describe.skipIf(setup.mode === 'skip')('two-step sign-in with an authenticator app (P3-1, real auth server)', () => {
+  it('TOTP is available on the auth server the tests reach (with MULTI_FACTOR_TEST=required its absence fails here)', () => {
+    if (setup.mode === 'fail') throw new Error(TOTP_SKIP_REASON)
+    expect(setup.enabled).toBe(true)
+  })
+
   const org = setup.org
   let owner: TestUser, adminUser: TestUser, viewer: TestUser, guesser: TestUser, plain: TestUser
   const secrets = new Map<string, string>()
+  const usedCodes = new Map<string, string>()
 
   beforeAll(async () => {
     owner = await createUser(org, 'platform_owner')
@@ -108,6 +119,11 @@ describe.skipIf(!setup.enabled)('two-step sign-in with an authenticator app (P3-
     expect(events).toEqual(expect.arrayContaining(['mfa_failed', 'mfa_enrolled']))
     // Nothing of the secret is in the audit.
     expect(JSON.stringify((await admin().from('auth_events').select('*').eq('user_id', adminUser.id)).data)).not.toContain(s.secret)
+    // Review I-4: the people screen knows when the app was set up (from the sign-in audit).
+    const { twoStepSummary } = await import('@/lib/admin/sessions')
+    const summary = await twoStepSummary(admin(), org)
+    expect(summary?.get(adminUser.id)).toMatchObject({ factors: 1 })
+    expect(Math.abs(Date.now() - Date.parse(summary!.get(adminUser.id)!.enrolledAt!))).toBeLessThan(5 * 60_000)
     // One app per person: a second set-up is refused while one exists.
     expect(((await outcome(() => mfa.startEnrolmentAction())).value as { ok: boolean }).ok).toBe(false)
   })
@@ -118,9 +134,25 @@ describe.skipIf(!setup.enabled)('two-step sign-in with an authenticator app (P3-
     const { requireAdministration } = await import('@/lib/auth/profile')
     expect((await outcome(() => requireAdministration('admin.users'))).redirect).toBe('/mfa?next=%2Fadmin%2Fusers')
     const mfa = await import('@/lib/actions/mfa')
-    expect((await outcome(() => mfa.verifyCodeAction({}, fd({ code: totpCode(secrets.get(adminUser.id)!), next: '/admin/users' })))).redirect).toBe('/admin/users')
+    await sleep(31_000) // the set-up used this window's code; a code counts once (review M-9)
+    const code = totpCode(secrets.get(adminUser.id)!)
+    usedCodes.set(adminUser.id, code)
+    expect((await outcome(() => mfa.verifyCodeAction({}, fd({ code, next: '/admin/users' })))).redirect).toBe('/admin/users')
     expect((await status(c)).aal2).toBe(true)
     expect(((await outcome(() => requireAdministration('admin.users'))).value as { id: string }).id).toBe(adminUser.id)
+  }, 70_000)
+
+  it('review M-9: a code is accepted once: the same code in another sign-in (within its window) is refused', async () => {
+    const mfa = await import('@/lib/actions/mfa')
+    const { MSG_CODE_USED } = await import('@/lib/auth/mfa')
+    const code = usedCodes.get(adminUser.id)!
+    // The code the previous test used (still in, or next to, its window): GoTrue alone would accept it again (measured in review round 1).
+    const second = await mfaClient(adminUser.email, adminUser.password)
+    actAs(adminUser, second)
+    expect((await outcome(() => mfa.verifyCodeAction({}, fd({ code, next: '/home' })))).value).toEqual({ error: MSG_CODE_USED })
+    expect((await status(second)).aal2).toBe(false)
+    const events = ((await admin().from('auth_events').select('event, detail').eq('user_id', adminUser.id).eq('event', 'mfa_failed')).data ?? [])
+    expect(events.some((e) => (e.detail as { reason?: string }).reason === 'code_reused')).toBe(true)
   })
 
   it('codes are counted: six codes per person in five minutes (the set-up code counts too), then even the right one waits', async () => {
@@ -131,8 +163,9 @@ describe.skipIf(!setup.enabled)('two-step sign-in with an authenticator app (P3-
     const { MSG_BAD_CODE } = await import('@/lib/auth/mfa')
     const { MSG_TOO_MANY_CODES } = await import('@/lib/auth/auth-limits')
     const right = totpCode(secrets.get(guesser.id)!)
-    const wrong = right === '123456' ? '654321' : '123456'
-    for (let i = 0; i < 5; i++) expect((await outcome(() => mfa.verifyCodeAction({}, fd({ code: wrong, next: '/home' })))).value, `try ${i + 2}`).toEqual({ error: MSG_BAD_CODE })
+    // Five different wrong codes (one code counts once since review M-9, so a repeated wrong code would be "used already").
+    const wrongs = ['111111', '222222', '333333', '444444', '555555', '666666'].filter((c) => c !== right).slice(0, 5)
+    for (const [i, wrong] of wrongs.entries()) expect((await outcome(() => mfa.verifyCodeAction({}, fd({ code: wrong, next: '/home' })))).value, `try ${i + 2}`).toEqual({ error: MSG_BAD_CODE })
     expect((await outcome(() => mfa.verifyCodeAction({}, fd({ code: right, next: '/home' })))).value).toEqual({ error: MSG_TOO_MANY_CODES })
     expect((await status(again)).aal2).toBe(false)
   })
@@ -207,6 +240,6 @@ describe.skipIf(!setup.enabled)('two-step sign-in with an authenticator app (P3-
   })
 })
 
-describe.skipIf(setup.enabled)('two-step sign-in with an authenticator app (skipped)', () => {
-  it.skip('TOTP is not switched on in the auth server the tests reach: restart the local stack (supabase/config.toml) or set MFA_TEST_AUTH_URL', () => {})
+describe.skipIf(setup.mode !== 'skip')('two-step sign-in with an authenticator app (skipped)', () => {
+  it.skip(TOTP_SKIP_REASON, () => {})
 })

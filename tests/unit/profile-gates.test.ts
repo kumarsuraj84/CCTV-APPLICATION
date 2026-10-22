@@ -144,13 +144,31 @@ describe('requireAdministration and mayAdminister', () => {
     expect((await requireProfile()).id).toBe('u1') // optional for viewers (D-10a)
   })
 
-  it('P3-1: the session facts are on the profile (seconds), and unreadable facts mean no facts (the database still decides access)', async () => {
-    const { getCurrentProfile, requireProfile } = await import('@/lib/auth/profile')
+  it('P3-1: the session facts are on the profile (seconds)', async () => {
+    const { getCurrentProfile } = await import('@/lib/auth/profile')
     m.session = { ...m.session, signed_in_at: '2026-10-23T00:00:00Z', last_auth_at: '2026-10-23T00:05:00Z', session_id: 's1' }
     expect((await getCurrentProfile())?.session).toMatchObject({ signedInAt: 1792713600, lastAuthAt: 1792713900, sessionId: 's1' })
+  })
+
+  // Review M-2 replaces the earlier rule "unreadable facts mean no facts" (the gate then skipped the code step, and with the switch off
+  // nothing else asked for it): when the facts cannot be read the gate fails closed and sends the person to the code step page, which
+  // says the sign-in could not be checked and offers to try again.
+  it('P3-1 review M-2: facts that cannot be read stop the person at the code step page (fail closed)', async () => {
+    const { getCurrentProfile, requireProfile, mfaGateOf } = await import('@/lib/auth/profile')
     m.session = null
     expect((await getCurrentProfile())?.session).toBeNull()
-    expect((await requireProfile()).id).toBe('u1')
+    expect(mfaGateOf({ session: null })).toBe('unknown')
+    await expect(requireProfile()).rejects.toThrow('REDIRECT:/mfa?next=%2Fhome')
+  })
+
+  it('P3-1 review M-14: the way back keeps the query of the page', async () => {
+    vi.resetModules()
+    vi.doMock('next/headers', () => ({ headers: async () => new Headers({ 'x-request-path': '/live', 'x-request-search': '?group=g1&x=2' }) }))
+    const { requireProfile } = await import('@/lib/auth/profile')
+    m.session = { ...m.session, has_factor: true }
+    await expect(requireProfile()).rejects.toThrow(`REDIRECT:/mfa?next=${encodeURIComponent('/live?group=g1&x=2')}`)
+    vi.doUnmock('next/headers')
+    vi.resetModules()
   })
 
   it('requireAdmin (the role-only gate) is gone', async () => {

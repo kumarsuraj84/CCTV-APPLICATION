@@ -32,6 +32,7 @@ vi.mock('next/cache', () => ({ revalidatePath: () => {} }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => m.client as SupabaseClient<Database> }))
 
 const admin = () => adminClient()
+const randomId = () => crypto.randomUUID()
 const digest = (e: unknown) => String((e as { digest?: string })?.digest ?? e)
 async function outcome(call: () => Promise<unknown>): Promise<{ redirect: string | null; value: unknown }> {
   try {
@@ -167,16 +168,49 @@ describe('multi-factor gating and fresh sign-in through the real actions (P3-1)'
     expect(((await admin().from('recorders').select('id').eq('location_id', store)).data ?? []).length).toBe(1)
   })
 
-  it('fresh sign-in: within 10 minutes the same changes go through (an NVR saved without a password is not a credential write)', async () => {
+  it('fresh sign-in: within 10 minutes the same changes go through', async () => {
     actAs(plainAdmin, await as(plainAdmin, { aal: 'aal1', authAgoSec: 9 * 60 }))
     const users = await import('@/lib/actions/admin/users')
     expect((await outcome(() => users.setRoleAction(viewer.id, 'operator'))).value).toMatchObject({ ok: true })
+  })
+
+  // Review I-3 replaces the earlier rule "an NVR saved without a password is not a credential write" (one guard now covers every change):
+  // merge, archive and restore, hierarchy moves, the monitoring switch, every NVR save, devices, the device import, set-up and fast
+  // playback (an export) are all refused with an old sign-in, and nothing changes.
+  it('review I-3: with an old sign-in, merge, archive, restore, moves, monitoring on/off, NVR saves, devices, imports, set-up and fast playback are refused', async () => {
     actAs(plainAdmin, await as(plainAdmin, { aal: 'aal1', authAgoSec: 30 * 60 }))
     const locations = await import('@/lib/actions/admin/locations')
+    const inventory = await import('@/lib/actions/admin/inventory')
+    const mfa = await import('@/lib/actions/mfa')
     const { MSG_CONFIRM_FIRST } = await import('@/lib/auth/session-policy')
+    const errorOf = (v: unknown) => (v as { error?: string }).error
+    const recorder = (await admin().from('recorders').select('id').eq('location_id', store).single()).data!.id
     const nvr = new FormData()
     for (const [k, v] of Object.entries({ name: 'N3', host: '192.0.2.43', http_port: '80', rtsp_port: '554', username: 'v' })) nvr.set(k, v)
-    expect(((await outcome(() => locations.saveRecorderAction(store, {}, nvr))).value as { error?: string }).error).not.toBe(MSG_CONFIRM_FIRST)
+    const devices = new FormData()
+    devices.set('file', new File(['name,type,ip\nX,server,192.0.2.50\n'], 'd.csv', { type: 'text/csv' }))
+    const calls: [string, () => Promise<unknown>][] = [
+      ['merge', () => locations.mergeCamerasAction({ keepId: randomId(), duplicateId: randomId(), confirmation: 'x' })],
+      ['archive', () => locations.archiveNodeAction('location', store)],
+      ['restore', () => locations.restoreNodeAction('location', store)],
+      ['move', () => locations.moveNodeAction({ kind: 'location', id: store, to: null })],
+      ['monitoring off', () => locations.setMonitoringAction(recorder, { enabled: false, reason: 'test reason' })],
+      ['NVR save without a password', () => locations.saveRecorderAction(store, {}, nvr)],
+      ['device delete', () => inventory.deleteDeviceAction(randomId())],
+      ['device import', () => inventory.importDevicesAction({}, devices)],
+      ['archive (inventory)', () => inventory.archiveInventoryAction('location', store)],
+    ]
+    for (const [what, call] of calls) expect(errorOf((await outcome(call)).value), what).toBe(MSG_CONFIRM_FIRST)
+    expect(await outcome(() => mfa.startEnrolmentAction())).toMatchObject({ value: { ok: false, error: MSG_CONFIRM_FIRST } })
+    // Fast playback (a downloadable recording, D-10 "exports") through the real route.
+    await grant(org, plainAdmin.id, ['cctv.export', 'cctv.playback'])
+    actAs(plainAdmin, await as(plainAdmin, { aal: 'aal1', authAgoSec: 30 * 60 }))
+    const { GET } = await import('@/app/api/vod/route')
+    const res = await GET(new Request(`http://localhost:3212/api/vod?camera=${randomId()}&start=2026-10-22T09:20:00Z&minutes=1`))
+    expect(res.status).toBe(403)
+    expect(((await res.json()) as { error: string }).error).toBe(MSG_CONFIRM_FIRST)
+    expect((await admin().from('locations').select('archived_at').eq('id', store).single()).data?.archived_at).toBeNull()
+    expect((await admin().from('recorders').select('monitoring_enabled').eq('id', recorder).single()).data?.monitoring_enabled).toBe(true)
   })
 
   it('sign out everywhere: the person’s sign-ins end; audited in the admin log and the sign-in audit', async () => {

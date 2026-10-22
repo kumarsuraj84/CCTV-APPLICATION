@@ -55,6 +55,18 @@ export async function mfaClient(email: string, password: string): Promise<Supaba
   return c
 }
 
+/** P3-1 review I-6: printed whenever the authenticator-app tests are skipped. */
+export const TOTP_SKIP_REASON =
+  'Authenticator-app (TOTP) tests SKIPPED: the auth server the tests reach does not offer TOTP. supabase/config.toml turns it on; ' +
+  'restart the local stack (npm run db:stop, then npm run db:start) and run with MULTI_FACTOR_TEST=required so a missing TOTP fails ' +
+  'instead of skipping (or set MFA_TEST_AUTH_URL to a loopback auth server with TOTP on).'
+
+/** run: TOTP is there; fail: required (MULTI_FACTOR_TEST=required) but not there; skip: not there and not required. */
+export function totpSuiteMode(env: Record<string, string | undefined>, enabled: boolean): 'run' | 'fail' | 'skip' {
+  if (enabled) return 'run'
+  return (env.MULTI_FACTOR_TEST ?? '').trim().toLowerCase() === 'required' ? 'fail' : 'skip'
+}
+
 /** Whether the auth server the tests reach lets people enrol an authenticator app (checked with a throw-away enrolment). */
 export async function totpEnabled(c: SupabaseClient<Database>): Promise<boolean> {
   const r = await c.auth.mfa.enroll({ factorType: 'totp', friendlyName: `probe-${Date.now()}` })
