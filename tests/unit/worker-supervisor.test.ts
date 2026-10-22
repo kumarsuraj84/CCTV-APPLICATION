@@ -141,6 +141,23 @@ describe('WorkerSupervisor (P2-7)', () => {
     await holder.supervisor.stop(1000)
   })
 
+  it('stopping while an acquisition is on its way: the lease it then gets is handed back at once, and no runner is made (review M-3)', async () => {
+    const s = setup()
+    let open!: () => void
+    s.db.gate = new Promise<void>((r) => (open = r))
+    const done = s.supervisor.run()
+    await until(() => s.db.callsOf('worker_acquire_lease').length === 1)
+    const stopping = s.supervisor.stop(1000)
+    s.db.gate = null
+    open() // the database answers: the lease was taken after all
+    await stopping
+    await done
+    expect(s.runners).toHaveLength(0)
+    expect(s.db.callsOf('worker_release_lease')).toHaveLength(1)
+    const other = new WorkerLease({ rpc: s.db.rpc, holder: HOLDERS[1], ttlSec: 1 })
+    expect((await other.tryAcquire()).result).toBe('acquired') // at once, not after the TTL
+  })
+
   it('survives a database outage: a runner is never started without a token; once the database is back the lease is taken', async () => {
     const s = setup()
     s.db.failing.add('worker_acquire_lease')

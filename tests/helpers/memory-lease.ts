@@ -38,8 +38,8 @@ export class MemoryLeaseDb {
           return { data: [{ acquired: true, fencing_token: 1, lease_until: new Date(now + ttl).toISOString(), retry_after_ms: 0 }], error: null }
         }
         if (row.until <= now || row.holder === holder) {
-          const sameLive = row.holder === holder && row.until > now && !row.released
-          const token = sameLive ? row.token : row.token + 1
+          // Review round 1 (M-2): every acquisition is a new epoch, even the live holder's own (only a renewal keeps the token).
+          const token = row.token + 1
           this.rows.set(name, { holder, until: now + ttl, token, released: false })
           return { data: [{ acquired: true, fencing_token: token, lease_until: new Date(now + ttl).toISOString(), retry_after_ms: 0 }], error: null }
         }

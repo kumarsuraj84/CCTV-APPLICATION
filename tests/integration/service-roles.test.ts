@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createRestRegistry } from '@/lib/streams/registry'
 import type { Database } from '@/types/database'
 import { adminClient, cleanupOrg, createCamera, createOrg, createSite, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
-import { takeTestLease } from '../setup/lease'
+import { takeTestLease, testLeaseName } from '../setup/lease'
 import { rest, serviceClient, serviceKey } from '../setup/service-keys'
 
 // P2-6 (D-14, D-14a; spike in docs/drishti/adr-service-roles.md): every server process has its own database role, chosen by the `role`
@@ -102,8 +102,9 @@ describe('per-service database roles (P2-6, D-14)', () => {
         ['recorder_credential_read', { p_recorder: recorderId, p_purpose: 'live' }],
         ['media_session_create', { p_org: orgId, p_user: viewer.id, p_kind: 'live', p_cameras: [cameraId], p_streams: [`cam_${cameraId}_sub`] }],
         // P2-7: the fenced signature (lease and token are required arguments).
-        ['monitor_apply_results', { p_org: orgId, p_results: [], p_threshold: 2, p_lease: 'monitor', p_fencing_token: 1 }],
-        ['worker_acquire_lease', { p_name: 'monitor', p_holder: randomUUID() }],
+        // P2-7 review M-9: never the real lease name "monitor" (a regressed grant would take the owner's worker lease).
+        ['monitor_apply_results', { p_org: orgId, p_results: [], p_threshold: 2, p_lease: testLeaseName(), p_fencing_token: 1 }],
+        ['worker_acquire_lease', { p_name: testLeaseName(), p_holder: randomUUID() }],
         ['rate_limit_hit', { p_key: 'x', p_limit: 1, p_window_sec: 60 }],
         ['privilege_violations', {}],
         ['grant_access', { p_org: orgId, p_user: viewer.id, p_grants: [] }],
@@ -129,9 +130,9 @@ describe('per-service database roles (P2-6, D-14)', () => {
       expect(code(await web.from('monitor_gaps').insert({ started_at: new Date().toISOString(), ended_at: new Date().toISOString() }))).toBe('42501')
       for (const [fn, args] of [
         // P2-7: the fenced signature; the web app may neither write results nor take the worker's lease.
-        ['monitor_apply_results', { p_org: orgId, p_results: [], p_threshold: 2, p_lease: 'monitor', p_fencing_token: 1 }],
-        ['worker_acquire_lease', { p_name: 'monitor', p_holder: randomUUID() }],
-        ['monitor_heartbeat', { p_lease: 'monitor', p_fencing_token: 1, p_at: new Date().toISOString() }],
+        ['monitor_apply_results', { p_org: orgId, p_results: [], p_threshold: 2, p_lease: testLeaseName(), p_fencing_token: 1 }],
+        ['worker_acquire_lease', { p_name: testLeaseName(), p_holder: randomUUID() }],
+        ['monitor_heartbeat', { p_lease: testLeaseName(), p_fencing_token: 1, p_at: new Date().toISOString() }],
         ['media_session_open', { p_sid: randomUUID(), p_user: viewer.id, p_camera: cameraId, p_kind: 'live', p_stream: 'x' }],
         ['media_session_create', { p_org: orgId, p_user: viewer.id, p_kind: 'live', p_cameras: [cameraId], p_streams: ['x'] }],
         ['inventory_purge_test_org', { p_org: orgId }],

@@ -852,6 +852,11 @@ describe('capability access model (P2-1)', () => {
       monitor_save_camera_ips: worker,
       worker_lease_set_until_test: server,
       worker_lease_forget_test: server,
+      // P2-7 review round 1 (20261021000039): the fence scoped to the rows it protects, and the guard that refuses direct writes of
+      // worker_state / monitor_gaps by the service key (an old worker): internal, no grant at all.
+      worker_fence_global: [],
+      worker_fence_org: [],
+      worker_rows_guard: [],
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)

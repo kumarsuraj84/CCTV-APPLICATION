@@ -17,9 +17,14 @@ export function assertLocalStack(): void {
 
 const opts = { auth: { persistSession: false, autoRefreshToken: false } }
 
+// P2-7 review round 1 (M-5): worker_state and monitor_gaps refuse direct writes by the service key (only the worker's fenced functions
+// write them), so that an old worker on the development key is refused cleanly. Test fixtures still set and restore those rows; they
+// say so with this header (migration 20261021000039). Not a security boundary: the service key is trusted with everything else.
+const fixtureOpts = { ...opts, global: { headers: { 'x-drishti-test-fixture': 'on' } } }
+
 export function adminClient(): SupabaseClient<Database> {
   assertLocalStack()
-  return createClient<Database>(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, opts)
+  return createClient<Database>(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, fixtureOpts)
 }
 
 export async function createOrg(): Promise<string> {

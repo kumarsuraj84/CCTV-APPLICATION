@@ -105,6 +105,36 @@ describe('SupabaseMonitorDb writes are fenced (P2-7)', () => {
     await expect(db.touchHeartbeat(new Date())).rejects.toBeInstanceOf(LeaseLostError)
   })
 
+  it('a write refused because this lease may not write those rows (WL002) is an ordinary error: the lease is not ended (review M-1)', async () => {
+    const c = fakeClient(() => ({ error: { code: 'WL002', message: 'only the monitor lease writes the worker state' } }))
+    const { f, lost } = fence(7, 'monitor:shard-3')
+    const db = new SupabaseMonitorDb(c.client, { fence: f })
+    const e = await db.touchHeartbeat(new Date()).catch((x: unknown) => x)
+    expect(isLeaseLost(e)).toBe(false)
+    expect((e as Error).message).toContain('only the monitor lease')
+    expect(lost).toEqual([])
+  })
+
+  it('the heartbeat answers how far the worker clock is from the database clock; more than 30 s is logged once as worker_clock_skew (review I-1)', async () => {
+    let skewMs = 125_000
+    const c = fakeClient((fn) => (fn === 'monitor_heartbeat' ? { data: skewMs, error: null } : { error: null }))
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((l: string) => void lines.push(String(l)))
+    const db = new SupabaseMonitorDb(c.client, { fence: fence().f })
+    await db.touchHeartbeat(new Date())
+    await db.touchHeartbeat(new Date())
+    const skew = () => lines.map((l) => JSON.parse(l) as Record<string, unknown>).filter((l) => l.event === 'worker_clock_skew')
+    expect(skew()).toHaveLength(1)
+    expect(skew()[0]).toMatchObject({ aheadOfDatabaseSec: 125 })
+    skewMs = 200
+    await db.touchHeartbeat(new Date()) // back in step: logged as such once
+    expect(lines.some((l) => l.includes('worker_clock_in_step'))).toBe(true)
+    skewMs = -3_600_000
+    await db.touchHeartbeat(new Date())
+    expect(skew()).toHaveLength(2)
+    expect(skew()[1]).toMatchObject({ aheadOfDatabaseSec: -3600 })
+  })
+
   it('other database errors stay ordinary errors with the old wording (the runner counts them, the lease is not touched)', async () => {
     const c = fakeClient(() => ({ error: { code: 'XX000', message: 'boom' } }))
     const { f, lost } = fence()

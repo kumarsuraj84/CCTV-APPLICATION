@@ -1,9 +1,9 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import type { SupabaseClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { loadMonitorConfig } from '@/lib/monitor/config'
-import { getWorkerLease } from '@/lib/monitor/health'
+import { getWorkerLease, getWorkerStatus } from '@/lib/monitor/health'
 import { isLeaseLost, LEASE_REFUSED_SQLSTATE, WorkerLease, type LeaseFence } from '@/lib/monitor/lease'
 import { realProbes } from '@/lib/monitor/probes'
 import { MonitorRunner } from '@/lib/monitor/runner'
@@ -68,7 +68,13 @@ function psql(sql: string): Promise<{ code: number | null; out: string; err: str
     p.stdin.end(sql)
   })
 }
+// Review round 1 (M-9b): the tests that need a second database session FAIL when Docker cannot be reached, unless the run says on purpose
+// that it has no Docker (DRISHTI_SKIP_DOCKER_TESTS=1): the strongest concurrency proof must never be skipped silently.
+const skipDocker = process.env.DRISHTI_SKIP_DOCKER_TESTS === '1'
 const canPsql = dockerPsqlAvailable()
+const needPsql = () => {
+  if (!canPsql) throw new Error(`These tests need psql in the database container ${DB_CONTAINER} (docker exec). Start Docker, or set DRISHTI_SKIP_DOCKER_TESTS=1 to skip them on purpose.`)
+}
 
 describe('worker lease and fencing (P2-7)', () => {
   let orgId: string
@@ -126,15 +132,18 @@ describe('worker lease and fencing (P2-7)', () => {
       expect(leases.filter((l) => l.token() !== null)).toHaveLength(1)
     })
 
-    it('a takeover of an ended lease increments the token; the live holder asking again keeps its token; another holder is refused', async () => {
+    it('every acquisition is a new epoch: a takeover increments the token, and so does the live holder asking again (review M-2); another holder is refused', async () => {
       const name = testLeaseName()
       const [a, b] = [randomUUID(), randomUUID()]
       expect(row<AcquireRow>(await acquire(worker(), name, a)).fencing_token).toBe(1)
-      expect(row<AcquireRow>(await acquire(worker(), name, a))).toMatchObject({ acquired: true, fencing_token: 1 })
+      // Review round 1 (M-2): the same holder taking it again (after a LOCAL loss, while the database lease still ran) gets token 2,
+      // so a request of its old epoch that is still on its way is refused. Only a renewal keeps a token.
+      expect(row<AcquireRow>(await acquire(worker(), name, a))).toMatchObject({ acquired: true, fencing_token: 2 })
+      expect(code(await apply(worker(), name, 1, [camResult(cams[5], true)]))).toBe(LEASE_REFUSED_SQLSTATE)
       expect(row<AcquireRow>(await acquire(worker(), name, b))).toMatchObject({ acquired: false, fencing_token: null })
       await setUntil(name, -1)
-      expect(row<AcquireRow>(await acquire(worker(), name, b))).toMatchObject({ acquired: true, fencing_token: 2 })
-      // A comes back after its lease ran out: a new epoch even for the same holder would be token 3, but B holds it now.
+      expect(row<AcquireRow>(await acquire(worker(), name, b))).toMatchObject({ acquired: true, fencing_token: 3 })
+      // A comes back after its lease ran out: B holds it now.
       expect(row<AcquireRow>(await acquire(worker(), name, a)).acquired).toBe(false)
     })
 
@@ -182,7 +191,8 @@ describe('worker lease and fencing (P2-7)', () => {
       expect(row<AcquireRow>(await acquire(worker(), name, b))).toMatchObject({ acquired: true, fencing_token: 2 })
     })
 
-    it.skipIf(!canPsql)('(e) exactly at lease_until = now() the lease has ended: a takeover succeeds and the fence refuses, in one transaction', async () => {
+    it.skipIf(skipDocker)('(e) exactly at lease_until = now() the lease has ended: a takeover succeeds and the fence refuses, in one transaction', async () => {
+      needPsql()
       const name = testLeaseName()
       const [a, b] = [randomUUID(), randomUUID()]
       const r = await psql(`
@@ -273,15 +283,20 @@ describe('worker lease and fencing (P2-7)', () => {
       expect((await person.client.from('worker_leases' as never).select('name').limit(1)).error?.code).toBe('42501')
     })
 
-    it.skipIf(!canPsql)('privilege_violations() names each new kind of mistake (probes in a transaction that is rolled back)', async () => {
+    it.skipIf(skipDocker)('privilege_violations() names each new kind of mistake (probes in a transaction that is rolled back)', async () => {
+      needPsql()
+      // Review round 1 (M-7): a worker function that takes p_fencing_token but never calls the fence is reported too.
       const r = await psql(`
         BEGIN;
         GRANT INSERT ON public.monitor_gaps TO monitor_worker;
         GRANT UPDATE (name) ON public.cameras TO monitor_worker;
         GRANT EXECUTE ON FUNCTION public.targets_uptime(uuid, text, uuid[], interval, timestamptz) TO monitor_worker;
         GRANT EXECUTE ON FUNCTION public.worker_fence(text, bigint) TO app_web;
+        GRANT EXECUTE ON FUNCTION public.worker_fence_org(text, bigint, uuid) TO app_web;
         GRANT INSERT ON public.worker_leases TO service_role;
         GRANT SELECT ON public.worker_leases TO authenticated;
+        CREATE FUNCTION public.zz_unfenced_probe(p_lease text, p_fencing_token bigint) RETURNS void LANGUAGE sql SET search_path = '' AS $f$ SELECT $f$;
+        GRANT EXECUTE ON FUNCTION public.zz_unfenced_probe(text, bigint) TO monitor_worker;
         SELECT v FROM public.privilege_violations() v ORDER BY v;
         ROLLBACK;
         SELECT count(*) FROM public.privilege_violations();`)
@@ -292,6 +307,8 @@ describe('worker lease and fencing (P2-7)', () => {
         'cameras (column): monitor_worker may UPDATE (the worker writes only through fenced functions)',
         'function targets_uptime: monitor_worker may execute it without a fencing token (every worker write takes p_fencing_token)',
         'function worker_fence: app_web may execute it (internal; only the fenced functions call it)',
+        'function worker_fence_org: app_web may execute it (internal; only the fenced functions call it)',
+        'function zz_unfenced_probe: monitor_worker may execute it, and it takes p_fencing_token but never calls the fence',
         'monitor_gaps: monitor_worker may INSERT (the worker writes only through fenced functions)',
         'worker_leases: authenticated has SELECT (server-only table)',
         'worker_leases: service_role may INSERT (written by the database only)',
@@ -311,9 +328,10 @@ describe('worker lease and fencing (P2-7)', () => {
     it('(b) A pauses, B takes over with token + 1, A wakes up: its results, gap and worker-state writes are refused with a clear error and nothing of them is stored', async () => {
       const name = testLeaseName()
       const a = await takeTestLease(name, randomUUID(), 3, worker())
-      // A works normally while it holds the lease.
+      // A works normally while it holds the lease. Review round 1 (M-1): the global worker rows accept a "test:" lease only from the
+      // service role (the development key of the worker), so this worker writes through it.
       const fenceA = fixedFence(name, a.token)
-      const dbA = new SupabaseMonitorDb(worker(), { orgId, fence: fenceA })
+      const dbA = new SupabaseMonitorDb(admin(), { orgId, fence: fenceA })
       await dbA.applyResults(orgId, [camResult(cams[2], true)], 1)
       expect((await camState(cams[2]))?.status).toBe('up')
       const before = { cam: await camState(cams[2]), state: await workerState() }
@@ -396,7 +414,8 @@ describe('worker lease and fencing (P2-7)', () => {
       }
     })
 
-    it.skipIf(!canPsql)('(d) the locking argument: a takeover waits for a fenced batch that is in progress, and only then hands out token + 1', async () => {
+    it.skipIf(skipDocker)('(d) the locking argument: a takeover waits for a fenced batch that is in progress, and only then hands out token + 1', async () => {
+      needPsql()
       const name = testLeaseName()
       const a = await takeTestLease(name, randomUUID(), 6, worker())
       const at = new Date().toISOString()
@@ -448,6 +467,100 @@ describe('worker lease and fencing (P2-7)', () => {
     })
   })
 
+  describe('review round 1: worker clocks, lease scope, old workers', () => {
+    const DAY = 86_400_000
+    const stateOf = async (id: string) =>
+      (await admin().from('check_state').select('status, last_checked_at, consecutive_failures').eq('target_type', 'camera').eq('target_id', id).maybeSingle()).data
+
+    it('I-1: a worker clock days ahead does not freeze a camera: its result is dated the database now, and the next normal result applies', async () => {
+      const cam = cams[6]
+      const a = await takeTestLease(testLeaseName(), randomUUID(), 60, worker())
+      expect((await apply(worker(), a.name, a.token, [camResult(cam, false, new Date(Date.now() + 3 * DAY).toISOString())])).error).toBeNull()
+      const first = await stateOf(cam)
+      expect(Math.abs(Date.parse(first!.last_checked_at!) - Date.now())).toBeLessThan(15_000) // clamped to the database clock
+      expect(first).toMatchObject({ status: 'down', consecutive_failures: 1 })
+      // The worker's clock is put right: its next result (a few seconds later) is applied, not skipped as "older".
+      expect((await apply(worker(), a.name, a.token, [camResult(cam, true, new Date(Date.now() + 2000).toISOString())])).error).toBeNull()
+      expect(await stateOf(cam)).toMatchObject({ status: 'up', consecutive_failures: 0 })
+    })
+
+    it('I-1: after a takeover by a worker whose clock is an hour behind, its results apply (a newer epoch always wins over an older time)', async () => {
+      const cam = cams[7]
+      const name = testLeaseName()
+      const a = await takeTestLease(name, randomUUID(), 60, worker())
+      expect((await apply(worker(), name, a.token, [camResult(cam, true)])).error).toBeNull()
+      await setUntil(name, -1)
+      const b = await takeTestLease(name, randomUUID(), 60, worker())
+      expect(b.token).toBe(a.token + 1)
+      const behind = new Date(Date.now() - 3_600_000).toISOString()
+      expect((await apply(worker(), name, b.token, [camResult(cam, false, behind)])).error).toBeNull()
+      expect(await stateOf(cam)).toMatchObject({ status: 'down', consecutive_failures: 1 })
+      expect(Date.parse((await stateOf(cam))!.last_checked_at!)).toBe(Date.parse(behind))
+      // Within B's own epoch the late-result rule still holds: an even older result of B is skipped.
+      expect((await apply(worker(), name, b.token, [camResult(cam, true, new Date(Date.now() - 7_200_000).toISOString())])).error).toBeNull()
+      expect(await stateOf(cam)).toMatchObject({ status: 'down' })
+    })
+
+    it('I-1: the heartbeat answers the worker-clock difference, and the worker status shows it with a warning beyond 30 s', async () => {
+      const name = testLeaseName()
+      const t = await takeTestLease(name, randomUUID(), 60)
+      const ahead = await rpcOf(admin())('monitor_heartbeat', { p_lease: name, p_fencing_token: t.token, p_at: new Date(Date.now() + 120_000).toISOString() })
+      expect(ahead.error).toBeNull()
+      expect(Math.abs(Number(ahead.data) - 120_000)).toBeLessThan(15_000)
+      const status = await getWorkerStatus(serviceClient('app_web'))
+      expect(Math.abs(status.clockSkewSec! - 120)).toBeLessThan(15)
+      expect(status.clockSkewWarning).toBe(true)
+      expect((await rpcOf(admin())('monitor_heartbeat', { p_lease: name, p_fencing_token: t.token, p_at: nowIso() })).error).toBeNull()
+      expect((await getWorkerStatus(serviceClient('app_web'))).clockSkewWarning).toBe(false)
+    })
+
+    it('M-1: the global worker rows accept only the lease "monitor" (a "test:" lease from the service role only); results only "monitor" / "monitor:<shard>" (and "test:" on test organisations)', async () => {
+      const name = testLeaseName()
+      const t = await takeTestLease(name, randomUUID(), 60, worker())
+      const shard = `monitor:test-${randomUUID()}`
+      const s = await takeTestLease(shard, randomUUID(), 60, worker())
+      const globalWrites = (lease: string, token: number): [string, Record<string, unknown>][] => [
+        ['monitor_heartbeat', { p_lease: lease, p_fencing_token: token, p_at: nowIso() }],
+        ['monitor_record_gap', { p_lease: lease, p_fencing_token: token, p_from: nowIso(), p_to: nowIso() }],
+        ['monitor_mark_round', { p_lease: lease, p_fencing_token: token, p_kind: 'cameras', p_at: nowIso() }],
+        ['monitor_run_started', { p_lease: lease, p_fencing_token: token, p_at: nowIso(), p_total: 0 }],
+        ['monitor_run_progress', { p_lease: lease, p_fencing_token: token, p_done: 0, p_total: 0 }],
+        ['monitor_run_finished', { p_lease: lease, p_fencing_token: token, p_at: nowIso() }],
+      ]
+      const before = await workerState()
+      for (const [fn, args] of [...globalWrites(name, t.token), ...globalWrites(shard, s.token)]) {
+        const r = await rpcOf(worker())(fn, args)
+        expect(code(r), `${fn} ${String(args.p_lease)}`).toBe('WL002')
+        expect(r.error?.message).toMatch(/written only under the worker lease "monitor"/)
+      }
+      for (const [fn, args] of globalWrites(shard, s.token)) expect(code(await rpcOf(admin())(fn, args)), fn).toBe('WL002')
+      expect(await workerState()).toEqual(before)
+      // Results: a shard lease or a test lease on a test organisation are accepted; a test lease for any other organisation is not.
+      expect((await apply(worker(), shard, s.token, [camResult(cams[8], true)])).error).toBeNull()
+      expect((await apply(worker(), name, t.token, [camResult(cams[8], true)])).error).toBeNull()
+      const elsewhere = await rpcOf(worker())('monitor_apply_results', { p_org: randomUUID(), p_results: [], p_threshold: 1, p_lease: name, p_fencing_token: t.token })
+      expect(code(elsewhere)).toBe('WL002')
+      expect(code(await rpcOf(worker())('monitor_save_camera_ips', { p_lease: name, p_fencing_token: t.token, p_org: randomUUID(), p_rows: [] }))).toBe('WL002')
+      expect((await release(worker(), shard, s.holder, s.token)).data).toBe(true)
+    })
+
+    it('M-5: an old worker on the development service key is refused cleanly: it can no longer write worker_state or monitor_gaps straight into the table', async () => {
+      // A plain service-key client, as the P2-6 worker made it (without the test fixtures' header).
+      const oldWorker = createClient<Database>(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } })
+      const beat = await oldWorker.from('worker_state').update({ last_heartbeat: nowIso() }).eq('id', 1)
+      expect(beat.error?.code).toBe('42501')
+      expect(beat.error?.message).toMatch(/fenced/)
+      expect((await oldWorker.from('worker_state').update({ run_started_at: nowIso() }).eq('id', 1)).error?.code).toBe('42501')
+      expect((await oldWorker.from('monitor_gaps').insert({ started_at: nowIso(), ended_at: nowIso() })).error?.code).toBe('42501')
+      // Its results: the old 3-argument function does not exist any more.
+      expect((await oldWorker.rpc('monitor_apply_results' as never, { p_org: orgId, p_results: [], p_threshold: 2 } as never)).error?.code).toBe('PGRST202')
+      // The new worker on the same key writes through the fenced functions.
+      const name = testLeaseName()
+      const t = await takeTestLease(name, randomUUID(), 60, oldWorker)
+      expect((await rpcOf(oldWorker)('monitor_heartbeat', { p_lease: name, p_fencing_token: t.token, p_at: nowIso() })).error).toBeNull()
+    })
+  })
+
   describe('the worker under the lease (in-process, fake NVR on loopback, test organisation only)', () => {
     let nvr: FakeNvr
     let rtsp: FakeRtsp
@@ -486,7 +599,9 @@ describe('worker lease and fencing (P2-7)', () => {
       // Every call of worker A goes through this gate: closing it is "the process is paused" (its requests wait, nothing is answered).
       let gate: Promise<void> | null = null
       let openGate: () => void = () => {}
-      const real = worker()
+      // Review round 1 (M-1): a "test:" lease writes the global worker rows only through the service role (the worker's development
+      // key); the worker's own key is held to the real lease "monitor", which tests never take.
+      const real = admin()
       const paused = new Proxy(real, {
         get(target, prop) {
           if (prop !== 'rpc') {
@@ -573,7 +688,9 @@ describe('worker lease and fencing (P2-7)', () => {
       vi.spyOn(console, 'log').mockImplementation(() => {})
       vi.spyOn(console, 'error').mockImplementation(() => {})
       const name = testLeaseName()
-      const leaseA = new WorkerLease({ rpc: rpcOf(worker()), name, ttlSec: 20, log: () => {} })
+      // Review round 1 (M-4): A's lease is long (120 s) so that its own watchdog can never end it during the test: the only way A
+      // loses it is the database refusing its late write. The writes go through the service role (M-1, see above).
+      const leaseA = new WorkerLease({ rpc: rpcOf(admin()), name, ttlSec: 120, log: () => {} })
       expect((await leaseA.tryAcquire()).result).toBe('acquired')
       let release!: () => void
       const blocked = new Promise<void>((r) => (release = r))
@@ -590,7 +707,7 @@ describe('worker lease and fencing (P2-7)', () => {
       }
       const lostA: string[] = []
       leaseA.onLost((r) => lostA.push(r))
-      const runnerA = new MonitorRunner({ db: new SupabaseMonitorDb(worker(), { orgId: lOrg, fence: leaseA.fence() }), probes: slowProbes, cfg: cfg(), clock: () => new Date() })
+      const runnerA = new MonitorRunner({ db: new SupabaseMonitorDb(admin(), { orgId: lOrg, fence: leaseA.fence() }), probes: slowProbes, cfg: cfg(), clock: () => new Date() })
       expect((await admin().rpc('monitor_request_check')).error).toBeNull()
       const asked = Date.parse((await workerState()).check_requested_at!)
       const runA = runnerA.checkRequests()
@@ -602,10 +719,10 @@ describe('worker lease and fencing (P2-7)', () => {
       const startedByA = (await workerState()).run_started_at
       // A's lease runs out; B takes over and starts.
       await setUntil(name, -1)
-      const leaseB = new WorkerLease({ rpc: rpcOf(worker()), name, ttlSec: 20, log: () => {} })
+      const leaseB = new WorkerLease({ rpc: rpcOf(admin()), name, ttlSec: 120, log: () => {} })
       expect(await leaseB.tryAcquire()).toEqual({ result: 'acquired', token: 2 })
       let startsB = 0
-      const dbB = new SupabaseMonitorDb(worker(), { orgId: lOrg, fence: leaseB.fence() })
+      const dbB = new SupabaseMonitorDb(admin(), { orgId: lOrg, fence: leaseB.fence() })
       const countingB = new Proxy(dbB, {
         get(t, p) {
           const v = Reflect.get(t, p, t)

@@ -141,7 +141,8 @@ describe('WorkerLease (P2-7)', () => {
     expect(await a.renew()).toBe('not_held')
     expect(seen).toEqual(['renewal_refused'])
     expect(w.events('lease_lost')).toHaveLength(1)
-    expect(w.events('lease_lost')[0]).toMatchObject({ lease: 'monitor', token: 1, reason: 'renewal_refused' })
+    // Review round 1 (M-6): the fencing token is logged as `epoch` (a token is no secret, and the logger hides fields named "token").
+    expect(w.events('lease_lost')[0]).toMatchObject({ lease: 'monitor', epoch: 1, reason: 'renewal_refused' })
   })
 
   it('renewal errors (database outage) keep the lease until the local deadline (TTL minus a margin, on the monotonic clock), then it is lost', async () => {
@@ -203,11 +204,12 @@ describe('WorkerLease (P2-7)', () => {
     first.lost('write_refused')
     expect(first.token()).toBeNull()
     expect(w.events('lease_lost')[0]).toMatchObject({ reason: 'write_refused' })
-    // The same holder acquires again: whatever token the database gives, the old fence never returns it.
-    await a.tryAcquire()
+    // The same holder acquires again: a NEW token (review round 1, M-2), and the old fence never returns any token.
+    expect(await a.tryAcquire()).toEqual({ result: 'acquired', token: 2 })
     const second = a.fence()
-    expect(second.token()).not.toBeNull()
+    expect(second.token()).toBe(2)
     expect(first.token()).toBeNull()
+    expect(w.db.accepts('monitor', 1)).toBe(false) // a request of the old epoch already on its way is refused by the database too
     first.lost('write_refused') // a late refusal of the old epoch does not end the new one
     expect(second.token()).not.toBeNull()
   })
@@ -225,6 +227,29 @@ describe('WorkerLease (P2-7)', () => {
     expect(await w.lease({ holder: HOLDER_B }).tryAcquire()).toEqual({ result: 'acquired', token: 2 })
     expect(await a.release()).toBe(false) // nothing held: nothing sent
     expect(w.db.callsOf('worker_release_lease')).toHaveLength(1)
+  })
+
+  it('a release whose answer never comes gives up after its time limit (a first Ctrl+C never hangs on the database; review M-3)', async () => {
+    const w = world()
+    const a = w.lease({ releaseTimeoutMs: 100 })
+    await a.tryAcquire()
+    w.db.gate = new Promise<void>(() => {})
+    const began = Date.now()
+    expect(await a.release()).toBe(false)
+    expect(Date.now() - began).toBeLessThan(1000)
+    expect(a.token()).toBeNull()
+  })
+
+  it('the default log shows the fencing token as "epoch", not redacted (review M-6)', async () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((l: string) => void lines.push(String(l)))
+    vi.spyOn(console, 'error').mockImplementation((l: string) => void lines.push(String(l)))
+    const db = new MemoryLeaseDb()
+    const a = new WorkerLease({ rpc: db.rpc, holder: HOLDER_A })
+    await a.tryAcquire()
+    const acquired = lines.map((l) => JSON.parse(l) as Record<string, unknown>).find((l) => l.event === 'lease_acquired')
+    expect(acquired).toMatchObject({ lease: 'monitor', epoch: 1 })
+    expect(lines.join('\n')).not.toContain('[redacted]')
   })
 
   it('a release that cannot reach the database never throws (the lease then simply runs out)', async () => {
