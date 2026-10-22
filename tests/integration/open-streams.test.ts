@@ -187,7 +187,8 @@ describe('openStreams', () => {
     expect(renewed.tokens.map((t) => t.cameraId)).toEqual([a1, a2]) // b1 is not the viewer's
     expect(fake.seen).toEqual([])
     expect(fake.wholeListReads).toBe(0)
-    expect(rpcs).toEqual(['media_session_create'])
+    // P4-L1 review I-1: the renewal's sessions are made under the person's stream cap, in one call (media_session_create_live).
+    expect(rpcs).toEqual(['media_session_create_live'])
     for (const t of renewed.tokens) {
       const claims = verifyStreamToken(t.token, Date.now(), SECRET)!
       expect(claims).toMatchObject({ u: viewer.id, c: t.cameraId, k: 'sub' })
@@ -215,7 +216,8 @@ describe('openStreams', () => {
       get(target, prop) {
         if (prop === 'rpc') {
           return async (fn: string, args: { p_cameras?: string[] }) => {
-            if (fn !== 'media_session_create') return (target.rpc as (f: string, a: object) => unknown)(fn, args)
+            // P4-L1 review I-1: live sessions are made by media_session_create_live (which calls media_session_create inside).
+            if (fn !== 'media_session_create_live') return (target.rpc as (f: string, a: object) => unknown)(fn, args)
             const r = (await target.rpc(fn, args as never)) as { data: { camera_id: string }[] | null; error: unknown }
             return { ...r, data: (r.data ?? []).filter((x) => x.camera_id !== a2) } // as if access to a2 ended just now
           }
@@ -233,7 +235,7 @@ describe('openStreams', () => {
     const failing = new Proxy(real, {
       get(target, prop) {
         if (prop === 'rpc') {
-          return (fn: string, args: object) => fn === 'media_session_create'
+          return (fn: string, args: object) => fn === 'media_session_create_live'
             ? Promise.resolve({ data: null, error: { code: '08006', message: 'connection failure' } })
             : (target.rpc as (f: string, a: object) => unknown)(fn, args)
         }
@@ -337,13 +339,12 @@ describe('openStreams', () => {
       },
     })
     streamsOf(await open(manager, [a1, a2, b1], 'sub', { adminClient: spy }))
-    // P4-L1 (bounded concurrency): first the person's open live streams are counted (media_sessions_live_open, no NVR data).
-    // P2-4: then the one call that registers the media sessions of the streams (no password is read for a refused one).
-    // P2-6: the logged credential read, for live video, naming the person it is for.
-    expect(calls.map((c) => c.name)).toEqual(['media_sessions_live_open', 'media_session_create', 'recorder_credential_read', 'recorder_credential_read'])
-    expect(calls[0].args).toEqual({ p_org: orgId, p_user: manager.id })
-    expect(calls.slice(2).map((c) => (c.args as { p_recorder: string }).p_recorder).sort()).toEqual([rA, rB].sort())
-    for (const c of calls.slice(2)) expect(c.args).toMatchObject({ p_purpose: 'live', p_actor: manager.id })
+    // P2-4 / P4-L1 review I-1: first the one call that registers the media sessions under the person's stream cap (no password is
+    // read for a refused or paused camera). P2-6: then the logged credential read, for live video, naming the person it is for.
+    expect(calls.map((c) => c.name)).toEqual(['media_session_create_live', 'recorder_credential_read', 'recorder_credential_read'])
+    expect(calls[0].args).toMatchObject({ p_org: orgId, p_user: manager.id, p_max: 25 })
+    expect(calls.slice(1).map((c) => (c.args as { p_recorder: string }).p_recorder).sort()).toEqual([rA, rB].sort())
+    for (const c of calls.slice(1)) expect(c.args).toMatchObject({ p_purpose: 'live', p_actor: manager.id })
   })
 
   it('with DEMO_VIDEO=1 and a loopback store the source is the generated test picture and no password is read', async () => {
@@ -358,8 +359,8 @@ describe('openStreams', () => {
     })
     const streams = streamsOf(await open(viewer, [a1, n1], 'sub', { env: { DEMO_VIDEO: '1', NODE_ENV: 'development' }, adminClient: spy }))
     expect(streams.map((s) => s.cameraId)).toEqual([a1, n1]) // the store without a password works too: there is no real camera
-    // no password read; only the count of open streams (P4-L1) and the media sessions (P2-4)
-    expect(calls).toEqual(['media_sessions_live_open', 'media_session_create'])
+    // no password read; only the media sessions under the stream cap (P2-4, P4-L1 review I-1)
+    expect(calls).toEqual(['media_session_create_live'])
     const src = fake.seen.find((s) => s.name === `cam_${a1}_sub`)!.src!
     expect(src).toMatch(/^ffmpeg:virtual\?video=\w+&size=640x360&duration=86400\.\d+#video=h264$/)
     const other = fake.seen.find((s) => s.name === `cam_${n1}_sub`)!.src!

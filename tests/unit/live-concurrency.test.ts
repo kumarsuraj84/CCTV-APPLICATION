@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { allocateTiles, capStreams, DEFAULT_MAX_STREAMS_PER_USER, MAX_STREAMS_PER_USER_CEILING, maxStreamsPerUser, MSG_PAUSED_FOR_BANDWIDTH } from '@/lib/streams/concurrency'
+import { allocateTiles, DEFAULT_MAX_STREAMS_PER_USER, MAX_STREAMS_PER_USER_CEILING, maxStreamsPerUser, MSG_PAUSED_FOR_BANDWIDTH, releaseFor } from '@/lib/streams/concurrency'
 import { MAX_STREAMS_PER_REQUEST } from '@/lib/streams/open'
 import { LAYOUTS, perPage } from '@/lib/streams/wall'
 
 // P4-L1 brief item 2: max simultaneous streams per user from the environment (default 25); excess tiles are paused to save bandwidth.
+// Review round 1 (I-1): the count itself is the database's (media_session_create_live, media_session_open; tests/integration/
+// live-concurrency.test.ts); what stays here is the setting, the wall's own choice of tiles and what the wall lets go of.
 
 describe('the per-person limit (LIVE_MAX_STREAMS_PER_USER)', () => {
   it('is 25 by default and for anything that is not a whole number from 1 to 100', () => {
@@ -21,34 +23,16 @@ describe('the per-person limit (LIVE_MAX_STREAMS_PER_USER)', () => {
   })
 })
 
-describe('capStreams (the server: what a new opening may add)', () => {
-  it('fills what is left of the limit in order and pauses the rest', () => {
-    const r = capStreams(['a', 'b', 'c', 'd'], new Set(['x', 'y']), 4)
-    expect([...r.allowed]).toEqual(['a', 'b'])
-    expect(r.paused).toEqual(['c', 'd'])
-  })
-
-  it('streams already open are renewals: kept first and never counted twice', () => {
-    const r = capStreams(['a', 'b', 'x'], new Set(['x', 'y', 'z']), 4)
-    expect(r.allowed.has('x')).toBe(true)
-    expect([...r.allowed].sort()).toEqual(['a', 'x'])
-    expect(r.paused).toEqual(['b'])
-    // A whole wall asked for again while every stream of it is open: nothing is paused.
-    const wall = Array.from({ length: 25 }, (_, i) => `s${i}`)
-    expect(capStreams(wall, new Set(wall), 25).paused).toEqual([])
-  })
-
-  it('repeats count once; nothing open means everything up to the limit', () => {
-    expect([...capStreams(['a', 'a', 'b'], new Set(), 25).allowed]).toEqual(['a', 'b'])
-    expect(capStreams(['a', 'b'], new Set(['p', 'q', 'r']), 2).paused).toEqual(['a', 'b'])
-  })
-})
-
 describe('allocateTiles (the wall: which tiles play)', () => {
   const page = ['t1', 't2', 't3', 't4']
   it('tiles on screen play in page order up to the limit; the rest are paused for bandwidth', () => {
     expect(allocateTiles(page, new Set(page), 2)).toEqual({ play: ['t1', 't2'], bandwidth: ['t3', 't4'], idle: [] })
     expect(allocateTiles(page, new Set(page), 25)).toEqual({ play: page, bandwidth: [], idle: [] })
+  })
+
+  it('review M-7: cameras whose recorder cannot be reached take a place only after the others', () => {
+    expect(allocateTiles(page, new Set(page), 2, false, new Set(['t1', 't2']))).toEqual({ play: ['t3', 't4'], bandwidth: ['t1', 't2'], idle: [] })
+    expect(allocateTiles(page, new Set(page), 3, false, new Set(['t1']))).toEqual({ play: ['t2', 't3', 't4'], bandwidth: ['t1'], idle: [] })
   })
 
   it('tiles scrolled out of view do not play and do not use the limit', () => {
@@ -61,5 +45,13 @@ describe('allocateTiles (the wall: which tiles play)', () => {
 
   it('says so in plain words', () => {
     expect(MSG_PAUSED_FOR_BANDWIDTH).toBe('Paused to save bandwidth')
+  })
+})
+
+describe('releaseFor (what the wall lets go of, so its unused tokens stop counting)', () => {
+  it('the cameras of the old list that are not on the new one', () => {
+    expect(releaseFor(['a', 'b', 'c'], ['b', 'd'])).toEqual(['a', 'c'])
+    expect(releaseFor([], ['a'])).toEqual([])
+    expect(releaseFor(['a'], ['a'])).toEqual([])
   })
 })

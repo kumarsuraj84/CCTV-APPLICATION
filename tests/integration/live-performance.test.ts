@@ -6,7 +6,7 @@ import { loadHomeRollups } from '@/lib/queries/home-rollups'
 import { getLiveScope } from '@/lib/queries/live'
 import { loadLiveLanding } from '@/lib/queries/live-landing'
 import { getDashboard } from '@/lib/queries/status'
-import { adminClient, atCluster, atRegion, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
+import { adminClient, atCamera, atCluster, atRegion, CCTV_VIEW, cleanupOrg, createOrg, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
 
 // P4-L1 performance budget: the Live landing and the Home roll-ups take less than 300 ms of server time at the size of the owner's
 // estate — 216 locations, 216 NVRs, 4,637 cameras — measured through PostgREST as the signed-in person (the way the pages read), in a
@@ -44,7 +44,7 @@ async function insertAll(table: 'locations' | 'cameras' | 'check_state', rows: R
 
 describe('Live landing and Home roll-ups at the size of the estate (P4-L1 budget: < 300 ms)', () => {
   let orgId: string
-  let orgAll: TestUser, regionUser: TestUser, clusterUser: TestUser
+  let orgAll: TestUser, regionUser: TestUser, clusterUser: TestUser, cameraUser: TestUser
   let regionIds: string[] = []
   let clusterIds: string[] = []
   const results: Record<string, Record<string, number>> = {}
@@ -89,6 +89,10 @@ describe('Live landing and Home roll-ups at the size of the estate (P4-L1 budget
     await grant(orgId, regionUser.id, CCTV_VIEW, atRegion(regionIds[0]))
     clusterUser = await createUser(orgId, 'user')
     await grant(orgId, clusterUser.id, CCTV_VIEW, atCluster(clusterIds[0]))
+    // Review M-13: the worst shape — about 3,000 single-camera grants (access_camera_set with a long camera list).
+    cameraUser = await createUser(orgId, 'user')
+    const picked = cameraIds.slice(0, 3000).map((c) => atCamera(c.id))
+    for (let i = 0; i < picked.length; i += 500) await grant(orgId, cameraUser.id, ['cctv.live'], picked.slice(i, i + 500))
   }, 600_000)
   afterAll(async () => {
     await cleanupOrg(orgId)
@@ -105,17 +109,17 @@ describe('Live landing and Home roll-ups at the size of the estate (P4-L1 budget
     expect(landing.tree.locations).toHaveLength(16)
   })
 
-  for (const who of ['organisation', 'region', 'cluster'] as const) {
+  for (const who of ['organisation', 'region', 'cluster', 'cameras_3000'] as const) {
     it(`${who}: Live landing and Home roll-ups under 300 ms`, async () => {
-      const u = who === 'organisation' ? orgAll : who === 'region' ? regionUser : clusterUser
+      const u = who === 'organisation' ? orgAll : who === 'region' ? regionUser : who === 'cluster' ? clusterUser : cameraUser
       const caps = await readCapabilities(u.client)
       const r: Record<string, number> = {}
       r.status_rollups_live = await median(() => getRollups(u.client, 'cctv.live'))
       r.live_landing = await median(() => loadLiveLanding(u.client, caps, {}))
       r.live_landing_search = await median(() => loadLiveLanding(u.client, caps, { q: 'Camera 12' }))
-      r.home_rollups = await median(() => loadHomeRollups(u.client))
-      r.home_dashboard_and_rollups = await median(() => Promise.all([getDashboard(u.client), loadHomeRollups(u.client)]))
-      if (who !== 'cluster') r.region_wall = await median(() => getLiveScope(u.client, { region: regionIds[0] }, 'cctv.live'))
+      r.home_rollups = await median(() => loadHomeRollups(u.client, caps))
+      r.home_dashboard_and_rollups = await median(() => Promise.all([getDashboard(u.client), loadHomeRollups(u.client, caps)]))
+      if (who === 'organisation' || who === 'region') r.region_wall = await median(() => getLiveScope(u.client, { region: regionIds[0] }, 'cctv.live'))
       r.cluster_wall = await median(() => getLiveScope(u.client, { cluster: clusterIds[0] }, 'cctv.live'))
       results[who] = r
       expect(r.live_landing, 'Live landing').toBeLessThan(300)

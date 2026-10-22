@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clampTourSeconds, INITIAL_TOUR, TOUR_DEFAULT_SECONDS, TOUR_SECONDS, tourReducer, tourRunning, tourStops, type TourCamera } from '@/lib/streams/tour'
+import { clampTourSeconds, INITIAL_TOUR, keyStopsTour, TOUR_DEFAULT_SECONDS, TOUR_SECONDS, tourAnnouncement, tourReducer, tourRunning, tourStops, type TourCamera } from '@/lib/streams/tour'
 
 // P4-L1 brief item 2 (LG-3): tour mode cycles the pages (and, on a wall of several locations, location by location) every 5–60 s,
 // skipping locations whose NVR is down, pausing while the pointer is on the wall (and while the tab is hidden), stopping on a key.
@@ -55,6 +55,19 @@ describe('tour timing', () => {
     s = tourReducer(s, { type: 'key' })
     expect(s.running).toBe(false)
     expect(tourRunning(s, true)).toBe(false)
+  })
+
+  it('review M-9: any key stops it, except modifier keys alone and keys typed into a form control (changing the interval)', () => {
+    expect(keyStopsTour({ key: 'x', target: null })).toBe(true)
+    expect(keyStopsTour({ key: 'Escape', target: { tagName: 'BUTTON' } })).toBe(true)
+    for (const key of ['Shift', 'Control', 'Alt', 'Meta']) expect(keyStopsTour({ key, target: null })).toBe(false)
+    for (const tagName of ['SELECT', 'INPUT', 'TEXTAREA']) expect(keyStopsTour({ key: 'ArrowDown', target: { tagName } })).toBe(false)
+  })
+
+  it('review M-9: the live region speaks only when the tour starts or stops, never at every stop', () => {
+    expect(tourAnnouncement(INITIAL_TOUR, { ...INITIAL_TOUR, running: true })).toBe('Tour started. Press any key to stop.')
+    expect(tourAnnouncement({ ...INITIAL_TOUR, running: true }, { ...INITIAL_TOUR, running: true, index: 3 })).toBeNull()
+    expect(tourAnnouncement({ ...INITIAL_TOUR, running: true }, INITIAL_TOUR)).toBe('Tour stopped.')
   })
 
   it('a tour with nothing to show does not start; fewer stops later keeps the index inside', () => {

@@ -7,7 +7,9 @@ vi.mock('@/lib/actions/groups', () => ({ addCamerasAction: vi.fn(), removeCamera
 
 import { LiveTreeView } from '@/components/live/LiveTreeView'
 import { LiveWall, type WallCamera } from '@/components/live/LiveWall'
+import { PresencePrompt } from '@/components/live/PresencePrompt'
 import { RollupCards } from '@/components/live/RollupCards'
+import { CameraStateBadge } from '@/components/live/StateDot'
 import type { CameraCounts } from '@/lib/live/rollups'
 import type { LiveTree } from '@/lib/live/tree'
 import type { LandingBranch } from '@/lib/queries/live-landing'
@@ -96,12 +98,47 @@ describe('the wall', () => {
 describe('Home roll-up cards', () => {
   const rows = [{ id: 'R1', code: 'BR', name: 'Bihar', counts: counts({ total: 10, live: 7, offline: 1, recorderUnreachable: 2 }), recorders: { total: 3, up: 2, down: 1, notChecked: 0, stale: 0, off: 0 } }]
   it('per region: counts in words and a link to its wall; NVR words only with the IT view', () => {
-    const it = renderToStaticMarkup(<RollupCards title="By region" level="region" rows={rows} liveLinks />)
+    const it = renderToStaticMarkup(<RollupCards title="By region" level="region" rows={rows} liveIds={new Set(['R1'])} />)
     expect(it).toContain('10 cameras: 7 live, 1 offline, 2 recorder not reachable')
     expect(it).toContain('3 NVRs: 1 down')
     expect(it).toContain('href="/live?region=R1"')
-    const cctv = renderToStaticMarkup(<RollupCards title="By region" level="region" rows={rows.map((r) => ({ ...r, recorders: null }))} liveLinks={false} />)
+    const cctv = renderToStaticMarkup(<RollupCards title="By region" level="region" rows={rows.map((r) => ({ ...r, recorders: null }))} liveIds={new Set()} />)
     expect(cctv).not.toContain('NVR')
     expect(cctv).not.toContain('/live?region=')
+  })
+
+  it('review M-12: a card opens a wall only when the person may watch a camera of that place live', () => {
+    const two = [...rows, { ...rows[0], id: 'R2', code: 'WB', name: 'West Bengal' }]
+    const html = renderToStaticMarkup(<RollupCards title="By region" level="region" rows={two} liveIds={new Set(['R2'])} />)
+    expect(html).toContain('href="/live?region=R2"')
+    expect(html).not.toContain('href="/live?region=R1"')
+  })
+})
+
+describe('review round 1 fixes on the screens', () => {
+  it('M-2: the state hints say "recorder", never "NVR" (they are shown to CCTV-only viewers too)', () => {
+    for (const state of ['unreachable', 'off', 'stale', 'live', 'offline', 'not_checked'] as const) {
+      expect(renderToStaticMarkup(<CameraStateBadge state={state} />), state).not.toMatch(/NVR/)
+    }
+  })
+
+  it('M-8: one control per tile is named "Enlarge …"; the whole-picture double-click area is not a second one for the keyboard', () => {
+    const html = renderToStaticMarkup(<LiveWall cameras={cams.slice(0, 4)} maxStreams={25} multiLocation={false} />)
+    expect(html.match(/aria-label="Enlarge /g)).toHaveLength(4)
+    expect(html).toMatch(/<button[^>]*tabindex="-1"[^>]*aria-hidden="true"/)
+  })
+
+  it('M-10: no link inside a <summary> (the "Open wall" links sit next to the toggle)', () => {
+    const html = renderToStaticMarkup(<LiveTreeView tree={tree} branch={null} openId={null} query="" />)
+    for (const summary of html.match(/<summary[\s\S]*?<\/summary>/g) ?? []) expect(summary).not.toContain('<a ')
+    expect(html).toContain('href="/live?region=R1"')
+    expect(html).toContain('href="/live?cluster=C1"')
+  })
+
+  it('I-2: when nobody has been at the screen for the idle limit, the wall stops and asks "Are you still there?"', () => {
+    const html = renderToStaticMarkup(<PresencePrompt onContinue={() => {}} />)
+    expect(html).toContain('Are you still there?')
+    expect(html).toContain('Continue watching')
+    expect(html).toMatch(/role="dialog"|role="alertdialog"/)
   })
 })

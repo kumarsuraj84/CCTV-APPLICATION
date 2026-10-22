@@ -61,7 +61,8 @@ describe('status queries', () => {
 
   it('the dashboard summarises what the reader may see', async () => {
     const d = await getDashboard(manager.client)
-    expect(d.cameras).toEqual({ total: 4, live: 1, down: 2, unknown: 1, stale: 0 })
+    // P4-L1 review I-3: `unreachable` counts cameras down with the worker's method nvr_down (none here: these results carry no method).
+    expect(d.cameras).toEqual({ total: 4, live: 1, down: 2, unknown: 1, stale: 0, unreachable: 0 })
     expect(d.stores.total).toBe(2)
     expect(d.stores.nvrDown.map((s) => [s.code, s.recorder, s.id, s.locationId])).toEqual([['ST2', 'NVR ST2', r2, s2]])
     expect(d.devices.server).toEqual({ total: 2, up: 1, down: 1, unknown: 0, stale: 0 })
@@ -87,7 +88,7 @@ describe('status queries', () => {
     await grant(orgId, atDown.id, CCTV_VIEW, atLocation(s2))
     const d = await getDashboard(atDown.client)
     expect(d.stores.total).toBe(1)
-    expect(d.cameras).toEqual({ total: 1, live: 0, down: 1, unknown: 0, stale: 0 })
+    expect(d.cameras).toEqual({ total: 1, live: 0, down: 1, unknown: 0, stale: 0, unreachable: 0 })
     expect(d.stores.nvrDown).toEqual([])
     expect(d.stores.nvrStale).toBe(0)
     // Nothing is grouped under an NVR outage the person cannot see: the camera's own outage is listed.
@@ -387,7 +388,7 @@ describe('status queries: stale and switched-off targets', () => {
 
   it('counts a live result older than 20 minutes as stale, not live; unknown stays unknown', async () => {
     const d = await getDashboard(manager.client)
-    expect(d.cameras).toEqual({ total: 3 + 1, live: 1, down: 1, unknown: 1, stale: 1 })
+    expect(d.cameras).toEqual({ total: 3 + 1, live: 1, down: 1, unknown: 1, stale: 1, unreachable: 0 })
     expect(d.stores.nvrStale).toBe(1)
   })
 

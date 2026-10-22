@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   autoLayout, gatewayBase, gatewayConnectOrigins, gatewayScriptUrl, gatewaySocketUrl, LAYOUTS, resolveGatewayBase, serverGatewayBase, layoutLabel, pageCount, pageItems, pageStart, perPage, QUICK_RETRY_MS, REFRESH_AFTER_MS, renewalKind,
-  REOPEN_AFTER_MS, RETRY_EVERY_MS,
+  REOPEN_AFTER_MS, RETRY_EVERY_MS, layoutsFor, planRequest,
 } from '@/lib/streams/wall'
 import { LIVE_WALL_ENABLED, liveWallHref } from '@/lib/groups/live-wall'
 import { MAX_STREAMS_PER_REQUEST } from '@/lib/streams/open'
@@ -164,5 +164,39 @@ describe('the groups screens link to the wall', () => {
     expect(LIVE_WALL_ENABLED).toBe(true)
     expect(liveWallHref('a b/c')).toBe('/live?group=a%20b%2Fc')
     expect(liveWallHref('0f6ad1c4-85a3-4a55-9d0b-3f0a4b1a0001')).toBe('/live?group=0f6ad1c4-85a3-4a55-9d0b-3f0a4b1a0001')
+  })
+})
+
+// P4-L1 review round 1: the wall's request plan (M-5 tour and returning tab reuse what was opened within 8 minutes, by token renewal;
+// M-6 cameras paused for bandwidth do not turn the one-minute renewal into a full opening) and the layouts a phone offers (M-11).
+describe('the wall\'s next request (review M-5, M-6)', () => {
+  const t = 1_800_000_000_000
+  const base = { phase: 'ready' as const, held: ['a', 'b'], paused: [] as string[], issuedAt: t, fullAt: t, triedAt: t, refreshFailed: false }
+  const never = () => false
+
+  it('a new list opens in full, unless every camera of it was opened in full within the last 8 minutes: then tokens only', () => {
+    expect(planRequest(['a', 'b'], { ...base, phase: 'loading', held: [] }, t, never)).toEqual({ at: t, mode: 'open', which: ['a', 'b'] })
+    expect(planRequest(['a', 'b'], { ...base, phase: 'loading', held: [] }, t, (id) => id === 'a')).toEqual({ at: t, mode: 'open', which: ['a', 'b'] })
+    expect(planRequest(['a', 'b'], { ...base, phase: 'loading', held: [] }, t, () => true)).toEqual({ at: t, mode: 'tokens', which: ['a', 'b'] })
+  })
+
+  it('the one-minute renewal is tokens only even while some cameras are paused; the paused ones are asked for again every 30 s', () => {
+    const s = { ...base, held: ['a'], paused: ['b'] }
+    expect(planRequest(['a', 'b'], s, t, never)).toEqual({ at: t + RETRY_EVERY_MS, mode: 'full', which: ['b'] })
+    expect(planRequest(['a', 'b'], s, t + REFRESH_AFTER_MS, never)).toEqual({ at: t + RETRY_EVERY_MS, mode: 'tokens', which: ['a'] })
+  })
+
+  it('a camera that did not come back (missing) is opened again in full; every 8 minutes everything is', () => {
+    expect(planRequest(['a', 'b', 'c'], { ...base }, t, never)).toEqual({ at: t + RETRY_EVERY_MS, mode: 'full', which: ['c'] })
+    expect(planRequest(['a', 'b'], { ...base, issuedAt: t + REOPEN_AFTER_MS - REFRESH_AFTER_MS }, t + REOPEN_AFTER_MS, never))
+      .toEqual({ at: t + REOPEN_AFTER_MS, mode: 'full', which: ['a', 'b'] })
+    expect(planRequest([], { ...base }, t, never)).toBeNull()
+  })
+})
+
+describe('layouts on a phone (review M-11)', () => {
+  it('offers one picture or 2×2 below 640 px, everything on a computer', () => {
+    expect(layoutsFor(true)).toEqual([1, 2])
+    expect(layoutsFor(false)).toEqual([...LAYOUTS])
   })
 })

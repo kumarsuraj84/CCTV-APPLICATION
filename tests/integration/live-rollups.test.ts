@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { getDashboard, getStates } from '@/lib/queries/status'
 import type { Database } from '@/types/database'
 import {
   adminClient, atCamera, atCluster, atLocation, atRegion, CCTV_VIEW, cleanupOrg, createCamera, createCluster, createLocation, createOrg, createRecorder,
@@ -145,16 +146,33 @@ describe('status_rollups (P4-L1 roll-ups by region, cluster and location)', () =
     expect(recs(m.get(`region:${RA}`))).toEqual({ total: 3, up: 2, down: 1, notChecked: 0, stale: 0, off: 0 })
   })
 
-  it('the camera figures agree with location_status, the existing per-location view (one rule for both)', async () => {
+  // Review round 1, I-3 (MC-4): one rule on every screen — location_status (the Locations list) counts a camera of an unreachable NVR as
+  // "recorder not reachable", not as down, exactly like the roll-ups: column by column equal.
+  it('the camera figures equal location_status column by column (one rule for both: recorder not reachable is not down)', async () => {
     const m = byNode(await rollups(orgAll))
-    const { data, error } = await orgAll.client.from('location_status').select('location_id, cameras_total, cameras_live, cameras_down, cameras_unknown, cameras_stale, cameras_monitoring_off')
+    const { data, error } = await orgAll.client.from('location_status')
+      .select('location_id, cameras_total, cameras_live, cameras_down, cameras_recorder_unreachable, cameras_unknown, cameras_stale, cameras_monitoring_off')
     expect(error).toBeNull()
-    for (const s of data ?? []) {
+    expect((data ?? []).length).toBeGreaterThan(0)
+    for (const s of (data ?? []) as Record<string, unknown>[]) {
       const r = m.get(`location:${s.location_id}`)
-      expect(r, s.location_id ?? '').toBeDefined()
-      expect([r!.cameras_total, r!.cameras_live, r!.cameras_offline + r!.cameras_recorder_unreachable, r!.cameras_not_checked, r!.cameras_stale, r!.cameras_off])
-        .toEqual([s.cameras_total, s.cameras_live, s.cameras_down, s.cameras_unknown, s.cameras_stale, s.cameras_monitoring_off])
+      expect(r, String(s.location_id)).toBeDefined()
+      expect([r!.cameras_total, r!.cameras_live, r!.cameras_offline, r!.cameras_recorder_unreachable, r!.cameras_not_checked, r!.cameras_stale, r!.cameras_off])
+        .toEqual([s.cameras_total, s.cameras_live, s.cameras_down, s.cameras_recorder_unreachable, s.cameras_unknown, s.cameras_stale, s.cameras_monitoring_off])
     }
+    const l1 = ((data ?? []) as Record<string, unknown>[]).find((s) => s.location_id === L1)!
+    expect([l1.cameras_down, l1.cameras_recorder_unreachable]).toEqual([1, 2])
+  })
+
+  it('a CCTV-only viewer reads the same location_status figures (camera words only; no NVR figure)', async () => {
+    const { data, error } = await clusterA1.client.from('location_status').select('location_id, cameras_down, cameras_recorder_unreachable, recorders_total, recorders_down, nvr_status')
+    expect(error).toBeNull()
+    expect(data).toEqual([{ location_id: L1, cameras_down: 1, cameras_recorder_unreachable: 2, recorders_total: 0, recorders_down: 0, nvr_status: null }])
+    // The Home dashboard and the Locations list read the same figures: 1 offline, 2 recorder not reachable.
+    expect((await getDashboard(clusterA1.client)).cameras).toMatchObject({ total: 4, down: 1, unreachable: 2 })
+    // And one camera's state, as every camera list shows it.
+    const states = await getStates(clusterA1.client, 'camera', [c2, c3])
+    expect([states.get(c2)?.status, states.get(c3)?.status]).toEqual(['down', 'unreachable'])
   })
 
   it('a camera-only viewer gets that camera\'s location only: no region or cluster row (their names stay hidden)', async () => {
@@ -213,6 +231,13 @@ describe('status_rollups (P4-L1 roll-ups by region, cluster and location)', () =
     expect((await admin.rpc('inventory_archive', { p_org: orgId, p_kind: 'location', p_id: L0, p_actor: owner.id })).error).toBeNull()
     m = byNode(await rollups(orgAll))
     expect(m.has(`location:${L0}`)).toBe(false)
-    expect([c6, c8, c9].every(Boolean)).toBe(true) // never checked (c6), switched off (c8), no cluster (c9): counted above
+    // Review M-4: what is left still counts as before — the switched-off camera (c8) of L3 as switched off only; the never-checked c6
+    // went with its location (L2 switched off); c9 with L0 (archived).
+    expect(cams(m.get(`location:${L3}`))).toEqual({ total: 1, live: 0, stale: 0, offline: 0, unreachable: 0, notChecked: 0, off: 1 })
+    const ids = new Set((await rollups(orgAll)).map((r) => r.node_id))
+    expect([L2, L0].some((id) => ids.has(id))).toBe(false)
+    // Nothing was ever written for the never-checked (c6) and the switched-off (c8) camera; c9 is archived with its location.
+    expect((await admin.from('check_state').select('target_id').in('target_id', [c6, c8])).data).toEqual([])
+    expect((await admin.from('cameras').select('archived_at').eq('id', c9).single()).data?.archived_at).not.toBeNull()
   })
 })

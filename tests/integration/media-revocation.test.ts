@@ -320,10 +320,12 @@ describe('open video stops when access goes (P2-4 acceptance)', () => {
       const extra = await createLocation(orgId)
       const rec = await createRecorder(orgId, extra, { host: '127.0.0.1', httpPort: 16546, rtspPort: 15546, secret: 'nvr-pass-6' })
       const cams: string[] = []
-      for (let ch = 1; ch <= 30; ch++) cams.push(await createCamera(orgId, { locationId: extra, recorderId: rec, channel: ch }))
-      // 300 sessions: ten for each of the 30 cameras, made by the registry as openStreams would make them.
+      // P4-L1 review I-1: one person may hold at most 25 DIFFERENT live streams at the gateway (the default cap, enforced by
+      // media_session_open), so the 300 sockets are twelve for each of 25 cameras (was ten for each of 30).
+      for (let ch = 1; ch <= 25; ch++) cams.push(await createCamera(orgId, { locationId: extra, recorderId: rec, channel: ch }))
+      // 300 sessions: twelve for each of the 25 cameras, made by the registry as openStreams would make them.
       const tokens: string[] = []
-      for (let round = 0; round < 10; round++) {
+      for (let round = 0; round < 12; round++) {
         const { data, error } = await admin().rpc('media_session_create', { p_org: orgId, p_user: u.id, p_kind: 'live', p_cameras: cams, p_streams: cams.map((c) => `cam_${c}_sub`) })
         if (error) throw new Error(error.message)
         for (const r of data ?? []) tokens.push(signStreamToken({ sid: r.sid, u: u.id, c: r.camera_id, k: 'sub', exp: Math.floor(Date.now() / 1000) + 90 }, SECRET))
