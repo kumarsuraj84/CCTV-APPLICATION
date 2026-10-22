@@ -154,6 +154,12 @@ Ruling C-1 (CONFIRMED) and the owner amendment to R-1; migrations `2026102100001
 - **Archive / restore services** (`lib/inventory/archive.ts`, actions `archiveInventoryAction` / `restoreInventoryAction`): administrative role AND `admin.inventory` for the organisation (from the person's own summary), then `inventory_archive` / `inventory_restore`, which raise the access version of exactly the affected people (5a M8).
 - **Discovery** (`discoverRecorderCameras`, `discoverStoreCameras`, `discoverAllRecorders`): administrative role AND `admin.inventory` (for one NVR or location: `has_capability_for(…, 'location', its location)`; for every NVR: organisation-wide in the summary), before any NVR login is read.
 
+### P2-5c-1: administration screens, editor scopes and dynamic groups
+
+- **Access editor scope modes** "A region", "A cluster" and "NVR(s)" next to locations, cameras and assets, offered per area only where the catalogue allows the kind (Wi-Fi has no NVR scope). They go through the same preview and save; the grantor rule (equal or wider scope, for no longer) is explained by the editor and the Server Action, and when the database refuses (`access_check_grantor`) its refusal is shown in plain words (`dbRefusal`).
+- **Dynamic camera-group rules** never widen access: `group_rule_members()` returns only members of groups the caller may see and cameras the caller may see; adding a rule for a place needs `cctv.live` for that whole place (`has_capability_for`), the same rule as adding its cameras one by one. Rules are server-only rows (`camera_group_rules`); their labels on the group page come from the editor's own client ("a place you cannot see" otherwise).
+- **Administration screens** (locations, NVRs, regions, clusters, mapping editor, merge, reconciliation, assets): administrative role AND `admin.inventory` for the whole organisation, asked by `requireAdministration` and again by every service (`lib/inventory/admin-gate.ts`); moves bump the access version of the affected people (the P2-4 revalidation signal; P2-4 not built yet).
+
 ## How to add a capability
 
 1. New forward migration: `INSERT INTO public.capabilities (key, area, description, risk, requires_mfa, scope_kinds)`; `requires_mfa` must equal `risk = 'high'` (or the key is `cctv.export`), the constraint enforces it.

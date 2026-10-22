@@ -1,0 +1,182 @@
+[
+  {
+    "shot": "locations-1366.png",
+    "url": "/admin/locations",
+    "title": "Locations and NVRs — CityKart Drishti",
+    "scrollW": 1351,
+    "vw": 1366,
+    "h": 1016,
+    "store": false
+  },
+  {
+    "shot": "locations-375.png",
+    "url": "/admin/locations",
+    "title": "Locations and NVRs — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 1854,
+    "store": false
+  },
+  {
+    "shot": "location-detail-1366.png",
+    "url": "/admin/locations/<id>",
+    "title": "Location — CityKart Drishti",
+    "scrollW": 1351,
+    "vw": 1366,
+    "h": 1691,
+    "store": false
+  },
+  {
+    "shot": "location-detail-375.png",
+    "url": "/admin/locations/<id>",
+    "title": "Location — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 2981,
+    "store": false
+  },
+  {
+    "shot": "nvr-detail-1366.png",
+    "url": "/admin/locations/<id>/nvrs/<id>",
+    "title": "NVR — CityKart Drishti",
+    "scrollW": 1351,
+    "vw": 1366,
+    "h": 2432,
+    "store": false
+  },
+  {
+    "shot": "nvr-detail-375.png",
+    "url": "/admin/locations/<id>/nvrs/<id>",
+    "title": "NVR — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 4206,
+    "store": false
+  },
+  {
+    "shot": "regions-clusters-1366.png",
+    "url": "/admin/regions",
+    "title": "Regions and clusters — CityKart Drishti",
+    "scrollW": 1351,
+    "vw": 1366,
+    "h": 1918,
+    "store": false
+  },
+  {
+    "shot": "regions-clusters-375.png",
+    "url": "/admin/regions",
+    "title": "Regions and clusters — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 2982,
+    "store": false
+  },
+  {
+    "shot": "zone-proposals-1366.png",
+    "url": "/admin/regions/proposals",
+    "title": "Suggest clusters — CityKart Drishti",
+    "scrollW": 1366,
+    "vw": 1366,
+    "h": 768,
+    "store": false
+  },
+  {
+    "shot": "zone-proposals-375.png",
+    "url": "/admin/regions/proposals",
+    "title": "Suggest clusters — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 812,
+    "store": false
+  },
+  {
+    "shot": "reconciliation-1366.png",
+    "url": "/admin/reconciliation",
+    "title": "Reconciliation — CityKart Drishti",
+    "scrollW": 1366,
+    "vw": 1366,
+    "h": 768,
+    "store": false
+  },
+  {
+    "shot": "reconciliation-375.png",
+    "url": "/admin/reconciliation",
+    "title": "Reconciliation — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 812,
+    "store": false
+  },
+  {
+    "shot": "assets-1366.png",
+    "url": "/admin/assets",
+    "title": "Assets — CityKart Drishti",
+    "scrollW": 1351,
+    "vw": 1366,
+    "h": 1215,
+    "store": false
+  },
+  {
+    "shot": "assets-375.png",
+    "url": "/admin/assets",
+    "title": "Assets — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 2519,
+    "store": false
+  },
+  {
+    "shot": "asset-detail-1366.png",
+    "url": "/admin/assets/<id>",
+    "title": "Asset — CityKart Drishti",
+    "scrollW": 1351,
+    "vw": 1366,
+    "h": 1504,
+    "store": false
+  },
+  {
+    "shot": "asset-detail-375.png",
+    "url": "/admin/assets/<id>",
+    "title": "Asset — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 3108,
+    "store": false
+  },
+  {
+    "shot": "group-rules-1366.png",
+    "url": "/groups/<id>",
+    "title": "Camera group — CityKart Drishti",
+    "scrollW": 1351,
+    "vw": 1366,
+    "h": 1050,
+    "store": true
+  },
+  {
+    "shot": "group-rules-375.png",
+    "url": "/groups/<id>",
+    "title": "Camera group — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 1584,
+    "store": true
+  },
+  {
+    "shot": "access-editor-scopes-1366.png",
+    "url": "/admin/users/<id>/access",
+    "title": "Access — CityKart Drishti",
+    "scrollW": 1351,
+    "vw": 1366,
+    "h": 1579,
+    "store": false
+  },
+  {
+    "shot": "access-editor-scopes-375.png",
+    "url": "/admin/users/<id>/access",
+    "title": "Access — CityKart Drishti",
+    "scrollW": 375,
+    "vw": 375,
+    "h": 2421,
+    "store": false
+  }
+]
