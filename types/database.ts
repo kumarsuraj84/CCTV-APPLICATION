@@ -819,6 +819,20 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"rate_limit_hits": {
+                  Row: {
+                    "hits": number,"key": string,"last_hit_at": string,"window_sec": number,"window_start": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "hits"?: number,"key": string,"last_hit_at"?: string,"window_sec": number,"window_start": string
+                  }
+                  Update: {
+                    "hits"?: number,"key"?: string,"last_hit_at"?: string,"window_sec"?: number,"window_start"?: string
+                  }
+                  Relationships: [
+                    
+                  ]
                 },"recorders": {
                   Row: {
                     "clock_offset_sec": number | null,"clock_offset_source": string | null,"created_asset": boolean,"created_at": string,"expected_channels": number,"http_port": number,"id": string,"location_id": string,"migrated_from_location_id": string | null,"monitoring_disabled_at": string | null,"monitoring_disabled_by": string | null,"monitoring_disabled_reason": string | null,"monitoring_enabled": boolean,"org_id": string,"rtsp_port": number,"secret_id": string | null,"updated_at": string,"username": string | null,"vendor_capabilities": NonNullable<Json>
@@ -879,6 +893,26 @@ isOneToOne: false
       foreignKeyName: "regions_org_id_fkey"
       columns: ["org_id"]
 isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"security_settings": {
+                  Row: {
+                    "note": string | null,"org_id": string,"service_role_credential_reads": boolean,"updated_at": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "note"?: string | null,"org_id": string,"service_role_credential_reads"?: boolean,"updated_at"?: string
+                  }
+                  Update: {
+                    "note"?: string | null,"org_id"?: string,"service_role_credential_reads"?: boolean,"updated_at"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "security_settings_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: true
       referencedRelation: "organizations"
       referencedColumns: ["id"]
     }
@@ -989,6 +1023,26 @@ isOneToOne: false
 isOneToOne: false
       referencedRelation: "profiles"
       referencedColumns: ["id","org_id"]
+    }
+                  ]
+                },"vault_reads": {
+                  Row: {
+                    "actor_id": string | null,"at": string,"db_role": string,"id": string,"org_id": string,"outcome": string,"purpose": string,"recorder_id": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "actor_id"?: string | null,"at"?: string,"db_role": string,"id"?: string,"org_id": string,"outcome": string,"purpose": string,"recorder_id"?: string | null
+                  }
+                  Update: {
+                    "actor_id"?: string | null,"at"?: string,"db_role"?: string,"id"?: string,"org_id"?: string,"outcome"?: string,"purpose"?: string,"recorder_id"?: string | null
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "vault_reads_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
     }
                   ]
                 },"worker_state": {
@@ -1349,6 +1403,9 @@ isOneToOne: false
 "change_person_role":
 { Args: { "p_actor": string,"p_expected_version"?: number,"p_org": string,"p_role": Database["public"]['Enums']["user_role"],"p_user": string }; Returns: Json
                            },
+"credential_purpose_allowed":
+{ Args: { "p_purpose": string,"p_role": string }; Returns: boolean
+                           },
 "current_org_id":
 { Args: Record<PropertyKey, never>; Returns: string
                            },
@@ -1528,6 +1585,31 @@ isOneToOne: false
 "privilege_violations":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },
+"privilege_violations_selftest":
+{ Args: Record<PropertyKey, never>; Returns: (string)[]
+                           },
+"rate_limit_clear":
+{ Args: { "p_key": string }; Returns: undefined
+                           },
+"rate_limit_hit":
+{ Args: { "p_key": string,"p_limit": number,"p_window_sec": number }; Returns: {
+              "allowed": boolean,"hits": number,"reset_at": string
+            }[]
+                           },
+"rate_limit_prune":
+{ Args: { "p_keep"?: string }; Returns: number
+                           },
+"rate_limit_state":
+{ Args: { "p_key": string,"p_window_sec": number }; Returns: {
+              "hits": number,"last_hit_at": string,"reset_at": string
+            }[]
+                           },
+"rate_limit_window_start":
+{ Args: { "p_at": string,"p_window_sec": number }; Returns: string
+                           },
+"recorder_credential_read":
+{ Args: { "p_actor"?: string,"p_purpose": string,"p_recorder": string }; Returns: string
+                           },
 "recorder_credential_status":
 { Args: { "p_org": string,"p_recorder": string }; Returns: Json
                            },
@@ -1542,6 +1624,9 @@ isOneToOne: false
                            },
 "recorder_save":
 { Args: { "p_actor"?: string,"p_expected_channels"?: number,"p_host": string,"p_http_port": number,"p_location": string,"p_name"?: string,"p_org": string,"p_recorder": string,"p_rtsp_port": number,"p_username": string }; Returns: string
+                           },
+"recorder_secret_equals":
+{ Args: { "p_actor": string,"p_org": string,"p_recorder": string,"p_secret": string }; Returns: boolean
                            },
 "recorder_set_monitoring":
 { Args: { "p_actor"?: string,"p_enabled": boolean,"p_org": string,"p_reason": string,"p_recorder": string }; Returns: Json
@@ -1564,6 +1649,15 @@ isOneToOne: false
 "revoke_user_sessions":
 { Args: { "p_user": string }; Returns: undefined
                            },
+"security_settings_set_test":
+{ Args: { "p_org": string,"p_service_role_credential_reads": boolean }; Returns: undefined
+                           },
+"service_caller_role":
+{ Args: Record<PropertyKey, never>; Returns: string
+                           },
+"service_role_may_read_credentials":
+{ Args: { "p_org": string }; Returns: boolean
+                           },
 "set_person_active":
 { Args: { "p_active": boolean,"p_actor": string,"p_org": string,"p_user": string }; Returns: boolean
                            },
@@ -1576,6 +1670,9 @@ isOneToOne: false
 { Args: { "p_ids": (string)[],"p_now"?: string,"p_org": string,"p_type": string,"p_window": string }; Returns: {
               "target_id": string,"uptime_pct": number
             }[]
+                           },
+"vault_reads_prune":
+{ Args: { "p_keep"?: string }; Returns: number
                            },
 "wifi_inventory":
 { Args: Record<PropertyKey, never>; Returns: {
