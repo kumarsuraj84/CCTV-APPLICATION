@@ -146,7 +146,9 @@ describe('monitoring in the database', () => {
     const now = new Date().toISOString()
     await apply(orgId, [{ type: 'recorder', id: recorderId, ok: true, at: now }, { type: 'camera', id: cam1, ok: true, at: now }])
     const m = await manager.client.from('location_status').select('*').eq('location_id', storeId).single()
-    expect(m.data).toMatchObject({ cameras_total: 2, cameras_live: 1, cameras_down: 1, cameras_unknown: 0, nvr_status: 'up', recorders_total: 1, recorders_up: 1 })
+    // P4-L1 review I-3 (MC-4): cam2 is down with the worker's method nvr_down (its NVR was not reachable), so it is "recorder not
+    // reachable", no longer counted as down.
+    expect(m.data).toMatchObject({ cameras_total: 2, cameras_live: 1, cameras_down: 0, cameras_recorder_unreachable: 1, cameras_unknown: 0, nvr_status: 'up', recorders_total: 1, recorders_up: 1 })
     const v = await viewer.client.from('location_status').select('*').eq('location_id', storeId).single()
     expect(v.data).toMatchObject({ cameras_total: 1, cameras_live: 1, cameras_down: 0 })
   })

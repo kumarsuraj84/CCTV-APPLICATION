@@ -52,9 +52,11 @@ describe('the re-check at commit of a bulk access change is bounded (review I-1)
     // 36 open sessions each, plus 108 made and never opened (three renewals of the wall).
     const openSids: string[] = []
     await Promise.all(admins.map(async (u) => {
-      const { data, error } = await admin().rpc('media_session_create', { p_org: orgId, p_user: u.id, p_kind: 'live', p_cameras: wall, p_streams: wall.map((c) => `cam_${c}_sub`) })
+      // P4-L1 review I-1: the gateway now holds a person to their live stream cap (default 25); this shape (a 6 × 6 wall each) is made
+      // with a cap of 36 by the capped call, as openStreams would with LIVE_MAX_STREAMS_PER_USER=36.
+      const { data, error } = await admin().rpc('media_session_create_live', { p_org: orgId, p_user: u.id, p_cameras: wall, p_streams: wall.map((c) => `cam_${c}_sub`), p_max: WALL })
       if (error) throw new Error(error.message)
-      for (const r of data ?? []) {
+      for (const r of (data ?? []) as { camera_id: string; sid: string }[]) {
         const o = await admin().rpc('media_session_open', { p_sid: r.sid, p_user: u.id, p_camera: r.camera_id, p_kind: 'live', p_stream: `cam_${r.camera_id}_sub` })
         expect((o.data as { ok: boolean }[])[0].ok).toBe(true)
         openSids.push(r.sid)
@@ -66,8 +68,10 @@ describe('the re-check at commit of a bulk access change is bounded (review I-1)
     }))
     expect(openSids).toHaveLength(ADMINS * WALL)
     // One administrator also watches a camera of a location that is archived: that session must end.
-    const [{ sid: doomedSid }] = ((await admin().rpc('media_session_create', { p_org: orgId, p_user: admins[0].id, p_kind: 'live', p_cameras: [doomedCamera], p_streams: [`cam_${doomedCamera}_sub`] })).data ?? []) as { sid: string }[]
-    await admin().rpc('media_session_open', { p_sid: doomedSid, p_user: admins[0].id, p_camera: doomedCamera, p_kind: 'live', p_stream: `cam_${doomedCamera}_sub` })
+    // (P4-L1 review I-1: made under a cap of 37 — the 36 of the wall plus this one — or the gateway would refuse it as over the cap.)
+    const [{ sid: doomedSid }] = ((await admin().rpc('media_session_create_live', { p_org: orgId, p_user: admins[0].id, p_cameras: [doomedCamera], p_streams: [`cam_${doomedCamera}_sub`], p_max: WALL + 1 })).data ?? []) as { sid: string }[]
+    const opened = await admin().rpc('media_session_open', { p_sid: doomedSid, p_user: admins[0].id, p_camera: doomedCamera, p_kind: 'live', p_stream: `cam_${doomedCamera}_sub` })
+    expect((opened.data as { ok: boolean }[])[0].ok).toBe(true)
 
     const plan = { archive: doomed.map((id) => ({ kind: 'location', id })) }
     const t0 = performance.now()
