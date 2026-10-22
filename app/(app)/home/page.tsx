@@ -1,9 +1,12 @@
 import Link from 'next/link'
+import { CheckNowButton } from '@/components/monitor/CheckNowButton'
 import { MonitoringBanner } from '@/components/monitor/MonitoringBanner'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { requireProfile } from '@/lib/auth/profile'
 import { DEVICE_TYPE_LABELS, DEVICE_TYPES, type DeviceType } from '@/lib/inventory/device-types'
+import { canRunChecks } from '@/lib/admin/roles'
+import { getWorkerStatus } from '@/lib/monitor/health'
 import { getMonitoringState } from '@/lib/monitor/uptime'
 import { getDashboard } from '@/lib/queries/status'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -15,7 +18,13 @@ export const metadata = { title: 'Home' }
 export default async function HomePage() {
   const profile = await requireProfile()
   // The numbers come through the person's own client (row-level security); only the monitoring heartbeat, which is not about any store, uses the service role.
-  const [d, monitoring] = await Promise.all([getDashboard(await createClient()), getMonitoringState(createAdminClient())])
+  const admin = createAdminClient()
+  const [d, monitoring, worker] = await Promise.all([
+    getDashboard(await createClient()),
+    getMonitoringState(admin),
+    // Only the time of the last full check is shown; if it cannot be read, the line is simply left out.
+    getWorkerStatus(admin).catch(() => null),
+  ])
   const nothing = d.stores.total === 0 && d.cameras.total === 0 && Object.keys(d.devices).length === 0
   const tile = (key: string, label: string, value: string | number, href: string, tone?: 'good' | 'bad') => (
     <Link key={key} href={href} className="rounded-xl border bg-card p-4 hover:bg-muted">
@@ -25,7 +34,16 @@ export default async function HomePage() {
   )
   return (
     <div className="space-y-6">
-      <PageHeader title={`Welcome, ${profile.full_name || profile.email}`} description="What is working and what is not, right now." />
+      <PageHeader
+        title={`Welcome, ${profile.full_name || profile.email}`}
+        description="What is working and what is not, right now."
+        actions={canRunChecks(profile.role) ? <CheckNowButton /> : undefined}
+      />
+      {worker && (
+        <p className="text-sm text-muted-foreground">
+          {worker.running ? 'Checking everything now…' : worker.runFinishedAt ? `Last checked ${formatDateTime(worker.runFinishedAt)}` : 'Everything has not been checked in full yet.'}
+        </p>
+      )}
       <MonitoringBanner monitoring={monitoring} />
       {nothing ? (
         <p className="text-sm text-muted-foreground">You have not been given access to anything yet. Ask an administrator.</p>

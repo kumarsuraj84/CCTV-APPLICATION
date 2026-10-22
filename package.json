@@ -18,7 +18,9 @@
     "db:types": "supabase gen types typescript --local > types/database.ts",
     "env:local": "node scripts/env-from-supabase.mjs",
     "worker": "tsx services/worker/index.ts",
-    "worker:dev": "tsx watch services/worker/index.ts"
+    "worker:dev": "tsx watch services/worker/index.ts",
+    "fake:nvr": "tsx scripts/fake-nvr.ts",
+    "demo:seed": "tsx scripts/seed-demo.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

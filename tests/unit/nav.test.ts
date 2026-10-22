@@ -20,6 +20,11 @@ describe('navigation per role', () => {
     expect(h).toContain('/admin/stores')
     expect(h).toContain('/admin/devices')
     expect(h).toContain('/admin/import')
+    expect(h).toContain('/admin/monitoring')
+  })
+
+  it('nobody below an admin sees the Monitoring page', () => {
+    for (const role of ['user', 'agent', 'manager'] as const) expect(hrefs(role)).not.toContain('/admin/monitoring')
   })
 
   it('a platform owner sees what an admin sees', () => {
