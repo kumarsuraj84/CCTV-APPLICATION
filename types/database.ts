@@ -917,6 +917,20 @@ isOneToOne: true
       referencedColumns: ["id"]
     }
                   ]
+                },"sign_in_attempts": {
+                  Row: {
+                    "failures": number,"key": string,"last_attempt_at": string | null,"window_start": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "failures"?: number,"key": string,"last_attempt_at"?: string | null,"window_start"?: string
+                  }
+                  Update: {
+                    "failures"?: number,"key"?: string,"last_attempt_at"?: string | null,"window_start"?: string
+                  }
+                  Relationships: [
+                    
+                  ]
                 },"user_camera_access": {
                   Row: {
                     "camera_id": string,"org_id": string,"user_id": string
@@ -1652,14 +1666,33 @@ isOneToOne: false
 "security_settings_set_test":
 { Args: { "p_org": string,"p_service_role_credential_reads": boolean }; Returns: undefined
                            },
+"security_unlocked_organizations":
+{ Args: Record<PropertyKey, never>; Returns: string[]
+                           },
 "service_caller_role":
 { Args: Record<PropertyKey, never>; Returns: string
+                           },
+"service_role_grants":
+{ Args: Record<PropertyKey, never>; Returns: {
+              "column_name": string,"grantee": string,"privilege": string,"relation": string
+            }[]
                            },
 "service_role_may_read_credentials":
 { Args: { "p_org": string }; Returns: boolean
                            },
 "set_person_active":
 { Args: { "p_active": boolean,"p_actor": string,"p_org": string,"p_user": string }; Returns: boolean
+                           },
+"sign_in_delay_sec":
+{ Args: { "p_failures": number }; Returns: number
+                           },
+"sign_in_finish":
+{ Args: { "p_ip_key"?: string,"p_key": string,"p_outcome": string }; Returns: undefined
+                           },
+"sign_in_gate":
+{ Args: { "p_ip_key"?: string,"p_ip_limit"?: number,"p_key": string }; Returns: {
+              "allowed": boolean,"reason": string,"wait_sec": number
+            }[]
                            },
 "status_reasons":
 { Args: { "p_ids": (string)[],"p_type": string }; Returns: {

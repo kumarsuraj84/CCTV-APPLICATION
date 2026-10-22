@@ -1,4 +1,10 @@
--- Rollback of 20261021000033_p26_service_roles.sql (P2-6). Dry run first: BEGIN; \i this file; ROLLBACK;
+-- Rollback of 20261021000033_p26_service_roles.sql (P2-6). Runs in its own transaction (review round 1, M-13): a run that fails midway
+-- changes nothing. Roll back the later migrations first, newest first (20261021000035, then 20261021000034 of P3-1, which adds a
+-- column to security_settings), then this one.
+-- Dry run first (everything is undone at the end):  psql -v ON_ERROR_STOP=1 -v drishti_dry_run=1 -f <this file>
+-- For real:                                         psql -v ON_ERROR_STOP=1 -f <this file>
+-- It leaves `ALTER DEFAULT PRIVILEGES FOR ROLE postgres REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC` in place on purpose: closed defaults
+-- for new functions are correct with or without the service roles.
 -- Puts back verbatim the functions the migration replaced (recorder_read_credential STABLE without logging, inventory_import_apply with
 -- its inline comparison, monitor_apply_results with the optional recorder, monitor_request_check / revoke_user_sessions /
 -- targets_uptime with their old search_path, the old privilege_violations), drops the new functions and tables (the credential-read
@@ -6,6 +12,8 @@
 -- BEFORE running it: every process must be back on SUPABASE_SERVICE_ROLE_KEY (remove the SUPABASE_*_KEY service keys from the
 -- environment and restart the web app, gateway and worker), or their requests fail with "role does not exist".
 -- What is lost: the credential-read log (vault_reads) and the rate-limit counts. NVR passwords, inventory and grants are untouched.
+
+BEGIN;
 
 DROP FUNCTION IF EXISTS public.privilege_violations_selftest();
 DROP FUNCTION IF EXISTS public.rate_limit_prune(interval);
@@ -423,3 +431,9 @@ DROP ROLE IF EXISTS monitor_worker;
 DROP ROLE IF EXISTS video_gateway;
 
 NOTIFY pgrst, 'reload schema';
+
+\if :{?drishti_dry_run}
+ROLLBACK;
+\else
+COMMIT;
+\endif
