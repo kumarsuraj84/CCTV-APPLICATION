@@ -15,10 +15,15 @@ export const FAKE_ERP_PORT = 9101
 export const FAKE_ATTENDANCE_PORT = 9102
 export const FAKE_ATTENDANCE_2_PORT = 9103
 
-/** Ports the demo points at where nothing listens, so that those targets show as offline. */
+/**
+ * Ports the demo points at where nothing listens, so that those targets show as offline. These are only the defaults; the seed checks
+ * that nothing listens and uses other, verified free ports (scripts/lib/ports.ts) for the rows it writes.
+ */
 export const DEAD_NVR_HTTP_PORT = 8082
 export const DEAD_NVR_RTSP_PORT = 8555
 export const DEAD_DEVICE_PORT = 9199
+export type DeadPorts = { nvrHttp: number; nvrRtsp: number; device: number }
+export const DEFAULT_DEAD_PORTS: DeadPorts = { nvrHttp: DEAD_NVR_HTTP_PORT, nvrRtsp: DEAD_NVR_RTSP_PORT, device: DEAD_DEVICE_PORT }
 
 /** The login of the pretend NVR. It protects nothing: the fake only listens on this computer. */
 export const DEMO_NVR_USER = 'viewer'
@@ -68,19 +73,24 @@ export type DemoStorePlan = {
 export type DemoDevicePlan = { type: 'server' | 'attendance' | 'footfall'; name: string; storeCode: string | null; port: number }
 
 /** The sample stores and devices. Every address is 127.0.0.1; names say DEMO so that they are never mistaken for real ones. */
-export function demoPlan(nvrPort: number = DEFAULT_NVR_PORT): { stores: DemoStorePlan[]; devices: DemoDevicePlan[] } {
+export function demoPlan(nvrPort: number = DEFAULT_NVR_PORT, dead: DeadPorts = DEFAULT_DEAD_PORTS): { stores: DemoStorePlan[]; devices: DemoDevicePlan[] } {
   const nvr = parseNvrPort(nvrPort)
+  const open = new Set([nvr, FAKE_RTSP_PORT, FAKE_ERP_PORT, FAKE_ATTENDANCE_PORT, FAKE_ATTENDANCE_2_PORT])
+  const closed = [dead.nvrHttp, dead.nvrRtsp, dead.device]
+  if (new Set(closed).size !== 3 || closed.some((p) => open.has(p))) {
+    throw new Error('The ports for the offline demo targets must differ from each other and from the ports the pretend servers use.')
+  }
   return {
     stores: [
       { code: 'DEMO1', name: 'Demo Store Patna', city: 'Patna', zone: 'BR', httpPort: nvr, rtspPort: FAKE_RTSP_PORT, cameras: 6, viewers: ['user', 'agent'] },
       // Nothing listens on these two ports: the NVR is down.
-      { code: 'DEMO2', name: 'Demo Store Ranchi', city: 'Ranchi', zone: 'Jharkhand', httpPort: DEAD_NVR_HTTP_PORT, rtspPort: DEAD_NVR_RTSP_PORT, cameras: 4, viewers: ['user', 'agent'] },
+      { code: 'DEMO2', name: 'Demo Store Ranchi', city: 'Ranchi', zone: 'Jharkhand', httpPort: dead.nvrHttp, rtspPort: dead.nvrRtsp, cameras: 4, viewers: ['user', 'agent'] },
       { code: 'DEMO3', name: 'Demo Store Gaya', city: 'Gaya', zone: 'BR', httpPort: nvr, rtspPort: FAKE_RTSP_PORT, cameras: 4, viewers: ['agent'] },
     ],
     devices: [
       { type: 'server', name: 'Demo ERP server', storeCode: null, port: FAKE_ERP_PORT },
       { type: 'attendance', name: 'Demo attendance machine', storeCode: 'DEMO1', port: FAKE_ATTENDANCE_PORT },
-      { type: 'footfall', name: 'Demo footfall counter', storeCode: 'DEMO1', port: DEAD_DEVICE_PORT }, // nothing listens: offline
+      { type: 'footfall', name: 'Demo footfall counter', storeCode: 'DEMO1', port: dead.device }, // nothing listens: offline
       { type: 'attendance', name: 'Demo attendance Gaya', storeCode: 'DEMO3', port: FAKE_ATTENDANCE_2_PORT },
     ],
   }

@@ -20,6 +20,10 @@ import {
   DEMO_ROLES,
   DEMO_ROLE_LABELS,
   DEMO_SLUG,
+  FAKE_ATTENDANCE_2_PORT,
+  FAKE_ATTENDANCE_PORT,
+  FAKE_ERP_PORT,
+  FAKE_RTSP_PORT,
   LOOPBACK,
   demoEmail,
   demoPlan,
@@ -27,6 +31,7 @@ import {
   makePassword,
   parseNvrPort,
 } from './lib/demo'
+import { findClosedPorts } from './lib/ports'
 
 type Admin = SupabaseClient<Database>
 
@@ -60,8 +65,10 @@ async function findDemoOrg(admin: Admin): Promise<{ id: string; slug: string; na
 
 /** Removing demo data while the checker runs could leave status rows behind, so the checker must be stopped first. */
 async function assertWorkerStopped(admin: Admin): Promise<void> {
-  const { data } = await admin.from('worker_state').select('last_heartbeat').eq('id', 1).single()
-  if (data?.last_heartbeat && Date.now() - new Date(data.last_heartbeat).getTime() < 30_000) {
+  // Fails closed: when it cannot be read whether the worker runs, nothing is removed.
+  const { data, error } = await admin.from('worker_state').select('last_heartbeat').eq('id', 1).single()
+  if (error || !data) fail('Could not check whether the monitoring worker is running, so nothing was removed. Check that the local database is up and try again.')
+  if (data.last_heartbeat && Date.now() - new Date(data.last_heartbeat).getTime() < 30_000) {
     fail('The monitoring worker is running. Stop it (Ctrl+C in its window) and try again.')
   }
 }
@@ -76,13 +83,38 @@ async function removeDemo(admin: Admin): Promise<boolean> {
   return true
 }
 
+/**
+ * A demo sign-in left behind by a run that stopped half way (the person exists, the profile does not) would make the next run fail with
+ * "already registered". Such leftovers are removed; a demo e-mail that belongs to a real profile is never touched.
+ */
+async function removeLeftoverDemoUsers(admin: Admin): Promise<void> {
+  const wanted = new Set(DEMO_ROLES.map((r) => demoEmail(r)))
+  for (let page = 1; ; page++) {
+    const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 1000 })
+    if (error) fail('Could not look for leftover demo sign-ins: ' + error.message)
+    for (const u of data.users) {
+      if (!u.email || !wanted.has(u.email.toLowerCase())) continue
+      const { data: profile, error: pErr } = await admin.from('profiles').select('id').eq('id', u.id).maybeSingle()
+      if (pErr) fail('Could not look for leftover demo sign-ins: ' + pErr.message)
+      if (profile) fail(`The e-mail ${u.email} already belongs to a person outside the demo. Not touching it.`)
+      const del = await admin.auth.admin.deleteUser(u.id)
+      if (del.error) fail('Could not remove a leftover demo sign-in: ' + del.error.message)
+    }
+    if (data.users.length < 1000) return
+  }
+}
+
 async function addDemo(admin: Admin, nvrPort: number): Promise<void> {
+  // The offline targets must really be offline: ports that nothing listens on, checked now and written into the rows.
+  const [nvrHttp, nvrRtsp, device] = await findClosedPorts(3, new Set([nvrPort, FAKE_RTSP_PORT, FAKE_ERP_PORT, FAKE_ATTENDANCE_PORT, FAKE_ATTENDANCE_2_PORT]))
+  const plan = demoPlan(nvrPort, { nvrHttp, nvrRtsp, device })
+  await removeLeftoverDemoUsers(admin)
   const { data: org, error: orgError } = await admin.from('organizations').insert({ name: DEMO_ORG_NAME, slug: DEMO_SLUG }).select('id').single()
   if (orgError || !org) throw new Error(`Could not create the demo organisation: ${orgError?.message}`)
   const orgId = org.id
+  const authIds: string[] = [] // every sign-in made here, so that a failure can remove them even if their profile was never made
   const passwords: { role: (typeof DEMO_ROLES)[number]; email: string; password: string }[] = []
   try {
-    const plan = demoPlan(nvrPort)
     const storeIds: Record<string, string> = {}
     for (const s of plan.stores) {
       const { data, error } = await admin
@@ -114,6 +146,7 @@ async function addDemo(admin: Admin, nvrPort: number): Promise<void> {
       const created = await admin.auth.admin.createUser({ email, password, email_confirm: true })
       if (created.error || !created.data.user) throw new Error(`user ${role}: ${created.error?.message}`)
       const id = created.data.user.id
+      authIds.push(id)
       const profile = await admin
         .from('profiles')
         .insert({ id, org_id: orgId, email, full_name: `Demo ${DEMO_ROLE_LABELS[role]}`, role, must_reset_password: false })
@@ -127,13 +160,17 @@ async function addDemo(admin: Admin, nvrPort: number): Promise<void> {
       passwords.push({ role, email, password })
     }
   } catch (e) {
-    // Leave nothing half-made behind.
+    // Leave nothing half-made behind: the organisation with its people, then any sign-in whose profile was never made.
     await cleanupOrg(orgId).catch((c) => console.error('Clean-up after the failure also failed:', c instanceof Error ? c.message : c))
+    for (const id of authIds) {
+      const del = await admin.auth.admin.deleteUser(id)
+      if (del.error && !/not found/i.test(del.error.message)) console.error('Could not remove a demo sign-in after the failure:', del.error.message)
+    }
     throw e
   }
 
   console.log('Demo data added: stores DEMO1, DEMO2, DEMO3 (14 cameras) and 4 devices, all pointing at this computer (127.0.0.1).')
-  console.log('DEMO2 has no NVR listening on purpose (shows as down), and so has the footfall counter. Camera 3 on the pretend NVR is offline.')
+  console.log('DEMO2 has no NVR listening on purpose (shows as down), and neither has the footfall counter (ports checked to be closed). Camera 3 on the pretend NVR is offline.')
   console.log('')
   console.log('Demo people. These passwords are shown now and are NOT saved anywhere:')
   for (const p of passwords) console.log(`  ${DEMO_ROLE_LABELS[p.role].padEnd(15)} ${p.email.padEnd(40)} ${p.password}`)

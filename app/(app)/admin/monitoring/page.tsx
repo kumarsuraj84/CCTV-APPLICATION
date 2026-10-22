@@ -1,3 +1,4 @@
+import { AutoRefresh } from '@/components/monitor/AutoRefresh'
 import { CheckNowButton } from '@/components/monitor/CheckNowButton'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -72,6 +73,7 @@ export default async function MonitoringPage() {
 
   return (
     <div className="space-y-6">
+      <AutoRefresh busy={worker.running || !!asked} />
       <PageHeader title="Monitoring" description="Is the checker running, and what did it find?" />
       <section className="space-y-3 rounded-xl border bg-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">

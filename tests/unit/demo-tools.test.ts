@@ -13,6 +13,8 @@ import {
   parseFakeNvrArgs,
   parseNvrPort,
 } from '../../scripts/lib/demo'
+import { findClosedPorts, isPortClosed } from '../../scripts/lib/ports'
+import { closedPort, startFakeNvr, startFakeRtsp, startFakeTcp } from '../helpers/fake-servers'
 
 describe('fake NVR options', () => {
   it('uses the default port and no flipping when nothing is given', () => {
@@ -42,7 +44,19 @@ describe('fake NVR options', () => {
     expect(parseNvrPort(65535)).toBe(65535)
   })
 
-  it('the fake servers can only listen on 127.0.0.1', () => {
+  it('the fake servers really listen on 127.0.0.1, whichever port they are started on', async () => {
+    const started = [await startFakeNvr({ port: 0 }), await startFakeRtsp('open', 0), await startFakeTcp(0)]
+    try {
+      for (const s of started) {
+        expect(s.host).toBe('127.0.0.1')
+        expect(s.port).toBeGreaterThan(0)
+      }
+    } finally {
+      await Promise.all(started.map((s) => s.close()))
+    }
+  })
+
+  it('the fake servers can only listen on 127.0.0.1 (source check)', () => {
     const source = readFileSync('tests/helpers/fake-servers.ts', 'utf8')
     const listens = source.split('\n').filter((l) => l.includes('.listen('))
     expect(listens.length).toBeGreaterThanOrEqual(3)
@@ -74,11 +88,46 @@ describe('demo data plan', () => {
     expect(() => demoPlan(8082)).toThrow()
   })
 
-  it('one store has its NVR down and one device is offline', () => {
-    const plan = demoPlan()
-    const live = new Set(plan.stores.map((s) => s.httpPort))
-    expect(live.size).toBe(2) // the live NVR port and the dead one
-    expect(plan.devices.some((d) => d.port === 9199)).toBe(true)
+  it('puts the NVR that is down on DEMO2 only, and the offline device on the footfall counter only', () => {
+    const dead = { nvrHttp: 50_001, nvrRtsp: 50_002, device: 50_003 }
+    const plan = demoPlan(8100, dead)
+    expect(plan.stores.filter((s) => s.httpPort === dead.nvrHttp || s.rtspPort === dead.nvrRtsp).map((s) => s.code)).toEqual(['DEMO2'])
+    const demo2 = plan.stores.find((s) => s.code === 'DEMO2')!
+    expect([demo2.httpPort, demo2.rtspPort]).toEqual([dead.nvrHttp, dead.nvrRtsp])
+    for (const s of plan.stores.filter((x) => x.code !== 'DEMO2')) expect([s.httpPort, s.rtspPort]).toEqual([8100, 8554])
+    expect(plan.devices.filter((d) => d.port === dead.device).map((d) => d.name)).toEqual(['Demo footfall counter'])
+    // Every other device points at a port the pretend servers open.
+    expect(plan.devices.filter((d) => d.port !== dead.device).map((d) => d.port)).toEqual([9101, 9102, 9103])
+  })
+
+  it('the offline ports must differ from each other and from the ports the pretend servers use', () => {
+    expect(() => demoPlan(8100, { nvrHttp: 50_001, nvrRtsp: 50_001, device: 50_003 })).toThrow()
+    expect(() => demoPlan(8100, { nvrHttp: 8100, nvrRtsp: 50_002, device: 50_003 })).toThrow()
+    expect(() => demoPlan(8100, { nvrHttp: 50_001, nvrRtsp: 8554, device: 50_003 })).toThrow()
+    expect(() => demoPlan(8100, { nvrHttp: 50_001, nvrRtsp: 50_002, device: 9101 })).toThrow()
+  })
+})
+
+describe('ports that nothing listens on', () => {
+  it('tells an open port from a closed one', async () => {
+    const open = await startFakeTcp(0)
+    try {
+      expect(await isPortClosed(open.port)).toBe(false)
+    } finally {
+      await open.close()
+    }
+    expect(await isPortClosed(await closedPort())).toBe(true)
+  })
+
+  it('finds distinct closed ports and keeps away from the ones it is told to avoid', async () => {
+    const avoid = new Set([8081, 8554])
+    const found = await findClosedPorts(3, avoid)
+    expect(new Set(found).size).toBe(3)
+    for (const p of found) {
+      expect(avoid.has(p)).toBe(false)
+      expect(p).toBeGreaterThanOrEqual(1024)
+      expect(await isPortClosed(p)).toBe(true)
+    }
   })
 })
 

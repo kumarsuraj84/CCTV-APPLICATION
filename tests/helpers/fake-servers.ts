@@ -4,6 +4,8 @@ import http from 'node:http'
 import net from 'node:net'
 
 export type Running = { port: number; close: () => Promise<void> }
+/** A fake server that says which address it really listens on (always 127.0.0.1; a test checks it). */
+export type Bound = Running & { host: string }
 
 const md5 = (s: string) => createHash('md5').update(s).digest('hex')
 
@@ -16,7 +18,7 @@ function closer(server: net.Server | http.Server, sockets: Set<net.Socket>) {
 }
 
 /** Accepts a connection and closes it at once: enough for a TCP "is it there" check. */
-export async function startFakeTcp(fixedPort = 0): Promise<Running> {
+export async function startFakeTcp(fixedPort = 0): Promise<Bound> {
   const sockets = new Set<net.Socket>()
   const server = net.createServer((s) => {
     sockets.add(s)
@@ -25,7 +27,7 @@ export async function startFakeTcp(fixedPort = 0): Promise<Running> {
     s.end()
   })
   const port = await new Promise<number>((resolve) => server.listen(fixedPort, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port)))
-  return { port, close: closer(server, sockets) }
+  return { port, host: (server.address() as net.AddressInfo).address, close: closer(server, sockets) }
 }
 
 /** A port nothing listens on: open a server, remember its port, close it. */
@@ -58,7 +60,7 @@ export type FakeNvrOptions = {
   videoInputs?: 'ok' | 'empty'
   port?: number
 }
-export type FakeNvr = Running & {
+export type FakeNvr = Bound & {
   requests: string[]
   /** Every Authorization header received, in order. */
   authorizations: string[]
@@ -177,7 +179,7 @@ export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNv
     s.on('close', () => sockets.delete(s))
   })
   const port = await new Promise<number>((resolve) => server.listen(options.port ?? 0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port)))
-  return { port, requests, authorizations, setStatuses: (s) => (statuses = s), close: closer(server, sockets) }
+  return { port, host: (server.address() as net.AddressInfo).address, requests, authorizations, setStatuses: (s) => (statuses = s), close: closer(server, sockets) }
 }
 
 // ── Fake RTSP camera endpoint ────────────────────────────────────────────────
@@ -187,7 +189,7 @@ export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNv
  * Basic is never accepted by the fake.
  */
 export type FakeRtspMode = 'open' | 'needs-auth' | 'refuse' | 'always-401' | 'needs-auth-basic-first' | 'needs-auth-digest-first'
-export type FakeRtsp = Running & {
+export type FakeRtsp = Bound & {
   requests: string[]
   /** Every Authorization header received, in order. */
   authorizations: string[]
@@ -228,5 +230,5 @@ export async function startFakeRtsp(mode: FakeRtspMode, fixedPort = 0, credentia
     })
   })
   const port = await new Promise<number>((resolve) => server.listen(fixedPort, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port)))
-  return { port, requests, authorizations, close: closer(server, sockets) }
+  return { port, host: (server.address() as net.AddressInfo).address, requests, authorizations, close: closer(server, sockets) }
 }
