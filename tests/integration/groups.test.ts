@@ -46,7 +46,8 @@ describe('camera groups', () => {
   let orgId: string
   let otherOrg: string
   let sA: string, sB: string
-  let a1: string, a2: string, a3: string, b1: string, b2: string
+  let a1: string, a2: string, a3: string, a4: string, b1: string, b2: string
+  let foreignCam: string // a camera of the other organisation
   let viewerA: TestUser, viewerB: TestUser, viewerNone: TestUser, manager: TestUser, agent: TestUser, agent2: TestUser, adminUser: TestUser, outsider: TestUser
   let wide: string // a group holding cameras of both stores
 
@@ -58,6 +59,7 @@ describe('camera groups', () => {
     a1 = await addCamera(orgId, sA, 1, 'Front Door')
     a2 = await addCamera(orgId, sA, 2, 'Back door')
     a3 = await addCamera(orgId, sA, 3, '100%_Till')
+    a4 = await addCamera(orgId, sA, 4, 'Odd*Name')
     b1 = await addCamera(orgId, sB, 1, 'Entrance DOOR')
     b2 = await addCamera(orgId, sB, 2, 'Store room')
     viewerA = await createUser(orgId, 'user')
@@ -68,6 +70,7 @@ describe('camera groups', () => {
     agent2 = await createUser(orgId, 'agent')
     adminUser = await createUser(orgId, 'admin')
     outsider = await createUser(otherOrg, 'admin')
+    foreignCam = await addCamera(otherOrg, await addStore(otherOrg, 'OT'), 1, 'Other org door')
     await grant(viewerA.id, [sA])
     await grant(viewerB.id, [sB])
     await grant(agent.id, [sA])
@@ -179,16 +182,31 @@ describe('camera groups', () => {
       const made = await createGroup(deps(agent2), actor, 'By word')
       if (!made.ok) throw new Error(made.error)
       const res = await addCamerasByKeyword(deps(agent2), actor, made.groupId, 'DOOR')
-      expect(res).toEqual({ ok: true, added: 2 }) // Front Door and Back door; "Entrance DOOR" is in store B
+      expect(res).toEqual({ ok: true, added: 2, truncated: false }) // Front Door and Back door; "Entrance DOOR" is in store B
       expect(await itemIds(agent2, made.groupId)).toEqual(sorted([a1, a2]))
-      expect(await addCamerasByKeyword(deps(agent2), actor, made.groupId, 'door')).toEqual({ ok: true, added: 0 })
+      expect(await addCamerasByKeyword(deps(agent2), actor, made.groupId, 'door')).toEqual({ ok: true, added: 0, truncated: false })
       // Wildcard characters in the keyword are plain text.
-      expect(await addCamerasByKeyword(deps(agent2), actor, made.groupId, '%')).toEqual({ ok: true, added: 1 }) // only "100%_Till"
-      expect(await addCamerasByKeyword(deps(agent2), actor, made.groupId, 'nothing like this')).toEqual({ ok: true, added: 0 })
+      expect(await addCamerasByKeyword(deps(agent2), actor, made.groupId, '%')).toEqual({ ok: true, added: 1, truncated: false }) // only "100%_Till"
+      expect(await addCamerasByKeyword(deps(agent2), actor, made.groupId, 'nothing like this')).toEqual({ ok: true, added: 0, truncated: false })
       expect((await addCamerasByKeyword(deps(agent2), actor, made.groupId, '   ')).ok).toBe(false)
     })
 
-    it('adds at most 500 cameras by keyword', async () => {
+    it('treats * in the keyword as the character itself, not as "anything"', async () => {
+      const actor = actorOf(agent2, orgId, 'agent')
+      const made = await createGroup(deps(agent2), actor, 'Star word')
+      if (!made.ok) throw new Error(made.error)
+      // "d*r" would match "Front Door" if * were a wildcard; it must match nothing.
+      expect(await addCamerasByKeyword(deps(agent2), actor, made.groupId, 'd*r')).toEqual({ ok: true, added: 0, truncated: false })
+      expect(await itemIds(agent2, made.groupId)).toEqual([])
+      expect(await addCamerasByKeyword(deps(agent2), actor, made.groupId, '*')).toEqual({ ok: true, added: 1, truncated: false }) // only "Odd*Name"
+      expect(await itemIds(agent2, made.groupId)).toEqual([a4])
+      // Other characters that mean something in patterns are plain text too.
+      for (const word of ['.', '(', '[', '\\', '^', '$', '+', '?', '|', '{']) {
+        expect(await addCamerasByKeyword(deps(agent2), actor, made.groupId, word)).toEqual({ ok: true, added: 0, truncated: false })
+      }
+    })
+
+    it('adds at most 500 cameras by keyword and says when more matched', async () => {
       const store = await addStore(orgId, 'BIG')
       const rows = Array.from({ length: 520 }, (_, i) => ({ org_id: orgId, store_id: store, channel: i + 1, name: `Lane ${i + 1}` }))
       const { error } = await admin().from('cameras').insert(rows)
@@ -196,7 +214,63 @@ describe('camera groups', () => {
       const actor = actorOf(adminUser, orgId, 'admin')
       const made = await createGroup(deps(adminUser), actor, 'Lanes')
       if (!made.ok) throw new Error(made.error)
-      expect(await addCamerasByKeyword(deps(adminUser), actor, made.groupId, 'lane')).toEqual({ ok: true, added: 500 })
+      expect(await addCamerasByKeyword(deps(adminUser), actor, made.groupId, 'lane')).toEqual({ ok: true, added: 500, truncated: true })
+      // A smaller match is not "more than 500".
+      const fewer = await createGroup(deps(adminUser), actor, 'Fewer lanes')
+      if (!fewer.ok) throw new Error(fewer.error)
+      expect(await addCamerasByKeyword(deps(adminUser), actor, fewer.groupId, 'lane 1')).toEqual({ ok: true, added: 111, truncated: false }) // Lane 1, 10-19, 100-199 = 1 + 10 + 100
+    })
+
+    it('ids that differ only by capital letters, or are repeated, are one camera and do not cause a refusal', async () => {
+      const actor = actorOf(agent, orgId, 'agent')
+      const made = await createGroup(deps(agent), actor, 'Case twins')
+      if (!made.ok) throw new Error(made.error)
+      const res = await addCameras(deps(agent), actor, made.groupId, [a1.toUpperCase(), a1, a1.toLowerCase(), a2])
+      expect(res).toEqual({ ok: true, added: 2 })
+      expect(await itemIds(agent, made.groupId)).toEqual(sorted([a1, a2]))
+    })
+
+    it('a malformed camera id gets the same plain refusal and adds nothing', async () => {
+      const actor = actorOf(agent, orgId, 'agent')
+      const made = await createGroup(deps(agent), actor, 'Malformed')
+      if (!made.ok) throw new Error(made.error)
+      const res = await addCameras(deps(agent), actor, made.groupId, [a1, 'not-a-uuid'])
+      expect(res).toEqual({ ok: false, error: 'Some of those cameras are not available to you.' })
+      expect(await itemIds(agent, made.groupId)).toEqual([])
+    })
+
+    it('a malformed group id is "Group not found."', async () => {
+      const actor = actorOf(agent, orgId, 'agent')
+      expect(await addCameras(deps(agent), actor, 'not-a-uuid', [a1])).toEqual({ ok: false, error: 'Group not found.' })
+      expect(await removeCamera(deps(agent), actor, 'not-a-uuid', a1)).toEqual({ ok: false, error: 'Group not found.' })
+    })
+
+    it('cannot add cameras to a group of another organisation, and nothing changes there', async () => {
+      // The other organisation's administrator uses the id of a group of ours, with a camera of their own.
+      const stranger = actorOf(outsider, otherOrg, 'admin')
+      const before = await itemIds(manager, wide)
+      expect(await addCameras(deps(outsider), stranger, wide, [foreignCam])).toEqual({ ok: false, error: 'Group not found.' })
+      expect(await addCamerasByKeyword(deps(outsider), stranger, wide, 'door')).toEqual({ ok: false, error: 'Group not found.' })
+      expect(await itemIds(manager, wide)).toEqual(before)
+      const { data } = await admin().from('camera_group_items').select('camera_id').eq('camera_id', foreignCam)
+      expect(data).toEqual([])
+      // And one of our own operators cannot put a camera of the other organisation into our group.
+      const mine = actorOf(agent, orgId, 'agent')
+      expect(await addCameras(deps(agent), mine, wide, [foreignCam])).toEqual({ ok: false, error: 'Some of those cameras are not available to you.' })
+    })
+
+    it('the audit action for keyword adds is separate from the one for chosen cameras', async () => {
+      const actor = actorOf(agent2, orgId, 'agent')
+      const made = await createGroup(deps(agent2), actor, 'Audit actions')
+      if (!made.ok) throw new Error(made.error)
+      await addCameras(deps(agent2), actor, made.groupId, [a3])
+      await addCamerasByKeyword(deps(agent2), actor, made.groupId, 'front')
+      await addCamerasByKeyword(deps(agent2), actor, made.groupId, 'front') // nothing new, nothing recorded
+      const { data } = await admin().from('admin_audit_log').select('action, detail').eq('org_id', orgId).eq('entity_id', made.groupId)
+      const byAction = Object.fromEntries((data ?? []).map((r) => [r.action, r.detail]))
+      expect(Object.keys(byAction).sort()).toEqual(['group_cameras_added', 'group_cameras_added_by_keyword', 'group_created'])
+      expect(byAction.group_cameras_added_by_keyword).toEqual({ keyword: 'front', added: 1 })
+      expect(byAction.group_cameras_added).toEqual({ count: 1, added: 1 })
     })
 
     it('a duplicate group name gets the plain duplicate message, also with spaces around it', async () => {
@@ -226,17 +300,32 @@ describe('camera groups', () => {
       const made = await createGroup(deps(adminUser), actor, 'To rename')
       if (!made.ok) throw new Error(made.error)
       expect((await renameGroup(deps(adminUser), actor, made.groupId, ' Renamed ')).ok).toBe(true)
-      const { data } = await admin().from('camera_groups').select('name').eq('id', made.groupId).single()
-      expect(data?.name).toBe('Renamed')
+      const nameOf = async (id: string) => (await admin().from('camera_groups').select('name').eq('id', id).single()).data?.name
+      const auditOf = async (id: string) => ((await admin().from('admin_audit_log').select('action').eq('org_id', orgId).eq('entity_id', id)).data ?? []).map((r) => r.action).sort()
+      expect(await nameOf(made.groupId)).toBe('Renamed')
+      expect(await auditOf(made.groupId)).toEqual(['group_created', 'group_renamed'])
       expect((await renameGroup(deps(adminUser), actor, made.groupId, '  ')).ok).toBe(false)
       const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
       const dup = await renameGroup(deps(adminUser), actor, made.groupId, 'Everything')
       logged.mockRestore()
       expect(dup.ok).toBe(false)
+      // Refused renames change nothing and record nothing.
+      expect(await nameOf(made.groupId)).toBe('Renamed')
+      expect(await auditOf(made.groupId)).toEqual(['group_created', 'group_renamed'])
+
       // A viewer cannot rename; an administrator of another organisation cannot find it.
-      expect((await renameGroup(deps(viewerA), actorOf(viewerA, orgId, 'user'), wide, 'Mine')).ok).toBe(false)
+      const wideAudit = await auditOf(wide)
+      const viewerRes = await renameGroup(deps(viewerA), actorOf(viewerA, orgId, 'user'), wide, 'Mine')
+      expect(viewerRes.ok).toBe(false)
+      expect(await nameOf(wide)).toBe('Everything')
       const foreign = await renameGroup(deps(outsider), actorOf(outsider, otherOrg, 'admin'), made.groupId, 'Hijacked')
       expect(foreign).toEqual({ ok: false, error: 'Group not found.' })
+      expect(await nameOf(made.groupId)).toBe('Renamed')
+      expect(await auditOf(made.groupId)).toEqual(['group_created', 'group_renamed'])
+      expect(await auditOf(wide)).toEqual(wideAudit)
+      // Nothing was recorded in the other organisation's name either.
+      const { data: strangerAudit } = await admin().from('admin_audit_log').select('id').eq('org_id', otherOrg).eq('entity_id', made.groupId)
+      expect(strangerAudit).toEqual([])
     })
 
     it('removes a camera from a group; a camera the person cannot see stays', async () => {
@@ -250,6 +339,17 @@ describe('camera groups', () => {
       expect(hidden.ok).toBe(false)
       const { data } = await admin().from('camera_group_items').select('camera_id').eq('group_id', wide).eq('camera_id', b1)
       expect(data).toHaveLength(1)
+    })
+
+    it('a viewer and a manager cannot remove a camera from a group', async () => {
+      const before = await itemIds(adminUser, wide)
+      for (const [u, role] of [[viewerA, 'user'], [manager, 'manager']] as const) {
+        const res = await removeCamera(deps(u), actorOf(u, orgId, role), wide, a1)
+        expect(res).toEqual({ ok: false, error: 'Only operators and administrators can change camera groups.' })
+      }
+      expect(await itemIds(adminUser, wide)).toEqual(before)
+      const { data } = await admin().from('admin_audit_log').select('id').eq('org_id', orgId).eq('entity_id', wide).eq('action', 'group_camera_removed')
+      expect(data).toEqual([])
     })
 
     it('deleting is allowed for the creator and for administrators only', async () => {

@@ -1,17 +1,26 @@
 import { describe, expect, it } from 'vitest'
-import { mobileNavFor, navFor, type Role } from '@/lib/nav'
+import { ROLES } from '@/lib/admin/roles'
+import { ICONS } from '@/components/layout/icons'
+import { mobileNavFor, NAV, navFor, type Role } from '@/lib/nav'
 
 const hrefs = (role: Role) => navFor(role).map((i) => i.href)
 
 describe('navigation per role', () => {
   it('a viewer sees monitoring pages only', () => {
     const h = hrefs('user')
-    expect(h).toEqual(['/home', '/stores', '/devices'])
+    expect(h).toEqual(['/home', '/stores', '/devices', '/groups'])
   })
 
-  it('an operator and a manager see the same pages as a viewer in Plan 1', () => {
+  it('an operator and a manager see the same pages as a viewer', () => {
     expect(hrefs('agent')).toEqual(hrefs('user'))
     expect(hrefs('manager')).toEqual(hrefs('user'))
+  })
+
+  it('every role that can open the app sees Groups, in the Monitoring group', () => {
+    for (const role of ROLES) expect(hrefs(role)).toContain('/groups')
+    const item = NAV.find((i) => i.href === '/groups')
+    expect(item).toMatchObject({ label: 'Groups', group: 'Monitoring' })
+    expect(item?.roles).toBeUndefined()
   })
 
   it('an admin also sees the admin pages', () => {
@@ -30,10 +39,14 @@ describe('navigation per role', () => {
   it('a platform owner sees what an admin sees', () => {
     expect(hrefs('platform_owner')).toEqual(hrefs('admin'))
   })
+
+  it('every item has an icon that exists', () => {
+    for (const item of NAV) expect(ICONS[item.icon]).toBeDefined()
+  })
 })
 
 describe('mobile navigation', () => {
-  it('shows only the pages everybody uses, taken from the same list as the sidebar', () => {
+  it('shows only the pages everybody uses, taken from the same list as the sidebar (Groups is not on the small bar)', () => {
     expect(mobileNavFor('user').map((i) => i.href)).toEqual(['/home', '/stores', '/devices'])
     expect(mobileNavFor('admin').map((i) => i.href)).toEqual(['/home', '/stores', '/devices'])
   })
