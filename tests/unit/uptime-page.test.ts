@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AdminClient } from '@/lib/admin/types'
-import { getMonitoringState, uptimeForPage } from '@/lib/monitor/uptime'
+import { getMonitoringState, uptimeForPage, uptimeSuffix } from '@/lib/monitor/uptime'
 
 const fakeAdmin = (rows: { target_id: string; uptime_pct: number | null }[] = []) => {
   const rpc = vi.fn((...args: [string, Record<string, unknown>]) => Promise.resolve({ data: rows, error: null, args }))
@@ -44,5 +44,13 @@ describe('getMonitoringState', () => {
   it('is stopped with no heartbeat or when the state cannot be read, and never throws', async () => {
     expect(await getMonitoringState(adminWith(null), NOW)).toEqual({ running: false, lastSeenAt: null })
     expect(await getMonitoringState(adminWith(null, true), NOW)).toEqual({ running: false, lastSeenAt: null })
+  })
+})
+
+describe('uptimeSuffix', () => {
+  it('names the moment the figures run until while monitoring is stopped', () => {
+    expect(uptimeSuffix({ running: true, lastSeenAt: null })).toBe('')
+    expect(uptimeSuffix({ running: false, lastSeenAt: null })).toBe('')
+    expect(uptimeSuffix({ running: false, lastSeenAt: new Date('2026-10-22T08:00:00Z') })).toBe(' (until 22 Oct 2026, 13:30)')
   })
 })

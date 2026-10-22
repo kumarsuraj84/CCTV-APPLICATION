@@ -126,3 +126,76 @@ describe('status queries: outages of cameras whose NVR was down', () => {
     expect(earlier.get(flaky)!).toBeCloseTo(66.67, 0)
   })
 })
+
+describe('status queries: which camera outages hide under an NVR outage', () => {
+  let orgId: string
+  let manager: TestUser
+
+  beforeAll(async () => {
+    orgId = await createOrg()
+    const a = admin()
+    const mk = async (code: string) => (await a.from('stores').insert({ org_id: orgId, code, name: `Unit ${code}`, nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const cam = async (store: string, name: string) => (await a.from('cameras').insert({ org_id: orgId, store_id: store, channel: 1, name }).select('id').single()).data!.id
+    const apply = (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: 1 })
+
+    // AGN: the NVR went down, the camera outage it caused ended, then the NVR went down again (open now). The ended camera outage stays listed.
+    const agn = await mk('AGN')
+    const camAgn = await cam(agn, 'EndedEarlier')
+    await apply([{ type: 'nvr', id: agn, ok: false, at: ago(60) }])
+    await apply([{ type: 'camera', id: camAgn, ok: false, at: ago(60), cause: 'nvr_down' }])
+    await apply([{ type: 'camera', id: camAgn, ok: true, at: ago(40) }, { type: 'nvr', id: agn, ok: true, at: ago(40) }])
+    await apply([{ type: 'nvr', id: agn, ok: false, at: ago(10) }])
+
+    // OLD: a camera outage from an earlier NVR outage is still open and the NVR is down again: it began before this NVR outage, so it is listed.
+    const old = await mk('OLD')
+    const camOld = await cam(old, 'StartedBefore')
+    await apply([{ type: 'nvr', id: old, ok: false, at: ago(90) }])
+    await apply([{ type: 'camera', id: camOld, ok: false, at: ago(90), cause: 'nvr_down' }])
+    await apply([{ type: 'nvr', id: old, ok: true, at: ago(70) }])
+    await apply([{ type: 'nvr', id: old, ok: false, at: ago(5) }])
+
+    // NRM: the ordinary case: both open, the camera outage began after the NVR outage began: it hides.
+    const nrm = await mk('NRM')
+    const camNrm = await cam(nrm, 'Grouped')
+    await apply([{ type: 'nvr', id: nrm, ok: false, at: ago(30) }])
+    await apply([{ type: 'camera', id: camNrm, ok: false, at: ago(29), cause: 'nvr_down' }])
+    manager = await createUser(orgId, 'manager')
+  })
+  afterAll(() => cleanupOrg(orgId))
+
+  it('hides only open camera outages that began inside the NVR outage', async () => {
+    const d = await getDashboard(manager.client)
+    const labels = d.recentOutages.map((o) => `${o.kind}:${o.label}`)
+    expect(labels).toEqual(expect.arrayContaining(['nvr:Unit AGN', 'nvr:Unit OLD', 'nvr:Unit NRM', 'camera:EndedEarlier', 'camera:StartedBefore']))
+    expect(labels).not.toContain('camera:Grouped')
+  })
+})
+
+describe('status queries: a capped scan of grouped outages', () => {
+  let orgId: string
+  let manager: TestUser
+
+  beforeAll(async () => {
+    orgId = await createOrg()
+    const a = admin()
+    const store = (await a.from('stores').insert({ org_id: orgId, code: 'BIG', name: 'Big store', nvr_ip: '127.0.0.1', nvr_username: 'u' }).select('id').single()).data!.id
+    const cams = (await a.from('cameras').insert([1, 2, 3, 4, 5].map((n) => ({ org_id: orgId, store_id: store, channel: n, name: `G${n}` }))).select('id, channel').order('channel')).data!.map((c) => c.id)
+    const apply = (results: object[]) => a.rpc('monitor_apply_results', { p_org: orgId, p_results: results as never, p_threshold: 1 })
+    await apply([{ type: 'nvr', id: store, ok: false, at: ago(60) }])
+    await apply(cams.map((id, i) => ({ type: 'camera', id, ok: false, at: ago(50 - i), cause: 'nvr_down' })))
+    manager = await createUser(orgId, 'manager')
+  })
+  afterAll(() => cleanupOrg(orgId))
+
+  it('says the list may be incomplete when everything scanned was grouped away', async () => {
+    const d = await getDashboard(manager.client, { outagePageSize: 2, outageMaxPages: 2 })
+    expect(d.recentOutages).toEqual([])
+    expect(d.recentOutagesLimited).toBe(true)
+  })
+
+  it('does not say so when the whole list was scanned', async () => {
+    const d = await getDashboard(manager.client)
+    expect(d.recentOutages.map((o) => o.label)).toEqual(['Big store'])
+    expect(d.recentOutagesLimited).toBe(false)
+  })
+})

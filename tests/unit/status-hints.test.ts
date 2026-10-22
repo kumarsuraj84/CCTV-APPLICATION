@@ -33,3 +33,12 @@ describe('formatUptime', () => {
     expect(formatUptime(undefined)).toBe('No data')
   })
 })
+
+describe('formatUptime never rounds up to 100', () => {
+  it('shows 100% only when it is exactly 100', () => {
+    expect(formatUptime(99.96)).toBe('99.9%')
+    expect(formatUptime(99.99)).toBe('99.9%')
+    expect(formatUptime(57.3)).toBe('57.3%')
+    expect(formatUptime(0)).toBe('0%')
+  })
+})

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
+import { mapLimit } from '@/lib/async/pool'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 
 type Client = SupabaseClient<Database>
@@ -21,6 +22,8 @@ export type Dashboard = {
   stores: { total: number; nvrDown: { id: string; code: string; name: string; since: string | null }[]; noLiveCamera: number }
   devices: Record<string, { total: number; up: number; down: number; unknown: number }>
   recentOutages: { id: string; kind: 'camera' | 'device' | 'nvr'; label: string; store: string | null; startedAt: string; endedAt: string | null }[]
+  /** True when the list may be missing problems because reading stopped at its cap (many outages hidden under NVR outages). */
+  recentOutagesLimited: boolean
 }
 
 /** The words the screens use. */
@@ -28,10 +31,11 @@ export function statusLabel(s: Status | null | undefined): 'Live' | 'Offline' | 
   return s === 'up' ? 'Live' : s === 'down' ? 'Offline' : 'Not checked yet'
 }
 
-/** An uptime percentage as the screens show it: one decimal, no trailing ".0", or "No data". */
+/** An uptime percentage as the screens show it: one decimal rounded down, so 100% means exactly 100; "No data" when there is none. */
 export function formatUptime(pct: number | null | undefined): string {
   if (pct === null || pct === undefined) return 'No data'
-  return `${Number(pct.toFixed(1))}%`
+  if (pct >= 100) return '100%'
+  return `${Math.floor(pct * 10 + 1e-9) / 10}%`
 }
 
 // Cameras are checked every 5 minutes and the NVR every minute; these allow a few missed rounds before anything is called stale.
@@ -59,15 +63,18 @@ export async function listStoreStatus(supabase: Client): Promise<Map<string, Sto
 
 export async function getStates(supabase: Client, type: 'camera' | 'device' | 'nvr', ids: string[]): Promise<Map<string, StateRow>> {
   const out = new Map<string, StateRow>()
-  for (let i = 0; i < ids.length; i += 100) {
+  const chunks: string[][] = []
+  for (let i = 0; i < ids.length; i += 100) chunks.push(ids.slice(i, i + 100))
+  const pages = await mapLimit(chunks, 4, async (chunk) => {
     const { data, error } = await supabase
       .from('check_state')
       .select('target_id, status, down_since, last_checked_at, last_up_at, error')
       .eq('target_type', type)
-      .in('target_id', ids.slice(i, i + 100))
+      .in('target_id', chunk)
     if (error) throw new Error('Could not read the status.')
-    for (const r of data ?? []) out.set(r.target_id, r as StateRow)
-  }
+    return (data ?? []) as StateRow[]
+  })
+  for (const page of pages) for (const r of page) out.set(r.target_id, r)
   return out
 }
 
@@ -78,25 +85,41 @@ const RECENT_COUNT = 10
 const OUTAGE_PAGE = 100
 const OUTAGE_MAX_PAGES = 5
 
+export type DashboardOptions = { outagePageSize?: number; outageMaxPages?: number }
+
 /**
- * The newest outages, newest first. A camera that is down only because its NVR is down is not listed again while that NVR outage is
- * still open, because the NVR outage already says so; once the NVR is back, a camera outage it caused is listed on its own.
- * Reads page by page so that a store with many grouped cameras cannot crowd out everything else.
+ * The newest outages, newest first. A camera outage is hidden (the NVR outage already says it) only when all of these hold: it is still
+ * open, its store's NVR outage is still open, and it began at or after that NVR outage began. Anything else, such as an outage that
+ * ended, or one left over from an earlier NVR outage, is listed on its own.
+ * Reads page by page so that a store with many grouped cameras cannot crowd out everything else. `limited` is true when the reading
+ * stopped at its cap with fewer than the wanted number of rows, so that an empty list may only mean "not found yet".
  */
-async function recentOutages(supabase: Client, storeById: Map<string, { id: string; code: string; name: string }>): Promise<Recent[]> {
-  const openNvr = new Set(
-    (await fetchAll((from, to) => supabase.from('outages').select('target_id').eq('target_type', 'nvr').is('ended_at', null).order('target_id').order('id').range(from, to))).map((o) => o.target_id),
+async function recentOutages(
+  supabase: Client,
+  storeById: Map<string, { id: string; code: string; name: string }>,
+  opts: DashboardOptions = {},
+): Promise<{ list: Recent[]; limited: boolean }> {
+  const pageSize = opts.outagePageSize ?? OUTAGE_PAGE
+  const maxPages = opts.outageMaxPages ?? OUTAGE_MAX_PAGES
+  const openNvr = new Map(
+    (await fetchAll((from, to) => supabase.from('outages').select('target_id, started_at').eq('target_type', 'nvr').is('ended_at', null).order('target_id').order('id').range(from, to))).map((o) => [o.target_id, o.started_at] as const),
   )
+  const groupedUnderNvr = (o: OutageRow, storeId: string): boolean => {
+    if (o.cause !== 'nvr_down' || o.ended_at !== null) return false
+    const nvrStart = openNvr.get(storeId)
+    return nvrStart !== undefined && new Date(o.started_at).getTime() >= new Date(nvrStart).getTime()
+  }
+  let exhausted = false
   const deviceStore = new Map<string, { name: string; store_id: string | null }>()
   const collected: { o: OutageRow; camera?: { name: string; store_id: string } }[] = []
 
-  for (let page = 0; page < OUTAGE_MAX_PAGES && collected.length < RECENT_COUNT; page++) {
+  for (let page = 0; page < maxPages && collected.length < RECENT_COUNT; page++) {
     const { data, error } = await supabase
       .from('outages')
       .select('id, target_type, target_id, started_at, ended_at, cause')
       .order('started_at', { ascending: false })
       .order('id', { ascending: false })
-      .range(page * OUTAGE_PAGE, (page + 1) * OUTAGE_PAGE - 1)
+      .range(page * pageSize, (page + 1) * pageSize - 1)
     if (error) throw new Error('Could not read the outages.')
     const rows = (data ?? []) as OutageRow[]
 
@@ -111,11 +134,14 @@ async function recentOutages(supabase: Client, storeById: Map<string, { id: stri
       if (collected.length >= RECENT_COUNT) break
       if (o.target_type === 'camera') {
         const camera = cameras.get(o.target_id)
-        if (o.cause === 'nvr_down' && camera && openNvr.has(camera.store_id)) continue
+        if (camera && groupedUnderNvr(o, camera.store_id)) continue
         collected.push({ o, camera })
       } else collected.push({ o })
     }
-    if (rows.length < OUTAGE_PAGE) break
+    if (rows.length < pageSize) {
+      exhausted = true
+      break
+    }
   }
 
   const deviceIds = collected.filter((c) => c.o.target_type === 'device').map((c) => c.o.target_id)
@@ -125,7 +151,7 @@ async function recentOutages(supabase: Client, storeById: Map<string, { id: stri
     for (const d of res.data ?? []) deviceStore.set(d.id, d)
   }
 
-  return collected.map(({ o, camera }): Recent => {
+  const list = collected.map(({ o, camera }): Recent => {
     const base = { id: o.id, startedAt: o.started_at, endedAt: o.ended_at }
     if (o.target_type === 'camera') return { ...base, kind: 'camera', label: camera?.name ?? 'Camera', store: camera ? (storeById.get(camera.store_id)?.code ?? null) : null }
     if (o.target_type === 'device') {
@@ -135,9 +161,10 @@ async function recentOutages(supabase: Client, storeById: Map<string, { id: stri
     const s = storeById.get(o.target_id)
     return { ...base, kind: 'nvr', label: s?.name ?? 'NVR', store: s?.code ?? null }
   })
+  return { list, limited: !exhausted && collected.length < RECENT_COUNT }
 }
 
-export async function getDashboard(supabase: Client): Promise<Dashboard> {
+export async function getDashboard(supabase: Client, opts: DashboardOptions = {}): Promise<Dashboard> {
   const [statuses, stores, devices, deviceStates] = await Promise.all([
     listStoreStatus(supabase),
     fetchAll((from, to) => supabase.from('stores').select('id, code, name').order('code').order('id').range(from, to)),
@@ -169,5 +196,6 @@ export async function getDashboard(supabase: Client): Promise<Dashboard> {
     c[st]++
   }
 
-  return { cameras, stores: { total: stores.length, nvrDown, noLiveCamera }, devices: deviceCounts, recentOutages: await recentOutages(supabase, storeById) }
+  const recent = await recentOutages(supabase, storeById, opts)
+  return { cameras, stores: { total: stores.length, nvrDown, noLiveCamera }, devices: deviceCounts, recentOutages: recent.list, recentOutagesLimited: recent.limited }
 }

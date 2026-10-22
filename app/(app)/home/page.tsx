@@ -79,7 +79,11 @@ export default async function HomePage() {
           <section className="space-y-2">
             <h2 className="font-medium">Recent problems</h2>
             {d.recentOutages.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No problems have been recorded yet.</p>
+              <p className="text-sm text-muted-foreground">
+                {d.recentOutagesLimited
+                  ? 'Showing the most recent problems: there is nothing else to list. Most recent problems are cameras that are offline because their NVR is offline (see the stores above).'
+                  : 'No problems have been recorded yet.'}
+              </p>
             ) : (
               <ul className="divide-y rounded-xl border bg-card text-sm">
                 {d.recentOutages.map((o) => (
@@ -88,9 +92,16 @@ export default async function HomePage() {
                       {o.kind === 'nvr' ? 'NVR' : o.kind === 'camera' ? 'Camera' : 'Device'} · {o.label}
                       {o.store && o.kind !== 'nvr' ? <span className="text-muted-foreground"> · {o.store}</span> : null}
                     </span>
-                    <span className="flex items-center gap-2 text-muted-foreground">
+                    <span className="flex flex-wrap items-center gap-2 text-muted-foreground">
                       {formatDateTime(o.startedAt)}
-                      {o.endedAt ? <StatusBadge status="up" /> : <StatusBadge status="down" />}
+                      {o.endedAt ? (
+                        <>
+                          <StatusBadge status="up" />
+                          <span>back live {formatDateTime(o.endedAt)}</span>
+                        </>
+                      ) : (
+                        <StatusBadge status="down" />
+                      )}
                     </span>
                   </li>
                 ))}

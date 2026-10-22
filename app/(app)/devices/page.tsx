@@ -4,7 +4,7 @@ import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { requireProfile } from '@/lib/auth/profile'
 import { DEVICE_TYPE_LABELS, DEVICE_TYPES, type DeviceType } from '@/lib/inventory/device-types'
-import { getMonitoringState, uptimeForPage } from '@/lib/monitor/uptime'
+import { getMonitoringState, uptimeForPage, uptimeSuffix } from '@/lib/monitor/uptime'
 import { listVisibleDevices } from '@/lib/queries/inventory'
 import { formatUptime, getStates } from '@/lib/queries/status'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -39,7 +39,7 @@ export default async function DevicesPage({ searchParams }: { searchParams: Prom
           <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
             <tr>
               <th className="px-3 py-2">Name</th><th className="px-3 py-2">Type</th><th className="px-3 py-2">Store</th><th className="px-3 py-2">Address</th>
-              <th className="px-3 py-2">Status</th><th className="px-3 py-2 text-right">Uptime 24h</th>
+              <th className="px-3 py-2">Status</th><th className="px-3 py-2 text-right">Uptime 24h{uptimeSuffix(monitoring)}</th>
             </tr>
           </thead>
           <tbody>

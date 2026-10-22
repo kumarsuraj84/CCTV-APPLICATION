@@ -1,5 +1,6 @@
 import type { AdminClient } from '@/lib/admin/types'
 import { getWorkerHealth } from '@/lib/monitor/health'
+import { formatDateTime } from '@/lib/time'
 
 export type UptimeWindow = '24h' | '7d' | '30d'
 export const WINDOW_HOURS: Record<UptimeWindow, number> = { '24h': 24, '7d': 168, '30d': 720 }
@@ -66,4 +67,9 @@ export async function uptimeForPage(
   if (monitoring.running) return uptimeFor(admin, orgId, type, ids, window)
   if (!monitoring.lastSeenAt) return new Map(ids.map((id) => [id, null]))
   return uptimeFor(admin, orgId, type, ids, window, monitoring.lastSeenAt)
+}
+
+/** Added to an uptime label while monitoring is stopped, so it is clear the figures stop at the last sign of life. */
+export function uptimeSuffix(m: MonitoringState): string {
+  return !m.running && m.lastSeenAt ? ` (until ${formatDateTime(m.lastSeenAt)})` : ''
 }

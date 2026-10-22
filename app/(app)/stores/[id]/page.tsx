@@ -5,7 +5,7 @@ import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { requireProfile } from '@/lib/auth/profile'
 import { DEVICE_TYPE_LABELS, type DeviceType } from '@/lib/inventory/device-types'
-import { getMonitoringState, uptimeForPage } from '@/lib/monitor/uptime'
+import { getMonitoringState, uptimeForPage, uptimeSuffix } from '@/lib/monitor/uptime'
 import { getVisibleStore } from '@/lib/queries/inventory'
 import { formatUptime, getStates, nvrLoginProblem, type StateRow } from '@/lib/queries/status'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -81,7 +81,7 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
                 <div className="text-muted-foreground">{c.camera_ip ?? 'Address not known yet'}</div>
                 <Since state={st} />
                 <div className="text-muted-foreground">
-                  {u24 == null && u7 == null ? 'Uptime: no data yet' : `Uptime 24h ${formatUptime(u24)} · 7d ${formatUptime(u7)}`}
+                  {u24 == null && u7 == null ? 'Uptime: no data yet' : `Uptime 24h ${formatUptime(u24)} · 7d ${formatUptime(u7)}${uptimeSuffix(monitoring)}`}
                 </div>
                 {st?.status === 'down' && st.error && <div className="break-words text-muted-foreground">Reason: {st.error}</div>}
               </div>
@@ -104,7 +104,7 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
                     <StatusBadge status={st?.status} />
                   </div>
                   <Since state={st} />
-                  <div className="text-muted-foreground">{u24 == null ? 'Uptime: no data yet' : `Uptime 24h ${formatUptime(u24)}`}</div>
+                  <div className="text-muted-foreground">{u24 == null ? 'Uptime: no data yet' : `Uptime 24h ${formatUptime(u24)}${uptimeSuffix(monitoring)}`}</div>
                   {st?.status === 'down' && st.error && <div className="break-words text-muted-foreground">Reason: {st.error}</div>}
                 </li>
               )
