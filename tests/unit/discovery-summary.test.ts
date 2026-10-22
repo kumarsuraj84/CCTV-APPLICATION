@@ -41,4 +41,10 @@ describe('the "Find cameras" summary', () => {
       'First floor: The NVR did not answer.',
     ])
   })
+
+  // P2-5c-1 (re-review N-1 / N-2): a restored camera that discovery could not place is listed too, never left aside silently.
+  it('lists a restored camera it could not place, pointing to the reconciliation list', () => {
+    const s = discoverySummary(base([{ recorderId: 'a', name: 'Ground', ok: true, result: result({ reconciliation: [{ kind: 'unplaced', channel: 3, cameraId: 'c9', cameraName: 'Camera 03' }] }) }]))
+    expect(s.details).toEqual(['Ground: the restored camera "Camera 03" (last on channel 3) could not be placed; link it on the Reconciliation page.'])
+  })
 })

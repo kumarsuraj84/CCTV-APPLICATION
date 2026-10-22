@@ -29,7 +29,16 @@ vi.mock('@/lib/admin/users', () => ({
 vi.mock('@/lib/inventory/stores', () => ({ createStore: async () => ({ ok: false, error: 'x' }), updateStore: async () => ({ ok: false, error: 'x' }), deleteStore: async () => ({ ok: false, error: 'x' }) }))
 vi.mock('@/lib/inventory/devices', () => ({ createDevice: async () => ({ ok: false, error: 'x' }), updateDevice: async () => ({ ok: false, error: 'x' }), deleteDevice: async () => ({ ok: false, error: 'x' }) }))
 vi.mock('@/lib/import/apply', () => ({ importStores: async () => ({}), importDevices: async () => ({}) }))
-vi.mock('@/lib/monitor/discovery', () => ({ discoverStoreCameras: async () => ({ ok: false, error: 'x' }) }))
+vi.mock('@/lib/monitor/discovery', () => ({ discoverStoreCameras: async () => ({ ok: false, error: 'x' }), discoverRecorderCameras: async () => ({ ok: false, error: 'x' }) }))
+// P2-5c-1 services (the actions are tested here for their gate; the services in tests/integration/p2-5c-admin.test.ts).
+const no = async () => ({ ok: false, error: 'x' })
+vi.mock('@/lib/inventory/hierarchy', () => ({ saveRegion: no, saveCluster: no, previewMove: no, moveNode: no, hierarchyProposals: no, applyProposals: no }))
+vi.mock('@/lib/inventory/locations', () => ({ saveLocation: no, saveNetworkDefinition: no }))
+vi.mock('@/lib/inventory/recorder-admin', () => ({ saveRecorder: no, setRecorderMonitoring: no, testRecorderConnection: no }))
+vi.mock('@/lib/inventory/mapping', () => ({ remapCamera: no, mergeCameras: no }))
+vi.mock('@/lib/inventory/findings', () => ({ dismissFinding: no, linkFinding: no }))
+vi.mock('@/lib/inventory/assets', () => ({ saveAsset: no, addDependency: no, removeDependency: no, addEndpoint: no, retireEndpoint: no }))
+vi.mock('@/lib/inventory/archive', () => ({ archiveInventory: no, restoreInventory: no }))
 const checkNow = vi.fn(async () => ({ ok: true }))
 vi.mock('@/lib/monitor/check-now', () => ({ requestCheckNow: (...a: unknown[]) => checkNow(...(a as [])), MSG_CHECK_NOT_ALLOWED: 'You are not allowed to start a check.' }))
 vi.mock('@/lib/rate-limit', () => ({ rateLimit: async () => ({ limited: false }) }))
@@ -42,6 +51,39 @@ beforeEach(() => {
 })
 
 const fd = () => new FormData()
+
+/**
+ * P2-5c-1: every new administration action (regions, clusters, moves, proposals, locations, network, NVRs, mapping, merge,
+ * reconciliation, assets, archive and restore from the new screens) asks for admin.inventory first, before any client is made.
+ */
+function p25c(): (() => Promise<unknown>)[] {
+  const load = () => import('@/lib/actions/admin/locations')
+  const assets = () => import('@/lib/actions/admin/assets')
+  return [
+    async () => (await load()).saveRegionAction({}, fd()),
+    async () => (await load()).saveClusterAction({}, fd()),
+    async () => (await load()).previewMoveAction({ kind: 'location', id: 'x', to: null }),
+    async () => (await load()).moveNodeAction({ kind: 'location', id: 'x', to: null }),
+    async () => (await load()).applyProposalsAction([]),
+    async () => (await load()).saveLocationAction({}, fd()),
+    async () => (await load()).saveNetworkAction('x', {}, fd()),
+    async () => (await load()).saveRecorderAction('x', {}, fd()),
+    async () => (await load()).setMonitoringAction('x', { enabled: false, reason: 'x' }),
+    async () => (await load()).testConnectionAction('x'),
+    async () => (await load()).discoverRecorderAction('x'),
+    async () => (await load()).remapCameraAction({ cameraId: 'x', recorderId: 'y', channel: 1 }),
+    async () => (await load()).mergeCamerasAction({ keepId: 'x', duplicateId: 'y' }),
+    async () => (await load()).dismissFindingAction('x', 'note'),
+    async () => (await load()).linkFindingAction('x'),
+    async () => (await load()).archiveNodeAction('location', 'x'),
+    async () => (await load()).restoreNodeAction('location', 'x'),
+    async () => (await assets()).saveAssetAction({}, fd()),
+    async () => (await assets()).addDependencyAction({ childId: 'x', parentId: 'y', kind: 'network' }),
+    async () => (await assets()).removeDependencyAction('x'),
+    async () => (await assets()).addEndpointAction('x', { spaceId: 'y', host: 'h', port: '', purpose: 'other' }),
+    async () => (await assets()).retireEndpointAction('x'),
+  ]
+}
 
 describe('admin actions', () => {
   it('ask for the capability that matches what they change', async () => {
@@ -67,6 +109,7 @@ describe('admin actions', () => {
       ['admin.inventory', () => inv.importStoresAction({}, fd())],
       ['admin.inventory', () => inv.importDevicesAction({}, fd())],
       ['admin.inventory', () => mon.discoverCamerasAction('x')],
+      ...p25c().map((call): [string, () => Promise<unknown>] => ['admin.inventory', call]),
     ]
     for (const [cap, call] of cases) {
       m.asked = []
@@ -85,6 +128,7 @@ describe('admin actions', () => {
       () => users.createUserAction({}, fd()), () => users.setActiveAction('x', true, { revokeAll: { grantIds: [], reason: 'x', expectedVersion: 0 } }),
       () => access.previewAccessAction('x', { changes: [], expectedVersion: 0 }), () => access.applyAccessAction('x', { changes: [], expectedVersion: 0, token: '' }),
       () => access.keepReviewedAction({ grantIds: [] }), () => inv.saveStoreAction({}, fd()), () => mon.discoverCamerasAction('x'),
+      ...p25c(),
     ]) {
       await expect(call()).rejects.toThrow('REDIRECT:/home')
     }

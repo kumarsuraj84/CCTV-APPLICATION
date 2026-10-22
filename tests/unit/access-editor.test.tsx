@@ -54,6 +54,7 @@ const data = (o: Partial<EditorData> = {}): EditorData => ({
   person: { id: 'u1', full_name: 'Asha Viewer', email: 'asha@example.test', role: 'user', is_active: true, must_reset_password: false },
   version: 4, editable: true, notEditableReason: null, catalogue, grantable: ['cctv.live', 'cctv.playback', 'cctv.export', 'it.inventory.view'],
   locations: [{ id: 's1', code: 'S1', name: 'Store one' }], cameras: [{ id: 'c1', store_id: 's1', channel: 1, name: 'Entrance' }], assets: [{ id: 'd1', store_id: 's1', name: 'Back-office PC', type: 'pc' }],
+  regions: [], clusters: [], recorders: [], // P2-5c-1 scope modes (none in these fixtures)
   grants: [
     grant({}),
     grant({ id: 'g2', capability: 'it.inventory.view', capabilityLabel: 'See IT assets', area: 'it', scopeKind: 'organization', scopeId: null, scopeLabel: 'Whole organisation', source: 'migrated:manager', needsReview: true, validUntil: '2026-10-25T18:30:00Z', lastDay: '2026-10-25', expiresSoon: true }),

@@ -42,17 +42,19 @@ describe('navigation by capability', () => {
 
   it('administrative capabilities show admin pages only together with an administrative role, and never data pages', () => {
     const adminSet = caps(['admin.users', 'admin.access', 'admin.inventory'], ORG)
-    expect(hrefs('admin', adminSet)).toEqual(['/home', '/admin/users', '/admin/access-review', '/admin/monitoring', '/admin/stores', '/admin/devices', '/admin/import'])
+    expect(hrefs('admin', adminSet)).toEqual(['/home', '/admin/users', '/admin/access-review', '/admin/monitoring', '/admin/locations', '/admin/regions', '/admin/assets', '/admin/stores', '/admin/devices', '/admin/import'])
     expect(hrefs('platform_owner', adminSet)).toEqual(hrefs('admin', adminSet))
     for (const role of ['user', 'operator', 'manager'] as const) expect(hrefs(role, adminSet), role).toEqual(['/home'])
   })
 
   it('each admin page needs its own capability, organisation-wide', () => {
     expect(hrefs('admin', caps(['admin.users'], ORG))).toEqual(['/home', '/admin/users'])
-    expect(hrefs('admin', caps(['admin.inventory'], ORG))).toEqual(['/home', '/admin/monitoring', '/admin/stores', '/admin/devices', '/admin/import'])
+    expect(hrefs('admin', caps(['admin.inventory'], ORG))).toEqual(['/home', '/admin/monitoring', '/admin/locations', '/admin/regions', '/admin/assets', '/admin/stores', '/admin/devices', '/admin/import'])
     // P2-3 review: "Access review" for admin.access (the editor itself is reached from Users).
     expect(hrefs('admin', caps(['admin.access'], ORG))).toEqual(['/home', '/admin/access-review'])
     expect(NAV.find((i) => i.href === '/admin/access-review')?.label).toBe('Access review')
+    // P2-5c-1: the administration screens for the hierarchy, NVRs and assets (ruling T-1: "Location", never "Store", in new screens).
+    expect(['/admin/locations', '/admin/regions', '/admin/assets'].map((h) => NAV.find((i) => i.href === h)?.label)).toEqual(['Locations and NVRs', 'Regions and clusters', 'Assets'])
     // An administrator role with no admin.* capability sees no admin page (P2-2 rule: role AND capability).
     expect(hrefs('admin', caps(['cctv.live'], ORG))).toEqual(['/home', '/stores', '/live', '/groups'])
   })

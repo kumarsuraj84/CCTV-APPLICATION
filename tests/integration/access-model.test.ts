@@ -771,6 +771,12 @@ describe('capability access model (P2-1)', () => {
       // P2-5b review round 1 (20261021000025): one discovery saved in one transaction; NVR assets switched on with their location.
       discovery_apply: server,
       locations_recorders_on: [],
+      // P2-5c-1 (20261021000026): merging a duplicate camera identity; dynamic camera-group rules (resolved for the signed-in reader,
+      // intersected with what they may see; the resolver itself is internal); the rule reference check is a trigger.
+      camera_merge: server,
+      group_rule_members: ['authenticated'],
+      camera_group_rule_members: [],
+      camera_group_rules_check: [],
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)
@@ -800,6 +806,8 @@ describe('capability access model (P2-1)', () => {
       'capability_camera_ids', 'capability_location_ids', 'capability_asset_ids', 'any_cctv_camera_ids', 'cameras_with_capability',
       'any_grant_location_ids', 'any_grant_cluster_ids', 'any_grant_region_ids', 'it_view_location_ids', 'it_view_asset_ids', 'it_view_recorder_ids',
       'cctv_visible_group_ids', 'my_access_summary', 'status_reasons', 'cameras_monitoring_off', 'it_view_endpoint_asset_ids',
+      // P2-5c-1: dynamic group members of groups the caller may see, cameras the caller may see.
+      'group_rule_members',
     ])
     for (const f of data ?? []) {
       expect(f.grantees.filter((g) => g === 'anon' || g.startsWith('PUBLIC')), `${f.name}(${f.args})`).toEqual([])
@@ -831,6 +839,8 @@ describe('capability access model (P2-1)', () => {
       // P2-5b.
       ['recorder_save', { p_org: orgA, p_location: L1, p_recorder: null, p_host: '192.0.2.99', p_http_port: 80, p_rtsp_port: 554, p_username: 'x' }],
       ['discovery_apply', { p_org: orgA, p_recorder: randomUUID(), p_ops: [] }],
+      // P2-5c-1.
+      ['camera_merge', { p_org: orgA, p_keep: c11, p_duplicate: randomUUID() }],
     ]
     for (const [fn, args] of calls) {
       expect((await anon.rpc(fn, args as never)).error?.code, `anon ${fn}`).toBe('42501')
