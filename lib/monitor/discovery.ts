@@ -1,7 +1,6 @@
 import { isAdminRole } from '@/lib/admin/roles'
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { mapLimit } from '@/lib/async/pool'
-import { auditAccess } from '@/lib/auth/access-audit'
 import { holdsOrgWide, readCapabilities } from '@/lib/auth/capabilities'
 import { locationFor, MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { reattachableByChannel } from '@/lib/inventory/cameras'
@@ -10,14 +9,25 @@ import { realProbes } from '@/lib/monitor/probes'
 import type { Probes } from '@/lib/monitor/types'
 import { describeNvrError } from '@/lib/nvr/client'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
+import { dropLiveStreams, type Go2rtcClient } from '@/lib/streams/go2rtc'
+import { fetchAll } from '@/lib/supabase/fetch-all'
+import type { Json } from '@/types/database'
 
-// Camera discovery, per recorder (P2-5b). Reads the channel list from ONE NVR and saves names and addresses. Cameras keep their ids:
+// Camera discovery, per recorder (P2-5b; review round 1). Reads the channel list from ONE NVR and saves names and addresses. Cameras keep
+// their ids:
 //   1. a channel already mapped to this NVR is that camera (match by recorder + channel, the ACTIVE mapping);
 //   2. else an unmapped camera of the location that was on this NVR's channel before (or any unmapped one when the location has only
 //      this NVR) is put back on it;
-//   3. else, when another camera of the location looks like the one on this channel (same reported address, or same name) — it may have
-//      been moved between NVRs — NOTHING is created: the channel is listed for reconciliation, so a camera never gets a second identity;
-//   4. else a new camera is created, mapped to this NVR's channel.
+//   3. else a camera of THIS NVR whose channel the NVR no longer lists, with the same reported address, moved to this channel (re-patched
+//      on the same box): it is moved (camera_remap; id, grants, groups and history kept) — review I-1;
+//   4. else, when a camera that could only be this one looks like it — a camera of this NVR whose channel is gone, with the same chosen
+//      name; or a camera of the location that was NEVER mapped, with the same address, chosen name or channel — NOTHING is created: the
+//      channel is listed for reconciliation, so a camera never gets a second identity;
+//   5. else a new camera is created, mapped to this NVR's channel.
+// A camera mapped to ANOTHER NVR is never taken or matched, whatever its name or address (review I-2: its own NVR lists it). Addresses
+// in the ranges PoE NVRs give their cameras (192.168.254.x, 10.1.1.x, 169.254.x.x) repeat on every such NVR and are never used to match;
+// names an NVR makes up ("Camera 01", "IPCamera 02", "D3", "Channel 4") are never used to match either.
+// Everything one discovery saves goes to the database in ONE transaction with its audit row (discovery_apply; review M-8).
 // Nothing is ever deleted or archived: a camera whose channel the NVR no longer lists is reported too. One attempt only: a refused
 // login is reported, never retried (a wrong password must not lock the NVR account). A switched-off NVR is never contacted.
 //
@@ -30,17 +40,22 @@ const MAX_NAME = 200
 
 const DENIED = 'Only administrators can look for cameras.'
 export const MSG_NVR_NOT_FOUND = 'NVR not found.'
+/** The location's primary NVR (the one the Manage stores page edits) has no password. */
 export const MSG_NO_NVR_PASSWORD = 'This NVR has no password saved. Add it on the Manage stores page first.'
+/** Any other NVR of the location (its page arrives with P2-5c): no advice that leads nowhere (review M-8). */
+export const MSG_NO_NVR_PASSWORD_OTHER = 'This NVR has no password saved yet.'
 export const MSG_NO_NVR = 'This store has no NVR.'
 
 /** Something an administrator should look at; nothing was changed for it. */
 export type Reconciliation =
-  /** The NVR lists this channel and no camera is mapped to it, but camera `cameraId` of the location may be the one (moved between NVRs, or unmapped on another channel). Not created. */
+  /** The NVR lists this channel and no camera is mapped to it, but camera `cameraId` may be the one (a camera of this NVR whose channel is gone, or a camera of the location never mapped). Not created. */
   | { kind: 'possible_move'; channel: number; reportedName: string; cameraId: string; cameraName: string; because: 'same_address' | 'same_name' | 'unmapped_same_channel' }
   /** A camera mapped to this NVR whose channel the NVR no longer lists. Kept as it is (never deleted or archived). */
   | { kind: 'missing'; channel: number; cameraId: string; cameraName: string }
   /** The NVR gives a matched camera a different name; the NVR's name was saved. */
   | { kind: 'renamed'; channel: number; cameraId: string; from: string; to: string }
+  /** An unmapped (restored) camera that was on this channel: another camera (`takenBy`) is on it now, so it was left unmapped. */
+  | { kind: 'channel_taken'; channel: number; cameraId: string; cameraName: string; takenBy: string }
 
 export type RecorderDiscovery = {
   recorderId: string; locationId: string
@@ -51,15 +66,26 @@ export type RecorderDiscovery = {
   updated: number
   /** Unmapped cameras put back on this NVR. */
   mapped: number
+  /** Cameras of this NVR moved to the channel the NVR now lists them on (same address; review I-1). */
+  moved: number
   reconciliation: Reconciliation[]
 }
 
 type Clients = { admin: AdminClient; rls: AdminClient }
-type Deps = { nvr: Probes['nvr'] }
+/** `go2rtc`: when given, the live streams of a camera that discovery moved to another channel are removed (review M-4). */
+type Deps = { nvr: Probes['nvr']; go2rtc?: Go2rtcClient }
 const defaults: Deps = { nvr: realProbes.nvr }
 
 const placeholderOf = (channel: number) => `Camera ${channel}`
 const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
+/** A name an NVR makes up for a channel; never evidence that two cameras are the same (review I-2). */
+const DEFAULT_NAME = /^(ip\s*)?cam(era)?\s*0*\d+$|^d\s*0*\d+$|^ch(annel)?\s*0*\d+$/i
+export const isDefaultCameraName = (name: string) => DEFAULT_NAME.test(name.trim())
+/** Addresses PoE NVRs give the cameras on their own ports: the same on every such NVR, so never evidence of identity (review I-2). */
+export function isRepeatingCameraAddress(ip: string): boolean {
+  return /^192\.168\.254\.\d{1,3}$/.test(ip) || /^10\.1\.1\.\d{1,3}$/.test(ip) || /^169\.254\.\d{1,3}\.\d{1,3}$/.test(ip)
+}
+const usableAddress = (ip: string | null | undefined): ip is string => typeof ip === 'string' && ip !== '' && !isRepeatingCameraAddress(ip)
 
 /**
  * Discovery of one recorder after every check has passed (the caller has proven admin.inventory for its location). `rec` was read with
@@ -73,7 +99,10 @@ async function discoverOne(clients: Clients, actor: Actor, rec: Recorder, deps: 
   // The password is read here, used for this one call and not kept anywhere.
   const read = await readRecorderPassword(admin, rec.id)
   if (!read.ok) return { ok: false, error: sanitizeError({ code: read.code }, { route: 'discoverRecorderCameras', fallback: 'Could not read the NVR password.' }) }
-  if (!read.password) return { ok: false, error: MSG_NO_NVR_PASSWORD }
+  if (!read.password) {
+    const { data: primary } = await admin.rpc('recorder_primary_of', { p_location: rec.location_id })
+    return { ok: false, error: primary === rec.id ? MSG_NO_NVR_PASSWORD : MSG_NO_NVR_PASSWORD_OTHER }
+  }
 
   let channels
   try {
@@ -90,77 +119,110 @@ async function discoverOne(clients: Clients, actor: Actor, rec: Recorder, deps: 
   ])
   if (existingError || activeError) return fail(existingError ?? activeError, 'Could not read the cameras.')
   let back: Map<number, string>
+  let everMapped: Set<string>
   try {
     back = await reattachableByChannel(admin, actor.orgId, rec.location_id, rec.id)
+    everMapped = await camerasEverMapped(admin, actor.orgId, (existing ?? []).filter((c) => c.recorder_id === null).map((c) => c.id))
   } catch (e) {
     return fail(e, 'Could not read the cameras.')
   }
   const byId = new Map((existing ?? []).map((c) => [c.id, c]))
   const onThis = new Map((active ?? []).filter((m) => byId.has(m.camera_id)).map((m) => [m.channel, byId.get(m.camera_id)!]))
-  const used = new Set<string>([...onThis.values()].map((c) => c.id))
+  const listed = new Set(channels.map((c) => c.channel))
+  // Cameras of THIS NVR whose channel the NVR no longer lists: they may have been re-patched to another channel of the same box (I-1).
+  const vacated = [...onThis].filter(([ch]) => !listed.has(ch)).map(([, cam]) => cam)
+  // Cameras of the location that were never mapped to any NVR (made by hand): the only other cameras that may be this channel's.
+  // A camera mapped to another NVR, or last mapped to one, belongs to that NVR and is never matched here (review I-2).
+  const neverMapped = (existing ?? []).filter((c) => c.recorder_id === null && !everMapped.has(c.id))
+  // Taken: the cameras on a channel the NVR still lists (rule 1). The vacated ones are still free to be matched (rules 3 and 4).
+  const used = new Set<string>([...onThis].filter(([ch]) => listed.has(ch)).map(([, c]) => c.id))
   const reconciliation: Reconciliation[] = []
-  const updates: { id: string; fields: { name: string; camera_ip: string | null; recorder_id?: string; channel?: number } }[] = []
-  const fresh: { org_id: string; location_id: string; recorder_id: string; channel: number; name: string; camera_ip: string | null }[] = []
-  let updated = 0
-  let mapped = 0
+  const ops: DiscoveryOp[] = []
 
-  const listed = new Set<number>()
   for (const c of channels) {
-    listed.add(c.channel)
     const placeholder = placeholderOf(c.channel)
     const reported = (c.name.trim() || placeholder).slice(0, MAX_NAME)
-    // A name the NVR only made up (its own placeholder) does not overwrite a name somebody chose.
-    const nameFor = (old?: string) => (reported === placeholder && old ? old : reported)
+    // A name the NVR only made up does not overwrite a name somebody chose.
+    const madeUp = isDefaultCameraName(reported)
+    const nameFor = (old?: string) => (madeUp && old ? old : reported)
     const mine = onThis.get(c.channel)
     if (mine) {
       const name = nameFor(mine.name)
-      if (!sameName(name, mine.name) && mine.name !== placeholder) reconciliation.push({ kind: 'renamed', channel: c.channel, cameraId: mine.id, from: mine.name, to: name })
+      if (!sameName(name, mine.name) && !isDefaultCameraName(mine.name)) reconciliation.push({ kind: 'renamed', channel: c.channel, cameraId: mine.id, from: mine.name, to: name })
       // An address the NVR does not report now is not forgotten.
-      updates.push({ id: mine.id, fields: { name, camera_ip: c.ip ?? mine.camera_ip ?? null } })
-      updated++
+      ops.push({ op: 'update', id: mine.id, name, ip: c.ip ?? mine.camera_ip ?? null })
       continue
     }
     const loose = back.get(c.channel)
     if (loose && !used.has(loose)) {
       const cam = byId.get(loose)!
       used.add(loose)
-      updates.push({ id: loose, fields: { name: nameFor(cam.name), camera_ip: c.ip ?? cam.camera_ip ?? null, recorder_id: rec.id, channel: c.channel } })
-      mapped++
+      ops.push({ op: 'map', id: loose, channel: c.channel, name: nameFor(cam.name), ip: c.ip ?? cam.camera_ip ?? null })
       continue
     }
-    // Rule 3: never a second identity for a camera that may only have moved. Another NVR's camera, or an unmapped one, that looks like
-    // this channel's camera is listed for an administrator to decide (remap it, or leave it), and nothing is created.
-    const others = (existing ?? []).filter((x) => !used.has(x.id) && x.recorder_id !== rec.id)
-    const sameAddress = c.ip ? others.find((x) => x.camera_ip === c.ip) : undefined
-    const sameNamed = reported !== placeholder ? others.find((x) => sameName(x.name, reported)) : undefined
-    const unmappedSameChannel = others.find((x) => x.recorder_id === null && x.channel === c.channel)
-    const candidate = sameAddress ?? sameNamed ?? unmappedSameChannel
+    // Rule 3 (I-1): the same box, the same address, another channel: the camera moved; it keeps its identity.
+    const free = vacated.filter((x) => !used.has(x.id))
+    const sameBoxAddress = usableAddress(c.ip) ? free.filter((x) => x.camera_ip === c.ip) : []
+    if (sameBoxAddress.length === 1) {
+      const cam = sameBoxAddress[0]
+      used.add(cam.id)
+      ops.push({ op: 'remap', id: cam.id, channel: c.channel, name: nameFor(cam.name), ip: c.ip ?? cam.camera_ip ?? null })
+      continue
+    }
+    // Rule 4: never a second identity for a camera that may only have moved; listed for an administrator, nothing created.
+    const chosen = !madeUp
+    const vacatedNamed = chosen ? free.find((x) => sameName(x.name, reported)) : undefined
+    const loneOnes = neverMapped.filter((x) => !used.has(x.id))
+    const sameAddress = usableAddress(c.ip) ? loneOnes.find((x) => x.camera_ip === c.ip) : undefined
+    const sameNamed = chosen ? loneOnes.find((x) => !isDefaultCameraName(x.name) && sameName(x.name, reported)) : undefined
+    const sameChannel = loneOnes.find((x) => x.channel === c.channel)
+    const candidate = vacatedNamed ?? sameAddress ?? sameNamed ?? sameChannel
     if (candidate) {
       used.add(candidate.id)
       reconciliation.push({
         kind: 'possible_move', channel: c.channel, reportedName: reported, cameraId: candidate.id, cameraName: candidate.name,
-        because: sameAddress ? 'same_address' : sameNamed ? 'same_name' : 'unmapped_same_channel',
+        because: candidate === vacatedNamed || candidate === sameNamed ? 'same_name' : candidate === sameAddress ? 'same_address' : 'unmapped_same_channel',
       })
       continue
     }
-    fresh.push({ org_id: actor.orgId, location_id: rec.location_id, recorder_id: rec.id, channel: c.channel, name: reported, camera_ip: c.ip ?? null })
+    ops.push({ op: 'insert', channel: c.channel, name: reported, ip: c.ip ?? null })
   }
-  for (const [channel, cam] of onThis) if (!listed.has(channel)) reconciliation.push({ kind: 'missing', channel, cameraId: cam.id, cameraName: cam.name })
+  const moved = new Set(ops.filter((o) => o.op === 'remap').map((o) => (o as { id: string }).id))
+  for (const [channel, cam] of onThis) if (!listed.has(channel) && !moved.has(cam.id)) reconciliation.push({ kind: 'missing', channel, cameraId: cam.id, cameraName: cam.name })
+  // M-8: a restored camera whose channel another camera of this NVR now has is listed (it stays unmapped).
+  for (const [channel, id] of back) {
+    const holder = onThis.get(channel)
+    if (!used.has(id) && holder && listed.has(channel)) reconciliation.push({ kind: 'channel_taken', channel, cameraId: id, cameraName: byId.get(id)?.name ?? '', takenBy: holder.id })
+  }
 
-  if (fresh.length > 0) {
-    const { error } = await admin.from('cameras').insert(fresh)
-    if (error) return fail(error, 'Could not save the cameras.')
-  }
-  for (const u of updates) {
-    const { error } = await admin.from('cameras').update(u.fields).eq('id', u.id).eq('org_id', actor.orgId)
-    if (error) return fail(error, 'Could not save the cameras.')
-  }
-  const result: RecorderDiscovery = { recorderId: rec.id, locationId: rec.location_id, cameras: channels.length, created: fresh.length, updated, mapped, reconciliation }
-  await auditAccess(admin, {
-    orgId: actor.orgId, actorId: actor.id, action: 'cameras_discovered', capability: 'admin.inventory', locationIds: [rec.location_id],
-    detail: { recorder_id: rec.id, created: result.created, updated, mapped, to_reconcile: reconciliation.length },
+  // One transaction for every change and the audit row (M-8): all of it or none of it.
+  const { data: saved, error: saveError } = await admin.rpc('discovery_apply', {
+    p_org: actor.orgId, p_recorder: rec.id, p_ops: ops as unknown as Json, p_to_reconcile: reconciliation.length, p_actor: actor.id,
   })
-  return { ok: true, ...result }
+  if (saveError || !saved) return fail(saveError, 'Could not save the cameras.')
+  const counts = saved as { created: number; updated: number; mapped: number; moved: number }
+  // M-4: a moved camera's live streams still point at its old channel; they are removed (the next viewer opens them again). Never fatal.
+  if (deps.go2rtc && moved.size > 0) await dropLiveStreams(deps.go2rtc, [...moved])
+  return {
+    ok: true, recorderId: rec.id, locationId: rec.location_id, cameras: channels.length,
+    created: counts.created, updated: counts.updated, mapped: counts.mapped, moved: counts.moved, reconciliation,
+  }
+}
+
+type DiscoveryOp =
+  | { op: 'insert'; channel: number; name: string; ip: string | null }
+  | { op: 'update'; id: string; name: string; ip: string | null }
+  | { op: 'map' | 'remap'; id: string; channel: number; name: string; ip: string | null }
+
+/** Which of these (unmapped) cameras ever had a channel mapping (to any NVR). */
+async function camerasEverMapped(admin: AdminClient, orgId: string, ids: string[]): Promise<Set<string>> {
+  const out = new Set<string>()
+  for (let i = 0; i < ids.length; i += 200) {
+    const part = ids.slice(i, i + 200)
+    const rows = await fetchAll((from, to) => admin.from('camera_channel_mappings').select('id, camera_id').eq('org_id', orgId).in('camera_id', part).order('id').range(from, to))
+    for (const m of rows) out.add(m.camera_id)
+  }
+  return out
 }
 
 /** The caller's checks: an administrative role, then admin.inventory for the location (as the person). Not found and not allowed look alike to outsiders. */
@@ -189,7 +251,7 @@ export async function discoverRecorderCameras(clients: Clients, actor: Actor, re
 }
 
 export type LocationDiscovery = {
-  cameras: number; created: number; updated: number; mapped: number
+  cameras: number; created: number; updated: number; mapped: number; moved: number
   recorders: ({ recorderId: string; name: string } & ({ ok: true; result: RecorderDiscovery } | { ok: false; error: string }))[]
 }
 
@@ -209,7 +271,7 @@ export async function discoverStoreCameras(clients: Clients, actor: Actor, store
     return { ok: false, error: sanitizeError(e, { route: 'discoverStoreCameras', fallback: 'Could not read the store.' }) }
   }
   if (recorders.length === 0) return { ok: false, error: MSG_NO_NVR }
-  const out: LocationDiscovery = { cameras: 0, created: 0, updated: 0, mapped: 0, recorders: [] }
+  const out: LocationDiscovery = { cameras: 0, created: 0, updated: 0, mapped: 0, moved: 0, recorders: [] }
   for (const rec of recorders) {
     const r = await discoverOne(clients, actor, rec, deps)
     if (r.ok) {
@@ -220,6 +282,7 @@ export async function discoverStoreCameras(clients: Clients, actor: Actor, store
       out.created += result.created
       out.updated += result.updated
       out.mapped += result.mapped
+      out.moved += result.moved
     } else out.recorders.push({ recorderId: rec.id, name: rec.name, ok: false, error: r.error })
   }
   if (!out.recorders.some((r) => r.ok)) return { ok: false, error: (out.recorders[0] as { error: string }).error }
@@ -265,7 +328,9 @@ export async function discoverAllRecorders(
     else {
       try {
         const r = await discoverOne(clients, actor, rec, deps)
-        item = r.ok ? { ...base, ok: true, result: { recorderId: r.recorderId, locationId: r.locationId, cameras: r.cameras, created: r.created, updated: r.updated, mapped: r.mapped, reconciliation: r.reconciliation } } : { ...base, ok: false, error: r.error }
+        item = r.ok
+          ? { ...base, ok: true, result: { recorderId: r.recorderId, locationId: r.locationId, cameras: r.cameras, created: r.created, updated: r.updated, mapped: r.mapped, moved: r.moved, reconciliation: r.reconciliation } }
+          : { ...base, ok: false, error: r.error }
       } catch (e) {
         item = { ...base, ok: false, error: sanitizeError(e, { route: 'discoverAllRecorders', fallback: 'Could not look for cameras on this NVR.' }) }
       }
@@ -278,7 +343,7 @@ export async function discoverAllRecorders(
     return item
   })
   // Many new cameras and mappings at once: fresh planner statistics (see inventory_refresh_statistics). A failure is only logged.
-  if (items.some((i) => i.ok && i.result.created + i.result.mapped > 0)) {
+  if (items.some((i) => i.ok && i.result.created + i.result.mapped + i.result.moved > 0)) {
     const { error: statsError } = await clients.admin.rpc('inventory_refresh_statistics')
     if (statsError) sanitizeError(statsError, { route: 'discoverAllRecorders.statistics' })
   }

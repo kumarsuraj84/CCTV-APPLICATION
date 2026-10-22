@@ -48,6 +48,7 @@ export function StoreForm({ store }: { store?: StoreFormValues }) {
         <Button type="submit" disabled={pending}>{store?.id ? 'Save changes' : 'Add store'}</Button>
         {state.error && <p role="alert" className="mt-2 text-sm text-destructive">{state.error}</p>}
         {state.ok && <p className="mt-2 text-sm">Saved.</p>}
+        {state.ok && state.warning && <p role="status" className="mt-1 text-sm text-amber-700">{state.warning}</p>}
       </div>
     </form>
   )

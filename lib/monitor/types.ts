@@ -6,7 +6,11 @@ import type { RtspTarget } from '@/lib/rtsp/describe'
 // P2-5b: the worker runs on the recorder model. An NVR is a recorder (recorders.id); its results are ('recorder', recorder id). A camera
 // is checked through the recorder of its ACTIVE channel mapping only; a camera without one is never probed.
 export type TargetType = 'camera' | 'device' | 'recorder'
-export type CheckResult = { type: TargetType; id: string; ok: boolean; at: string; method?: string; error?: string; cause?: 'nvr_down' }
+/**
+ * One check result. `recorder` (camera results only): the recorder (NVR) whose round produced it. The database applies a camera result
+ * only while the camera is still mapped to that recorder (review M-3: a late result of the camera's previous NVR is ignored).
+ */
+export type CheckResult = { type: TargetType; id: string; ok: boolean; at: string; method?: string; error?: string; cause?: 'nvr_down'; recorder?: string }
 export type DeviceJob = { id: string; org_id: string; ip: string; tcp_port: number | null }
 /** One NVR's own reachability check: `id` is the recorder id. */
 export type NvrJob = { id: string; org_id: string; location_id: string; ip: string; rtsp_port: number }
@@ -43,7 +47,8 @@ export interface MonitorDb {
    */
   loadRecorderJobs(recorderIds?: string[], staleBefore?: Date): Promise<RecorderJob[]>
   applyResults(orgId: string, results: CheckResult[], threshold: number): Promise<void>
-  saveCameraIps(orgId: string, rows: { cameraId: string; ip: string }[]): Promise<void>
+  /** Camera addresses an NVR reported; `recorderId` is that NVR: an address is saved only while the camera is still mapped to it. */
+  saveCameraIps(orgId: string, rows: { cameraId: string; ip: string; recorderId: string }[]): Promise<void>
   touchHeartbeat(now: Date): Promise<void>
   /** Remembers a period when the worker was not running (it is left out of uptime). */
   recordGap(from: Date, to: Date): Promise<void>

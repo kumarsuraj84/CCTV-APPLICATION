@@ -9,11 +9,15 @@ import { createDevice, deleteDevice, updateDevice } from '@/lib/inventory/device
 import { submittedValues } from '@/lib/forms/submitted-values'
 import { archiveInventory, restoreInventory, type ArchiveKind } from '@/lib/inventory/archive'
 import { createStore, deleteStore, updateStore } from '@/lib/inventory/stores'
+import { localGo2rtc } from '@/lib/streams/local-go2rtc'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 
-/** `values` carries the submitted non-secret fields back after an error, so the form keeps what was typed. */
-export type FormResult = { error?: string; ok?: boolean; values?: Record<string, string> }
+/**
+ * `values` carries the submitted non-secret fields back after an error, so the form keeps what was typed. `warning`: saved, but worth a
+ * look (review M-2: an NVR address another store's NVR also has).
+ */
+export type FormResult = { error?: string; ok?: boolean; warning?: string; values?: Record<string, string> }
 export type ImportState = { result?: ImportResult; parseErrors?: RowError[]; error?: string }
 
 // P2-2: stores, devices and imports need an administrative role AND admin.inventory (the services still check the role as authority).
@@ -42,7 +46,8 @@ export async function saveStoreAction(_prev: FormResult, formData: FormData): Pr
   const id = text(formData, 'id')
   const res = id ? await updateStore(admin, actor, id, storeInput(formData)) : await createStore(admin, actor, storeInput(formData))
   revalidatePath('/admin/stores')
-  return res.ok ? { ok: true } : { error: res.error, values: submittedValues(formData, STORE_FIELDS, ['is_active']) }
+  if (!res.ok) return { error: res.error, values: submittedValues(formData, STORE_FIELDS, ['is_active']) }
+  return res.warning ? { ok: true, warning: res.warning } : { ok: true }
 }
 
 export async function deleteStoreAction(storeId: string): Promise<FormResult> {
@@ -77,7 +82,7 @@ export async function deleteDeviceAction(deviceId: string): Promise<FormResult> 
 /** P2-5b: archive / restore a location, NVR, camera, asset, cluster or region (the screens arrive with P2-5c). */
 export async function archiveInventoryAction(kind: ArchiveKind, id: string): Promise<FormResult> {
   const p = await requireAdministration('admin.inventory')
-  const res = await archiveInventory({ admin: createAdminClient(), rls: await createClient() }, { id: p.id, orgId: p.org_id, role: p.role }, kind, String(id))
+  const res = await archiveInventory({ admin: createAdminClient(), rls: await createClient(), go2rtc: localGo2rtc() }, { id: p.id, orgId: p.org_id, role: p.role }, kind, String(id))
   revalidatePath('/admin/stores')
   return res.ok ? { ok: true } : { error: res.error }
 }

@@ -40,7 +40,10 @@ export function cleanResults(results: CheckResult[]): Json[] {
       r !== null && typeof r === 'object' && TARGET_TYPES.has(r.type) && typeof r.id === 'string' && UUID.test(r.id) &&
       typeof r.ok === 'boolean' && typeof r.at === 'string' && !Number.isNaN(Date.parse(r.at))
     if (!valid) continue
+    // A camera result that names its recorder must name it with a UUID (review M-3); the database then checks the camera's mapping.
+    if (r.type === 'camera' && r.recorder !== undefined && (typeof r.recorder !== 'string' || !UUID.test(r.recorder))) continue
     const element: { [key: string]: Json } = { type: r.type, id: r.id, ok: r.ok, at: r.at }
+    if (r.type === 'camera' && typeof r.recorder === 'string') element.recorder = r.recorder.toLowerCase()
     if (typeof r.method === 'string') element.method = r.method
     if (typeof r.error === 'string') element.error = r.error
     if (r.cause === 'nvr_down') element.cause = r.cause
@@ -157,9 +160,10 @@ export class SupabaseMonitorDb implements MonitorDb {
     if (error) throw new Error(`monitor_apply_results failed: ${error.message}`)
   }
 
-  async saveCameraIps(orgId: string, rows: { cameraId: string; ip: string }[]): Promise<void> {
+  async saveCameraIps(orgId: string, rows: { cameraId: string; ip: string; recorderId: string }[]): Promise<void> {
     for (const r of rows) {
-      const { error } = await this.admin.from('cameras').update({ camera_ip: r.ip }).eq('id', r.cameraId).eq('org_id', orgId)
+      // Only while the camera is still on the NVR that reported the address (a camera moved meanwhile keeps its new NVR's address).
+      const { error } = await this.admin.from('cameras').update({ camera_ip: r.ip }).eq('id', r.cameraId).eq('org_id', orgId).eq('recorder_id', r.recorderId)
       if (error) logger.error({ event: 'camera_ip_save_failed', error })
     }
   }

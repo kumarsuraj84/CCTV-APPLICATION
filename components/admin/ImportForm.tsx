@@ -31,6 +31,11 @@ export function ImportForm({ title, help, sampleHref, action }: {
             Added {state.result.created}, updated {state.result.updated}, skipped {errors.length}.
           </p>
         )}
+        {(state.result?.warnings?.length ?? 0) > 0 && (
+          <ul role="status" className="space-y-1 text-sm text-amber-700">
+            {state.result!.warnings!.map((w, i) => <li key={i}>Line {w.line}: {w.message}</li>)}
+          </ul>
+        )}
         {errors.length > 0 && (
           <div className="max-h-60 overflow-y-auto rounded-lg border">
             <table className="w-full text-sm">

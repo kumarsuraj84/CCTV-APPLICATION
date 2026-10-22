@@ -1,4 +1,5 @@
 import type { AdminClient } from '@/lib/admin/types'
+import { fetchAll } from '@/lib/supabase/fetch-all'
 
 // Cameras and their channel mappings (P2-5b). A camera's identity never depends on its channel: it is mapped to ONE recorder channel at
 // a time (camera_channel_mappings), and moving it keeps its id, grants, groups and history. Nothing here deletes or archives a camera.
@@ -40,10 +41,18 @@ export async function mappedChannels(admin: AdminClient, orgId: string, recorder
   return new Set((data ?? []).map((m) => m.channel))
 }
 
+/** The channels of this recorder that EVER had a camera mapping (active or closed: the mapping history is append-only). */
+export async function channelsEverMapped(admin: AdminClient, orgId: string, recorderId: string): Promise<Set<number>> {
+  const rows = await fetchAll((from, to) => admin.from('camera_channel_mappings').select('id, channel').eq('org_id', orgId).eq('recorder_id', recorderId).order('id').range(from, to))
+  return new Set(rows.map((m) => m.channel))
+}
+
 /**
  * Makes sure channels 1..count of this recorder each have a camera: a channel without one gets a camera of the location that was on it
- * before (see reattachableByChannel), else a new "Camera N" mapped to it. Real names come from discovery later; existing cameras are
- * never renamed, moved off another channel or deleted.
+ * before (see reattachableByChannel), else — only when the channel NEVER had a camera on this recorder — a new "Camera N" mapped to
+ * it. Review I-3: a channel whose camera was archived or moved away stays empty (before, every save of the store or re-import of the
+ * CSV brought a phantom "Camera N" back, which was then probed and showed offline). Real names come from discovery later; existing
+ * cameras are never renamed, moved off another channel or deleted.
  */
 export async function ensurePlaceholderCameras(admin: AdminClient, orgId: string, locationId: string, recorderId: string, count: number): Promise<void> {
   if (count <= 0) return
@@ -55,7 +64,8 @@ export async function ensurePlaceholderCameras(admin: AdminClient, orgId: string
     const { error } = await admin.from('cameras').update({ recorder_id: recorderId, channel: ch }).eq('id', back.get(ch)!).eq('org_id', orgId)
     if (error) throw error
   }
-  const rows = missing.filter((ch) => !back.has(ch)).map((ch) => ({ org_id: orgId, location_id: locationId, recorder_id: recorderId, channel: ch, name: `Camera ${ch}` }))
+  const used = await channelsEverMapped(admin, orgId, recorderId)
+  const rows = missing.filter((ch) => !back.has(ch) && !used.has(ch)).map((ch) => ({ org_id: orgId, location_id: locationId, recorder_id: recorderId, channel: ch, name: `Camera ${ch}` }))
   if (rows.length === 0) return
   const { error } = await admin.from('cameras').insert(rows)
   if (error) throw error

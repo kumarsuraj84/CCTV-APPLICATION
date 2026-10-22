@@ -3,6 +3,7 @@ import { isAdminRole } from '@/lib/admin/roles'
 import { holdsOrgWide, readCapabilities } from '@/lib/auth/capabilities'
 import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
+import { dropLiveStreams, type Go2rtcClient } from '@/lib/streams/go2rtc'
 
 // Archive and restore (P2-5a, decision D5-3; service layer of P2-5b for the P2-5c screens). Nothing in the inventory is ever deleted:
 // archiving switches the node off, keeps its history, grants and groups, and raises the access version of exactly the people whose
@@ -34,22 +35,36 @@ async function allowed(rls: AdminClient, actor: Actor): Promise<{ ok: true } | {
   return holdsOrgWide(caps, 'admin.inventory') ? { ok: true } : { ok: false, error: DENIED }
 }
 
-async function run(fn: 'inventory_archive' | 'inventory_restore', clients: { admin: AdminClient; rls: AdminClient }, actor: Actor, kind: ArchiveKind, id: string): Promise<Result<object>> {
+/** `go2rtc`: when given, archiving removes the live streams of the cameras it archives (review M-4). */
+type Clients = { admin: AdminClient; rls: AdminClient; go2rtc?: Go2rtcClient }
+
+async function run(fn: 'inventory_archive' | 'inventory_restore', clients: Clients, actor: Actor, kind: ArchiveKind, id: string): Promise<Result<object>> {
   if (!KINDS.includes(kind)) return { ok: false, error: MSG_NOT_FOUND }
   if (typeof id !== 'string' || !UUID.test(id)) return { ok: false, error: MSG_NOT_FOUND }
   const may = await allowed(clients.rls, actor)
   if (!may.ok) return may
-  const { error } = await clients.admin.rpc(fn, { p_org: actor.orgId, p_kind: kind, p_id: id.toLowerCase(), p_actor: actor.id })
+  const target = id.toLowerCase()
+  // The cameras an archive switches off (read before: afterwards they are archived like any other).
+  let cameras: string[] = []
+  if (fn === 'inventory_archive' && clients.go2rtc && (kind === 'camera' || kind === 'location')) {
+    if (kind === 'camera') cameras = [target]
+    else {
+      const { data } = await clients.admin.from('cameras').select('id').eq('org_id', actor.orgId).eq('location_id', target).is('archived_at', null)
+      cameras = (data ?? []).map((c) => c.id)
+    }
+  }
+  const { error } = await clients.admin.rpc(fn, { p_org: actor.orgId, p_kind: kind, p_id: target, p_actor: actor.id })
   if (error) {
     const plain = error.code ? REFUSALS[error.code] : undefined
     if (plain) return { ok: false, error: plain }
     return { ok: false, error: sanitizeError(error, { route: fn, fallback: fn === 'inventory_archive' ? 'Could not archive it.' : 'Could not restore it.' }) }
   }
+  if (clients.go2rtc && cameras.length > 0) await dropLiveStreams(clients.go2rtc, cameras)
   return { ok: true }
 }
 
 /** Archives one node of the organisation (a recorder with cameras, or a cluster / region with contents, is refused plainly). */
-export function archiveInventory(clients: { admin: AdminClient; rls: AdminClient }, actor: Actor, kind: ArchiveKind, id: string): Promise<Result<object>> {
+export function archiveInventory(clients: Clients, actor: Actor, kind: ArchiveKind, id: string): Promise<Result<object>> {
   return run('inventory_archive', clients, actor, kind, id)
 }
 
@@ -57,6 +72,6 @@ export function archiveInventory(clients: { admin: AdminClient; rls: AdminClient
  * Restores one archived node. Restored cameras come back UNMAPPED (5a ruling): run the NVR's camera discovery (it puts them back on
  * their channel) or map them, and only then are they checked and streamed again.
  */
-export function restoreInventory(clients: { admin: AdminClient; rls: AdminClient }, actor: Actor, kind: ArchiveKind, id: string): Promise<Result<object>> {
+export function restoreInventory(clients: Clients, actor: Actor, kind: ArchiveKind, id: string): Promise<Result<object>> {
   return run('inventory_restore', clients, actor, kind, id)
 }

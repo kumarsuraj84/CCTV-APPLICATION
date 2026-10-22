@@ -16,7 +16,12 @@ export function FindCamerasButton({ storeId }: { storeId: string }) {
         start(async () => {
           const res = await discoverCamerasAction(storeId)
           if (res.error) toast.error(res.error)
-          else toast.success(res.message ?? 'Done.')
+          else {
+            const details = res.details ?? []
+            toast.success(res.message ?? 'Done.', details.length > 0
+              ? { description: <ul className="mt-1 list-disc space-y-0.5 pl-4">{details.map((d, i) => <li key={i}>{d}</li>)}</ul>, duration: 20000 }
+              : undefined)
+          }
         })
       }
     >

@@ -192,7 +192,7 @@ async function runRecorderCameras(deps: Deps, s: RecorderJob): Promise<void> {
   if (s.knownDown) {
     await deps.db.applyResults(
       s.org_id,
-      s.cameras.map((c): CheckResult => ({ type: 'camera', id: c.id, ok: false, at, method: 'nvr_down', error: 'The NVR is not reachable.', cause: 'nvr_down' })),
+      s.cameras.map((c): CheckResult => ({ type: 'camera', id: c.id, recorder: s.id, ok: false, at, method: 'nvr_down', error: 'The NVR is not reachable.', cause: 'nvr_down' })),
       1,
     )
     return
@@ -202,7 +202,7 @@ async function runRecorderCameras(deps: Deps, s: RecorderJob): Promise<void> {
   if (!isValidHost(s.ip) || !isValidPort(s.http_port) || !isValidPort(s.rtsp_port)) {
     await deps.db.applyResults(
       s.org_id,
-      s.cameras.map((c): CheckResult => ({ type: 'camera', id: c.id, ok: false, at, method: 'none', error: BAD_NVR })),
+      s.cameras.map((c): CheckResult => ({ type: 'camera', id: c.id, recorder: s.id, ok: false, at, method: 'none', error: BAD_NVR })),
       deps.cfg.failThreshold,
     )
     return
@@ -318,12 +318,12 @@ async function runRecorderCameras(deps: Deps, s: RecorderJob): Promise<void> {
     .map((c): CheckResult => {
       const ok = online.get(c.channel) === true
       const unlisted = listed.size > 0 && !listed.has(c.channel)
-      return { type: 'camera', id: c.id, ok, at, method, error: ok ? undefined : cameraProblem(rtspCode.get(c.channel), unlisted, nvrProblem) }
+      return { type: 'camera', id: c.id, recorder: s.id, ok, at, method, error: ok ? undefined : cameraProblem(rtspCode.get(c.channel), unlisted, nvrProblem) }
     })
   if (results.length > 0) await deps.db.applyResults(s.org_id, results, deps.cfg.failThreshold)
 
   const changed = s.cameras.filter((c) => addresses.has(c.channel) && addresses.get(c.channel) !== c.camera_ip)
-  if (changed.length > 0) await deps.db.saveCameraIps(s.org_id, changed.map((c) => ({ cameraId: c.id, ip: addresses.get(c.channel)! })))
+  if (changed.length > 0) await deps.db.saveCameraIps(s.org_id, changed.map((c) => ({ cameraId: c.id, ip: addresses.get(c.channel)!, recorderId: s.id })))
 }
 
 /** All cameras of one recorder. Asks the NVR first; cameras it does not report online get an RTSP check. Never throws. */

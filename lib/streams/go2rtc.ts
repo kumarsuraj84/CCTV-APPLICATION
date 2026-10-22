@@ -1,6 +1,8 @@
 // Talks to go2rtc's HTTP API (loopback only). The stream source contains camera credentials, so nothing thrown here ever carries
 // the address, the source, the name or the underlying error: callers get a plain sentence and nothing that could be logged by mistake.
 
+import { logger } from '@/lib/observability/logger'
+
 const NAME = /^[A-Za-z0-9_-]{1,200}$/
 /** The only stream names the pruner may remove: live (cam_<id>_sub|main) and playback (pb_<id>_<start>) streams made by this app. */
 const PRUNABLE = /^(cam|pb)_[0-9a-f-]{36}_(sub|main|\d+)$/
@@ -264,3 +266,23 @@ function producerUrls(stream: unknown): string[] {
 }
 
 export const pruneStreams = (client: Go2rtcClient, o?: Parameters<Go2rtcClient['prune']>[0]): Promise<number> => client.prune(o)
+
+/**
+ * Removes the live streams (cam_<id>_sub, cam_<id>_main) of cameras that were archived or moved to another NVR channel (review P2-5b
+ * M-4): go2rtc keeps a stream's source until it is registered again, so a viewer reconnecting through the gateway would otherwise reach
+ * the camera's OLD channel, which may now carry another camera. The next viewer opens the stream again through openStreams (the
+ * camera's current route). Playback streams are left: they show the recording of the time they were opened for. Never throws; a
+ * failure is logged with the event name only (the source holds a password).
+ */
+export async function dropLiveStreams(client: Go2rtcClient, cameraIds: readonly string[]): Promise<void> {
+  for (const id of cameraIds) {
+    for (const kind of ['sub', 'main'] as const) {
+      const name = `cam_${id}_${kind}`
+      try {
+        if (await client.has(name)) await client.remove(name)
+      } catch {
+        logger.warn({ event: 'live_stream_drop_failed', camera: id, kind })
+      }
+    }
+  }
+}
