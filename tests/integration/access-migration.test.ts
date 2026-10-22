@@ -167,9 +167,10 @@ describe('VA-18: migration of the old access model (AC-6, AC-7, AL-7, D-2a)', ()
     for (const key of ['manager', 'admin', 'owner']) {
       expect(await effective('report_effective_asset_ids', people[key].u.id, 'it.inventory.view', true), key).toEqual(sorted([e0, e1, e2, e3, ...nvrs]))
     }
-    const devices = async (u: TestUser) => ((await u.client.from('assets').select('id').eq('is_recorder', false)).data ?? []).length
-    expect(await devices(people.storeOnly.u)).toBe(0)
-    expect(await devices(people.manager.u)).toBe(4)
+    // Review I-2: every readable asset row, NVR recorder assets included, named exactly.
+    const assetRows = async (u: TestUser) => ((await u.client.from('assets').select('id')).data ?? []).map((a) => a.id).sort()
+    expect(await assetRows(people.storeOnly.u)).toEqual([])
+    expect(await assetRows(people.manager.u)).toEqual(sorted([e0, e1, e2, e3, ...nvrs]))
   })
 
   it('writes one report row per person, flags home-store and manager grants for review, and lists the lost IT visibility', async () => {

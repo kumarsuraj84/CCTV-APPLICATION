@@ -122,10 +122,10 @@ async function scopeLabels(admin: AdminClient, orgId: string, refs: { scope_kind
   const [stores, cameras, devices, regions, clusters, recorders] = await Promise.all([
     readIn(ids('location'), (c) => admin.from('locations').select('id, code, name').eq('org_id', orgId).in('id', c)),
     readIn(ids('camera'), (c) => admin.from('cameras').select('id, name, store_id:location_id, stores:locations(code)').eq('org_id', orgId).in('id', c)),
-    readIn(ids('asset'), (c) => admin.from('assets').select('id, name, store_id:location_id, stores:locations(code)').eq('org_id', orgId).in('id', c)),
+    readIn(ids('asset'), (c) => admin.from('assets').select('id, name, store_id:location_id, stores:locations!assets_location_fk(code)').eq('org_id', orgId).in('id', c)),
     readIn(ids('region'), (c) => admin.from('regions').select('id, code, name').eq('org_id', orgId).in('id', c)),
     readIn(ids('cluster'), (c) => admin.from('clusters').select('id, code, name').eq('org_id', orgId).in('id', c)),
-    readIn(ids('recorder'), (c) => admin.from('assets').select('id, name, store_id:location_id, stores:locations(code)').eq('org_id', orgId).in('id', c)),
+    readIn(ids('recorder'), (c) => admin.from('assets').select('id, name, store_id:location_id, stores:locations!assets_location_fk(code)').eq('org_id', orgId).in('id', c)),
   ])
   const code = (x: unknown) => (x as { code: string } | null)?.code ?? ''
   const label = new Map<string, string>([

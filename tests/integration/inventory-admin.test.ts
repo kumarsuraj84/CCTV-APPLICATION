@@ -115,6 +115,17 @@ describe('inventory administration', () => {
     expect((await deleteDevice(admin(), actor, dev.deviceId)).ok).toBe(true)
   })
 
+  it('a location\'s NVR is not a device: the device screens refuse to change or delete it (review M4)', async () => {
+    const made = await createStore(admin(), actor, { name: 'Echo', ip: '192.0.2.60', nvr_username: 'viewer', nvr_password: 'Secret-E', channels: 0 })
+    if (!made.ok) throw new Error(made.error)
+    const nvr = (await admin().rpc('recorder_primary_of', { p_location: made.storeId })).data as string
+    const before = (await admin().from('assets').select('name, ip, enabled, archived_at').eq('id', nvr).single()).data
+    expect(await updateDevice(admin(), actor, nvr, { name: 'Renamed', type: 'server', ip: '192.0.2.61' }))
+      .toEqual({ ok: false, error: 'This is the NVR of a store. Change it on the Manage stores page.' })
+    expect(await deleteDevice(admin(), actor, nvr)).toEqual({ ok: false, error: 'This is the NVR of a store. Change it on the Manage stores page.' })
+    expect((await admin().from('assets').select('name, ip, enabled, archived_at').eq('id', nvr).single()).data).toEqual(before)
+  })
+
   it('only administrators may change inventory', async () => {
     const viewer: Actor = { id: crypto.randomUUID(), orgId, role: 'user' }
     expect((await createDevice(admin(), viewer, { name: 'X', type: 'server', ip: '192.0.2.50' })).ok).toBe(false)

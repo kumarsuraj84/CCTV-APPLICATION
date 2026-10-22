@@ -4,6 +4,7 @@ import { StatusBadge } from '@/components/monitor/StatusBadge'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { coversSomeWholeLocation } from '@/lib/auth/capabilities'
 import { requireAdministration } from '@/lib/auth/profile'
+import { pickPrimaries } from '@/lib/inventory/recorders'
 import { getWorkerStatus } from '@/lib/monitor/health'
 import { describeRounds } from '@/lib/monitor/last-checked'
 import { isStale, nvrLoginProblem, type StateRow } from '@/lib/queries/status'
@@ -39,8 +40,8 @@ export default async function MonitoringPage() {
     ),
     fetchAll((from, to) => admin.from('locations').select('id, code, name').eq('org_id', me.org_id).eq('is_active', true).is('archived_at', null).order('code').range(from, to)),
     fetchAll((from, to) => admin.from('cameras').select('id, store_id:location_id').eq('org_id', me.org_id).eq('is_active', true).is('archived_at', null).order('id').range(from, to)),
-    // P2-5a: NVR states are recorder states; until P2-5b the page shows each location's primary recorder (the first one made).
-    fetchAll((from, to) => admin.from('recorders').select('id, location_id').eq('org_id', me.org_id).order('created_at').order('id').range(from, to)),
+    // P2-5a: NVR states are recorder states; until P2-5b the page shows each location's primary recorder (its legacy NVR, else the first one made).
+    fetchAll((from, to) => admin.from('recorders').select('id, location_id, migrated_from_location_id').eq('org_id', me.org_id).order('created_at').order('id').range(from, to)),
     // The gaps are about the whole checker, not one organisation. A failed read only leaves this list out.
     admin.from('monitor_gaps').select('id, started_at, ended_at').gte('ended_at', since).order('started_at', { ascending: false }).limit(GAPS_SHOWN),
   ])
@@ -52,12 +53,7 @@ export default async function MonitoringPage() {
   const nvrByStore = new Map<string, StateRow>()
   const cameraStates = new Map<string, StateRow>()
   const primaryLocation = new Map<string, string>()
-  const seenLocation = new Set<string>()
-  for (const r of recorders) {
-    if (seenLocation.has(r.location_id)) continue
-    seenLocation.add(r.location_id)
-    primaryLocation.set(r.id, r.location_id)
-  }
+  for (const [loc, r] of pickPrimaries(recorders)) primaryLocation.set(r.id, loc)
   for (const s of states) {
     const kind = s.target_type === 'recorder' ? 'nvr' : s.target_type
     const c = (counts[kind] ??= { up: 0, down: 0, unknown: 0, stale: 0 })

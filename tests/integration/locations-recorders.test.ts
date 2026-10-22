@@ -70,12 +70,16 @@ describe('locations, recorders and channel mappings (P2-5a)', () => {
   })
 
   it('a camera has at most one active mapping, and a recorder channel at most one active camera', async () => {
+    // Refused by the partial unique (23505) or the no-overlap exclusion (23P01), whichever PostgreSQL checks first.
     const twice = await admin().from('camera_channel_mappings').insert({ org_id: orgId, camera_id: cams.A1, recorder_id: recB, channel: 9 })
-    expect(twice.error).not.toBeNull()
+    expect(['23505', '23P01']).toContain(twice.error?.code)
     const taken = await admin().from('camera_channel_mappings').insert({ org_id: orgId, camera_id: cams.C3, recorder_id: recA, channel: 1 })
-    expect(taken.error).not.toBeNull()
-    // A second camera on an occupied channel through the camera row is refused the same way.
-    expect((await admin().from('cameras').insert({ org_id: orgId, location_id: store, recorder_id: recA, channel: 2, name: 'dup' })).error).not.toBeNull()
+    expect(['23505', '23P01']).toContain(taken.error?.code)
+    // A second camera on an occupied channel through the camera row is refused the same way, and leaves no camera behind.
+    const dup = await admin().from('cameras').insert({ org_id: orgId, location_id: store, recorder_id: recA, channel: 2, name: 'dup' })
+    expect(['23505', '23P01']).toContain(dup.error?.code)
+    expect((await admin().from('cameras').select('id').eq('name', 'dup').eq('org_id', orgId)).data).toEqual([])
+    expect((await admin().from('camera_channel_mappings').select('camera_id').eq('org_id', orgId).is('valid_to', null)).data).toHaveLength(9)
   })
 
   it('recorder scope: only that NVR\'s cameras; it never covers the whole location', async () => {
@@ -140,7 +144,7 @@ describe('locations, recorders and channel mappings (P2-5a)', () => {
     expect((await viewer.client.from('check_state').select('target_id').eq('target_type', 'recorder')).data).toEqual([])
     const per = (await itPerson.client.from('recorder_status').select('recorder_id, status').eq('location_id', store)).data!
     expect(new Map(per.map((r) => [r.recorder_id, r.status]))).toEqual(new Map([[recA, 'up'], [recB, 'up'], [recC, 'down']]))
-    expect((await viewer.client.rpc('status_reasons', { p_type: 'camera', p_ids: [cams.C2] })).error).toBeNull()
+    expect((await viewer.client.rpc('status_reasons', { p_type: 'camera', p_ids: [cams.C2] })).data).toEqual([{ target_id: cams.C2, reason: null }])
     expect((await viewer.client.from('outages').select('cause').eq('target_id', cams.C2)).data).toEqual([{ cause: 'nvr_down' }])
   })
 
@@ -254,7 +258,7 @@ describe('locations, recorders and channel mappings (P2-5a)', () => {
     expect(row).toMatchObject({ monitoring_enabled: false, monitoring_disabled_reason: 'Real NVR, do not contact', monitoring_disabled_by: actor.id })
     expect(row.monitoring_disabled_at).not.toBeNull()
     const audit = (await admin().from('admin_audit_log').select('action, detail').eq('org_id', orgId).eq('entity_id', rec)).data!
-    expect(audit.map((a) => a.action)).toContain('recorder_monitoring_disabled')
+    expect(audit).toEqual([{ action: 'recorder_monitoring_disabled', detail: { reason: 'Real NVR, do not contact', was_enabled: true } }])
     // Switched off: open outages closed, no state, results ignored; the recorder and its cameras show "switched off", not offline.
     for (const [type, id] of [['recorder', rec], ['camera', cam]] as const) {
       expect((await admin().from('outages').select('ended_at').eq('target_type', type).eq('target_id', id)).data!.every((o) => o.ended_at !== null)).toBe(true)
@@ -283,7 +287,10 @@ describe('locations, recorders and channel mappings (P2-5a)', () => {
     expect(dup.error?.code).toBe('23505')
     const space = (await admin().from('address_spaces').insert({ org_id: orgId, name: 'Store LAN behind NAT', kind: 'location_nat', location_id: store }).select('id').single()).data!.id
     const other = await createAsset(orgId, { locationId: store, name: 'Switch 3', ip: '10.77.0.5', port: 22, addressSpaceId: space })
-    expect(other).toBeTruthy()
+    const eps = (await admin().from('asset_endpoints').select('asset_id, address_space_id').eq('org_id', orgId).eq('host', '10.77.0.5').is('retired_at', null)).data!
+    expect(eps.find((e) => e.asset_id === other)?.address_space_id).toBe(space)
+    expect(eps).toHaveLength(2)
+    expect(new Set(eps.map((e) => e.address_space_id)).size).toBe(2)
     // Exactly one global space per organisation, created with the organisation.
     expect((await admin().from('address_spaces').select('id').eq('org_id', orgId).eq('kind', 'global')).data).toHaveLength(1)
   })
@@ -301,12 +308,11 @@ describe('locations, recorders and channel mappings (P2-5a)', () => {
     expect(await check(inside, '10.20.0.9')).toBe('ok')
     expect(await check(outside, '10.10.0.5')).toBe('outside_location_network')
     expect(await check(none, '10.10.0.6')).toBe('no_network_defined')
-    const conflicts = (await admin().rpc('network_address_conflicts', { p_org: orgId })).data as { asset_id: string; status: string }[]
-    expect(conflicts.map((c) => c.asset_id)).toContain(outside)
-    expect(conflicts.map((c) => c.asset_id)).not.toContain(inside)
-    expect(conflicts.find((c) => c.asset_id === outside)?.status).toBe('outside_location_network')
+    const conflicts = (await admin().rpc('network_address_conflicts', { p_org: orgId })).data as { asset_id: string; location_id: string; status: string }[]
+    expect(conflicts.filter((c) => c.location_id === shop).map((c) => [c.asset_id, c.status])).toEqual([[outside, 'outside_location_network']])
+    expect(conflicts.filter((c) => c.location_id === bare)).toEqual([])
     // A malformed network is refused.
-    expect((await admin().from('network_definitions').insert({ org_id: orgId, location_id: bare, management_cidr: 'not-a-network' })).error).not.toBeNull()
+    expect((await admin().from('network_definitions').insert({ org_id: orgId, location_id: bare, management_cidr: 'not-a-network' })).error?.code).toBe('22P02')
   })
 
   it('asset dependencies: a cycle (and a self-dependency) is refused', async () => {
@@ -317,14 +323,16 @@ describe('locations, recorders and channel mappings (P2-5a)', () => {
     expect((await dep(sw, wan)).error).toBeNull()
     expect((await dep(nvrAsset, sw)).error).toBeNull()
     expect((await dep(wan, nvrAsset)).error?.code).toBe('DR005')
-    expect((await dep(wan, wan)).error).not.toBeNull()
-    expect((await dep(sw, wan, 'magic')).error).not.toBeNull()
+    expect((await dep(wan, wan)).error?.code).toBe('DR005') // the cycle trigger (BEFORE) refuses it before the CHECK is reached
+    expect((await dep(sw, wan, 'magic')).error?.code).toBe('23514')
+    expect((await admin().from('asset_dependencies').select('child_asset_id, parent_asset_id').eq('org_id', orgId).order('created_at')).data)
+      .toEqual([{ child_asset_id: sw, parent_asset_id: wan }, { child_asset_id: nvrAsset, parent_asset_id: sw }])
   })
 
   it('the Wi-Fi capability matrix is seeded from the research with a source for every row, and nothing is lab-validated', async () => {
     const { data, error } = await admin().from('device_capabilities').select('*')
     expect(error).toBeNull()
-    expect((data ?? []).length).toBeGreaterThan(20)
+    expect((data ?? []).length).toBe(65) // every sourced cell of docs/drishti/wifi-capability-research.md, nothing else
     for (const r of data ?? []) {
       expect(r.source_ref, `${r.vendor} ${r.model} ${r.operation}`).toMatch(/^(S|I)\d+/)
       expect(['supported', 'unsupported', 'unverified']).toContain(r.support)
@@ -338,7 +346,7 @@ describe('locations, recorders and channel mappings (P2-5a)', () => {
     expect(telnet?.support).toBe('unsupported')
   })
 
-  it('privileges: nothing new is open to anon or to a CCTV-only viewer; privilege_violations stays empty', async () => {
+  it('privileges: nothing new is open to anon or to a CCTV-only viewer; privilege_violations stays empty (fix round 1: exact)', async () => {
     expect((await admin().rpc('privilege_violations')).data).toEqual([])
     const tables = ['regions', 'clusters', 'locations', 'assets', 'recorders', 'camera_channel_mappings', 'address_spaces', 'asset_endpoints',
       'network_definitions', 'asset_dependencies', 'device_capabilities', 'location_status', 'recorder_status', 'recorder_endpoints',
@@ -358,3 +366,283 @@ describe('locations, recorders and channel mappings (P2-5a)', () => {
     expect((await itPerson.client.from('camera_channel_mappings').insert({ org_id: orgId, camera_id: cams.A1, recorder_id: recA, channel: 50 })).error?.code).toBe('42501')
   })
 })
+
+// ── P2-5a review, fix round 1 (I-1, M2..M15) ────────────────────────────────────────────────────────────────────────────────────
+describe('P2-5a review fix round 1', () => {
+  let orgId: string, other: string
+  let region: string, cluster: string, loc: string, seam: string, recX: string, sw: string
+  let camX: string, camS: string
+  let assetOnX: TestUser, recOnX: TestUser, camOnly: TestUser, recOnly: TestUser, assetOnly: TestUser, locHolder: TestUser, orgWide: TestUser
+  const readAll = async (u: TestUser) => ({
+    assets: ids((await u.client.from('assets').select('id')).data),
+    recorders: ids((await u.client.from('recorders').select('id')).data),
+    endpoints: ((await u.client.from('recorder_endpoints').select('recorder_id')).data ?? []).map((r) => r.recorder_id).sort(),
+    cameraEndpoints: ((await u.client.from('camera_endpoints').select('camera_id')).data ?? []).map((r) => r.camera_id).sort(),
+    mappings: ((await u.client.from('camera_channel_mappings').select('camera_id')).data ?? []).map((r) => r.camera_id).sort(),
+    assetEndpoints: ((await u.client.from('asset_endpoints').select('asset_id, purpose')).data ?? []).map((r) => `${r.asset_id}:${r.purpose}`).sort(),
+    states: ((await u.client.from('check_state').select('target_type, target_id')).data ?? []).map((r) => `${r.target_type}:${r.target_id}`).sort(),
+    outages: ((await u.client.from('outages').select('target_type, target_id')).data ?? []).map((r) => `${r.target_type}:${r.target_id}`).sort(),
+    recorderStatus: ((await u.client.from('recorder_status').select('recorder_id')).data ?? []).map((r) => r.recorder_id).sort(),
+  })
+  const version = async (user: string) => (await admin().from('profiles').select('access_version').eq('id', user).single()).data!.access_version
+
+  beforeAll(async () => {
+    orgId = await createOrg()
+    other = await createOrg()
+    region = must(await admin().from('regions').insert({ org_id: orgId, code: 'RVR', name: 'Review region' }).select('id').single()).id
+    cluster = must(await admin().from('clusters').insert({ org_id: orgId, region_id: region, code: 'RVC', name: 'Review cluster' }).select('id').single()).id
+    loc = await createLocation(orgId, { code: 'RV1', clusterId: cluster, legacyNvr: { ip: '10.91.0.1' } })
+    seam = await primaryRecorderOf(loc)
+    recX = await createRecorder(orgId, loc, { name: 'NVR X', secret: 'pass-X' })
+    camX = await createCamera(orgId, { locationId: loc, recorderId: recX, channel: 1 })
+    camS = await createCamera(orgId, { locationId: loc, recorderId: seam, channel: 1 })
+    sw = await createAsset(orgId, { locationId: loc, type: 'switch', name: 'RV switch' })
+    assetOnX = await createUser(orgId, 'user')
+    recOnX = await createUser(orgId, 'user')
+    camOnly = await createUser(orgId, 'user')
+    recOnly = await createUser(orgId, 'user')
+    assetOnly = await createUser(orgId, 'user')
+    locHolder = await createUser(orgId, 'user')
+    orgWide = await createUser(orgId, 'user')
+    await grant(orgId, assetOnX.id, ['it.inventory.view', 'it.monitoring.view'], { kind: 'asset', id: recX })
+    await grant(orgId, recOnX.id, ['it.inventory.view', 'it.monitoring.view'], atRecorder(recX))
+    await grant(orgId, camOnly.id, 'cctv.live', atCamera(camX))
+    await grant(orgId, recOnly.id, 'cctv.live', atRecorder(recX))
+    await grant(orgId, assetOnly.id, 'it.inventory.view', { kind: 'asset', id: sw })
+    await grant(orgId, locHolder.id, 'cctv.live', atLocation(loc))
+    await grant(orgId, orgWide.id, ['cctv.live', 'it.monitoring.view'], ORG_SCOPE)
+    await apply(orgId, [{ type: 'recorder', id: recX, ok: false, at: ago(3), error: 'Login refused by NVR X' }, { type: 'recorder', id: recX, ok: false, at: ago(2), error: 'Login refused by NVR X' }])
+    await apply(orgId, [{ type: 'camera', id: camX, ok: true, at: ago(1) }])
+  })
+  afterAll(async () => {
+    await cleanupOrg(orgId)
+    await cleanupOrg(other)
+  })
+
+  it('I-1: an IT grant on the NVR\'s ASSET shows only the asset row — no logins, camera addresses, mappings, recorder states or reasons', async () => {
+    expect(await readAll(assetOnX)).toEqual({
+      assets: [recX], recorders: [], endpoints: [], cameraEndpoints: [], mappings: [], assetEndpoints: [], states: [], outages: [], recorderStatus: [],
+    })
+    expect((await assetOnX.client.rpc('status_reasons', { p_type: 'recorder', p_ids: [recX] })).data).toEqual([])
+    expect((await assetOnX.client.from('location_status').select('recorders_total, cameras_total').eq('location_id', loc).single()).data).toEqual({ recorders_total: 0, cameras_total: 0 })
+    expect((await assetOnX.client.rpc('it_view_recorder_ids')).data).toEqual([])
+    // The same capabilities at RECORDER scope show the recorder level (the narrowest scope that does).
+    expect(await readAll(recOnX)).toEqual({
+      assets: [recX], recorders: [recX], endpoints: [recX], cameraEndpoints: [camX], mappings: [camX],
+      assetEndpoints: [`${recX}:management`, `${recX}:rtsp`], states: [`recorder:${recX}`], outages: [`recorder:${recX}`], recorderStatus: [recX],
+    })
+    expect((await recOnX.client.rpc('status_reasons', { p_type: 'recorder', p_ids: [recX] })).data).toEqual([{ target_id: recX, reason: 'Login refused by NVR X' }])
+    // The organisation-wide IT view sees both NVRs of the location and both cameras' addresses.
+    const all = await readAll(orgWide)
+    expect({ recorders: all.recorders, cameraEndpoints: all.cameraEndpoints }).toEqual({ recorders: [recX, seam].sort(), cameraEndpoints: [camX, camS].sort() })
+  })
+
+  it('M15: region and cluster names only for grants at, above or a whole location below the node (impact map 1.9)', async () => {
+    for (const u of [camOnly, recOnly, assetOnly, assetOnX, recOnX]) {
+      expect(ids((await u.client.from('regions').select('id')).data), 'regions').toEqual([])
+      expect(ids((await u.client.from('clusters').select('id')).data), 'clusters').toEqual([])
+    }
+    expect(ids((await locHolder.client.from('regions').select('id')).data)).toEqual([region])
+    expect(ids((await locHolder.client.from('clusters').select('id')).data)).toEqual([cluster])
+    // The location row itself stays visible for every grant inside it.
+    for (const u of [camOnly, recOnly, assetOnly, locHolder]) expect(ids((await u.client.from('locations').select('id')).data)).toEqual([loc])
+  })
+
+  it('M3: the seam keeps writing to the location\'s legacy NVR only; a later recorder never gets its address or password', async () => {
+    const shop = await createLocation(orgId, { code: 'RVSEAM' })
+    const early = await createRecorder(orgId, shop, { host: '10.92.0.7', name: 'Made by people first' })
+    expect((await admin().from('locations').update({ nvr_ip: '10.92.0.8', nvr_username: 'legacy' }).eq('id', shop)).error).toBeNull()
+    const recs = must(await admin().from('recorders').select('id, migrated_from_location_id, username').eq('location_id', shop).order('created_at'))
+    expect(recs).toHaveLength(2)
+    const legacy = recs.find((r) => r.id !== early)!
+    expect(legacy).toMatchObject({ migrated_from_location_id: shop, username: 'legacy' })
+    expect(must(await admin().from('assets').select('ip').eq('id', early).single())).toEqual({ ip: '10.92.0.7' })
+    expect(must(await admin().from('assets').select('ip').eq('id', legacy.id).single())).toEqual({ ip: '10.92.0.8' })
+    expect((await admin().rpc('recorder_primary_of', { p_location: shop })).data).toBe(legacy.id)
+    expect((await admin().rpc('nvr_store_credential', { p_store: shop, p_secret: 'legacy-pass' })).error).toBeNull()
+    expect((await admin().rpc('recorder_read_credential', { p_recorder: legacy.id })).data).toBe('legacy-pass')
+    expect((await admin().rpc('recorder_read_credential', { p_recorder: early })).data).toBeNull()
+    // The legacy NVR cannot be archived while the location still names it (then recorder 2 would inherit its address).
+    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'recorder', p_id: legacy.id })).error?.code).toBe('DR009')
+    expect((await admin().from('locations').update({ nvr_ip: null }).eq('id', shop)).error).toBeNull()
+    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'recorder', p_id: legacy.id })).error).toBeNull()
+    expect(must(await admin().from('assets').select('ip').eq('id', early).single())).toEqual({ ip: '10.92.0.7' })
+  })
+
+  it('M2/M13: adopting an nvr device forgets its device history; a device without a location is never adopted', async () => {
+    const shop = await createLocation(orgId, { code: 'RVADOPT' })
+    const dev = must(await admin().from('assets').insert({ org_id: orgId, location_id: shop, type: 'nvr', name: 'Old NVR row', ip: '10.93.0.1', tcp_port: 80 }).select('id').single()).id
+    await apply(orgId, [{ type: 'device', id: dev, ok: false, at: ago(2) }], 1)
+    expect(must(await admin().from('outages').select('ended_at').eq('target_type', 'device').eq('target_id', dev))).toEqual([{ ended_at: null }])
+    expect((await admin().from('locations').update({ nvr_ip: '10.93.0.1', nvr_username: 'u' }).eq('id', shop)).error).toBeNull()
+    expect((await admin().rpc('recorder_primary_of', { p_location: shop })).data).toBe(dev)
+    expect(must(await admin().from('check_state').select('id').eq('target_type', 'device').eq('target_id', dev))).toEqual([])
+    const outs = must(await admin().from('outages').select('ended_at').eq('target_type', 'device').eq('target_id', dev))
+    expect(outs).toHaveLength(1)
+    expect(outs[0].ended_at).not.toBeNull()
+    // A device results for it are ignored from now on (it is a recorder).
+    await apply(orgId, [{ type: 'device', id: dev, ok: false, at: ago(1) }], 1)
+    expect(must(await admin().from('check_state').select('id').eq('target_type', 'device').eq('target_id', dev))).toEqual([])
+    const loose = must(await admin().from('assets').insert({ org_id: orgId, location_id: null, type: 'nvr', name: 'NVR without a location', ip: '10.93.0.2', tcp_port: 8080 }).select('id').single()).id
+    const shop2 = await createLocation(orgId, { code: 'RVLOOSE' })
+    expect((await admin().from('locations').update({ nvr_ip: '10.93.0.2', nvr_username: 'u' }).eq('id', shop2)).error).toBeNull()
+    const rec2 = (await admin().rpc('recorder_primary_of', { p_location: shop2 })).data as string
+    expect(rec2).not.toBe(loose)
+    expect(must(await admin().from('assets').select('location_id, is_recorder').eq('id', loose).single())).toEqual({ location_id: null, is_recorder: false })
+  })
+
+  it('M4/M15: a switched-off or disabled NVR is never contacted: no results, no password, its cameras count as switched off only', async () => {
+    const shop = await createLocation(orgId, { code: 'RVOFF' })
+    const off = await createRecorder(orgId, shop, { name: 'Disabled NVR', secret: 'pass-off' })
+    const cam = await createCamera(orgId, { locationId: shop, recorderId: off, channel: 1 })
+    const viewer = await createUser(orgId, 'user')
+    await grant(orgId, viewer.id, 'cctv.live', atLocation(shop))
+    expect((await admin().from('assets').update({ enabled: false }).eq('id', off)).error).toBeNull()
+    await apply(orgId, [{ type: 'camera', id: cam, ok: true, at: ago(1) }, { type: 'recorder', id: off, ok: true, at: ago(1) }], 1)
+    expect(must(await admin().from('check_state').select('id').in('target_id', [cam, off]))).toEqual([])
+    expect((await viewer.client.rpc('cameras_monitoring_off', { p_ids: [cam] })).data).toEqual([cam])
+    expect(must(await viewer.client.from('location_status').select('cameras_total, cameras_live, cameras_unknown, cameras_monitoring_off').eq('location_id', shop).single()))
+      .toEqual({ cameras_total: 1, cameras_live: 0, cameras_unknown: 0, cameras_monitoring_off: 1 })
+    // Monitoring switched off: the server will not even read the password.
+    expect((await admin().from('assets').update({ enabled: true }).eq('id', off)).error).toBeNull()
+    expect((await admin().rpc('recorder_read_credential', { p_recorder: off })).data).toBe('pass-off')
+    expect((await admin().rpc('recorder_set_monitoring', { p_org: orgId, p_recorder: off, p_enabled: false, p_reason: 'Do not contact' })).error).toBeNull()
+    const read = await admin().rpc('recorder_read_credential', { p_recorder: off })
+    expect(read.error?.code).toBe('55000')
+    expect(read.data).toBeNull()
+  })
+
+  it('M6: remapping a camera onto a switched-off NVR forgets its state; a camera is never counted live AND switched off', async () => {
+    const shop = await createLocation(orgId, { code: 'RVREMAP' })
+    const on = await createRecorder(orgId, shop, { name: 'On' })
+    const offRec = await createRecorder(orgId, shop, { name: 'Off' })
+    const cam = await createCamera(orgId, { locationId: shop, recorderId: on, channel: 1 })
+    await apply(orgId, [{ type: 'camera', id: cam, ok: true, at: ago(1) }])
+    expect(must(await admin().from('check_state').select('status').eq('target_id', cam))).toEqual([{ status: 'up' }])
+    await admin().rpc('recorder_set_monitoring', { p_org: orgId, p_recorder: offRec, p_enabled: false, p_reason: 'Not ours' })
+    await mapCamera(orgId, cam, offRec, 4)
+    expect(must(await admin().from('check_state').select('id').eq('target_id', cam))).toEqual([])
+    // Even a stale 'up' row (written behind the database's back) is shown as switched off, never also as live.
+    expect((await admin().from('check_state').insert({ org_id: orgId, target_type: 'camera', target_id: cam, status: 'up', last_checked_at: ago(1) })).error).toBeNull()
+    expect(must(await orgWide.client.from('location_status').select('cameras_total, cameras_live, cameras_down, cameras_stale, cameras_unknown, cameras_monitoring_off').eq('location_id', shop).single()))
+      .toEqual({ cameras_total: 1, cameras_live: 0, cameras_down: 0, cameras_stale: 0, cameras_unknown: 0, cameras_monitoring_off: 1 })
+    // The direct cache update path (cameras.recorder_id) takes the same rule.
+    await mapCamera(orgId, cam, on, 2)
+    await apply(orgId, [{ type: 'camera', id: cam, ok: true, at: ago(1) }])
+    expect((await admin().from('cameras').update({ recorder_id: offRec, channel: 5 }).eq('id', cam)).error).toBeNull()
+    expect(must(await admin().from('check_state').select('id').eq('target_id', cam))).toEqual([])
+  })
+
+  it('M5/M15: a restored camera comes back unmapped, with its old on/off state, and is not checked until it is mapped again', async () => {
+    const shop = await createLocation(orgId, { code: 'RVREST' })
+    const r = await createRecorder(orgId, shop)
+    const on = await createCamera(orgId, { locationId: shop, recorderId: r, channel: 1 })
+    const wasOff = await createCamera(orgId, { locationId: shop, recorderId: r, channel: 2, isActive: false })
+    for (const c of [on, wasOff]) {
+      expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'camera', p_id: c })).error).toBeNull()
+      expect((await admin().rpc('inventory_restore', { p_org: orgId, p_kind: 'camera', p_id: c })).error).toBeNull()
+    }
+    expect(must(await admin().from('cameras').select('id, is_active, recorder_id').in('id', [on, wasOff]).order('channel')))
+      .toEqual([{ id: on, is_active: true, recorder_id: null }, { id: wasOff, is_active: false, recorder_id: null }])
+    expect(must(await admin().from('camera_channel_mappings').select('id').in('camera_id', [on, wasOff]).is('valid_to', null))).toEqual([])
+    await apply(orgId, [{ type: 'camera', id: on, ok: true, at: ago(1) }])
+    expect(must(await admin().from('check_state').select('id').eq('target_id', on))).toEqual([])
+    await mapCamera(orgId, on, r, 1)
+    await apply(orgId, [{ type: 'camera', id: on, ok: true, at: ago(1) }])
+    expect(must(await admin().from('check_state').select('status').eq('target_id', on))).toEqual([{ status: 'up' }])
+    // An asset switched off before it was archived stays off after its restore.
+    const dev = await createAsset(orgId, { locationId: shop, name: 'Was off' })
+    await admin().from('assets').update({ enabled: false }).eq('id', dev)
+    await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'asset', p_id: dev })
+    await admin().rpc('inventory_restore', { p_org: orgId, p_kind: 'asset', p_id: dev })
+    expect(must(await admin().from('assets').select('enabled, archived_at').eq('id', dev).single())).toEqual({ enabled: false, archived_at: null })
+  })
+
+  it('M8: archive, restore and remap raise the access version of exactly the people whose access changes', async () => {
+    const shop = await createLocation(orgId, { code: 'RVVER' })
+    const r1 = await createRecorder(orgId, shop)
+    const r2 = await createRecorder(orgId, shop)
+    const cam = await createCamera(orgId, { locationId: shop, recorderId: r1, channel: 1 })
+    const atLoc = await createUser(orgId, 'user')
+    const atR1 = await createUser(orgId, 'user')
+    const atR2 = await createUser(orgId, 'user')
+    const elsewhere = await createUser(orgId, 'user')
+    await grant(orgId, atLoc.id, 'cctv.live', atLocation(shop))
+    await grant(orgId, atR1.id, 'cctv.live', atRecorder(r1))
+    await grant(orgId, atR2.id, 'cctv.live', atRecorder(r2))
+    await grant(orgId, elsewhere.id, 'cctv.live', atLocation(loc))
+    const people = [atLoc, atR1, atR2, elsewhere, orgWide]
+    const snap = async () => Object.fromEntries(await Promise.all(people.map(async (p) => [p.id, await version(p.id)] as const)))
+    const changed = (a: Record<string, number>, b: Record<string, number>) => people.filter((p) => b[p.id] > a[p.id]).map((p) => p.id).sort()
+
+    let v = await snap()
+    await mapCamera(orgId, cam, r2, 1) // only the two recorder holders gain or lose the camera
+    let w = await snap()
+    expect(changed(v, w)).toEqual([atR1.id, atR2.id].sort())
+    v = w
+    await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'camera', p_id: cam })
+    w = await snap()
+    expect(changed(v, w)).toEqual([atLoc.id, atR2.id, orgWide.id].sort())
+    v = w
+    await admin().rpc('inventory_restore', { p_org: orgId, p_kind: 'camera', p_id: cam }) // unmapped: the recorder holder gets nothing back
+    w = await snap()
+    expect(changed(v, w)).toEqual([atLoc.id, orgWide.id].sort())
+    v = w
+    await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'recorder', p_id: r1 })
+    w = await snap()
+    expect(changed(v, w)).toEqual([atLoc.id, atR1.id, orgWide.id].sort())
+    v = w
+    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'location', p_id: shop })).error).toBeNull()
+    w = await snap()
+    expect(changed(v, w)).toEqual([atLoc.id, atR2.id, orgWide.id].sort())
+    v = w
+    expect((await admin().rpc('inventory_restore', { p_org: orgId, p_kind: 'location', p_id: shop })).error).toBeNull()
+    w = await snap()
+    expect(changed(v, w)).toEqual([atLoc.id, atR2.id, orgWide.id].sort())
+  })
+
+  it('M9/M14: discovery ranges inside the network, same-organisation uplink, no parent cycle, address spaces of the right location', async () => {
+    const shop = await createLocation(orgId, { code: 'RVNET' })
+    const ok = await admin().from('network_definitions').insert({ org_id: orgId, location_id: shop, management_cidr: '10.30.0.0/24', discovery_ranges: ['10.30.0.0/25'] })
+    expect(ok.error).toBeNull()
+    const bad = await admin().from('network_definitions').update({ discovery_ranges: ['10.30.0.0/25', '10.31.0.0/24'] }).eq('location_id', shop)
+    expect(bad.error?.code).toBe('22023')
+    expect(bad.error?.message).toMatch(/discovery range 10\.31\.0\.0\/24 is outside the management network/)
+    // The uplink is an asset of the same organisation.
+    const foreign = await createAsset(other, { locationId: null, type: 'sdwan_edge', name: 'Other org edge' })
+    expect((await admin().from('locations').update({ uplink_asset_id: foreign }).eq('id', shop)).error?.code).toBe('23503')
+    const edge = await createAsset(orgId, { locationId: shop, type: 'sdwan_edge', name: 'Edge' })
+    expect((await admin().from('locations').update({ uplink_asset_id: edge }).eq('id', shop)).error).toBeNull()
+    // Parent locations never form a cycle.
+    const a = await createLocation(orgId, { code: 'RVPA' })
+    const b = await createLocation(orgId, { code: 'RVPB' })
+    expect((await admin().from('locations').update({ parent_location_id: a }).eq('id', b)).error).toBeNull()
+    const cyc = await admin().from('locations').update({ parent_location_id: b }).eq('id', a)
+    expect(cyc.error?.code).toBe('DR008')
+    // An asset may use a location's own address space only at that location.
+    const space = must(await admin().from('address_spaces').insert({ org_id: orgId, name: 'RVNET own', kind: 'location_nat', location_id: shop }).select('id').single()).id
+    const wrong = await admin().from('assets').insert({ org_id: orgId, location_id: a, type: 'switch', name: 'Wrong space', ip: '10.30.0.9', address_space_id: space })
+    expect(wrong.error?.code).toBe('23514')
+    expect((await admin().from('assets').insert({ org_id: orgId, location_id: shop, type: 'switch', name: 'Right space', ip: '10.30.0.9', address_space_id: space })).error).toBeNull()
+  })
+
+  it('M12: the test clean-up refuses an organisation that is not a test or demo organisation, before deleting anything', async () => {
+    const realish = await createOrg()
+    const l = await createLocation(realish, { code: 'KEEP' })
+    await admin().from('admin_audit_log').insert({ org_id: realish, action: 'kept', entity_type: 'organization', entity_id: realish })
+    expect((await admin().from('organizations').update({ slug: `real-${realish}` }).eq('id', realish)).error).toBeNull()
+    try {
+      await expect(cleanupOrg(realish)).rejects.toThrow(/refused: "real-/)
+      expect(must(await admin().from('locations').select('id').eq('id', l))).toEqual([{ id: l }])
+      expect(must(await admin().from('admin_audit_log').select('action').eq('org_id', realish))).toEqual([{ action: 'kept' }])
+    } finally {
+      await admin().from('organizations').update({ slug: `test-${realish}` }).eq('id', realish)
+      await cleanupOrg(realish)
+    }
+  })
+})
+
+function must<T>(r: { data: T; error: { message: string } | null }): NonNullable<T> {
+  if (r.error || r.data === null || r.data === undefined) throw new Error(r.error?.message ?? 'no row')
+  return r.data as NonNullable<T>
+}

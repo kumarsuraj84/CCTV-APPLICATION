@@ -5,6 +5,7 @@
 -- this one transaction; the result is checked against the snapshot that 20261021000019 took with the OLD functions: for every person
 -- and every capability the cameras and the whole locations are identical, and the assets differ only by the NVR assets created here for
 -- locations the person already covered whole (the NVR was already visible to them as the location's NVR). Any difference aborts.
+-- APPLY ONLY THROUGH `npx supabase migration up` (one transaction per file, so a failed check leaves nothing behind; review M1).
 
 CREATE TABLE public.inventory_migration_report (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

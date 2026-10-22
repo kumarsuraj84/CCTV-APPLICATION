@@ -89,8 +89,8 @@ describe('regions, clusters and recorder scopes (P2-5a, ruling C-1)', () => {
   it('dynamic: a location added to a cluster later is included at once', async () => {
     const late = await build('E2LATE', cl.E2)
     rec.E2LATE = late
-    expect(await camsOf(regionViewer)).toEqual(expect.arrayContaining(cams.E2LATE))
-    expect(await camsOf(clusterViewer)).not.toEqual(expect.arrayContaining([cams.E2LATE[0]]))
+    expect(await camsOf(regionViewer)).toEqual(camsAt('E1A', 'E1B', 'E2A', 'E2B', 'E3A', 'E3B', 'E2LATE'))
+    expect(await camsOf(clusterViewer)).toEqual(camsAt('E1A', 'E1B'))
     expect((await regionViewer.client.rpc('has_capability_for', { p_cap: 'cctv.live', p_kind: 'location', p_id: late.l })).data).toBe(true)
   })
 
@@ -162,7 +162,7 @@ describe('regions, clusters and recorder scopes (P2-5a, ruling C-1)', () => {
   // Owner amendment to R-1: regions and clusters are optional for a location (permanently, not only during migration).
   it('a location without a cluster is covered by organisation, location, recorder or camera grants only', async () => {
     expect(await camsOf(outsider)).toEqual(camsAt('LOOSE'))
-    expect(await camsOf(regionViewer)).not.toEqual(expect.arrayContaining([cams.LOOSE[0]]))
+    expect(await camsOf(regionViewer)).toEqual(camsAt('E1A', 'E1B', 'E2A', 'E2B', 'E3A', 'E3B', 'E2LATE'))
     const h = (await admin().from('location_hierarchy').select('location_id, unassigned').eq('location_id', loc.LOOSE).single()).data
     expect(h).toEqual({ location_id: loc.LOOSE, unassigned: true })
   })
@@ -185,14 +185,16 @@ describe('regions, clusters and recorder scopes (P2-5a, ruling C-1)', () => {
     expect((await admin().rpc('inventory_move_location', { p_org: orgId, p_location: moved, p_cluster: cl.W1, p_actor: regionAdmin.id })).error).toBeNull()
 
     expect((await camsOf(clusterViewer)).length).toBe(before - 4)
-    expect(await camsOf(holderNew)).toEqual(expect.arrayContaining(cams.E1B))
-    expect(await camsOf(regionViewer)).not.toEqual(expect.arrayContaining([cams.E1B[0]]))
+    expect(await camsOf(holderNew)).toEqual(camsAt('W1A', 'W1B', 'E1B'))
+    expect(await camsOf(regionViewer)).toEqual(camsAt('E1A', 'E2A', 'E2B', 'E3A', 'E3B', 'E2LATE'))
     expect(await version(clusterViewer.id)).toBeGreaterThan(v1)
     expect(await version(holderNew.id)).toBeGreaterThan(v2)
     const audit = (await admin().from('admin_audit_log').select('action, actor_id, detail').eq('org_id', orgId).eq('entity_id', moved).eq('action', 'hierarchy_moved')).data!
     expect(audit).toHaveLength(1)
     expect(audit[0].actor_id).toBe(regionAdmin.id)
-    expect((audit[0].detail as { affected_people: string[] }).affected_people).toEqual(expect.arrayContaining([clusterViewer.id, holderNew.id, regionViewer.id]))
+    // Exactly the holders of a cluster or region grant at the old or new parent (E1 / W1 and EAST / WEST).
+    expect([...(audit[0].detail as { affected_people: string[] }).affected_people].sort())
+      .toEqual([clusterViewer.id, clusterAdmin.id, holderNew.id, regionViewer.id, regionAdmin.id, liveOnly.id].sort())
     // A direct update by the service role takes the same path (trigger).
     await admin().from('locations').update({ cluster_id: cl.E1 }).eq('id', moved)
     expect(await camsOf(clusterViewer)).toEqual(camsAt('E1A', 'E1B'))
@@ -204,36 +206,73 @@ describe('regions, clusters and recorder scopes (P2-5a, ruling C-1)', () => {
     const v = await version(liveOnly.id)
     expect((await admin().rpc('inventory_move_cluster', { p_org: orgId, p_cluster: cl.E3, p_region: west })).error).toBeNull()
     expect(await camsOf(liveOnly)).toEqual(camsAt('W1A', 'W1B', 'E3A', 'E3B'))
-    expect(await camsOf(regionViewer)).not.toEqual(expect.arrayContaining([cams.E3A[0]]))
+    expect(await camsOf(regionViewer)).toEqual(camsAt('E1A', 'E1B', 'E2A', 'E2B', 'E2LATE'))
     expect(await version(liveOnly.id)).toBeGreaterThan(v)
     await admin().rpc('inventory_move_cluster', { p_org: orgId, p_cluster: cl.E3, p_region: east })
-    expect(await camsOf(regionViewer)).toEqual(expect.arrayContaining(camsAt('E3A', 'E3B')))
+    expect(await camsOf(regionViewer)).toEqual(camsAt('E1A', 'E1B', 'E2A', 'E2B', 'E3A', 'E3B', 'E2LATE'))
   })
 
-  it('archived regions and clusters grant nothing (history kept); restoring gives access back', async () => {
-    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'cluster', p_id: cl.E1 })).error).toBeNull()
-    expect(await camsOf(clusterViewer)).toEqual([])
-    // The region still covers the locations of its other clusters; the archived cluster contributes nothing.
-    expect(await camsOf(regionViewer)).not.toEqual(expect.arrayContaining([cams.E1A[0]]))
-    expect((await admin().from('access_grants').select('revoked_at').eq('user_id', clusterViewer.id).eq('scope_kind', 'cluster')).data!.every((g) => g.revoked_at === null)).toBe(true)
-    // A grant at an archived node is refused.
-    expect((await admin().rpc('grant_access', { p_org: orgId, p_user: target.id, p_grants: [{ capability: 'cctv.live', scope_kind: 'cluster', scope_id: cl.E1 }] })).error).not.toBeNull()
-    expect((await admin().rpc('inventory_restore', { p_org: orgId, p_kind: 'cluster', p_id: cl.E1 })).error).toBeNull()
+  it('archiving a cluster or region that still has active children is refused (DR007); an emptied node can be archived, grants nothing, and comes back', async () => {
+    // Review M7: archiving a node with live children would silently take access from everybody holding the node.
+    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'cluster', p_id: cl.E1 })).error?.code).toBe('DR007')
+    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'region', p_id: west })).error?.code).toBe('DR007')
     expect(await camsOf(clusterViewer)).toEqual(camsAt('E1A', 'E1B'))
-    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'region', p_id: west })).error).toBeNull()
-    expect(await camsOf(liveOnly)).toEqual([])
-    expect((await admin().from('regions').delete().eq('id', west)).error?.code).toBe('DR003')
-    expect((await admin().rpc('inventory_restore', { p_org: orgId, p_kind: 'region', p_id: west })).error).toBeNull()
     expect(await camsOf(liveOnly)).toEqual(camsAt('W1A', 'W1B'))
+    // A spare cluster (no region) with one location: archive the location first, then the cluster.
+    const spare = await createCluster(orgId, null, { code: 'SPARE' })
+    const holder = await createUser(orgId, 'user')
+    await grant(orgId, holder.id, 'cctv.live', atCluster(spare))
+    const s1 = await build('SPARE1', spare)
+    expect(await camsOf(holder)).toEqual(camsAt('SPARE1'))
+    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'cluster', p_id: spare })).error?.code).toBe('DR007')
+    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'location', p_id: s1.l })).error).toBeNull()
+    expect(await camsOf(holder)).toEqual([])
+    const v = await version(holder.id)
+    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'cluster', p_id: spare })).error).toBeNull()
+    expect(await version(holder.id)).toBeGreaterThan(v)
+    expect((await admin().from('access_grants').select('revoked_at').eq('user_id', holder.id).eq('scope_kind', 'cluster')).data).toEqual([{ revoked_at: null }])
+    // A grant at an archived node is refused.
+    expect((await admin().rpc('grant_access', { p_org: orgId, p_user: target.id, p_grants: [{ capability: 'cctv.live', scope_kind: 'cluster', scope_id: spare }] })).error?.message)
+      .toMatch(/scope outside organisation/)
+    expect((await admin().from('clusters').delete().eq('id', spare)).error?.code).toBe('DR003')
+    expect((await admin().rpc('inventory_restore', { p_org: orgId, p_kind: 'cluster', p_id: spare })).error).toBeNull()
+    expect((await admin().rpc('inventory_restore', { p_org: orgId, p_kind: 'location', p_id: s1.l })).error).toBeNull()
+    expect(await camsOf(holder)).toEqual(camsAt('SPARE1'))
+    // An empty region can be archived and restored.
+    const spareRegion = await createRegion(orgId, { code: 'SPARER' })
+    expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'region', p_id: spareRegion })).error).toBeNull()
+    expect((await admin().from('regions').delete().eq('id', spareRegion)).error?.code).toBe('DR003')
+    expect((await admin().rpc('inventory_restore', { p_org: orgId, p_kind: 'region', p_id: spareRegion })).error).toBeNull()
   })
 
   it('an archived location hides its cameras for every scope, and its restore brings them back', async () => {
+    const mixedAll = [...camsAt('E3A', 'E3B'), cams.W1A[0], ...cams.W1B.slice(2)].sort()
+    expect(await camsOf(mixed)).toEqual(mixedAll)
     expect((await admin().rpc('inventory_archive', { p_org: orgId, p_kind: 'location', p_id: loc.E3B })).error).toBeNull()
-    expect(await camsOf(mixed)).not.toEqual(expect.arrayContaining([cams.E3B[0]]))
-    expect(await camsOf(regionViewer)).not.toEqual(expect.arrayContaining([cams.E3B[0]]))
-    expect(ids((await regionViewer.client.from('locations').select('id')).data)).not.toContain(loc.E3B)
+    expect(await camsOf(mixed)).toEqual([...camsAt('E3A'), cams.W1A[0], ...cams.W1B.slice(2)].sort())
+    expect(await camsOf(regionViewer)).toEqual(camsAt('E1A', 'E1B', 'E2A', 'E2B', 'E3A', 'E2LATE'))
+    expect(ids((await regionViewer.client.from('locations').select('id')).data)).toEqual([loc.E1A, loc.E1B, loc.E2A, loc.E2B, loc.E3A, loc.E2LATE].sort())
     expect((await admin().rpc('inventory_restore', { p_org: orgId, p_kind: 'location', p_id: loc.E3B })).error).toBeNull()
-    expect(await camsOf(mixed)).toEqual(expect.arrayContaining(cams.E3B))
+    expect(await camsOf(mixed)).toEqual(mixedAll)
+  })
+
+  it('scope ids of another organisation are refused for region, cluster and recorder grants', async () => {
+    const otherOrg = await createOrg()
+    try {
+      const r = await createRegion(otherOrg)
+      const c = await createCluster(otherOrg, r)
+      const l = await createLocation(otherOrg, { clusterId: c })
+      const x = await createRecorder(otherOrg, l)
+      for (const [kind, id] of [['region', r], ['cluster', c], ['recorder', x], ['location', l]] as const) {
+        const res = await admin().rpc('grant_access', { p_org: orgId, p_user: target.id, p_grants: [{ capability: 'cctv.live', scope_kind: kind, scope_id: id }] })
+        expect(res.error?.message, kind).toMatch(/scope outside organisation/)
+        const viaEditor = await admin().rpc('apply_access_change', { p_org: orgId, p_user: target.id, p_actor: regionAdmin.id, p_changes: [{ op: 'grant', capability: 'cctv.live', scope_kind: kind, scope_id: id }] })
+        expect(viaEditor.error, `${kind} via the editor`).not.toBeNull()
+      }
+      expect((await admin().from('access_grants').select('id').eq('user_id', target.id).in('scope_id', [r, c, x, l])).data).toEqual([])
+    } finally {
+      await cleanupOrg(otherOrg)
+    }
   })
 
   it('the scope-kind matrix of the catalogue: refused and accepted pairs; the typed column mirrors the scope id', async () => {

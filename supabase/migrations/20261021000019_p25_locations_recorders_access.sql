@@ -1,6 +1,8 @@
 -- P2-5a core (decision D-4, ruling C-1 CONFIRMED, decisions D5-1..D5-12 of docs/drishti/p2-5-impact-map.md; M2 of its section 2.1).
 -- One atomic transaction: renames break text-bodied functions only when they are called, so every rename and every function rewrite
 -- commit together, and a self-test at the end turns "found at first call" into "migration fails".
+-- APPLY ONLY THROUGH `npx supabase migration up` (or `supabase db push`): the CLI runs each migration file in one transaction. The file
+-- has no BEGIN/COMMIT of its own; fed statement by statement to psql without -1 it could stop half-way (review M1, docs/drishti/locations-model.md §10).
 --
 --   Organization → Region → Cluster → Location → NVR (recorder) → Camera   (a strict tree; IT assets belong to a location;
 --   region and cluster are optional for a location — owner amendment to R-1)

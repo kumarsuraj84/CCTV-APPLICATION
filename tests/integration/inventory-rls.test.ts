@@ -8,8 +8,8 @@ import {
 // directive forbids: a manager seeing everything (AC-8), store and zone grants revealing IT devices (AC-4), camera grants narrowing a
 // store grant (AC-6) and a home store acting as a grant (AC-7). Each case below names the requirement it now proves.
 
-// P2-5a: stores → locations, devices → assets (ids unchanged). A location's NVR is now an asset too (a recorder); the device lists
-// below are the IT devices, so recorder assets are counted on their own (the NVR test at the end).
+// P2-5a: stores → locations, devices → assets (ids unchanged). A location's NVR is now an asset too (a recorder). Review I-2: every
+// asset row the person can read is counted — the stores' NVR recorder assets are named in the positive expectations below.
 type Table = 'locations' | 'cameras' | 'assets'
 
 async function addStore(orgId: string, code: string, zone: string): Promise<string> {
@@ -44,9 +44,7 @@ async function addDevice(orgId: string, storeId: string | null, type: 'server' |
 }
 
 async function idsOf(user: TestUser, table: Table): Promise<string[]> {
-  const { data, error } = table === 'assets'
-    ? await user.client.from('assets').select('id').eq('is_recorder', false)
-    : await user.client.from(table).select('id')
+  const { data, error } = await user.client.from(table).select('id')
   expect(error).toBeNull()
   return (data ?? []).map((r) => r.id).sort()
 }
@@ -59,6 +57,7 @@ describe('inventory visibility (row-level security, capability model)', () => {
   let s1: string, s2: string, s3: string, sB: string
   let c11: string, c12: string, c21: string, c31: string, c32: string
   let d1: string, d3: string, d0: string
+  let n1: string, n2: string, n3: string // the stores' NVR recorder assets
   let manager: TestUser, managerWithGrants: TestUser, zoneUser: TestUser, storeUser: TestUser, camUser: TestUser, mixedUser: TestUser
   let zoneCamUser: TestUser, ownStoreUser: TestUser, nobody: TestUser, resetUser: TestUser, managerB: TestUser, admin: TestUser, itUser: TestUser
 
@@ -81,6 +80,7 @@ describe('inventory visibility (row-level security, capability model)', () => {
     d3 = await addDevice(orgA, s3, 'attendance', 'Door')
     d0 = await addDevice(orgA, null, 'server', 'Head office')
     await addDevice(orgB, sB, 'server', 'Other org')
+    ;[n1, n2, n3] = await Promise.all([s1, s2, s3].map((s) => primaryRecorderOf(s)))
 
     manager = await createUser(orgA, 'manager')
     managerWithGrants = await createUser(orgA, 'manager')
@@ -116,7 +116,7 @@ describe('inventory visibility (row-level security, capability model)', () => {
     for (const t of ['locations', 'cameras', 'assets'] as const) expect(await idsOf(manager, t)).toEqual([])
     expect(await idsOf(managerWithGrants, 'locations')).toEqual(sorted(s1, s2, s3))
     expect(await idsOf(managerWithGrants, 'cameras')).toEqual(sorted(c11, c12, c21, c31, c32))
-    expect(await idsOf(managerWithGrants, 'assets')).toEqual(sorted(d1, d3, d0))
+    expect(await idsOf(managerWithGrants, 'assets')).toEqual(sorted(d1, d3, d0, n1, n2, n3))
   })
 
   it('AC-4: CCTV grants for the stores of a zone give those stores and cameras, and no devices', async () => {
@@ -153,7 +153,7 @@ describe('inventory visibility (row-level security, capability model)', () => {
   })
 
   it('AC-4: devices come only with an IT capability: a location grant shows its devices, an asset grant exactly that one; no cameras', async () => {
-    expect(await idsOf(itUser, 'assets')).toEqual(sorted(d1, d0))
+    expect(await idsOf(itUser, 'assets')).toEqual(sorted(d1, d0, n1))
     expect(await idsOf(itUser, 'cameras')).toEqual([])
     expect(await idsOf(itUser, 'locations')).toEqual(sorted(s1)) // the device without a store adds no store
   })

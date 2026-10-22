@@ -177,11 +177,15 @@ export async function createAsset(orgId: string, o: { locationId: string | null;
   }).select('id').single()).id
 }
 
-/** The location's primary recorder (the first one created; the one the legacy NVR columns and nvr_* wrappers refer to). */
+/**
+ * The location's primary recorder: the one carrying the location's legacy NVR columns (seam, `migrated_from_location_id` = the
+ * location; review M3), else the first one created. The same rule as `recorder_primary_of` in the database.
+ */
 export async function primaryRecorderOf(locationId: string): Promise<string> {
-  const rows = must('primaryRecorderOf', await adminClient().from('recorders').select('id, created_at').eq('location_id', locationId).order('created_at').order('id').limit(1))
-  if (!rows.length) throw new Error('primaryRecorderOf: the location has no recorder')
-  return rows[0].id
+  const { data, error } = await adminClient().rpc('recorder_primary_of', { p_location: locationId })
+  if (error) throw new Error(`primaryRecorderOf failed: ${error.message}`)
+  if (!data) throw new Error('primaryRecorderOf: the location has no recorder')
+  return data as string
 }
 
 // Child tables first. Add new organisation-scoped tables here.
@@ -199,9 +203,17 @@ export const ORG_TABLES_IN_DELETE_ORDER: string[] = [
   'user_store_access',
 ]
 
+/** Only organisations made by the tests (slug `test-…`) or the demo organisation may ever be emptied (review M12). */
+export const CLEANABLE_SLUG = /^(test-.+|demo-sample-data)$/
+
 export async function cleanupOrg(orgId: string | undefined): Promise<void> {
   if (!orgId) return // a failed setup must not hide its own error behind a cleanup error
   const admin = adminClient()
+  // Review M12: refuse BEFORE deleting anything (the first deletes below are not guarded by the database).
+  const { data: org, error: orgErr } = await admin.from('organizations').select('slug').eq('id', orgId).maybeSingle()
+  if (orgErr) throw new Error(`cleanupOrg(${orgId}): could not read the organisation: ${orgErr.message}`)
+  if (!org) return // already gone
+  if (!CLEANABLE_SLUG.test(org.slug)) throw new Error(`cleanupOrg(${orgId}) refused: "${org.slug}" is not a test or demo organisation`)
   const problems: string[] = []
   const note = (what: string, error: { message: string } | null) => {
     if (error) problems.push(`${what}: ${error.message}`)

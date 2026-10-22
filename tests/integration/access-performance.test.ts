@@ -85,9 +85,19 @@ describe('VA-20: access model performance at 8,100 cameras, 300 locations in 30 
         cameraRecorder.set(cam.id, cam.recorder_id as string)
       }
     }
-    // 197 people without a sign-in (their grants only add rows to scan) plus six typical viewers who sign in.
+    // Review M11: monitoring state for every camera and every recorder (~8,500 check_state rows): every tenth camera down, the rest up.
+    const now = new Date().toISOString()
+    const stateRows = [
+      ...cameras.map((id, i) => ({ org_id: orgId, target_type: 'camera', target_id: id, status: i % 10 === 0 ? 'down' : 'up', last_checked_at: now, down_since: i % 10 === 0 ? now : null })),
+      ...[...recordersOf.values()].flat().map((id) => ({ org_id: orgId, target_type: 'recorder', target_id: id, status: 'up', last_checked_at: now, down_since: null })),
+    ]
+    for (let i = 0; i < stateRows.length; i += 1000) {
+      const res = await a.from('check_state').insert(stateRows.slice(i, i + 1000))
+      if (res.error) throw new Error(res.error.message)
+    }
+    // 196 people without a sign-in (their grants only add rows to scan) plus seven typical viewers who sign in.
     const ids: string[] = []
-    for (let i = 0; i < PEOPLE - 6; i++) {
+    for (let i = 0; i < PEOPLE - 7; i++) {
       const created = await a.auth.admin.createUser({ email: `${randomUUID()}@example.test`, password: randomBytes(12).toString('base64url') + 'aA1!', email_confirm: true })
       if (created.error || !created.data.user) throw new Error(created.error?.message)
       ids.push(created.data.user.id)
@@ -116,6 +126,8 @@ describe('VA-20: access model performance at 8,100 cameras, 300 locations in 30 
     await grant(orgId, viewers.threeRecorders.id, 'cctv.live', threeRecorders.map(atRecorder))
     viewers.fiftyCameras = await createUser(orgId, 'user')
     await grant(orgId, viewers.fiftyCameras.id, 'cctv.live', cameras.slice(500, 550).map(atCamera))
+    viewers.itOrgWide = await createUser(orgId, 'user') // the IT view only, organisation-wide (recorder figures of every location)
+    await grant(orgId, viewers.itOrgWide.id, ['it.inventory.view', 'it.monitoring.view'])
   }, 900_000)
   afterAll(() => cleanupOrg(orgId), 900_000)
 
@@ -135,6 +147,7 @@ describe('VA-20: access model performance at 8,100 cameras, 300 locations in 30 
       tenLocations: 10 * perLocation,
       threeRecorders: perLocation, // the three NVRs of one location hold all its cameras
       fiftyCameras: 50,
+      itOrgWide: 0, // IT only: no camera rows
     }
     const batch = cameras.slice(0, 1000)
     for (const [key, u] of Object.entries(viewers)) {
@@ -160,6 +173,32 @@ describe('VA-20: access model performance at 8,100 cameras, 300 locations in 30 
       expect(r.summary, `${key} summary`).toBeLessThan(BOUND_MS)
     }
   }, 180_000)
+
+  it('with ~8,500 check_state rows the status views are exact and fast, also for an organisation-wide IT viewer (review M11)', async () => {
+    const recorders = [...recordersOf.values()].flat().length
+    const down = cameras.filter((_, i) => i % 10 === 0).length
+    const sum = (rows: Record<string, number>[], k: string) => rows.reduce((s, r) => s + r[k], 0)
+    const cols = 'cameras_total, cameras_live, cameras_down, recorders_total, recorders_up, recorders_down'
+    const it = (await viewers.itOrgWide.client.from('location_status').select(cols).limit(1000)).data as unknown as Record<string, number>[]
+    expect(it).toHaveLength(LOCATIONS)
+    expect({ cams: sum(it, 'cameras_total'), recs: sum(it, 'recorders_total'), up: sum(it, 'recorders_up'), down: sum(it, 'recorders_down') })
+      .toEqual({ cams: 0, recs: recorders, up: recorders, down: 0 })
+    const all = (await viewers.orgWide.client.from('location_status').select(cols).limit(1000)).data as unknown as Record<string, number>[]
+    expect({ cams: sum(all, 'cameras_total'), live: sum(all, 'cameras_live'), down: sum(all, 'cameras_down'), recs: sum(all, 'recorders_total') })
+      .toEqual({ cams: cameras.length, live: cameras.length - down, down, recs: recorders })
+    const timing = {
+      itOrgWide: {
+        locationStatus: await median(5, () => viewers.itOrgWide.client.from('location_status').select('*').limit(1000)),
+        recorderStatus: await median(5, () => viewers.itOrgWide.client.from('recorder_status').select('*').limit(1000)),
+      },
+      orgWide: {
+        locationStatus: await median(5, () => viewers.orgWide.client.from('location_status').select('*').limit(1000)),
+        cameraStates: await median(5, () => viewers.orgWide.client.from('check_state').select('target_id, status').eq('target_type', 'camera').limit(1000)),
+      },
+    }
+    console.info(JSON.stringify({ event: 'access_perf_status', check_state_rows: cameras.length + recorders, medians_ms: timing }))
+    for (const [key, r] of Object.entries(timing)) for (const [k, ms] of Object.entries(r)) expect(ms, `${key} ${k}`).toBeLessThan(BOUND_MS * 2)
+  }, 120_000)
 
   it('the batch check equals the expansion for a recorder-scoped and a region-scoped person', async () => {
     for (const key of ['threeRecorders', 'region'] as const) {

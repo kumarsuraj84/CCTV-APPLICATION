@@ -4,6 +4,7 @@ import type { Database, Json } from '@/types/database'
 import { logger } from '@/lib/observability/logger'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import { isNvrKnownDown } from '@/lib/monitor/nvr-state'
+import { isMonitored, pickPrimaries } from '@/lib/inventory/recorders'
 import type { CheckResult, DeviceJob, MonitorDb, NvrJob, StoreJob, WorkerRequest } from '@/lib/monitor/types'
 
 type Admin = SupabaseClient<Database>
@@ -68,18 +69,19 @@ export class SupabaseMonitorDb implements MonitorDb {
    */
   private async primaries(locationIds?: string[]): Promise<Map<string, { id: string; monitoring: boolean }>> {
     const parts: (string[] | undefined)[] = locationIds ? chunks([...new Set(locationIds)], ID_CHUNK) : [undefined]
-    const rows: { id: string; location_id: string; created_at: string; monitoring_enabled: boolean }[] = []
+    const rows = []
     for (const part of parts) {
       rows.push(...(await fetchAll((from, to) => {
-        let q = this.admin.from('recorders').select('id, location_id, created_at, monitoring_enabled, assets!recorders_asset_fk!inner(archived_at)')
+        let q = this.admin.from('recorders').select('id, location_id, created_at, migrated_from_location_id, monitoring_enabled, assets!recorders_asset_fk!inner(archived_at, enabled)')
           .is('assets.archived_at', null).order('created_at').order('id')
         if (this.orgId) q = q.eq('org_id', this.orgId)
         if (part) q = q.in('location_id', part)
         return q.range(from, to)
       })))
     }
+    // The legacy NVR of the location (seam, review M3), monitored only when switched on and its asset enabled (review M4).
     const out = new Map<string, { id: string; monitoring: boolean }>()
-    for (const r of rows) if (!out.has(r.location_id)) out.set(r.location_id, { id: r.id, monitoring: r.monitoring_enabled })
+    for (const [loc, r] of pickPrimaries(rows)) out.set(loc, { id: r.id, monitoring: isMonitored(r) })
     return out
   }
 
@@ -138,7 +140,8 @@ export class SupabaseMonitorDb implements MonitorDb {
     const byStore = new Map<string, StoreJob['cameras']>()
     for (const c of cameras) {
       if (!wanted.has(c.store_id)) continue
-      if (c.recorder_id !== null && c.recorder_id !== primary.get(c.store_id)?.id) continue
+      // Review M5: only cameras mapped to that NVR; an unmapped camera (e.g. just restored) is not checked until it is mapped again.
+      if (c.recorder_id !== primary.get(c.store_id)?.id) continue
       const row = { id: c.id, channel: c.channel, camera_ip: c.camera_ip }
       const list = byStore.get(c.store_id)
       if (list) list.push(row)

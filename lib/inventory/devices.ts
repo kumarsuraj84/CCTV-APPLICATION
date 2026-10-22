@@ -6,6 +6,18 @@ import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { assertRefsInOrg } from '@/lib/security/org-scope'
 
 const DENIED = 'Only administrators can change devices.'
+export const MSG_IS_NVR = 'This is the NVR of a store. Change it on the Manage stores page.'
+
+/**
+ * Review M4: a location's NVR is a recorder asset, not a device. The device screens never change or delete it (its address, login
+ * and monitoring switch belong to the recorder; P2-5c brings the NVR screens).
+ */
+async function nvrRefusal(admin: AdminClient, actor: Actor, deviceId: string): Promise<string | null> {
+  const { data, error } = await admin.from('assets').select('id, is_recorder').eq('id', deviceId).eq('org_id', actor.orgId).is('archived_at', null).maybeSingle()
+  if (error) return sanitizeError(error, { route: 'devices', fallback: 'Could not read the device.' })
+  if (!data) return 'Device not found.'
+  return data.is_recorder ? MSG_IS_NVR : null
+}
 
 async function checked(admin: AdminClient, actor: Actor, input: unknown) {
   const parsed = deviceSchema.safeParse(input)
@@ -36,6 +48,8 @@ export async function createDevice(admin: AdminClient, actor: Actor, input: unkn
 
 export async function updateDevice(admin: AdminClient, actor: Actor, deviceId: string, input: unknown): Promise<Result<object>> {
   if (!isAdminRole(actor.role)) return { ok: false, error: DENIED }
+  const refused = await nvrRefusal(admin, actor, deviceId)
+  if (refused) return { ok: false, error: refused }
   const c = await checked(admin, actor, input)
   if (!c.value) return { ok: false, error: c.error }
   const v = c.value
@@ -50,9 +64,9 @@ export async function updateDevice(admin: AdminClient, actor: Actor, deviceId: s
 
 export async function deleteDevice(admin: AdminClient, actor: Actor, deviceId: string): Promise<Result<object>> {
   if (!isAdminRole(actor.role)) return { ok: false, error: DENIED }
-  // P2-5a: deleting is archiving (switched off, endpoints freed, monitoring history and grants kept).
-  const { data: found } = await admin.from('assets').select('id').eq('id', deviceId).eq('org_id', actor.orgId).is('archived_at', null).maybeSingle()
-  if (!found) return { ok: false, error: 'Device not found.' }
+  // P2-5a: deleting is archiving (switched off, endpoints freed, monitoring history and grants kept). Never a location's NVR (M4).
+  const refused = await nvrRefusal(admin, actor, deviceId)
+  if (refused) return { ok: false, error: refused }
   const { error } = await admin.rpc('inventory_archive', { p_org: actor.orgId, p_kind: 'asset', p_id: deviceId, p_actor: actor.id })
   if (error) return { ok: false, error: sanitizeError(error, { route: 'deleteDevice', fallback: 'Could not delete the device.' }) }
   await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'device_deleted', entityType: 'device', entityId: deviceId })

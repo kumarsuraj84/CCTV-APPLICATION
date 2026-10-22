@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
 import { mapLimit } from '@/lib/async/pool'
 import { fetchAll } from '@/lib/supabase/fetch-all'
+import { pickPrimaries } from '@/lib/inventory/recorders'
 
 type Client = SupabaseClient<Database>
 
@@ -128,10 +129,9 @@ export async function listStoreStatus(supabase: Client): Promise<Map<string, Sto
  */
 export async function getStates(supabase: Client, type: 'camera' | 'device' | 'nvr' | 'recorder', ids: string[]): Promise<Map<string, StateRow>> {
   if (type === 'nvr') {
-    const { data, error } = await supabase.from('recorders').select('id, location_id, created_at, monitoring_enabled').in('location_id', ids).order('created_at').order('id')
+    const { data, error } = await supabase.from('recorders').select('id, location_id, created_at, migrated_from_location_id').in('location_id', ids).order('created_at').order('id')
     if (error) throw new Error('Could not read the status.')
-    const primary = new Map<string, { id: string; monitoring_enabled: boolean }>()
-    for (const r of data ?? []) if (!primary.has(r.location_id)) primary.set(r.location_id, r)
+    const primary = pickPrimaries(data ?? []) // the legacy NVR of the location first (review M3), as recorder_primary_of
     const states = await getStates(supabase, 'recorder', [...primary.values()].map((r) => r.id))
     const out = new Map<string, StateRow>()
     for (const [loc, r] of primary) {
@@ -172,9 +172,10 @@ export async function getStates(supabase: Client, type: 'camera' | 'device' | 'n
       for (const id of (data as unknown as string[] | null) ?? []) off.add(String(id))
     }
   } else if (type === 'recorder' && ids.length > 0) {
-    const { data, error } = await supabase.from('recorders').select('id').in('id', ids).eq('monitoring_enabled', false)
+    // recorder_status.monitoring_enabled is "monitored": switched on AND the NVR asset enabled (review M4).
+    const { data, error } = await supabase.from('recorder_status').select('recorder_id').in('recorder_id', ids).eq('monitoring_enabled', false)
     if (error) throw new Error('Could not read the status.')
-    for (const r of data ?? []) off.add(r.id)
+    for (const r of data ?? []) if (r.recorder_id) off.add(r.recorder_id)
   }
   for (const id of off) out.set(id, { target_id: id, status: 'off', down_since: null, last_checked_at: null, last_up_at: null, error: null })
   return out

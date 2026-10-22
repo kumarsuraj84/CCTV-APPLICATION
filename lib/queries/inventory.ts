@@ -48,7 +48,7 @@ export async function getVisibleStore(supabase: Client, id: string) {
 
 export async function listVisibleDevices(supabase: Client, type?: string) {
   return fetchAll((from, to) => {
-    let query = supabase.from('assets').select('id, store_id:location_id, type, name, ip, tcp_port, enabled, stores:locations(code, name)').eq('enabled', true)
+    let query = supabase.from('assets').select('id, store_id:location_id, type, name, ip, tcp_port, enabled, stores:locations!assets_location_fk(code, name)').eq('enabled', true)
       .eq('is_recorder', false).order('name').order('id')
     if (type) query = query.eq('type', type as Database['public']['Enums']['device_type'])
     return query.range(from, to)

@@ -273,14 +273,14 @@ isOneToOne: false
                   ]
                 },"assets": {
                   Row: {
-                    "address_space_id": string | null,"archived_at": string | null,"assigned_profile_id": string | null,"attached_recorder_id": string | null,"capability_discovered_at": string | null,"config_owner": string | null,"created_at": string,"credential_ref": string | null,"criticality": string | null,"enabled": boolean,"firmware": string | null,"id": string,"ip": string | null,"is_recorder": boolean,"last_inventory_at": string | null,"lifecycle_state": string,"location_id": string | null,"mac": string | null,"management_mode": string | null,"model": string | null,"name": string,"notes": string | null,"org_id": string,"owner": string | null,"role": string | null,"serial": string | null,"tcp_port": number | null,"type": Database["public"]['Enums']["device_type"],"updated_at": string,"vendor": string | null,"warranty_until": string | null
+                    "address_space_id": string | null,"archived_at": string | null,"archived_was_enabled": boolean | null,"assigned_profile_id": string | null,"attached_recorder_id": string | null,"capability_discovered_at": string | null,"config_owner": string | null,"created_at": string,"credential_ref": string | null,"criticality": string | null,"enabled": boolean,"firmware": string | null,"id": string,"ip": string | null,"is_recorder": boolean,"last_inventory_at": string | null,"lifecycle_state": string,"location_id": string | null,"mac": string | null,"management_mode": string | null,"model": string | null,"name": string,"notes": string | null,"org_id": string,"owner": string | null,"role": string | null,"serial": string | null,"tcp_port": number | null,"type": Database["public"]['Enums']["device_type"],"updated_at": string,"vendor": string | null,"warranty_until": string | null
                   }
                   ComputedFields: never
                   Insert: {
-                    "address_space_id"?: string | null,"archived_at"?: string | null,"assigned_profile_id"?: string | null,"attached_recorder_id"?: string | null,"capability_discovered_at"?: string | null,"config_owner"?: string | null,"created_at"?: string,"credential_ref"?: string | null,"criticality"?: string | null,"enabled"?: boolean,"firmware"?: string | null,"id"?: string,"ip"?: string | null,"is_recorder"?: boolean,"last_inventory_at"?: string | null,"lifecycle_state"?: string,"location_id"?: string | null,"mac"?: string | null,"management_mode"?: string | null,"model"?: string | null,"name": string,"notes"?: string | null,"org_id": string,"owner"?: string | null,"role"?: string | null,"serial"?: string | null,"tcp_port"?: number | null,"type": Database["public"]['Enums']["device_type"],"updated_at"?: string,"vendor"?: string | null,"warranty_until"?: string | null
+                    "address_space_id"?: string | null,"archived_at"?: string | null,"archived_was_enabled"?: boolean | null,"assigned_profile_id"?: string | null,"attached_recorder_id"?: string | null,"capability_discovered_at"?: string | null,"config_owner"?: string | null,"created_at"?: string,"credential_ref"?: string | null,"criticality"?: string | null,"enabled"?: boolean,"firmware"?: string | null,"id"?: string,"ip"?: string | null,"is_recorder"?: boolean,"last_inventory_at"?: string | null,"lifecycle_state"?: string,"location_id"?: string | null,"mac"?: string | null,"management_mode"?: string | null,"model"?: string | null,"name": string,"notes"?: string | null,"org_id": string,"owner"?: string | null,"role"?: string | null,"serial"?: string | null,"tcp_port"?: number | null,"type": Database["public"]['Enums']["device_type"],"updated_at"?: string,"vendor"?: string | null,"warranty_until"?: string | null
                   }
                   Update: {
-                    "address_space_id"?: string | null,"archived_at"?: string | null,"assigned_profile_id"?: string | null,"attached_recorder_id"?: string | null,"capability_discovered_at"?: string | null,"config_owner"?: string | null,"created_at"?: string,"credential_ref"?: string | null,"criticality"?: string | null,"enabled"?: boolean,"firmware"?: string | null,"id"?: string,"ip"?: string | null,"is_recorder"?: boolean,"last_inventory_at"?: string | null,"lifecycle_state"?: string,"location_id"?: string | null,"mac"?: string | null,"management_mode"?: string | null,"model"?: string | null,"name"?: string,"notes"?: string | null,"org_id"?: string,"owner"?: string | null,"role"?: string | null,"serial"?: string | null,"tcp_port"?: number | null,"type"?: Database["public"]['Enums']["device_type"],"updated_at"?: string,"vendor"?: string | null,"warranty_until"?: string | null
+                    "address_space_id"?: string | null,"archived_at"?: string | null,"archived_was_enabled"?: boolean | null,"assigned_profile_id"?: string | null,"attached_recorder_id"?: string | null,"capability_discovered_at"?: string | null,"config_owner"?: string | null,"created_at"?: string,"credential_ref"?: string | null,"criticality"?: string | null,"enabled"?: boolean,"firmware"?: string | null,"id"?: string,"ip"?: string | null,"is_recorder"?: boolean,"last_inventory_at"?: string | null,"lifecycle_state"?: string,"location_id"?: string | null,"mac"?: string | null,"management_mode"?: string | null,"model"?: string | null,"name"?: string,"notes"?: string | null,"org_id"?: string,"owner"?: string | null,"role"?: string | null,"serial"?: string | null,"tcp_port"?: number | null,"type"?: Database["public"]['Enums']["device_type"],"updated_at"?: string,"vendor"?: string | null,"warranty_until"?: string | null
                   }
                   Relationships: [
                     {
@@ -431,14 +431,14 @@ isOneToOne: false
                   ]
                 },"cameras": {
                   Row: {
-                    "archived_at": string | null,"camera_ip": string | null,"channel": number,"created_at": string,"id": string,"is_active": boolean,"location_id": string,"name": string,"org_id": string,"recorder_id": string | null,"updated_at": string
+                    "archived_at": string | null,"archived_was_active": boolean | null,"camera_ip": string | null,"channel": number,"created_at": string,"id": string,"is_active": boolean,"location_id": string,"name": string,"org_id": string,"recorder_id": string | null,"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "archived_at"?: string | null,"camera_ip"?: string | null,"channel": number,"created_at"?: string,"id"?: string,"is_active"?: boolean,"location_id": string,"name": string,"org_id": string,"recorder_id"?: string | null,"updated_at"?: string
+                    "archived_at"?: string | null,"archived_was_active"?: boolean | null,"camera_ip"?: string | null,"channel": number,"created_at"?: string,"id"?: string,"is_active"?: boolean,"location_id": string,"name": string,"org_id": string,"recorder_id"?: string | null,"updated_at"?: string
                   }
                   Update: {
-                    "archived_at"?: string | null,"camera_ip"?: string | null,"channel"?: number,"created_at"?: string,"id"?: string,"is_active"?: boolean,"location_id"?: string,"name"?: string,"org_id"?: string,"recorder_id"?: string | null,"updated_at"?: string
+                    "archived_at"?: string | null,"archived_was_active"?: boolean | null,"camera_ip"?: string | null,"channel"?: number,"created_at"?: string,"id"?: string,"is_active"?: boolean,"location_id"?: string,"name"?: string,"org_id"?: string,"recorder_id"?: string | null,"updated_at"?: string
                   }
                   Relationships: [
                     {
@@ -595,14 +595,14 @@ isOneToOne: false
                   ]
                 },"locations": {
                   Row: {
-                    "address": string | null,"archived_at": string | null,"city": string | null,"cluster_id": string | null,"code": string,"created_at": string,"expected_channels": number,"http_port": number,"id": string,"is_active": boolean,"kind": string,"name": string,"nvr_ip": string | null,"nvr_secret_id": string | null,"nvr_username": string | null,"org_id": string,"parent_location_id": string | null,"rtsp_port": number,"state": string | null,"updated_at": string,"uplink_asset_id": string | null,"zone": string | null
+                    "address": string | null,"archived_at": string | null,"archived_was_active": boolean | null,"city": string | null,"cluster_id": string | null,"code": string,"created_at": string,"expected_channels": number,"http_port": number,"id": string,"is_active": boolean,"kind": string,"name": string,"nvr_ip": string | null,"nvr_secret_id": string | null,"nvr_username": string | null,"org_id": string,"parent_location_id": string | null,"rtsp_port": number,"state": string | null,"updated_at": string,"uplink_asset_id": string | null,"zone": string | null
                   }
                   ComputedFields: never
                   Insert: {
-                    "address"?: string | null,"archived_at"?: string | null,"city"?: string | null,"cluster_id"?: string | null,"code": string,"created_at"?: string,"expected_channels"?: number,"http_port"?: number,"id"?: string,"is_active"?: boolean,"kind"?: string,"name": string,"nvr_ip"?: string | null,"nvr_secret_id"?: string | null,"nvr_username"?: string | null,"org_id": string,"parent_location_id"?: string | null,"rtsp_port"?: number,"state"?: string | null,"updated_at"?: string,"uplink_asset_id"?: string | null,"zone"?: string | null
+                    "address"?: string | null,"archived_at"?: string | null,"archived_was_active"?: boolean | null,"city"?: string | null,"cluster_id"?: string | null,"code": string,"created_at"?: string,"expected_channels"?: number,"http_port"?: number,"id"?: string,"is_active"?: boolean,"kind"?: string,"name": string,"nvr_ip"?: string | null,"nvr_secret_id"?: string | null,"nvr_username"?: string | null,"org_id": string,"parent_location_id"?: string | null,"rtsp_port"?: number,"state"?: string | null,"updated_at"?: string,"uplink_asset_id"?: string | null,"zone"?: string | null
                   }
                   Update: {
-                    "address"?: string | null,"archived_at"?: string | null,"city"?: string | null,"cluster_id"?: string | null,"code"?: string,"created_at"?: string,"expected_channels"?: number,"http_port"?: number,"id"?: string,"is_active"?: boolean,"kind"?: string,"name"?: string,"nvr_ip"?: string | null,"nvr_secret_id"?: string | null,"nvr_username"?: string | null,"org_id"?: string,"parent_location_id"?: string | null,"rtsp_port"?: number,"state"?: string | null,"updated_at"?: string,"uplink_asset_id"?: string | null,"zone"?: string | null
+                    "address"?: string | null,"archived_at"?: string | null,"archived_was_active"?: boolean | null,"city"?: string | null,"cluster_id"?: string | null,"code"?: string,"created_at"?: string,"expected_channels"?: number,"http_port"?: number,"id"?: string,"is_active"?: boolean,"kind"?: string,"name"?: string,"nvr_ip"?: string | null,"nvr_secret_id"?: string | null,"nvr_username"?: string | null,"org_id"?: string,"parent_location_id"?: string | null,"rtsp_port"?: number,"state"?: string | null,"updated_at"?: string,"uplink_asset_id"?: string | null,"zone"?: string | null
                   }
                   Relationships: [
                     {
@@ -634,6 +634,12 @@ isOneToOne: false
       columns: ["parent_location_id","org_id"]
 isOneToOne: false
       referencedRelation: "locations"
+      referencedColumns: ["id","org_id"]
+    },{
+      foreignKeyName: "locations_uplink_fk"
+      columns: ["uplink_asset_id","org_id"]
+isOneToOne: false
+      referencedRelation: "assets"
       referencedColumns: ["id","org_id"]
     }
                   ]
@@ -1112,6 +1118,9 @@ isOneToOne: false
 "access_bump_version":
 { Args: { "p_user": string }; Returns: number
                            },
+"access_bump_versions":
+{ Args: { "p_people": (string)[] }; Returns: number
+                           },
 "access_caller_aal2":
 { Args: Record<PropertyKey, never>; Returns: boolean
                            },
@@ -1294,6 +1303,9 @@ isOneToOne: false
 "has_capability_for":
 { Args: { "p_cap": string,"p_id": string,"p_kind": string }; Returns: boolean
                            },
+"inventory_affected_people":
+{ Args: { "p_id": string,"p_kind": string,"p_org": string }; Returns: (string)[]
+                           },
 "inventory_archive":
 { Args: { "p_actor"?: string,"p_id": string,"p_kind": string,"p_org": string }; Returns: Json
                            },
@@ -1322,6 +1334,9 @@ isOneToOne: false
 "inventory_purge_test_org":
 { Args: { "p_org": string }; Returns: Json
                            },
+"inventory_remap_effects":
+{ Args: { "p_camera": string,"p_from": string,"p_org": string,"p_to": string }; Returns: undefined
+                           },
 "inventory_require_test_org":
 { Args: { "p_org": string }; Returns: undefined
                            },
@@ -1343,6 +1358,9 @@ isOneToOne: false
 { Args: { "p_org": string }; Returns: number
                            },
 "it_view_asset_ids":
+{ Args: Record<PropertyKey, never>; Returns: string[]
+                           },
+"it_view_endpoint_asset_ids":
 { Args: Record<PropertyKey, never>; Returns: string[]
                            },
 "it_view_location_ids":
@@ -1411,6 +1429,9 @@ isOneToOne: false
                            },
 "recorder_read_credential":
 { Args: { "p_recorder": string }; Returns: string
+                           },
+"recorder_seam_of":
+{ Args: { "p_location": string }; Returns: string
                            },
 "recorder_set_monitoring":
 { Args: { "p_actor"?: string,"p_enabled": boolean,"p_org": string,"p_reason": string,"p_recorder": string }; Returns: Json

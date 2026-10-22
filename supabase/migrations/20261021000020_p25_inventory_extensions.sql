@@ -2,6 +2,7 @@
 -- address validation, asset dependencies with cycle prevention, and the vendor capability matrix seeded from
 -- docs/drishti/wifi-capability-research.md (documentation evidence only: nothing is lab-validated; anything not stated by a source
 -- that was read stays 'unverified', and cells with no source at all are simply not seeded = unverified by default).
+-- APPLY ONLY THROUGH `npx supabase migration up` (one transaction per file; no BEGIN/COMMIT here; review M1).
 
 -- ═══ Network definitions (W-1, supplement §A) ═════════════════════════════════════════════════════════════════════════════
 CREATE TABLE public.network_definitions (

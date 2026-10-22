@@ -4,7 +4,8 @@
 -- REFUSES, changing nothing, while any of these exist (the old model cannot hold them):
 --   recorders (the 0021 rollback removes the migrated ones; recorders added by people must be archived and purged first),
 --   region / cluster / recorder grants (revoked ones too), archived locations / assets / cameras (restore them first: the old model has
---   no archive), locations without an NVR address or login (head offices), assets without an address, 'recorder' monitoring history.
+--   no archive), locations without an NVR address or login (head offices), assets without an address, assets of a type added by
+--   20261021000018, 'recorder' monitoring history. Run the rollback of 20261021000022 first (it refuses nothing; this one checks).
 -- LOST: regions, clusters, location kind / cluster / parent / uplink, the new asset attributes (serial, MAC, vendor, …), address spaces
 -- and endpoints, mapping history and the migration snapshot. An NVR device adopted by the migration keeps its location and enabled
 -- flag as the migration set them. The device_type values added by 20261021000018 stay (an enum value cannot be dropped).
@@ -31,6 +32,9 @@ BEGIN
     UNION ALL SELECT format('%s location(s) without an NVR address or login', count(*)) FROM public.locations
       WHERE nvr_ip IS NULL OR nvr_username IS NULL HAVING count(*) > 0
     UNION ALL SELECT format('%s asset(s) without an address', count(*)) FROM public.assets WHERE ip IS NULL HAVING count(*) > 0
+    -- Review M10: the old application does not know the asset types added by 20261021000018 (an enum value cannot be dropped).
+    UNION ALL SELECT format('%s asset(s) of a type added by P2-5a', count(*)) FROM public.assets
+      WHERE type::text IN ('sdwan_edge', 'switch', 'access_point', 'router', 'ups', 'printer', 'desktop', 'laptop') HAVING count(*) > 0
     UNION ALL SELECT format('%s recorder state / outage row(s)', count(*)) FROM (
       SELECT 1 FROM public.check_state WHERE target_type = 'recorder' UNION ALL SELECT 1 FROM public.outages WHERE target_type = 'recorder') h
       HAVING count(*) > 0
