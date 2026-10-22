@@ -337,11 +337,13 @@ describe('openStreams', () => {
       },
     })
     streamsOf(await open(manager, [a1, a2, b1], 'sub', { adminClient: spy }))
-    // P2-4: first the one call that registers the media sessions of the streams (no password is read for a refused one).
+    // P4-L1 (bounded concurrency): first the person's open live streams are counted (media_sessions_live_open, no NVR data).
+    // P2-4: then the one call that registers the media sessions of the streams (no password is read for a refused one).
     // P2-6: the logged credential read, for live video, naming the person it is for.
-    expect(calls.map((c) => c.name)).toEqual(['media_session_create', 'recorder_credential_read', 'recorder_credential_read'])
-    expect(calls.slice(1).map((c) => (c.args as { p_recorder: string }).p_recorder).sort()).toEqual([rA, rB].sort())
-    for (const c of calls.slice(1)) expect(c.args).toMatchObject({ p_purpose: 'live', p_actor: manager.id })
+    expect(calls.map((c) => c.name)).toEqual(['media_sessions_live_open', 'media_session_create', 'recorder_credential_read', 'recorder_credential_read'])
+    expect(calls[0].args).toEqual({ p_org: orgId, p_user: manager.id })
+    expect(calls.slice(2).map((c) => (c.args as { p_recorder: string }).p_recorder).sort()).toEqual([rA, rB].sort())
+    for (const c of calls.slice(2)) expect(c.args).toMatchObject({ p_purpose: 'live', p_actor: manager.id })
   })
 
   it('with DEMO_VIDEO=1 and a loopback store the source is the generated test picture and no password is read', async () => {
@@ -356,7 +358,8 @@ describe('openStreams', () => {
     })
     const streams = streamsOf(await open(viewer, [a1, n1], 'sub', { env: { DEMO_VIDEO: '1', NODE_ENV: 'development' }, adminClient: spy }))
     expect(streams.map((s) => s.cameraId)).toEqual([a1, n1]) // the store without a password works too: there is no real camera
-    expect(calls).toEqual(['media_session_create']) // no password read; only the media sessions (P2-4)
+    // no password read; only the count of open streams (P4-L1) and the media sessions (P2-4)
+    expect(calls).toEqual(['media_sessions_live_open', 'media_session_create'])
     const src = fake.seen.find((s) => s.name === `cam_${a1}_sub`)!.src!
     expect(src).toMatch(/^ffmpeg:virtual\?video=\w+&size=640x360&duration=86400\.\d+#video=h264$/)
     const other = fake.seen.find((s) => s.name === `cam_${n1}_sub`)!.src!

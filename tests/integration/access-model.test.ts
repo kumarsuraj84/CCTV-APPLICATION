@@ -857,6 +857,11 @@ describe('capability access model (P2-1)', () => {
       worker_fence_global: [],
       worker_fence_org: [],
       worker_rows_guard: [],
+      // P4-L1 (20261021000038): roll-ups for the caller (their own access, the masking of status_reasons); the person's open live
+      // streams for the video path's cap; the trigger that records each session's location and NVR (no grant at all).
+      status_rollups: ['authenticated'],
+      media_sessions_live_open: ['service_role', 'media_service'],
+      media_sessions_before_insert: [],
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)
@@ -898,6 +903,8 @@ describe('capability access model (P2-1)', () => {
       'wifi_inventory',
       // P3-1: the caller's own session facts for the multi-factor gate (tests/integration/mfa-session-db.test.ts).
       'my_session_status',
+      // P4-L1: roll-ups per region, cluster and location of what the caller may see (tests/integration/live-rollups.test.ts).
+      'status_rollups',
     ])
     for (const f of data ?? []) {
       expect(f.grantees.filter((g) => g === 'anon' || g.startsWith('PUBLIC')), `${f.name}(${f.args})`).toEqual([])

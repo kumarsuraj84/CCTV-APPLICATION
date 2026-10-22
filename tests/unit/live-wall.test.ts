@@ -8,15 +8,18 @@ import { MAX_STREAMS_PER_REQUEST } from '@/lib/streams/open'
 import { TOKEN_LIFETIME_SEC } from '@/lib/streams/token'
 
 describe('wall layouts', () => {
-  it('offers 1, 2x2, 3x3 and 4x4, and never more pictures on a page than one request may open', () => {
-    expect([...LAYOUTS]).toEqual([1, 2, 3, 4])
-    expect(LAYOUTS.map(perPage)).toEqual([1, 4, 9, 16])
+  // P4-L1 (LG-2): the legacy wall's 5×5 (25 pictures) is offered too; it is chosen by hand only, the automatic choice stays at most 4×4.
+  it('offers 1, 2x2, 3x3, 4x4 and 5x5, and never more pictures on a page than one request may open', () => {
+    expect([...LAYOUTS]).toEqual([1, 2, 3, 4, 5])
+    expect(LAYOUTS.map(perPage)).toEqual([1, 4, 9, 16, 25])
     expect(Math.max(...LAYOUTS.map(perPage))).toBeLessThanOrEqual(MAX_STREAMS_PER_REQUEST)
-    expect(LAYOUTS.map(layoutLabel)).toEqual(['1', '2×2', '3×3', '4×4'])
+    expect(LAYOUTS.map(layoutLabel)).toEqual(['1', '2×2', '3×3', '4×4', '5×5'])
   })
 
-  it('picks the smallest layout that shows everything, and 4x4 for more', () => {
-    expect([0, 1, 2, 4, 5, 9, 10, 16, 17, 400].map(autoLayout)).toEqual([1, 1, 2, 2, 3, 3, 4, 4, 4, 4])
+  it('picks the smallest layout that shows everything, and 4x4 for more (5x5 only when chosen)', () => {
+    expect([0, 1, 2, 4, 5, 9, 10, 16, 17, 25, 400].map(autoLayout)).toEqual([1, 1, 2, 2, 3, 3, 4, 4, 4, 4, 4])
+    expect(pageCount(50, 5)).toBe(2)
+    expect(pageStart(30, 5)).toBe(25)
   })
 
   it('pages: 16 to a page on a 4x4 wall', () => {
