@@ -868,6 +868,11 @@ describe('capability access model (P2-1)', () => {
       audit_guard_status: server,
       audit_purge_test_org: server,
       admin_audit_log_append_only: [],
+      // P4-L1 review round 1 (0040) and fix round 2 (0043): the live opening under the person's cap and the release a window sends
+      // when its page is left (its own unused tokens only) for the video path; what a person holds is internal.
+      media_session_create_live: ['service_role', 'media_service'],
+      media_sessions_release_live: ['service_role', 'media_service'],
+      media_sessions_held_live: [],
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)
@@ -892,7 +897,9 @@ describe('capability access model (P2-1)', () => {
     for (const name of ['preview_access_change', 'access_expiring', 'access_migrate_legacy', 'replace_user_grants', 'grant_access', 'revoke_grant',
       'access_camera_set', 'access_asset_set', 'my_access_summary', 'access_grant_summary',
       // P2-7: the unfenced 3-argument monitor_apply_results is gone.
-      'monitor_apply_results']) {
+      'monitor_apply_results',
+      // P4-L1 fix round 2: the 6-argument media_session_create_live (no window id) is gone.
+      'media_session_create_live']) {
       expect((data ?? []).filter((f) => f.name === name), name).toHaveLength(1)
     }
     // Minor 8, the sweep: no function of schema public is callable by anon or PUBLIC, and signed-in people only the allow-list.

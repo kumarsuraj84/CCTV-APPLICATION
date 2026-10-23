@@ -70,6 +70,7 @@ const ALLOWED: Record<string, string> = {
   'app/api/vod/route.ts#HEAD': 'always answers 405; never starts anything',
   'app/api/playback/stream/route.ts#GET': 'viewing: the fast playback stream (cctv.playback, D-L1): a 90 s token bound to person, camera and media session, script fetch only, no file headers',
   'app/api/playback/stream/route.ts#HEAD': 'always answers 405; never starts anything',
+  'app/api/live/release/route.ts#POST': 'only takes the caller\'s own unused live tokens away when a Live page is left (P4-L1 fix round 2); never opens anything, never ends an open socket',
   'app/api/csp-report/route.ts#POST': 'public report sink: logs the directive and blocked origin only, size- and rate-limited',
   'app/api/health/route.ts#GET': 'reads only (public health)',
   'app/api/health/detail/route.ts#GET': 'reads only (P5.4 detailed health, super administrators who finished signing in)',

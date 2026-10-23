@@ -9,42 +9,86 @@ import { click, fire, installMiniDom, type MiniDocument, type MiniElement } from
 // large picture, a tour step, the idle prompt, and none at all after leaving the page.
 
 const sockets = new Set<string>()
-const asked: { fn: string; ids: string[]; release?: unknown }[] = []
+const asked: { fn: string; ids: string[]; release?: unknown; client?: unknown }[] = []
+// Fix round 2 (N-1): the server's side of the cap, as the database counts it — the distinct cameras of open sockets and of tokens
+// handed out but not used yet (not released, still able to connect). New cameras beyond `cap.max` come back paused; `cap.peak` is the
+// most the person ever held.
+const cap = { max: 25, unused: new Map<string, { camera: string; client: unknown }>(), peak: 0 }
+const tokenOf = (url: string) => decodeURIComponent(url.split('token=')[1] ?? '')
+const heldNow = () => new Set([...[...sockets].map((u) => tokenOf(u).replace(/^t-/, '').replace(/-\d+$/, '')), ...[...cap.unused.values()].map((v) => v.camera)])
+const note = () => { cap.peak = Math.max(cap.peak, heldNow().size) }
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {}, push: () => {} }) }))
 vi.mock('@/components/live/useGatewayBase', () => ({ useGatewayBase: () => 'http://gw.test:3412' }))
 vi.mock('@/components/live/player', () => ({
   loadPlayer: () => Promise.resolve(),
   startPlayer: (_host: unknown, url: string, ev: { onPlaying: () => void }) => {
     sockets.add(url)
+    cap.unused.delete(tokenOf(url))
+    note()
     queueMicrotask(() => ev.onPlaying())
     return () => { sockets.delete(url) }
   },
 }))
 const token = (id: string, n: number) => `t-${id}-${n}`
 let issued = 0
+/** One request as the database answers it: the window's released cameras first (its own unused tokens), then the cap. */
+function hand(ids: string[], o?: { release?: { cameraIds: string[] }[]; client?: unknown }) {
+  const rel = new Set((o?.release ?? []).flatMap((r) => r.cameraIds).filter((id) => !ids.includes(id)))
+  for (const [t, v] of cap.unused) if (rel.has(v.camera) && v.client === o?.client) cap.unused.delete(t)
+  const held = heldNow()
+  const out: { id: string; token: string }[] = []
+  const paused: string[] = []
+  for (const id of ids) {
+    if (held.has(id) || held.size < cap.max) {
+      held.add(id)
+      const t = token(id, ++issued)
+      cap.unused.set(t, { camera: id, client: o?.client })
+      out.push({ id, token: t })
+    } else paused.push(id)
+  }
+  note()
+  return { out, paused }
+}
 vi.mock('@/lib/actions/streams', () => ({
-  openStreamsAction: async (ids: string[], kind: string, o?: { release?: unknown }) => {
-    asked.push({ fn: 'open', ids, release: o?.release })
-    return { ok: true, streams: ids.map((id) => ({ cameraId: id, name: id, storeCode: 'L', channel: 1, kind, token: token(id, ++issued) })) }
+  openStreamsAction: async (ids: string[], kind: string, o?: { release?: { cameraIds: string[] }[]; client?: unknown }) => {
+    asked.push({ fn: 'open', ids, release: o?.release, client: o?.client })
+    const { out, paused } = hand(ids, o)
+    return { ok: true, streams: out.map(({ id, token: t }) => ({ cameraId: id, name: id, storeCode: 'L', channel: 1, kind, token: t })), ...(paused.length ? { paused } : {}) }
   },
-  refreshStreamTokensAction: async (ids: string[], kind: string) => {
-    asked.push({ fn: 'full', ids })
-    return { ok: true, streams: ids.map((id) => ({ cameraId: id, name: id, storeCode: 'L', channel: 1, kind, token: token(id, ++issued) })) }
+  refreshStreamTokensAction: async (ids: string[], kind: string, o?: { release?: { cameraIds: string[] }[]; client?: unknown }) => {
+    asked.push({ fn: 'full', ids, release: o?.release, client: o?.client })
+    const { out, paused } = hand(ids, o)
+    return { ok: true, streams: out.map(({ id, token: t }) => ({ cameraId: id, name: id, storeCode: 'L', channel: 1, kind, token: t })), ...(paused.length ? { paused } : {}) }
   },
-  renewStreamTokensAction: async (ids: string[]) => {
-    asked.push({ fn: 'tokens', ids })
-    return { ok: true, tokens: ids.map((id) => ({ cameraId: id, token: token(id, ++issued) })) }
+  renewStreamTokensAction: async (ids: string[], _kind: string, o?: { release?: { cameraIds: string[] }[]; client?: unknown }) => {
+    asked.push({ fn: 'tokens', ids, release: o?.release, client: o?.client })
+    const { out, paused } = hand(ids, o)
+    return { ok: true, tokens: out.map(({ id, token: t }) => ({ cameraId: id, token: t })), ...(paused.length ? { paused } : {}) }
   },
 }))
+// The page's leave release (POST /api/live/release with keepalive): the tokens it names stop counting, if they were not used.
+const leaves: { tokens: string[]; keepalive: boolean }[] = []
+let leaveWorks = true
+const fakeFetch = vi.fn(async (url: string, init: { body: string; keepalive?: boolean }) => {
+  if (url !== '/api/live/release') throw new Error(`unexpected fetch ${url}`)
+  const { tokens } = JSON.parse(init.body) as { tokens: string[] }
+  leaves.push({ tokens, keepalive: init.keepalive === true })
+  if (!leaveWorks) throw new Error('offline')
+  for (const t of tokens) cap.unused.delete(t)
+  return new Response(null, { status: 204 })
+})
 vi.mock('@/lib/actions/groups', () => ({ addCamerasAction: vi.fn(), removeCameraAction: vi.fn(), createGroupAction: vi.fn() }))
 
 let dom: { document: MiniDocument; restore: () => void }
 const roots: { unmount: () => void }[] = []
 /** The camera a socket was opened for (its token is t-<camera>-<n>). */
 const cameraOf = (url: string) => decodeURIComponent(url.split('token=')[1] ?? '').replace(/^t-/, '').replace(/-\d+$/, '')
-beforeAll(() => { dom = installMiniDom() })
-afterAll(() => dom.restore())
-beforeEach(() => { sockets.clear(); asked.length = 0; dom.document.visibilityState = 'visible' })
+beforeAll(() => { dom = installMiniDom(); vi.stubGlobal('fetch', fakeFetch) })
+afterAll(() => { dom.restore(); vi.unstubAllGlobals() })
+beforeEach(() => {
+  sockets.clear(); asked.length = 0; dom.document.visibilityState = 'visible'
+  cap.unused.clear(); cap.peak = 0; cap.max = 25; leaves.length = 0; leaveWorks = true
+})
 afterEach(async () => {
   for (const r of roots.splice(0)) await act(async () => r.unmount())
   vi.useRealTimers()
@@ -150,5 +194,98 @@ describe('the wall cleans up after itself (React side; review M-3)', () => {
     await settle(100)
     expect(asked.length).toBe(before)
     await act(async () => root.unmount())
+  })
+})
+
+// Fix round 2, re-review N-1: leaving a wall must not leave its unused renewal tokens holding places for up to 90 s. The wall keeps the
+// cameras it last asked for at module level (one per page, not per component), so the next wall's first request releases them; and
+// leaving (unmount = route change, pagehide, a hidden tab) sends the tokens it holds to /api/live/release (keepalive; best effort).
+describe('leaving a wall frees its places at once (fix round 2, N-1)', () => {
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+  const advance = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms) }) }
+  async function mountFake(node: React.ReactNode) {
+    const { createRoot } = await import('react-dom/client')
+    const container = dom.document.createElement('div')
+    dom.document.body.appendChild(container)
+    const root = createRoot(container as unknown as Element)
+    let gone = false
+    roots.push({ unmount: () => { if (!gone) root.unmount() } })
+    const real = root.unmount.bind(root)
+    root.unmount = () => { gone = true; real() }
+    await act(async () => root.render(node))
+    await advance(50)
+    return { root, container }
+  }
+  const wallA = Array.from({ length: 16 }, (_, i) => cam(i + 201, 'LA'))
+  const wallB = Array.from({ length: 16 }, (_, i) => cam(i + 301, 'LB'))
+  const ids = (cs: { id: string }[]) => cs.map((c) => c.id).sort()
+
+  async function watchAThenLeave() {
+    const { LiveWall } = await import('@/components/live/LiveWall')
+    const a = await mountFake(<LiveWall cameras={wallA} maxStreams={25} />)
+    expect(sockets.size).toBe(16)
+    await advance(61_000) // over a minute: the one-minute renewal hands out 16 new tokens the tiles do not use
+    expect(asked.at(-1)?.fn).toBe('tokens')
+    expect(cap.unused.size).toBe(16)
+    await act(async () => a.root.unmount()) // leave (a route change)
+    await advance(10)
+    expect(sockets.size).toBe(0)
+  }
+
+  it('wall A (4×4) for over a minute, leave, wall B with other cameras: every tile of B opens and the count never goes above the cap', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+    await watchAThenLeave()
+    // The leave sent the tokens the wall held (the unused renewal ones among them), with keepalive.
+    expect(leaves).toHaveLength(1)
+    expect(leaves[0].keepalive).toBe(true)
+    expect(leaves[0].tokens).toHaveLength(16)
+    expect(cap.unused.size).toBe(0)
+    const { LiveWall } = await import('@/components/live/LiveWall')
+    await mountFake(<LiveWall cameras={wallB} maxStreams={25} />)
+    expect([...sockets].map(cameraOf).sort()).toEqual(ids(wallB))
+    expect(asked.filter((x) => x.ids.includes(wallB[0].id)).every((x) => !('paused' in x))).toBe(true)
+    expect(cap.peak).toBeLessThanOrEqual(25)
+  })
+
+  it('when the leave release is lost, the next wall\'s first request releases the old wall (kept per page), so B still opens whole', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+    leaveWorks = false
+    await watchAThenLeave()
+    expect(cap.unused.size).toBe(16) // the 16 unused renewal tokens still count
+    const { LiveWall } = await import('@/components/live/LiveWall')
+    await mountFake(<LiveWall cameras={wallB} maxStreams={25} />)
+    const firstOfB = asked.find((x) => x.ids.includes(wallB[0].id))!
+    expect(firstOfB.release).toEqual([{ cameraIds: wallA.map((c) => c.id), kind: 'sub' }])
+    // One window id for the whole page: the release only reaches this window's own tokens (N-6).
+    expect(typeof firstOfB.client === 'string' && UUID.test(firstOfB.client)).toBe(true)
+    expect(new Set(asked.map((x) => x.client))).toEqual(new Set([firstOfB.client]))
+    expect([...sockets].map(cameraOf).sort()).toEqual(ids(wallB))
+    expect(cap.peak).toBeLessThanOrEqual(25)
+  })
+
+  it('pagehide and a hidden tab send the held tokens too (best effort, keepalive)', async () => {
+    const { LiveWall } = await import('@/components/live/LiveWall')
+    await mount(<LiveWall cameras={[1, 2, 3].map((i) => cam(i))} maxStreams={25} />)
+    expect(sockets.size).toBe(3)
+    const held = [...sockets].map(tokenOf).sort()
+    ;(globalThis as unknown as { window: { dispatchEvent: (e: { type: string }) => void } }).window.dispatchEvent({ type: 'pagehide' })
+    expect(leaves).toHaveLength(1)
+    expect({ ...leaves[0], tokens: [...leaves[0].tokens].sort() }).toEqual({ tokens: held, keepalive: true })
+    dom.document.visibilityState = 'hidden'
+    await act(async () => { dom.document.dispatchEvent({ type: 'visibilitychange' }) })
+    await settle()
+    expect(sockets.size).toBe(0)
+    // Hidden after a pagehide sends nothing twice (the same tokens were already sent).
+    expect(leaves).toHaveLength(1)
+  })
+
+  it('a hidden tab alone sends the held tokens', async () => {
+    const { LiveWall } = await import('@/components/live/LiveWall')
+    await mount(<LiveWall cameras={[1, 2].map((i) => cam(i))} maxStreams={25} />)
+    const held = [...sockets].map(tokenOf).sort()
+    dom.document.visibilityState = 'hidden'
+    await act(async () => { dom.document.dispatchEvent({ type: 'visibilitychange' }) })
+    await settle()
+    expect(leaves.map((l) => ({ ...l, tokens: [...l.tokens].sort() }))).toEqual([{ tokens: held, keepalive: true }])
   })
 })

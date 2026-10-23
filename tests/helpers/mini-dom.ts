@@ -180,13 +180,22 @@ export function installMiniDom(): { document: MiniDocument; restore: () => void 
   const g = globalThis as Record<string, unknown>
   const before = new Map(['document', 'window', 'HTMLElement', 'HTMLIFrameElement', 'Element', 'Node', 'IS_REACT_ACT_ENVIRONMENT'].map((k) => [k, g[k]]))
   const document = new MiniDocument()
+  // The window's own events (pagehide, …): a test fires them with window.dispatchEvent({ type }).
+  const windowListeners = new Map<string, Set<(e: { type: string }) => void>>()
   const win: Record<string, unknown> = {
     document,
     location: { protocol: 'http:', host: 'app.test:3212', hostname: 'app.test', href: 'http://app.test:3212/live' },
     navigator: { userAgent: 'mini-dom' },
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type: string, l: (e: { type: string }) => void) {
+      if (!windowListeners.has(type)) windowListeners.set(type, new Set())
+      windowListeners.get(type)!.add(l)
+    },
+    removeEventListener(type: string, l: (e: { type: string }) => void) { windowListeners.get(type)?.delete(l) },
+    dispatchEvent(e: { type: string }) {
+      for (const l of [...(windowListeners.get(e.type) ?? [])]) l(e)
+      return true
+    },
     getSelection: () => null,
     HTMLElement: MiniElement,
     HTMLIFrameElement: class {},

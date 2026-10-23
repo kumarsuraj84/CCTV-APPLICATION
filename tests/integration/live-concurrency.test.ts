@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { MSG_FAILED_OPEN, openStreams, renewStreams } from '@/lib/streams/open'
+import { MSG_FAILED_OPEN, openStreams, releaseStreams, renewStreams } from '@/lib/streams/open'
 import { verifyStreamToken } from '@/lib/streams/token'
 import { startFakeGo2rtc, type FakeGo2rtc } from '../helpers/fake-go2rtc'
 import { adminClient, cleanupOrg, createOrg, createSite, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
@@ -50,9 +50,9 @@ describe('live streams per person are bounded, and every opening is recorded (P4
     return u
   }
   const env = (max: string) => ({ LIVE_MAX_STREAMS_PER_USER: max })
-  const open = (u: TestUser, ids: string[], o: { kind?: 'sub' | 'main'; max?: string; release?: { cameraIds: string[]; kind: 'sub' | 'main' }[]; adminClient?: ReturnType<typeof admin> } = {}) =>
-    openStreams({ admin: o.adminClient ?? admin(), rls: u.client, go2rtc: fake.client, env: env(o.max ?? '4') }, { id: u.id, orgId }, ids, o.kind ?? 'sub', { release: o.release })
-  const renew = (u: TestUser, ids: string[], max = '4') => renewStreams({ admin: admin(), rls: u.client, env: env(max) }, { id: u.id, orgId }, ids, 'sub')
+  const open = (u: TestUser, ids: string[], o: { kind?: 'sub' | 'main'; max?: string; release?: { cameraIds: string[]; kind: 'sub' | 'main' }[]; adminClient?: ReturnType<typeof admin>; client?: string } = {}) =>
+    openStreams({ admin: o.adminClient ?? admin(), rls: u.client, go2rtc: fake.client, env: env(o.max ?? '4') }, { id: u.id, orgId }, ids, o.kind ?? 'sub', { release: o.release, client: o.client })
+  const renew = (u: TestUser, ids: string[], max = '4', client?: string) => renewStreams({ admin: admin(), rls: u.client, env: env(max) }, { id: u.id, orgId }, ids, 'sub', { client })
   /** What the gateway does when the browser's socket arrives with the token. */
   async function connect(token: string): Promise<{ ok: boolean; reason: string | null; sid: string }> {
     const c = verifyStreamToken(token, Date.now(), SECRET)!
@@ -166,6 +166,120 @@ describe('live streams per person are bounded, and every opening is recorded (P4
     const fresh = await rpc('media_sessions_live_open', { p_org: orgId, p_user: u.id, p_fresh_sec: 1 })
     // The open socket is no longer "fresh" after 1 s without a check; its token's connect window (90 s) has not passed, but it was used.
     expect(fresh.data).toEqual([])
+  })
+
+  // Re-review N-1: a wall watched for more than a minute leaves the renewal tokens of its last minute unused. Leaving it releases them
+  // (the page's leave, or the next wall's first request), so the next wall with other cameras opens whole and the person's count never
+  // goes above the cap.
+  describe('leaving a wall and opening another (re-review N-1)', () => {
+    let big: Awaited<ReturnType<typeof createSite>>
+    beforeAll(async () => {
+      big = await createSite(orgId, { host: '127.0.0.1', rtspPort: 15562, httpPort: 16562, username: 'wall-viewer-2', secret: 'nvr-pass-wall-2', cameras: 32 })
+    })
+    const W = '7d6f9a1e-4b1c-4a5e-9c2d-111111111111'
+    const held = async (u: TestUser) => ((await rpc('media_sessions_live_open', { p_org: orgId, p_user: u.id })).data as { stream: string }[]).length
+
+    it('wall A (4×4) for over a minute, leave (released), wall B with other cameras: all of B opens, never above the cap', async () => {
+      const u = await viewer()
+      const a = big.cameraIds.slice(0, 16)
+      const b = big.cameraIds.slice(16, 32)
+      const first = ok(await open(u, a, { max: '25', client: W }))
+      for (const s of first.streams) await connect(s.token)
+      const renewal = ok(await renew(u, a, '25', W)) // the one-minute renewal: 16 more tokens, unused
+      expect(await held(u)).toBe(16)
+      // Leaving the page: the wall's sockets close and it hands back the tokens it holds (pagehide / unmount).
+      const { data } = await admin().from('media_sessions').select('id').eq('user_id', u.id).not('opened_at', 'is', null).is('closed_at', null)
+      for (const s of data ?? []) await rpc('media_session_close', { p_sid: s.id })
+      const released = ok(await releaseStreams({ admin: admin() }, { id: u.id, orgId }, renewal.tokens.map((t) => t.token)))
+      expect(released.released).toBe(16)
+      expect(await held(u)).toBe(0)
+      const next = ok(await open(u, b, { max: '25', client: W }))
+      expect(next.streams).toHaveLength(16)
+      expect(next.paused ?? []).toEqual([])
+      expect(await held(u)).toBeLessThanOrEqual(25)
+    })
+
+    it('the same without the leave release: the next wall\'s first request releases the previous wall (kept per page), all of B opens', async () => {
+      const u = await viewer()
+      const a = big.cameraIds.slice(0, 16)
+      const b = big.cameraIds.slice(16, 32)
+      ok(await open(u, a, { max: '25', client: W }))
+      ok(await renew(u, a, '25', W))
+      const next = ok(await open(u, b, { max: '25', client: W, release: [{ cameraIds: a, kind: 'sub' }] }))
+      expect(next.streams).toHaveLength(16)
+      expect(await held(u)).toBe(16)
+    })
+
+    it('without any release the old tokens would hold places (why the wall releases)', async () => {
+      const u = await viewer()
+      ok(await open(u, big.cameraIds.slice(0, 16), { max: '25', client: W }))
+      const next = ok(await open(u, big.cameraIds.slice(16, 32), { max: '25', client: W }))
+      expect(next.streams).toHaveLength(9)
+      expect(next.paused).toHaveLength(7)
+    })
+
+    it('re-review N-5: what a tour step costs — a first visit is a full opening, a revisit within 8 minutes only new tokens (measured)', async () => {
+      const u = await viewer()
+      const page = big.cameraIds.slice(0, 16)
+      const calls: string[] = []
+      const real = admin()
+      const spy = new Proxy(real, {
+        get(target, prop) {
+          if (prop === 'rpc') return (fn: string, args: object) => { calls.push(fn); return (target.rpc as (f: string, a: object) => unknown)(fn, args) }
+          const v = Reflect.get(target, prop)
+          return typeof v === 'function' ? v.bind(target) : v
+        },
+      }) as ReturnType<typeof admin>
+      const time = async (f: () => Promise<unknown>) => { const t = performance.now(); await f(); return performance.now() - t }
+      fake.seen.length = 0
+      const fullMs = await time(() => openStreams({ admin: spy, rls: u.client, go2rtc: fake.client, env: env('25') }, { id: u.id, orgId }, page, 'sub', { client: W }))
+      const fullCalls = [...calls]
+      const go2rtcFull = fake.seen.length
+      calls.length = 0
+      fake.seen.length = 0
+      const renewMs = await time(() => renewStreams({ admin: spy, rls: u.client, env: env('25') }, { id: u.id, orgId }, page, 'sub', { client: W }))
+      expect(fullCalls).toEqual(['media_session_create_live', 'recorder_credential_read']) // one NVR: one login read
+      expect(go2rtcFull).toBeGreaterThanOrEqual(16)
+      expect(calls).toEqual(['media_session_create_live'])
+      expect(fake.seen).toEqual([])
+      // The action adds one audit row (cctv_live_opened) to a full opening only (lib/actions/streams.ts).
+      console.log(JSON.stringify({ tour_step_cost: { cameras: 16, full_open_ms: Math.round(fullMs), full_open_db_calls: fullCalls.length, full_open_go2rtc_calls: go2rtcFull, audit_rows: 1, token_renewal_ms: Math.round(renewMs), token_renewal_db_calls: calls.length } }))
+    })
+
+    it('re-review N-6: a release from one window never revokes another window\'s unused token for the same camera', async () => {
+      const u = await viewer()
+      const [c1] = big.cameraIds
+      const W2 = '7d6f9a1e-4b1c-4a5e-9c2d-222222222222'
+      const one = ok(await open(u, [c1], { max: '25', client: W }))
+      const two = ok(await open(u, [c1], { max: '25', client: W2 }))
+      ok(await releaseStreams({ admin: admin() }, { id: u.id, orgId }, [one.streams[0].token]))
+      expect(await connect(one.streams[0].token)).toMatchObject({ ok: false, reason: 'released' })
+      expect((await connect(two.streams[0].token)).ok).toBe(true)
+    })
+
+    it('re-review N-6: the next request\'s release (p_release) of one window leaves another window\'s token for that camera alone', async () => {
+      const u = await viewer()
+      const [c1, c2] = big.cameraIds
+      const W2 = '7d6f9a1e-4b1c-4a5e-9c2d-333333333333'
+      const one = ok(await open(u, [c1], { max: '25', client: W }))
+      const two = ok(await open(u, [c1], { max: '25', client: W2 }))
+      ok(await open(u, [c2], { max: '25', client: W, release: [{ cameraIds: [c1], kind: 'sub' }] }))
+      expect(await connect(one.streams[0].token)).toMatchObject({ ok: false, reason: 'released' })
+      expect((await connect(two.streams[0].token)).ok).toBe(true)
+    })
+
+    it('a leave release ignores tokens of other people, forged ones and junk (it names sessions only through the person\'s own signed tokens)', async () => {
+      const u = await viewer()
+      const other = await viewer()
+      const [c1] = big.cameraIds
+      const theirs = ok(await open(other, [c1], { max: '25', client: W }))
+      const mine = ok(await open(u, [c1], { max: '25', client: W }))
+      const forged = `${mine.streams[0].token.split('.')[0]}.AAAA`
+      const r = ok(await releaseStreams({ admin: admin() }, { id: u.id, orgId }, [theirs.streams[0].token, forged, 'junk', 42]))
+      expect(r.released).toBe(0)
+      expect((await connect(theirs.streams[0].token)).ok).toBe(true)
+      expect((await connect(mine.streams[0].token)).ok).toBe(true)
+    })
   })
 
   it('fails closed: when the count cannot be read nothing is opened, with a plain message', async () => {

@@ -18,6 +18,7 @@ export const ALLOWED: Allowed[] = [
   { file: 'lib/streams/fast.ts', text: 'no-store', partial: true, reason: HTTP },
   { file: 'lib/streams/fast-client.ts', text: 'no-store', partial: true, reason: HTTP },
   { file: 'app/api/playback/stream/route.ts', text: 'no-store', partial: true, reason: HTTP },
+  { file: 'app/api/live/release/route.ts', text: 'no-store', partial: true, reason: HTTP },
   { file: 'lib/streams/vod.ts', text: 'no-store', partial: true, reason: HTTP },
   { file: 'app/api/health/route.ts', text: 'no-store', partial: true, reason: HTTP },
   { file: 'app/api/health/detail/route.ts', text: 'no-store', partial: true, reason: HTTP },
