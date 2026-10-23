@@ -97,8 +97,42 @@ export function startupProblems(proc: ProcessName, env: Env = process.env, now: 
       }
     }
     if (env.DEMO_VIDEO?.trim()) problems.push('DEMO_VIDEO must not be set in production.')
+    // Release 1 (P2-6 re-review N-2): without the proxy count no client address is known: there is no per-address ceiling of sign-ins
+    // and anyone can keep a named person in the sign-in delay. Production sits behind the one TLS proxy with TRUSTED_PROXY_HOPS=1.
+    const hops = Number((env.TRUSTED_PROXY_HOPS ?? '').trim() || '0')
+    if (proc === 'web' && !(Number.isInteger(hops) && hops > 0)) {
+      warnings.push('TRUSTED_PROXY_HOPS is not set: the web app cannot tell client addresses apart (no per-address limit of sign-ins; one wrong try per delay keeps a named person waiting). Behind the TLS proxy set TRUSTED_PROXY_HOPS=1 (docs/drishti/runbook-tls.md).')
+    }
   }
   return { problems, warnings }
+}
+
+/** Keys of this process that have ended or end within KEY_WARN_DAYS days (P2-6 re-review N-4). Never a key value. */
+export function keyExpiryWarnings(proc: ProcessName, env: Env = process.env, now: number = Date.now()): string[] {
+  const out: string[] = []
+  for (const role of ROLES[proc]) {
+    const name = SERVICE_KEY_ENV[role]
+    const k = serviceKeyFor(role, env)
+    if (!k.ok || k.fallback) continue
+    const exp = claims(k.key)?.exp
+    if (typeof exp !== 'number') continue
+    const daysLeft = Math.floor((exp * 1000 - now) / 86_400_000)
+    if (exp * 1000 <= now) out.push(`${name} has ended (it is older than its one-year lifetime): make a new one with node scripts/gen-secrets.mjs --rotate=${name} and restart.`)
+    else if (daysLeft < KEY_WARN_DAYS) out.push(`${name} ends in ${daysLeft} days: rotate it (node scripts/gen-secrets.mjs --rotate=${name}) and restart.`)
+  }
+  return out
+}
+
+/**
+ * Release 1 (P2-6 re-review N-4): a process that stays up for months is told every day, not only at its start, that one of its keys
+ * ends soon (or has ended). The timer never keeps the process alive. Returns the function that stops it.
+ */
+export function watchKeyExpiry(proc: ProcessName, o: { env?: Env; log: (message: string) => void; everyMs?: number }): () => void {
+  const timer = setInterval(() => {
+    for (const w of keyExpiryWarnings(proc, o.env ?? process.env, Date.now())) o.log(w)
+  }, o.everyMs ?? 86_400_000)
+  ;(timer as { unref?: () => void }).unref?.()
+  return () => clearInterval(timer)
 }
 
 /** Production: why one needed secret cannot be used (not set, under 32 characters, easy to guess), or null. Never the value. */

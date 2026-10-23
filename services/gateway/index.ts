@@ -4,7 +4,7 @@ import { gatewayBindHost } from '@/lib/web/tls'
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 import { isProductionMode } from '@/lib/runtime-mode'
-import { refusalMessage, startupProblems } from '@/lib/startup-checks'
+import { refusalMessage, startupProblems, watchKeyExpiry } from '@/lib/startup-checks'
 import { go2rtcApiAuth, probeGo2rtcLogin } from '@/lib/streams/go2rtc-auth'
 import { createRestRegistry } from '@/lib/streams/registry'
 import { requireServiceKey, serviceKeyFor } from '@/lib/supabase/service-clients'
@@ -24,6 +24,8 @@ async function main() {
     logger.error({ event: 'gateway_config_refused', message: refusalMessage('gateway', startup.problems) })
     process.exit(1)
   }
+  // Release 1 (P2-6 re-review N-4): a key that ends while the gateway runs is announced every day, not only at the start.
+  watchKeyExpiry('gateway', { log: (message) => logger.warn({ event: 'gateway_key_expiry', message }) })
 
   const secret = getSecret('stream_token')
   if (!secret) {

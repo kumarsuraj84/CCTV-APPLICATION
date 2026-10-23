@@ -9,7 +9,7 @@ import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
 import { WorkerSupervisor } from '@/lib/monitor/supervisor'
 import { runHousekeeping, scheduleHousekeeping } from '@/lib/monitor/housekeeping'
 import { logger } from '@/lib/observability/logger'
-import { refusalMessage, startupProblems } from '@/lib/startup-checks'
+import { refusalMessage, startupProblems, watchKeyExpiry } from '@/lib/startup-checks'
 import { createServiceClient, serviceKeyFor } from '@/lib/supabase/service-clients'
 
 /** How long a stop request waits for the checks in progress before the process exits anyway. */
@@ -50,6 +50,8 @@ async function main() {
     logger.error({ event: 'worker_config_refused', message: refusalMessage('worker', startup.problems) })
     process.exit(1)
   }
+  // Release 1 (P2-6 re-review N-4): a key that ends while the worker runs is announced every day, not only at the start.
+  watchKeyExpiry('worker', { log: (message) => logger.warn({ event: 'worker_key_expiry', message }) })
   const key = serviceKeyFor('monitor_worker')
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !key.ok) {
     logger.error({ event: 'worker_config_missing', message: key.ok ? 'NEXT_PUBLIC_SUPABASE_URL is required' : key.error })

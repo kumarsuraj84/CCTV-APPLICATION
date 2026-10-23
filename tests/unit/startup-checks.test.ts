@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { describe, expect, it, vi } from 'vitest'
 import { signServiceJwt } from '@/scripts/lib/service-jwt.mjs'
 import { isProductionMode } from '@/lib/runtime-mode'
-import { startupProblems } from '@/lib/startup-checks'
+import { keyExpiryWarnings, startupProblems, watchKeyExpiry } from '@/lib/startup-checks'
 import { serviceKeyFor } from '@/lib/supabase/service-clients'
 import { connectRefusal } from '@/lib/security/targets'
 import { sharedSecret } from '@/lib/secrets'
@@ -146,5 +148,85 @@ describe('startupProblems', () => {
   it('development: no problem without the keys (the service key is the fallback), only warnings', () => {
     const r = startupProblems('gateway', { SUPABASE_SERVICE_ROLE_KEY: 'svc', STREAM_TOKEN_SECRET: 's'.repeat(43) }, at)
     expect(r.problems).toEqual([])
+  })
+})
+
+// Release 1 clean-ups (P2-6 re-review N-1, N-2, N-4).
+describe('release 1: the forgotten DRISHTI_ENV, the client address, keys that end while a process runs', () => {
+  it('N-1: the production flag also fails closed for "Production", and an empty or blank value is development', () => {
+    expect(isProductionMode({ DRISHTI_ENV: 'Production' })).toBe(true)
+    expect(isProductionMode({ DRISHTI_ENV: ' production ' })).toBe(true)
+    expect(isProductionMode({ DRISHTI_ENV: '' })).toBe(false)
+    expect(isProductionMode({ DRISHTI_ENV: '   ' })).toBe(false)
+  })
+
+  it('N-1: without DRISHTI_ENV, a missing own key never falls back to the full service key when the database is not on this computer', () => {
+    for (const url of ['https://abcd.supabase.co', 'http://10.0.0.47:54321', 'http://db.citykart.local:8000']) {
+      for (const urlName of ['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_URL']) {
+        const k = serviceKeyFor('monitor_worker', { SUPABASE_SERVICE_ROLE_KEY: 'svc', [urlName]: url })
+        expect(k.ok, `${urlName}=${url}`).toBe(false)
+        if (!k.ok) {
+          expect(k.error).toMatch(/SUPABASE_MONITOR_WORKER_KEY/)
+          expect(k.error).toMatch(/DRISHTI_ENV=production/)
+          expect(k.error).not.toContain('svc')
+        }
+      }
+    }
+    // The local stack (loopback) keeps the development fallback with its warning.
+    for (const url of ['http://127.0.0.1:55321', 'http://localhost:54321', 'http://[::1]:54321']) {
+      expect(serviceKeyFor('video_gateway', { SUPABASE_SERVICE_ROLE_KEY: 'svc', NEXT_PUBLIC_SUPABASE_URL: url }), url).toMatchObject({ ok: true, fallback: true })
+    }
+    // And so the start-up check of a worker with a remote database and no key reports it (a warning in development).
+    const r = startupProblems('worker', { SUPABASE_SERVICE_ROLE_KEY: 'svc', NEXT_PUBLIC_SUPABASE_URL: 'https://abcd.supabase.co' }, at)
+    expect(r.warnings.join(' ')).toMatch(/not on this computer/)
+  })
+
+  it('N-2: the production web app warns when TRUSTED_PROXY_HOPS is not set (no client address: no per-address ceiling)', () => {
+    const blank = startupProblems('web', webEnv(), at)
+    expect(blank.problems).toEqual([])
+    expect(blank.warnings.join(' ')).toMatch(/TRUSTED_PROXY_HOPS/)
+    expect(startupProblems('web', { ...webEnv(), TRUSTED_PROXY_HOPS: '0' }, at).warnings.join(' ')).toMatch(/TRUSTED_PROXY_HOPS/)
+    expect(startupProblems('web', { ...webEnv(), TRUSTED_PROXY_HOPS: '1' }, at).warnings.join(' ')).not.toMatch(/TRUSTED_PROXY_HOPS/)
+    // Not for the other processes, and not in development.
+    expect(startupProblems('gateway', gatewayEnv(), at).warnings.join(' ')).not.toMatch(/TRUSTED_PROXY_HOPS/)
+    expect(startupProblems('web', { SUPABASE_SERVICE_ROLE_KEY: 'svc' }, at).warnings.join(' ')).not.toMatch(/TRUSTED_PROXY_HOPS/)
+  })
+
+  it('N-4: keyExpiryWarnings names a key that ends within 30 days, and nothing else', () => {
+    const soon = { ...workerEnv(), SUPABASE_MONITOR_WORKER_KEY: key('monitor_worker', 10 * 24 * 3600) }
+    expect(keyExpiryWarnings('worker', soon, at).join(' ')).toMatch(/SUPABASE_MONITOR_WORKER_KEY ends in 10 days/)
+    expect(keyExpiryWarnings('worker', workerEnv(), at)).toEqual([])
+    expect(keyExpiryWarnings('worker', soon, at + 11 * 86_400_000).join(' ')).toMatch(/SUPABASE_MONITOR_WORKER_KEY has ended/)
+  })
+
+  it('N-4: a long-running process repeats the warning every day (not only at start-up), and the timer does not keep it alive', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(at)
+      const env = { ...workerEnv(), SUPABASE_MONITOR_WORKER_KEY: key('monitor_worker', 40 * 24 * 3600) } // fine today, ends in 40 days
+      const lines: string[] = []
+      const stop = watchKeyExpiry('worker', { env, log: (m) => lines.push(m) })
+      expect(lines).toEqual([]) // the start-up check already spoke
+      vi.advanceTimersByTime(10 * 86_400_000)
+      expect(lines).toEqual([]) // 30 days left: not yet
+      vi.advanceTimersByTime(86_400_000)
+      expect(lines.join(' ')).toMatch(/ends in 29 days/)
+      vi.advanceTimersByTime(86_400_000)
+      expect(lines).toHaveLength(2)
+      stop()
+      vi.advanceTimersByTime(5 * 86_400_000)
+      expect(lines).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('N-4: the worker, the gateway and the web app start the daily watch; the production web app logs its warnings too', () => {
+    const read = (p: string) => readFileSync(path.resolve(__dirname, '../..', p), 'utf8')
+    expect(read('services/worker/index.ts')).toContain("watchKeyExpiry('worker'")
+    expect(read('services/gateway/index.ts')).toContain("watchKeyExpiry('gateway'")
+    const web = read('lib/startup-web-run.ts')
+    expect(web).toContain("watchKeyExpiry('web'")
+    expect(web).toMatch(/startupProblems\('web', env\)\.warnings/)
   })
 })

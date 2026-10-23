@@ -15,7 +15,8 @@ import { resilientFetch } from '@/lib/supabase/resilient-fetch'
 //   video_gateway  the gateway (three registry functions only)
 //
 // Compatibility: when a role's key is missing, development falls back to SUPABASE_SERVICE_ROLE_KEY with a loud warning (once per role
-// and process) so running processes keep working until the keys are added; production (lib/runtime-mode.ts: DRISHTI_ENV=production or
+// and process) so running processes keep working until the keys are added — only while the database is on this computer (the local
+// stack; release 1, P2-6 re-review N-1: a remote database without DRISHTI_ENV is refused, never the full key); production (lib/runtime-mode.ts: DRISHTI_ENV=production or
 // NODE_ENV=production) refuses, and lib/startup-checks.ts stops each process at start-up before it serves anything.
 // Keys go only into request headers: never into a URL, an error message or a log line.
 
@@ -43,6 +44,22 @@ function roleClaim(jwt: string): string | null {
   }
 }
 
+/** The database address's host when one is configured and it is not this computer (loopback); null otherwise (unset: cannot tell). */
+function remoteDatabaseHost(env: Env): string | null {
+  for (const configured of [env.SUPABASE_URL?.trim(), env.NEXT_PUBLIC_SUPABASE_URL?.trim()]) {
+    if (!configured) continue
+    let host: string
+    try {
+      host = new URL(configured).hostname.replace(/^\[|\]$/g, '').toLowerCase()
+    } catch {
+      return 'an address that cannot be read'
+    }
+    const loopback = host === 'localhost' || host.endsWith('.localhost') || host === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+    if (!loopback) return host
+  }
+  return null
+}
+
 /** Which key this role uses here. Never returns or mentions a key value in an error. */
 export function serviceKeyFor(role: ServiceRole, env: Env = process.env): KeyAnswer {
   const name = SERVICE_KEY_ENV[role]
@@ -53,6 +70,15 @@ export function serviceKeyFor(role: ServiceRole, env: Env = process.env): KeyAns
     return { ok: true, key: own, fallback: false }
   }
   if (isProductionMode(env)) return { ok: false, error: `${name} is required in production (its own database key; make it with: node scripts/gen-secrets.mjs).` }
+  // Release 1 (P2-6 re-review N-1): a database that is not on this computer is not the development stack. Without DRISHTI_ENV the
+  // fallback would quietly give this process the full service key there (a forgotten production switch), so it is refused.
+  const remote = remoteDatabaseHost(env)
+  if (remote) {
+    return {
+      ok: false,
+      error: `${name} is not set and the database (${remote}) is not on this computer: give this process its own key (node scripts/gen-secrets.mjs) and set DRISHTI_ENV=production on a server. The full service key is used only with the local development stack.`,
+    }
+  }
   const service = env.SUPABASE_SERVICE_ROLE_KEY?.trim()
   if (!service) return { ok: false, error: `${name} (or, in development only, SUPABASE_SERVICE_ROLE_KEY) is not set.` }
   return { ok: true, key: service, fallback: true }
