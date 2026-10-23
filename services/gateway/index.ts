@@ -86,10 +86,17 @@ async function main() {
     }
   }
 
+  // P5.5 (load test finding): behind the TLS proxy on this computer every socket comes from 127.0.0.1; TRUSTED_PROXY_HOPS=1 (as for the
+  // web app) makes the per-address limits count each browser's address (the proxy's X-Forwarded-For) instead of one shared address.
+  const hopsText = process.env.TRUSTED_PROXY_HOPS?.trim() || '0'
+  if (!/^\d$/.test(hopsText) || Number(hopsText) > 5) {
+    logger.error({ event: 'gateway_config_invalid', message: 'TRUSTED_PROXY_HOPS must be a whole number from 0 to 5 (1 behind the TLS proxy).' })
+    process.exit(1)
+  }
   let gateway: ReturnType<typeof createGateway>
   try {
     // P2-6 (D-13): go2rtc's API credentials (GO2RTC_API_USERNAME / GO2RTC_API_PASSWORD); required in production (startup check above).
-    gateway = createGateway({ go2rtcUrl, go2rtcAuth: go2rtcApiAuth(), secret, allowedOrigins: valid, registry, log: (e) => logger.info(e) })
+    gateway = createGateway({ go2rtcUrl, go2rtcAuth: go2rtcApiAuth(), secret, allowedOrigins: valid, registry, trustedProxyHops: Number(hopsText), log: (e) => logger.info(e) })
   } catch (e) {
     logger.error({ event: 'gateway_config_invalid', message: e instanceof Error ? e.message : 'The gateway could not be set up.' })
     process.exit(1)

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import http from 'node:http'
+import { isIP } from 'node:net'
 import type { Duplex } from 'node:stream'
 import WebSocket, { WebSocketServer, type RawData } from 'ws'
 import { usableSecret } from '@/lib/secrets'
@@ -73,6 +74,11 @@ export type GatewayOptions = {
   maxSocketsPerIp?: number
   /** Upgrade attempts per address per minute (default 240); more are closed with 1013 (HTTP script requests get a 429). */
   maxUpgradesPerMinute?: number
+  /**
+   * P5.5: reverse proxies in front of the gateway on this computer (TRUSTED_PROXY_HOPS; 1 behind Caddy, runbook-tls.md). The per-address
+   * limits then count the client address the proxy adds instead of the proxy's own. Default 0: X-Forwarded-For is ignored.
+   */
+  trustedProxyHops?: number
   /** How long a request may take to arrive before the connection is dropped (default 10 s; headers and body). */
   requestTimeoutMs?: number
   /** When the receiving side has this many bytes waiting, the sending side is paused (default 1 MB). */
@@ -192,6 +198,22 @@ class WindowLimiter {
 }
 
 const clientAddress = (socket: Duplex & { remoteAddress?: string }) => (socket.remoteAddress ?? 'unknown').replace(/^::ffff:/, '')
+const LOOPBACK_PEER = /^(127(\.\d{1,3}){3}|::1)$/
+
+/**
+ * P5.5 (load test finding): the address the per-address limits count. Behind the one TLS address (Caddy on this computer, GATEWAY_HOST=
+ * 127.0.0.1) every socket comes from 127.0.0.1, so with `hops` trusted proxies (TRUSTED_PROXY_HOPS, as the web app) the address is the
+ * hops-th X-Forwarded-For entry from the right, the one the proxy wrote. It is believed only for a socket from this computer (the proxy):
+ * a client reaching the gateway directly cannot pick its own bucket. No such entry, or one that is not an address: the socket's own.
+ */
+function limitAddress(req: http.IncomingMessage, socket: Duplex & { remoteAddress?: string }, hops: number): string {
+  const peer = clientAddress(socket)
+  if (hops < 1 || !LOOPBACK_PEER.test(peer)) return peer
+  const header = req.headersDistinct['x-forwarded-for']
+  const parts = (header ?? []).join(',').split(',').map((s) => s.trim()).filter(Boolean)
+  const entry = parts.length >= hops ? parts[parts.length - hops].replace(/^::ffff:/, '') : ''
+  return isIP(entry) !== 0 ? entry : peer
+}
 
 /** go2rtc error messages can contain camera addresses and passwords; the browser only ever gets a fixed sentence. */
 function cleanUpstreamText(data: Buffer): Buffer {
@@ -237,6 +259,8 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
   const maxPerIp = opts.maxSocketsPerIp ?? DEFAULT_MAX_SOCKETS_PER_IP
   const socketsPerIp = new Map<string, number>()
   const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+  const hops = opts.trustedProxyHops ?? 0
+  if (!Number.isInteger(hops) || hops < 0 || hops > 5) throw new Error('The number of trusted proxies (TRUSTED_PROXY_HOPS) must be a whole number from 0 to 5.')
 
   const origin = upstreamBase.origin
   const wsOrigin = origin.replace(/^http/, 'ws')
@@ -389,7 +413,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body), ...baseHeaders })
       return res.end(body)
     }
-    if (!scriptLimiter.allow(clientAddress(req.socket))) {
+    if (!scriptLimiter.allow(limitAddress(req, req.socket, hops))) {
       log({ event: 'gateway_session', outcome: 'rate_limited' })
       return sendText(res, 429, 'Too many requests. Try again in a minute.', { 'Retry-After': '60', ...scriptCors(req) })
     }
@@ -423,8 +447,8 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     socket.on('error', () => {})
     if (closing) return refuseRaw(socket, 503, 'Service unavailable')
     if (pathOf(req.url) !== WS_PATH) return refuseRaw(socket, 404, 'Not found')
-    const limited = !upgradeLimiter.allow(clientAddress(socket))
-    const ip = clientAddress(socket)
+    const ip = limitAddress(req, socket, hops)
+    const limited = !upgradeLimiter.allow(ip)
     wss.handleUpgrade(req, socket, head, (ws) => {
       ws.on('error', () => {})
       const mine = (socketsPerIp.get(ip) ?? 0) + 1
