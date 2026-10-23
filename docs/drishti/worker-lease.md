@@ -117,8 +117,12 @@ Later alert and incident writes must take `p_fencing_token` too; `privilege_viol
 2. skips a result older than its target's `last_checked_at` only when it comes from the SAME lease and the same or an older fencing
    token (`check_state.applied_lease`, `applied_fencing_token` remember who applied the last one). A newer epoch always applies: the
    fence already guarantees that an older epoch cannot write after a takeover, and the new holder's clock may be behind the old one's.
+   Release 1 (migration `20261021000044`, re-review R-1): and only when it is late by **less than 10 minutes** (a long round's results
+   are sent at its end). A result 10 minutes or more older than the last one of the same epoch means the worker's clock stepped back; it
+   is applied, so a step back no longer freezes a target until the clock catches up (before, every status change was dropped for as long
+   as the step). The cost: a round that takes longer than 10 minutes can put back a result older than the newest one for one interval.
 A result at the same time is applied. Tests: a clock three days ahead, then a normal result; a takeover by a worker an hour behind;
-a late result of the same epoch (skipped).
+a late result of the same epoch (2 and 9 minutes: skipped); a step back of an hour inside one epoch (applied, then normal again).
 
 ## 4. The worker
 
@@ -172,8 +176,9 @@ would only matter once workers are sharded (one check for all organisations is h
 | The holder is paused (VM, sleep, debugger) and resumes | it stopped using its token at its local deadline (watchdog); every request it had already sent reaches the database after the takeover and is refused (WL001); its renewal is refused; it goes to standby (test (b)) |
 | The database is unreachable | renewals fail; the token is kept until the local deadline, then given up (nothing is sent without it); the worker retries with back-off and takes the lease again when the database is back (a new epoch, test (i)) |
 | A renewal is slow | the deadline counts from when it was sent, never from the answer |
-| Clocks differ between worker and database | irrelevant for WHO holds the lease (database clock only); results are dated by the worker: more than 30 s ahead is dated at the database's now(), a clock behind makes results look old ("Not checked lately"); the worker logs `worker_clock_skew` and the worker status shows `clockSkewSec` / `clockSkewWarning` (section 9) |
-| A late result of an earlier round | skipped by the SQL guard when it is from the same epoch; a newer epoch always applies |
+| Clocks differ between worker and database | irrelevant for WHO holds the lease (database clock only); results are dated by the worker: more than 30 s ahead is dated at the database's now(), a clock behind makes results look old ("Not checked lately"); the worker logs `worker_clock_skew`, the worker status has `clockSkewSec` / `clockSkewWarning`, shown on the Monitoring page and the Health page (section 9) |
+| A late result of an earlier round | skipped by the SQL guard when it is from the same epoch and less than 10 minutes late; a newer epoch always applies |
+| The worker's clock steps back inside one epoch | a result 10 minutes or more "late" is applied (migration 0044); a smaller step skips results for at most the step |
 | An old (P2-6) worker is still running | on its own key: refused by the grants; on the service key: its direct worker_state / gap writes are refused by `worker_rows_guard`, its results find no function; it shows as not running. Stop it. |
 | A worker built with another lease name | refused for the global rows (WL002); results only under `monitor` / `monitor:<n>` |
 | Someone writes `worker_leases` by hand | only the database owner can; `privilege_violations()` reports any other write grant |
@@ -202,11 +207,13 @@ The lease itself uses the database clock only. These comparisons still mix clock
 
 | Comparison | Clocks | Effect of a difference |
 |---|---|---|
-| Result times vs `last_checked_at` | worker (results) vs earlier results; the 30 s future limit vs the database | ahead > 30 s: dated now(); behind: results look old, a target can show "Not checked lately"; a takeover always applies (section 3) |
-| "Check now": `check_requested_at` vs `run_started_at` | database vs worker | a worker clock behind the database by more than a run's time can repeat a run once; ahead can make a request look answered until its next run |
+| Result times vs `last_checked_at` | worker (results) vs earlier results; the 30 s future limit vs the database | ahead > 30 s: dated now(); behind: results look old, a target can show "Not checked lately"; a takeover always applies (section 3); a STEP back inside one epoch: results are skipped for the step, at most 10 minutes (release 1, migration 0044; before, for the whole step) |
+| "Check now": `check_requested_at` vs `run_started_at` | database vs worker | a worker clock behind the database by more than a run's time can repeat a run once; a worker clock ahead by X makes a request made within X after the last full run start look answered ("A check just finished") until X has passed — days if the clock is days off. It never changes a status or an outage |
 | Heartbeat age on the pages and `/api/health` | worker (heartbeat) vs web server | the worker can look stopped or alive for longer by the difference |
 | Gaps (silences between beats, start-up gap) | worker | none between machines; a clock step on the worker makes one gap longer or shorter |
 | The check-now cooldown | web server vs worker (`run_finished_at`) | the 30 s cooldown is longer or shorter by the difference |
 
 The worker's clock difference is measured at every heartbeat (`worker_state.heartbeat_db_at` next to `last_heartbeat`), logged once
-beyond 30 s (`worker_clock_skew`) and shown as `WorkerStatus.clockSkewSec` / `clockSkewWarning`. Keep the worker's computer on time sync.
+beyond 30 s (`worker_clock_skew`) and kept as `WorkerStatus.clockSkewSec` / `clockSkewWarning`. Beyond 30 s it is shown to people on
+the Monitoring page ("The checker's clock is … ahead of / behind the database's", `components/monitor/WorkerClockNotice.tsx`, release 1
+re-review R-2) and on the Health page (P5.4). Keep the worker's computer on time sync.

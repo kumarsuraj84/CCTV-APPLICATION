@@ -2,6 +2,7 @@ import { GatewayHealthPanel } from '@/components/admin/GatewayHealthPanel'
 import { AutoRefresh } from '@/components/monitor/AutoRefresh'
 import { CheckNowButton } from '@/components/monitor/CheckNowButton'
 import { StatusBadge } from '@/components/monitor/StatusBadge'
+import { WorkerClockNotice } from '@/components/monitor/WorkerClockNotice'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { coversSomeWholeLocation } from '@/lib/auth/capabilities'
 import { requireAdministration } from '@/lib/auth/profile'
@@ -114,6 +115,7 @@ export default async function MonitoringPage() {
           <dt className="text-muted-foreground">Cameras</dt>
           <dd>{rounds.cameras}</dd>
         </dl>
+        <WorkerClockNotice skewSec={worker.clockSkewSec} warning={worker.clockSkewWarning} />
         {!worker.ok && (
           <p className="text-sm text-destructive">
             The checker is not running, so the status shown elsewhere may be out of date. Start it with <code className="font-mono">npm run worker</code> on the server.

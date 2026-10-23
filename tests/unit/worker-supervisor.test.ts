@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkerLease, type LeaseFence } from '@/lib/monitor/lease'
-import { WorkerSupervisor, type SupervisedRunner } from '@/lib/monitor/supervisor'
+import { STOP_ACQUIRE_WAIT_MS, WorkerSupervisor, type SupervisedRunner } from '@/lib/monitor/supervisor'
 import { MemoryLeaseDb } from '../helpers/memory-lease'
 
 // P2-7 (D-8): the worker runs its checks only while it holds the lease. It waits in standby while another worker holds it, stops all work
@@ -156,6 +156,29 @@ describe('WorkerSupervisor (P2-7)', () => {
     expect(s.db.callsOf('worker_release_lease')).toHaveLength(1)
     const other = new WorkerLease({ rpc: s.db.rpc, holder: HOLDERS[1], ttlSec: 1 })
     expect((await other.tryAcquire()).result).toBe('acquired') // at once, not after the TTL
+  })
+
+  it('release 1 (P2-7 re-review R-4): stopping while an acquisition never gets an answer returns within the bound, and a late answer is still handed back', async () => {
+    const s = setup()
+    let open!: () => void
+    s.db.gate = new Promise<void>((r) => (open = r))
+    const done = s.supervisor.run()
+    await until(() => s.db.callsOf('worker_acquire_lease').length === 1)
+    const t0 = Date.now()
+    await s.supervisor.stop(1000, { acquireWaitMs: 300 })
+    const waited = Date.now() - t0
+    expect(waited).toBeLessThan(1500) // before: stop() waited for the unanswered acquisition for ever
+    expect(s.supervisor.phase).toBe('stopped')
+    // The answer comes after the stop: the lease taken is handed back at once, no runner is made.
+    s.db.gate = null
+    open()
+    await done
+    expect(s.runners).toHaveLength(0)
+    await until(() => s.db.callsOf('worker_release_lease').length === 1)
+  })
+
+  it('release 1 (R-4): the default bound for an acquisition in flight at stop is 3 s', () => {
+    expect(STOP_ACQUIRE_WAIT_MS).toBe(3000)
   })
 
   it('survives a database outage: a runner is never started without a token; once the database is back the lease is taken', async () => {

@@ -85,7 +85,7 @@ export class WorkerSupervisor {
    * Stops the worker: the runner (if any) finishes what it can within maxWaitMs, its last writes still fenced with a valid token, then
    * the lease is released. Returns whether the runner finished its work in time.
    */
-  async stop(maxWaitMs: number): Promise<boolean> {
+  async stop(maxWaitMs: number, o: { acquireWaitMs?: number } = {}): Promise<boolean> {
     this.stopping.abort()
     const a = this.active
     this.active = null
@@ -101,7 +101,16 @@ export class WorkerSupervisor {
     }
     await this.d.lease.release()
     this.phase = 'stopped'
-    if (this.running) await this.running
+    // Release 1 (P2-7 re-review R-4): an acquisition still on its way has no deadline of its own, so the wait for the loop is bounded.
+    // If its answer comes later, the loop hands the lease back at once (above); if the process exits first, the lease simply runs out.
+    if (this.running) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([this.running, new Promise<void>((resolve) => (timer = setTimeout(resolve, o.acquireWaitMs ?? STOP_ACQUIRE_WAIT_MS)))])
+      clearTimeout(timer)
+    }
     return drained
   }
 }
+
+/** How long stop() waits for an acquisition that is still on its way (review R-4). */
+export const STOP_ACQUIRE_WAIT_MS = 3000
