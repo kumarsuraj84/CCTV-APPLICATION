@@ -15,10 +15,17 @@ Rules that hold for every step below:
   (`auditSecrets()` reports a short or repeated one, never the value).
 - After a change, restart exactly the processes in the "read by" column. The development web server (`npm run dev`) reloads
   `.env.local` by itself; the gateway, the worker and go2rtc must be restarted.
-- Windows: the generator's file mode (0600) has no effect there. Restrict every env file to the account that runs the process
-  (review round 1, M-14), once after it is created: `icacls <file> /inheritance:r /grant:r "%USERNAME%:F"` (in PowerShell:
-  `icacls <file> /inheritance:r /grant:r "${env:USERNAME}:F"`). The generator fills an empty `KEY=` line in place and keeps the file's
-  Windows line ends.
+- Windows: the generator's file mode (0600) has no effect there, so it sets the ACL itself (P5.4 review I-7). A NEW file (and a new
+  `--out-dir` folder) is locked before any secret is written into it: inheritance removed, SYSTEM and Administrators full control (plus
+  the person running it, only when the prompt is not elevated). An EXISTING file, including every `--rotate`, is rewritten in place,
+  so it keeps the ACL it has: the service account's read right that `drishti-services.ps1 -Action Install` gave it stays. The
+  generator fills an empty `KEY=` line in place and keeps the file's Windows line ends.
+  To put a production env file's ACL right by hand, use `C:\Drishti\scripts\drishti-services.ps1 -Action RepairAcl` (it applies the
+  whole plan of `windows-services.md` section 3), or for one file (well-known SIDs, so it works in any Windows language):
+  `icacls C:\Drishti\config\web.env /inheritance:r /grant:r *S-1-5-18:F /grant:r *S-1-5-32-544:F /grant:r "NT SERVICE\DrishtiWeb:R"`
+  (`worker.env`: `NT SERVICE\DrishtiWorker`; `gateway.env`: `NT SERVICE\DrishtiGateway`; `go2rtc.env`: `NT SERVICE\DrishtiGo2rtc`).
+  Never `/grant:r "%USERNAME%:F"` alone on a production file: it takes the service's read right away and the service no longer starts.
+  On a development computer, `.env.local` may stay as it is.
 - Production mode (review round 1, I-1): `DRISHTI_ENV=production` in every process's environment (`deploy/production.env.example`).
   Each process then checks its own keys and secrets at start-up and refuses with one plain line (exit code 1) when one is missing,
   ended or in the wrong process; development only warns. Give each process its own env file: in production the worker and the gateway
@@ -138,7 +145,7 @@ error from GoTrue is answered "Sign-in is busy, please try again in a moment" an
    Each process logs `service_key_fallback` while it still uses the service key; after the restart no such line appears.
 3. Recreate go2rtc (`npm run stack:up` or `stack:up:demo`) so its API asks for the login (section 4).
 4. Production only: lock the service key out of NVR logins (section 5), set `DRISHTI_ENV=production` in every process's own env file
-   (`deploy/production.env.example`), restrict the files (icacls, above), then start go2rtc, the gateway, the worker and the web app;
+   (`deploy/production.env.example`), restrict the files (`drishti-services.ps1 -Action RepairAcl`, above), then start go2rtc, the gateway, the worker and the web app;
    each refuses with a plain line if something is missing.
 
 Back out: remove the new keys from the env file and restart the same processes (development falls back to the service key with a

@@ -136,4 +136,8 @@ A lost phone: a super administrator resets it (§7.3).
 - **Monitoring** (Admin → Monitoring): is the checker running, what it found, NVRs that refuse their login, the gaps when it was not
   running, the video gateway.
 - **Audit log** (Admin → Audit log, needs `admin.audit.read`): actions or sign-ins, filtered by category, what happened, a person, a day
-  range, or a search word. Entries can never be changed or removed.
+  range, or a search word. The application cannot change or remove entries: not the web app, the worker, the video path or the
+  service key. Only a database superuser (the person who runs the database server) could, so keep that login with the owner. The
+  tamper-evident chain that would show such a change (D-15) comes later.
+- **Health page disks**: the free space of the data disk (`DRISHTI_DATA_DIR`) and of the backup disk (`DRISHTI_BACKUP_DIR` in
+  `web.env`, the same folder as `BackupDir` in `drishti.config.psd1`); the fuller one decides the colour.

@@ -29,7 +29,9 @@ One service only: `-Action Restart -Service DrishtiGateway` (for example after r
 
 ## Order matters when
 
-- go2rtc's login changes: recreate/restart go2rtc first, then the gateway and the web app (`secret-rotation.md` section 4).
+- go2rtc's login changes: recreate/restart go2rtc first, then the gateway and the web app (`secret-rotation.md` section 4). On Windows,
+  `drishti-services.ps1 -Action Restart -Service DrishtiGo2rtc` stops the gateway first (it depends on go2rtc: Windows would refuse to
+  stop go2rtc under it), restarts go2rtc, starts the gateway again and says so; then `-Action Restart -Service DrishtiWeb`.
 - The database comes back after an outage: nothing to do; the worker takes its lease again (a new epoch) and the web app reconnects.
   The Health page's "Monitoring worker" check turns "OK" within a minute.
 - Windows updates on the server: stop as above, update, reboot; the services start by themselves; check `-Action Status`.

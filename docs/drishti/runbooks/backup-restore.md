@@ -8,9 +8,14 @@ dumps the local database (read only) and restores it into a NEW database `drisht
 row counts of 18 key tables (all equal), the migration level (equal to the backup and to this checkout's highest migration), decrypts
 every Vault secret (224 of 224) and the canary secret, and compares the SHA-256 of the server's Vault root key with the one in the
 backup; the copy is dropped afterwards. Evidence: `docs/drishti/evidence/p5/backup-restore.md` and `backup-restore-proof.json`.
-**Not exercised:** a restore INTO the live database (it would replace the owner's data; the script's live path, `--clean --if-exists`,
-is unvalidated), a restore onto another server with a restored key file, and the Direct (non-Docker) mode of the scripts. Rehearse
-both on a copy of the server before relying on them (section 6).
+**Fix round 1 (review I-1).** The live restore no longer runs `pg_restore --clean` on the live database (that fails on a Supabase
+database anyway: realtime's partitioned tables). It restores into a new database, proves it, and swaps the two by renaming (section
+5b). That path is tested end to end on a disposable "live" database `drishti_restore_live` of the local server: swapped, counts back,
+the database it replaced kept with a row written after the backup, a `before-restore` backup made first; and a forged manifest refused
+with the live database unchanged and no copy left.
+**Not exercised:** that path against the real live database (it would replace the owner's data), a restore onto another server with a
+restored key file, and the Direct (non-Docker) mode of the scripts. Rehearse them on a copy of the server before relying on them
+(section 6).
 
 ## 1. What a backup is
 
@@ -37,9 +42,14 @@ So:
 - `pg_dump` copies the ciphertext but never the key. A dump restored on a server with **another** root key restores every row, but every
   NVR password (and the canary) fails to decrypt: monitoring and video stop for every NVR until each password is typed again.
 - **Back up the key file separately**, once and after every key change, NOT next to the dumps (whoever has both has every NVR
-  password): `backup.ps1 -IncludeVaultKey` copies it to `VaultKey.KeyBackupDir` (Administrators only; in production a different disk or
-  an encrypted removable medium kept by the owner, plus a sealed paper copy of the 64 characters in the safe). Every manifest records
-  the key's SHA-256 even without a copy, and `restore.ps1` compares it with the server it restores on.
+  password): `backup.ps1 -IncludeVaultKey` copies it to `VaultKey.KeyBackupDir` (in production a different disk or an encrypted
+  removable medium kept by the owner, plus a sealed paper copy of the 64 characters in the safe). backup.ps1 refuses a `KeyBackupDir`
+  that is `BackupDir` or inside it (or the other way round), and locks the folder (SYSTEM and Administrators only) BEFORE it copies the
+  key or the configuration into it. Every manifest records the key's SHA-256 even without a copy, and `restore.ps1` compares it with
+  the server it restores on.
+- **Copies off the server must be encrypted** (review M-8): the key file, the configuration copies AND the dumps. A dump holds the
+  sign-in system's two-step secrets and refresh tokens, not only the NVR ciphertext. Use an encrypted medium or an encrypted archive
+  whose password the owner keeps apart.
 - Self-hosted Supabase in Docker: the key file lives in the database container's file system at `/etc/postgresql-custom/`. On the
   local development stack the Supabase CLI writes the same development key into every new container (the 224 secrets still decrypt
   after the container was recreated on 2026-10-23), which is **not** the case for a self-hosted production stack: mount
@@ -63,14 +73,20 @@ So:
 | Credential-read log `vault_reads` | 180 days (the worker prunes it) | in the database |
 | Audit (`admin_audit_log`, `auth_events`) | not pruned: append-only, kept in every backup | in the database |
 
-`backup.ps1 -ApplyRetention` removes only folders it made itself (`<yyyyMMdd-HHmmss>-<tag>` with a `manifest.json`) that are older than
-`Retention.Days` AND not among the newest `Retention.KeepAtLeast`; other folders are never touched (`tests/unit/windows-scripts.test.ts`).
+`backup.ps1 -ApplyRetention` (or `-RetentionOnly`, without a new backup) removes only folders it made itself that are older than
+`Retention.Days` AND not among the newest `Retention.KeepAtLeast`; other folders are never touched. "Made itself" means all of: a name
+`<yyyyMMdd-HHmmss>-<tag>`, a `manifest.json` whose `kind` is `drishti-backup`, not a junction or link, and nothing inside that is a
+junction or link (such a folder is kept and named in the output; the walk never follows a link). Retention runs as SYSTEM, so it
+refuses to run at all while `BackupDir` may be written by anyone but SYSTEM and the Administrators (review I-6). Tested with a real
+junction planted in a backup folder, pointing at a folder that must survive (`tests/unit/windows-scripts.test.ts`).
 A backup that has not been restored once is not a backup: rehearse a restore every month (section 6) and record it.
 
 ## 4. The nightly backup (scheduled task, on the production server only)
 
 ```powershell
-$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\Drishti\app\current\deploy\windows\backup.ps1 -ConfigPath C:\Drishti\config\drishti.config.psd1 -Tag nightly -ApplyRetention'
+# C:\Drishti\scripts is the administrators-only copy the install and every update keep current (never a folder users can write to:
+# the task runs as SYSTEM).
+$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\Drishti\scripts\backup.ps1 -ConfigPath C:\Drishti\config\drishti.config.psd1 -Tag nightly -ApplyRetention'
 $t = New-ScheduledTaskTrigger -Daily -At 02:00
 Register-ScheduledTask -TaskName 'Drishti nightly backup' -Action $a -Trigger $t -User 'SYSTEM' -RunLevel Highest
 ```
@@ -92,17 +108,29 @@ from its manifest. Every line of its output says what was checked; exit code 0 o
 
 ### 5b. The real restore (the live database)
 
-1. Announce downtime. `drishti-services.ps1 -Action Stop` (all four).
-2. Make a backup of the current state first (`backup.ps1 -Tag before-restore`), even if it is damaged.
-3. Check the server's Vault root key is the backup's: `restore.ps1` compares the SHA-256; on a new server put the saved key file in
+1. Announce downtime. `drishti-services.ps1 -Action Stop` (all four; restore.ps1 refuses while any Drishti service runs).
+2. Check the server's Vault root key is the backup's: `restore.ps1` compares the SHA-256; on a new server put the saved key file in
    place (`/etc/postgresql-custom/pgsodium_root.key` in the container, or the mounted host folder) and restart the database before
    restoring.
-4. `.\restore.ps1 -BackupPath <folder> -TargetDatabase postgres -AllowLiveDatabase -SourcePath C:\Drishti\app\current`. It runs
-   `pg_restore --clean --if-exists` and then the same checks. **Unvalidated path** (section intro): if it reports problems, restore
-   into a new database instead (5a without `-DropAfterVerify`) and point the stack at it, or rebuild the server and restore there.
-5. If the migration level is below the release's ("migrations of this release are not applied yet"): `npx supabase migration up`
+3. `C:\Drishti\scripts\restore.ps1 -BackupPath <folder> -TargetDatabase postgres -AllowLiveDatabase -PreRestoreBackup -SourcePath C:\Drishti\app\current`.
+   It holds the update lock, and then:
+   - `-PreRestoreBackup`: a backup of the current state first (`before-restore`), even if it is damaged;
+   - restores into a new database `postgres_restored_<time>` (from `template0`, connected through `template1`), stopping at the first
+     `pg_restore` error;
+   - proves the copy: the dump's SHA-256, row counts equal to the manifest, the migration level, every Vault secret and the canary, the
+     root key hash;
+   - only when every check passed: gives the copy the live database's owner, rights and settings, closes the connections and renames
+     `postgres` to `postgres_before_restore_<time>` and the copy to `postgres`. The replaced database is kept (drop it yourself once the
+     restored one is known good); its connections are allowed again so you can read from it.
+   - when anything fails before the swap: "the live database postgres was NOT changed", the unused copy is dropped, exit code 1.
+4. If the migration level is below the release's ("migrations of this release are not applied yet"): `npx supabase migration up`
    (runbook `update-rollback.md`).
-6. Start the services, open the Health page: every check "OK", especially "Vault" and "Database version".
+5. Start the services, open the Health page: every check "OK", especially "Vault" and "Database version".
+
+The swap needs room for a second copy of the database on the database's disk (about 3 times the dump size). The swap ends every
+connection to the live database, including those of the Supabase services (PostgREST, GoTrue, Realtime, the database's own background
+jobs). Whether each reconnects by itself is **not tested**: after step 3, restart the Supabase stack's containers other than the
+database (`docker restart` of each, or `docker compose restart`) before step 5.
 
 ## 6. Monthly rehearsal (record it)
 
