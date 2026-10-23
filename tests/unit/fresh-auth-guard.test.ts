@@ -1,10 +1,17 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
+import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 
 // P3-1 review I-3: fresh sign-in is ONE enforced mechanism. Every Server Action (every export of a 'use server' file) and every route
 // handler is either guarded — its body calls requireFreshAdministration / requireFreshProfile / requireFreshFor (lib/auth/fresh.ts)
 // — or is on the explicit allow-list below with the reason. A new action or route fails this test until it is classified.
+//
+// Release 1 clean-ups (P3-1 re-review N-1): the scan reads the TypeScript syntax tree instead of matching text, so it also sees
+// `export const x = async () => …`, `export default …`, `export { a, b }` (and re-exports, which cannot be classified and fail), a
+// 'use server' directive after a comment, files under services/ and the project root. "Guarded" now means: a `const g = [await]
+// requireFresh…(…)` statement followed at once by an `if` on `g` that returns — a call in a comment, a call whose result is ignored or a
+// guard in another function does not count — and, in a Server Action, no `await` before the guard (it comes before any work).
 
 const ROOT = path.resolve(__dirname, '../..')
 const rel = (p: string) => path.relative(ROOT, p).replace(/\\/g, '/')
@@ -13,19 +20,103 @@ function walk(dir: string, out: string[] = []): string[] {
     const p = path.join(dir, e)
     if (e === 'node_modules' || e.startsWith('.')) continue
     if (statSync(p).isDirectory()) walk(p, out)
-    else if (/\.(ts|tsx)$/.test(e)) out.push(p)
+    else if (/\.(ts|tsx)$/.test(e) && !e.endsWith('.d.ts')) out.push(p)
   }
   return out
 }
 
-/** Exported async functions of a file with their bodies (up to the next top-level export). */
-function exportsOf(src: string, names: RegExp): { name: string; body: string }[] {
-  const re = new RegExp(`^export (?:async )?function (${names.source})\\b`, 'gm')
-  const hits = [...src.matchAll(re)].map((m) => ({ name: m[1], at: m.index! }))
-  return hits.map((h, i) => ({ name: h.name, body: src.slice(h.at, i + 1 < hits.length ? hits[i + 1].at : undefined) }))
+const GUARDS = new Set(['requireFreshAdministration', 'requireFreshProfile', 'requireFreshFor'])
+const parse = (src: string, file: string) => ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
+
+/** The file's directive prologue says 'use server' (comments before it do not matter). */
+export function isUseServer(sf: ts.SourceFile): boolean {
+  for (const s of sf.statements) {
+    if (!ts.isExpressionStatement(s) || !ts.isStringLiteral(s.expression)) return false
+    if (s.expression.text === 'use server') return true
+  }
+  return false
 }
 
-const GUARDED = /\brequireFresh(?:Administration|Profile|For)\(/
+type FnLike = ts.FunctionLikeDeclaration
+const hasExport = (n: ts.Node) => !!ts.getModifiers(n as ts.HasModifiers)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
+const isDefault = (n: ts.Node) => !!ts.getModifiers(n as ts.HasModifiers)?.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword)
+const fnOf = (e: ts.Expression | undefined): FnLike | null => (e && (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) ? e : null)
+
+/** Every export of a file with the function behind it (null: not a function here, or a re-export that cannot be read). */
+export function exportsOfSource(sf: ts.SourceFile): { name: string; fn: FnLike | null }[] {
+  const locals = new Map<string, FnLike | null>()
+  for (const s of sf.statements) {
+    if (ts.isFunctionDeclaration(s) && s.name) locals.set(s.name.text, s)
+    if (ts.isVariableStatement(s)) for (const d of s.declarationList.declarations) if (ts.isIdentifier(d.name)) locals.set(d.name.text, fnOf(d.initializer))
+  }
+  const out: { name: string; fn: FnLike | null }[] = []
+  for (const s of sf.statements) {
+    if (ts.isFunctionDeclaration(s) && hasExport(s)) out.push({ name: isDefault(s) ? 'default' : (s.name?.text ?? 'default'), fn: s })
+    else if (ts.isVariableStatement(s) && hasExport(s)) {
+      for (const d of s.declarationList.declarations) if (ts.isIdentifier(d.name)) out.push({ name: d.name.text, fn: fnOf(d.initializer) })
+    } else if (ts.isExportAssignment(s)) out.push({ name: 'default', fn: fnOf(s.expression) ?? (ts.isIdentifier(s.expression) ? (locals.get(s.expression.text) ?? null) : null) })
+    else if (ts.isExportDeclaration(s) && !s.isTypeOnly) {
+      if (!s.exportClause) out.push({ name: '*', fn: null })
+      else if (ts.isNamedExports(s.exportClause)) {
+        for (const el of s.exportClause.elements) {
+          if (el.isTypeOnly) continue
+          out.push({ name: el.name.text, fn: s.moduleSpecifier ? null : (locals.get((el.propertyName ?? el.name).text) ?? null) })
+        }
+      } else out.push({ name: s.exportClause.name.text, fn: null })
+    }
+  }
+  return out
+}
+
+const containsAwait = (n: ts.Node): boolean => {
+  let found = false
+  const visit = (x: ts.Node) => {
+    if (found) return
+    if (ts.isAwaitExpression(x)) found = true
+    else if (!ts.isFunctionLike(x)) ts.forEachChild(x, visit)
+  }
+  visit(n)
+  return found
+}
+/** `const g = [await] requireFresh…(…)`: the variable's name, else null. */
+function guardVariable(s: ts.Statement): string | null {
+  if (!ts.isVariableStatement(s) || s.declarationList.declarations.length !== 1) return null
+  const d = s.declarationList.declarations[0]
+  let init = d.initializer
+  if (init && ts.isAwaitExpression(init)) init = init.expression
+  if (!init || !ts.isCallExpression(init) || !ts.isIdentifier(init.expression) || !GUARDS.has(init.expression.text)) return null
+  return ts.isIdentifier(d.name) ? d.name.text : null
+}
+const mentions = (n: ts.Node, name: string): boolean => (ts.isIdentifier(n) && n.text === name) || (ts.forEachChild(n, (c) => (mentions(c, name) ? true : undefined)) ?? false)
+const returns = (s: ts.Statement): boolean => ts.isReturnStatement(s) || (ts.isBlock(s) && s.statements.some((x) => ts.isReturnStatement(x)))
+
+/**
+ * Guarded: a guard statement whose result is checked at once by an `if` that returns. Server Actions: the guard is a statement of the
+ * function's own body with no await before it. Route handlers: anywhere in the handler's own blocks (they check the caller first).
+ */
+export function isGuarded(fn: FnLike | null, kind: 'action' | 'route'): boolean {
+  if (!fn?.body || !ts.isBlock(fn.body)) return false
+  const lists: ts.NodeArray<ts.Statement>[] = []
+  if (kind === 'action') lists.push(fn.body.statements)
+  else {
+    const visit = (n: ts.Node) => {
+      if (ts.isBlock(n)) lists.push(n.statements)
+      if (!ts.isFunctionLike(n) || n === fn) ts.forEachChild(n, visit)
+    }
+    visit(fn.body)
+  }
+  for (const list of lists) {
+    for (let i = 0; i < list.length; i++) {
+      const g = guardVariable(list[i])
+      if (!g) continue
+      const next = list[i + 1]
+      const checked = !!next && ts.isIfStatement(next) && mentions(next.expression, g) && returns(next.thenStatement)
+      const first = kind === 'route' || list.slice(0, i).every((s) => !containsAwait(s))
+      if (checked && first) return true
+    }
+  }
+  return false
+}
 
 /** Not guarded on purpose; each with its reason. Key: `<file>#<export>`. */
 const ALLOWED: Record<string, string> = {
@@ -93,16 +184,60 @@ const MUST_BE_GUARDED = [
   'lib/actions/mfa.ts#startEnrolmentAction', 'lib/actions/mfa.ts#removeOwnFactorAction', 'app/api/vod/route.ts#GET',
 ]
 
-function inventory(): Map<string, string> {
-  const out = new Map<string, string>()
-  for (const f of [...walk(path.join(ROOT, 'lib')), ...walk(path.join(ROOT, 'app')), ...walk(path.join(ROOT, 'components'))]) {
-    const src = readFileSync(f, 'utf8')
+const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
+/** Every file the app could serve an action or a handler from: lib, app, components, services and the project root's own files. */
+const scanned = () => [
+  ...['lib', 'app', 'components', 'services'].flatMap((d) => walk(path.join(ROOT, d))),
+  ...readdirSync(ROOT).filter((e) => /\.(ts|tsx)$/.test(e) && !e.endsWith('.d.ts')).map((e) => path.join(ROOT, e)),
+]
+
+/** key `<file>#<export>` → whether it is guarded. */
+function inventory(): Map<string, boolean> {
+  const out = new Map<string, boolean>()
+  for (const f of scanned()) {
     const r = rel(f)
-    if (/^\s*['"]use server['"]/.test(src)) for (const e of exportsOf(src, /[A-Za-z0-9_]+/)) out.set(`${r}#${e.name}`, e.body)
-    if (/\/route\.tsx?$/.test(r)) for (const e of exportsOf(src, /GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS/)) out.set(`${r}#${e.name}`, e.body)
+    const sf = parse(readFileSync(f, 'utf8'), r)
+    if (isUseServer(sf)) for (const e of exportsOfSource(sf)) out.set(`${r}#${e.name}`, isGuarded(e.fn, 'action'))
+    if (/(^|\/)route\.tsx?$/.test(r)) for (const e of exportsOfSource(sf)) if (HTTP_METHODS.has(e.name)) out.set(`${r}#${e.name}`, isGuarded(e.fn, 'route'))
   }
   return out
 }
+
+describe('the scanner itself (release 1, re-review N-1: no blind spots)', () => {
+  const kinds = (src: string) => {
+    const sf = parse(src, 'x.ts')
+    return { server: isUseServer(sf), exports: exportsOfSource(sf).map((e) => [e.name, isGuarded(e.fn, 'action')]) }
+  }
+  const guard = "const g = await requireFreshAdministration('admin.inventory')\n  if (!g.ok) return { error: g.error }"
+
+  it('sees every form of export, and a directive after a comment', () => {
+    const src = [
+      "// a comment first\n/* and another */\n'use server'",
+      `export async function a() {\n  ${guard}\n  return {}\n}`,
+      'export const b = async () => { return 1 }',
+      'const c = async () => 2\nconst d = async function () { return 3 }\nexport { c, d as dd }',
+      "export { e } from './elsewhere'",
+      'export default async function () { return 4 }',
+    ].join('\n')
+    expect(kinds(src)).toEqual({ server: true, exports: [['a', true], ['b', false], ['c', false], ['dd', false], ['e', false], ['default', false]] })
+  })
+
+  it('a guard counts only when its result is checked at once and nothing was awaited before it', () => {
+    const one = (body: string) => kinds(`'use server'\nexport async function x() {\n${body}\n}`).exports[0][1]
+    expect(one(guard)).toBe(true)
+    expect(one("// const g = await requireFreshAdministration('admin.inventory')\nreturn {}")).toBe(false) // in a comment
+    expect(one("await requireFreshAdministration('admin.inventory')\nreturn {}")).toBe(false) // result ignored
+    expect(one("const g = await requireFreshAdministration('admin.inventory')\nawait save()\nif (!g.ok) return {}")).toBe(false) // checked too late
+    expect(one(`await save()\n${guard}`)).toBe(false) // work before the guard
+    expect(one("const g = await requireFreshAdministration('admin.inventory')\nif (!g.ok) console.log(g)")).toBe(false) // does not return
+    expect(one('const s = mode === 1 ? 2 : 3\n' + guard)).toBe(true) // plain work before it is fine
+  })
+
+  it('a guard in another function next to the export does not count', () => {
+    const src = `'use server'\nexport async function x() { return helper() }\nasync function helper() {\n  ${guard}\n  return {}\n}`
+    expect(kinds(src).exports).toEqual([['x', false]])
+  })
+})
 
 describe('fresh sign-in: one enforced mechanism (review I-3)', () => {
   const all = inventory()
@@ -113,22 +248,32 @@ describe('fresh sign-in: one enforced mechanism (review I-3)', () => {
   })
 
   it('every Server Action and route handler is guarded or on the allow-list with a reason', () => {
-    const unclassified = [...all.entries()].filter(([k, body]) => !GUARDED.test(body) && !ALLOWED[k]).map(([k]) => k)
+    const unclassified = [...all.entries()].filter(([k, guarded]) => !guarded && !ALLOWED[k]).map(([k]) => k)
     expect(unclassified).toEqual([])
   })
 
   it('nothing on the allow-list is guarded anyway or gone (the list stays honest)', () => {
     expect(Object.keys(ALLOWED).filter((k) => !all.has(k))).toEqual([])
-    expect(Object.keys(ALLOWED).filter((k) => GUARDED.test(all.get(k) ?? ''))).toEqual([])
+    expect(Object.keys(ALLOWED).filter((k) => all.get(k) === true)).toEqual([])
   })
 
   it('the high-risk ones are guarded (access, people, credentials, merge, archive, moves, monitoring, devices, imports, export, set-up)', () => {
-    expect(MUST_BE_GUARDED.filter((k) => !GUARDED.test(all.get(k) ?? ''))).toEqual([])
+    expect(MUST_BE_GUARDED.filter((k) => all.get(k) !== true)).toEqual([])
   })
 
   it('no file has an inline server action (they could not be classified here)', () => {
-    const inline = [...walk(path.join(ROOT, 'app')), ...walk(path.join(ROOT, 'components')), ...walk(path.join(ROOT, 'lib'))]
-      .filter((f) => /\n\s+['"]use server['"]/.test(readFileSync(f, 'utf8'))).map(rel)
+    const inline: string[] = []
+    for (const f of scanned()) {
+      const sf = parse(readFileSync(f, 'utf8'), rel(f))
+      const visit = (n: ts.Node) => {
+        if (ts.isFunctionLike(n) && 'body' in n && n.body && ts.isBlock(n.body)) {
+          const first = n.body.statements[0]
+          if (first && ts.isExpressionStatement(first) && ts.isStringLiteral(first.expression) && first.expression.text === 'use server') inline.push(rel(f))
+        }
+        ts.forEachChild(n, visit)
+      }
+      visit(sf)
+    }
     expect(inline).toEqual([])
   })
 })

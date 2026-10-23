@@ -3,6 +3,11 @@ import { isProductionMode } from '@/lib/runtime-mode'
 
 type Env = Record<string, string | undefined>
 
+function loopbackHost(hostname: string): boolean {
+  const h = hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  return h === 'localhost' || h.endsWith('.localhost') || h === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)
+}
+
 function privateHost(hostname: string): boolean {
   const h = hostname.replace(/^\[|\]$/g, '').toLowerCase()
   if (h === 'localhost' || h.endsWith('.localhost')) return true
@@ -19,8 +24,10 @@ function privateHost(hostname: string): boolean {
 /**
  * P3-1 review I-5: in production the Supabase API (and with it the auth server) must not be reachable from the internet, or anyone could
  * sign in and try codes directly, around the app's sign-in delay, code count and one-app rule. Null when the configured address is this
- * computer, the private network or the app's own address (one reverse proxy); otherwise the plain problem. A hosted project with its
- * network restrictions switched on is accepted only with DRISHTI_AUTH_URL_PUBLIC_OK=network-restricted (docs/drishti/runbook-tls.md).
+ * computer or the app's own address (one reverse proxy); otherwise the plain problem. Release 1 (re-review I-5 / R-1): an address on the
+ * private network is accepted only with DRISHTI_AUTH_URL_PRIVATE_OK=firewalled — the company network is where the attacker of the finding
+ * sits, so the owner must have closed the port to the other PCs (runbook section 3). A hosted project with its network restrictions
+ * switched on is accepted only with DRISHTI_AUTH_URL_PUBLIC_OK=network-restricted (docs/drishti/runbook-tls.md).
  */
 export function authUrlProblem(env: Env = process.env): string | null {
   if (!isProductionMode(env)) return null
@@ -31,11 +38,15 @@ export function authUrlProblem(env: Env = process.env): string | null {
   } catch {
     return 'NEXT_PUBLIC_SUPABASE_URL is not an address; it must be this computer or the private network (docs/drishti/runbook-tls.md section 3).'
   }
-  if (privateHost(host)) return null
+  if (loopbackHost(host)) return null
   try {
     if (env.NEXT_PUBLIC_APP_URL && new URL(env.NEXT_PUBLIC_APP_URL).hostname === host) return null
   } catch {
     // no app address to compare with
+  }
+  if (privateHost(host)) {
+    if ((env.DRISHTI_AUTH_URL_PRIVATE_OK ?? '').trim() === 'firewalled') return null
+    return `The Supabase address (${host}) is on the private network, where every PC could reach the auth server and try codes around the app's limits. Bind Supabase to this computer (127.0.0.1), or close its port to the other PCs and then set DRISHTI_AUTH_URL_PRIVATE_OK=firewalled (docs/drishti/runbook-tls.md section 3).`
   }
   if ((env.DRISHTI_AUTH_URL_PUBLIC_OK ?? '').trim() === 'network-restricted') return null
   return `The Supabase address (${host}) is public: the auth server must be reachable only from this computer or the private network, or anyone could sign in and try codes around the app's limits (docs/drishti/runbook-tls.md section 3).`

@@ -55,13 +55,23 @@ The web app must listen on loopback: start it with `next start -H 127.0.0.1 --po
 5 minutes), "one app per person", the code-once rule and the idle limit all live in the web app. Anybody who can reach the auth server
 (GoTrue, `/auth/v1` of the Supabase API) directly could sign in, ask for and try codes, and refresh sessions around them. So:
 
-- `NEXT_PUBLIC_SUPABASE_URL` / `SUPABASE_URL` point to this computer (`http://127.0.0.1:<port>`) or the private network; the Supabase
-  API port is closed in the Windows firewall for every other computer (`New-NetFirewallRule -DisplayName "Supabase API local only"
-  -Direction Inbound -LocalPort <port> -Protocol TCP -RemoteAddress Any -Action Block`, then allow only the app host if it is another
-  machine). Caddy does not route it (see the Caddyfile).
-- The web app **refuses to start in production** (`DRISHTI_ENV=production`) when that address is public (`lib/web/tls.ts`
-  `authUrlProblem`, called by the start-up check). A hosted project with its network restrictions switched on (only the app host may
-  connect) is accepted with `DRISHTI_AUTH_URL_PUBLIC_OK=network-restricted` — set it only after checking the restriction.
+- `NEXT_PUBLIC_SUPABASE_URL` / `SUPABASE_URL` point to this computer (`http://127.0.0.1:<port>`); Caddy does not route the Supabase
+  API (see the Caddyfile). Close the Supabase API port to every other computer (release 1, re-review R-1b: in Windows Firewall a
+  **Block rule always wins over an Allow rule**, so "block Any, then allow the app host" cannot work):
+  - **One computer (app and Supabase together, the normal layout):** one Block rule is enough —
+    `New-NetFirewallRule -DisplayName "Supabase API local only" -Direction Inbound -LocalPort <port> -Protocol TCP -RemoteAddress Any -Action Block`.
+    Windows Firewall does not filter loopback traffic, so the app on this computer still connects over `127.0.0.1`.
+  - **The app on another machine:** do NOT add a Block rule for the port. Rely on the default "block inbound" profile and add one Allow
+    rule scoped to the app host only — `New-NetFirewallRule -DisplayName "Supabase API from the app host" -Direction Inbound -LocalPort <port> -Protocol TCP -RemoteAddress <app host IP> -Action Allow`
+    — and check that no other Allow rule (a Docker or "any port" rule) opens the port. Then set `DRISHTI_AUTH_URL_PRIVATE_OK=firewalled`
+    on the app host (below).
+  - Docker Desktop publishes the CLI stack's ports on every address; check the result from another PC either way.
+- The web app **refuses to start in production** (`DRISHTI_ENV=production`) unless that address is this computer or the app's own
+  address (`lib/web/tls.ts` `authUrlProblem`, called by the start-up check). Release 1 (re-review I-5 / R-1): an address on the private
+  network (`10.x`, `192.168.x`, `172.16-31.x`, a single-label or `.local` / `.lan` / `.internal` name) is refused too unless the owner
+  has closed its port to the other PCs as above and sets `DRISHTI_AUTH_URL_PRIVATE_OK=firewalled` — the company network is exactly
+  where the attacker of the finding sits. A hosted project with its network restrictions switched on (only the app host may connect)
+  is accepted with `DRISHTI_AUTH_URL_PUBLIC_OK=network-restricted` — set it only after checking the restriction.
 - The auth server's own limits as a second line: `[auth.mfa] max_enrolled_factors = 1`, `[auth.sessions] timebox = "12h"` and
   `inactivity_timeout = "8h"` (local: `supabase/config.toml`; self-hosted production: `GOTRUE_MFA_MAX_ENROLLED_FACTORS=1`,
   `GOTRUE_SESSIONS_TIMEBOX=12h`, `GOTRUE_SESSIONS_INACTIVITY_TIMEOUT=8h`). GoTrue 2.197 also limits code checks per IP with
@@ -95,8 +105,11 @@ PC). `GATEWAY_ALLOWED_ORIGINS` must still list every address people type (for ex
 2. Every administrator sets up an authenticator app first (Security page → "Set up two-step sign-in"), so nobody is locked out, and
    **before** the switch (review I-4): count who still has none — the Users page shows "Two-step sign-in: on, set up <date> IST from
    <address>" per person — or as the database owner:
-   `SELECT p.email FROM public.profiles p WHERE p.org_id = '<org>' AND p.is_active AND p.role IN ('admin','platform_owner')
-   AND p.id NOT IN (SELECT user_id FROM public.mfa_factor_people('<org>'));` must return no row.
+   `SELECT p.email FROM public.profiles p WHERE p.org_id = '<org>' AND p.is_active AND (p.role IN ('admin','platform_owner')
+   OR EXISTS (SELECT 1 FROM public.access_grants_eval(p.id, now(), false, true, true) g JOIN public.capabilities c ON c.key = g.capability
+   WHERE c.requires_mfa)) AND p.id NOT IN (SELECT user_id FROM public.mfa_factor_people('<org>'));` must return no row.
+   (Release 1, re-review N-3: the same rule as the app's gate, `my_session_status().privileged` — an administrative role OR any live
+   grant of a capability that needs two-step sign-in: every `admin.*`, `cctv.export` and the high-risk IT capabilities.)
    Setting up an app needs a fresh sign-in (the password within the last 10 minutes), so a stolen session alone cannot bind a phone.
    **Remaining risk:** whoever knows a privileged person's password before that person has set up an app (a new account's one-time
    password, a promoted person, anyone not yet enrolled when the switch goes on) can sign in and bind their own phone first. Mitigations:

@@ -9,7 +9,9 @@ import { webStartupProblems } from '@/lib/startup-web'
 const SECRET = 'a-test-jwt-secret-that-is-long-enough-1234567890'
 const strong = (seed: string) => `${seed}-Qw7xK2pLm9Zr4Tb8Nc1Vh6Yd3Fs5Gj0Ek`.slice(0, 43)
 const prod = () => ({
-  DRISHTI_ENV: 'production', NEXT_PUBLIC_SUPABASE_URL: 'https://db.example.test', SUPABASE_SERVICE_ROLE_KEY: 'svc',
+  // Release 1 (P3-1 re-review I-5 / R-1): the single-host layout, Supabase on this computer (a private-network name now needs the
+  // owner's DRISHTI_AUTH_URL_PRIVATE_OK=firewalled; tests/unit/auth-url-check.test.ts).
+  DRISHTI_ENV: 'production', NEXT_PUBLIC_SUPABASE_URL: 'http://127.0.0.1:55321', SUPABASE_SERVICE_ROLE_KEY: 'svc',
   SUPABASE_APP_WEB_KEY: signServiceJwt(SECRET, 'app_web'), SUPABASE_MEDIA_SERVICE_KEY: signServiceJwt(SECRET, 'media_service'),
   // P5.4: production refuses weak secrets, so the fixtures are strong, distinct values (as gen-secrets makes).
   STREAM_TOKEN_SECRET: strong('st'), ACCESS_PREVIEW_SECRET: strong('ap'), MERGE_CONFIRM_SECRET: strong('mc'), VERIFIED_USER_SECRET: strong('vu'),

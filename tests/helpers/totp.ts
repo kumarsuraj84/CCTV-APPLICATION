@@ -1,4 +1,6 @@
 import { createHmac } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
 
@@ -55,16 +57,35 @@ export async function mfaClient(email: string, password: string): Promise<Supaba
   return c
 }
 
-/** P3-1 review I-6: printed whenever the authenticator-app tests are skipped. */
+/** P3-1 review I-6: printed whenever the authenticator-app tests are skipped or fail for want of TOTP. */
 export const TOTP_SKIP_REASON =
-  'Authenticator-app (TOTP) tests SKIPPED: the auth server the tests reach does not offer TOTP. supabase/config.toml turns it on; ' +
-  'restart the local stack (npm run db:stop, then npm run db:start) and run with MULTI_FACTOR_TEST=required so a missing TOTP fails ' +
-  'instead of skipping (or set MFA_TEST_AUTH_URL to a loopback auth server with TOTP on).'
+  'Authenticator-app (TOTP) tests: the auth server the tests reach does not offer TOTP. supabase/config.toml turns it on, so they are ' +
+  'REQUIRED: restart the local stack (npm run db:stop, then npm run db:start) so the auth server picks it up (or set MFA_TEST_AUTH_URL ' +
+  'to a loopback auth server with TOTP on). To skip them on purpose for one run, set MULTI_FACTOR_TEST=skip.'
 
-/** run: TOTP is there; fail: required (MULTI_FACTOR_TEST=required) but not there; skip: not there and not required. */
-export function totpSuiteMode(env: Record<string, string | undefined>, enabled: boolean): 'run' | 'fail' | 'skip' {
+/** Whether supabase/config.toml switches TOTP enrolment on ([auth.mfa.totp] enroll_enabled = true). */
+export function configHasTotp(text?: string): boolean {
+  const toml = text ?? readFileSync(path.resolve(__dirname, '../../supabase/config.toml'), 'utf8')
+  let inTotp = false
+  for (const raw of toml.split(/\r?\n/)) {
+    const line = raw.replace(/#.*$/, '').trim()
+    if (line.startsWith('[')) inTotp = line === '[auth.mfa.totp]'
+    else if (inTotp && /^enroll_enabled\s*=\s*true$/.test(line)) return true
+  }
+  return false
+}
+
+/**
+ * run: TOTP is there. Otherwise — release 1 (P3-1 re-review R-2) — fail by default when the repository's config switches TOTP on (the
+ * stack was not restarted), or when MULTI_FACTOR_TEST=required or CI is set; skip only with MULTI_FACTOR_TEST=skip or when the config
+ * has no TOTP.
+ */
+export function totpSuiteMode(env: Record<string, string | undefined>, enabled: boolean, configOn: boolean = configHasTotp()): 'run' | 'fail' | 'skip' {
   if (enabled) return 'run'
-  return (env.MULTI_FACTOR_TEST ?? '').trim().toLowerCase() === 'required' ? 'fail' : 'skip'
+  const asked = (env.MULTI_FACTOR_TEST ?? '').trim().toLowerCase()
+  if (asked === 'required' || (env.CI ?? '').trim() !== '') return 'fail'
+  if (asked === 'skip') return 'skip'
+  return configOn ? 'fail' : 'skip'
 }
 
 /** Whether the auth server the tests reach lets people enrol an authenticator app (checked with a throw-away enrolment). */
