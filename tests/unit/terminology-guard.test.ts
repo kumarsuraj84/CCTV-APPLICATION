@@ -9,8 +9,11 @@ import { ALLOWED } from './terminology-allowlist'
 // The few intentional exceptions live in tests/unit/terminology-allowlist.ts, each with its reason.
 
 const ROOT = path.resolve(__dirname, '..', '..')
-const DIRS = ['app', 'components', 'lib', 'scripts']
-const WORD = /\bstores?\b/i
+// Release 1 clean-ups (T-1 review L1): services/ is scanned too, and the PowerShell agent's strings (agent/, below).
+const DIRS = ['app', 'components', 'lib', 'scripts', 'services']
+// L1: also the joined forms people read in help and messages: store_code, store-name, storeId (a word character next to "store" hid
+// them from \bstores?\b).
+const WORD = /\bstores?\b|\bstore[_-]?(?:code|name|id)s?\b|\bstore(?:Code|Name|Id)s?\b/i
 
 function files(dir: string): string[] {
   const out: string[] = []
@@ -22,10 +25,21 @@ function files(dir: string): string[] {
   return out
 }
 
+/**
+ * Release 1 (L1): a string that is code, not wording — a field or column name, a PostgREST select list, a header value: every
+ * comma-separated part is one lower-case token with no space, and each part that says "store" carries a code character (_ : ( ! -).
+ * A plain word ("Stores", "store") or any sentence is wording. This replaces the old `partial` allow-list entries, which let any string
+ * of the file through.
+ */
+function codeLike(text: string): boolean {
+  const parts = text.split(',').map((p) => p.trim())
+  return parts.every((p) => /^[a-z0-9_!:.()*-]+$/.test(p)) && parts.filter((p) => WORD.test(p)).every((p) => /[_:(!-]/.test(p))
+}
+
 export function wordingOf(source: string, fileName: string): { line: number; text: string }[] {
   const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, fileName.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
   const found: { line: number; text: string }[] = []
-  const add = (node: ts.Node, text: string) => { if (WORD.test(text)) found.push({ line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1, text: text.trim().slice(0, 120) }) }
+  const add = (node: ts.Node, text: string) => { if (WORD.test(text) && !codeLike(text.trim())) found.push({ line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1, text: text.trim().slice(0, 120) }) }
   const visit = (node: ts.Node) => {
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) return
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) add(node, node.text)
@@ -50,6 +64,32 @@ describe('the wording is "location", not "store" (ruling T-1)', () => {
       "const e = 'restore'",
     ].join('\n')
     expect(wordingOf(src, 'x.tsx').map((f) => f.text)).toEqual(['Manage stores', 'Add a store for', 'Open the store', 'Cache-Control: no-store'])
+  })
+
+  it('release 1 (L1): the joined forms are seen too, and "restore" or "storage" are not', () => {
+    const src = ["const a = 'Use the store_code column'", "const b = 'Pick a store-name'", "const c = `Your storeId ${1}`", "const d = 'restore the storage'"].join('\n')
+    expect(wordingOf(src, 'x.ts').map((f) => f.text)).toEqual(['Use the store_code column', 'Pick a store-name', 'Your storeId'])
+  })
+
+  it('release 1 (L1): code strings (a field name, a PostgREST select list, a header value) are not wording; a sentence in the same file is', () => {
+    const src = ["const a = 'store_id'", "const b = 'id, store_id:location_id, name'", "const c = 'no-store, private'", "const d = 'id, stores:locations(id, name)'",
+      "const e = 'Could not read the stores.'", "const f = 'Stores'", "const g = 'store'"].join('\n')
+    expect(wordingOf(src, 'x.ts').map((f) => f.text)).toEqual(['Could not read the stores.', 'Stores', 'store'])
+  })
+
+  it('release 1 (L1): no string of the PowerShell agent says store', () => {
+    const offenders: string[] = []
+    const ps = (dir: string): string[] => readdirSync(dir).flatMap((n) => {
+      const full = path.join(dir, n)
+      return statSync(full).isDirectory() ? ps(full) : /\.(ps1|psm1)$/.test(n) ? [full] : []
+    })
+    for (const f of ps(path.join(ROOT, 'agent'))) {
+      readFileSync(f, 'utf8').split(/\r?\n/).forEach((line, i) => {
+        if (/^\s*#/.test(line)) return
+        for (const m of line.matchAll(/"([^"]*)"|'([^']*)'/g)) if (WORD.test(m[1] ?? m[2] ?? '')) offenders.push(`${path.relative(ROOT, f)}:${i + 1}  ${(m[1] ?? m[2]).slice(0, 80)}`)
+      })
+    }
+    expect(offenders).toEqual([])
   })
 
   it('no string in app/, components/, lib/ or scripts/ says store, outside the documented allow-list', () => {

@@ -2,41 +2,25 @@
 // Everything else the person can read says "location". Each entry is one string in one file, with the reason. A string must equal
 // `text`, or only contain it when `partial` is set. Code identifiers, property names, imports and comments are not strings and are not
 // scanned at all; this list is for strings only. An entry that matches nothing fails the guard (the list stays an honest record).
+// Release 1 clean-ups (T-1 review L1): strings that are code — a field or column name, a PostgREST select list, a header value such as
+// "no-store, private", a preset id such as "store-viewer" — are recognised by the guard itself (codeLike in terminology-guard.test.ts),
+// so the broad `partial` entries for them are gone; the two `partial` entries left are narrow phrases.
 
 export type Allowed = { file: string; text: string; partial?: true; reason: string }
 
 const KIND = 'the kind of a location is "store" (a shop); one of store, head office, DC, warehouse, other'
-const HTTP = 'HTTP cache directive "no-store", not wording'
-const POSTGREST = 'PostgREST select alias or embed name; the database still has these names until P2-5a renames the schema'
 
 export const ALLOWED: Allowed[] = [
   // --- not wording: technical values -------------------------------------------------------------------------------------------------
-  { file: 'lib/streams/gateway.ts', text: 'no-store', partial: true, reason: HTTP },
-  { file: 'lib/streams/gateway-health.ts', text: 'no-store', partial: true, reason: HTTP },
-  { file: 'lib/streams/go2rtc.ts', text: 'no-store', partial: true, reason: HTTP },
-  // P4-L2: speed.ts lost its /api/vod probe (the Playback screen no longer uses /api/vod); the fast playback stream path uses no-store.
-  { file: 'lib/streams/fast.ts', text: 'no-store', partial: true, reason: HTTP },
-  { file: 'lib/streams/fast-client.ts', text: 'no-store', partial: true, reason: HTTP },
-  { file: 'app/api/playback/stream/route.ts', text: 'no-store', partial: true, reason: HTTP },
-  { file: 'app/api/live/release/route.ts', text: 'no-store', partial: true, reason: HTTP },
-  { file: 'lib/streams/vod.ts', text: 'no-store', partial: true, reason: HTTP },
-  { file: 'app/api/health/route.ts', text: 'no-store', partial: true, reason: HTTP },
-  { file: 'app/api/health/detail/route.ts', text: 'no-store', partial: true, reason: HTTP },
+  { file: 'lib/streams/gateway.ts', text: 'Cache-Control: no-store', partial: true, reason: 'HTTP cache directive in a raw HTTP answer written by hand, not wording' },
   { file: 'lib/audit/catalogue.ts', text: 'lib/inventory/stores.ts', reason: 'P5.4: the repository path of the legacy writer of three audit actions (a file name, never shown to people)' },
-  { file: 'app/api/vod/route.ts', text: 'no-store', partial: true, reason: HTTP },
   // P3-1: the old addresses of ruling T-1, now redirected by proxy.ts (they were in next.config.ts, which this guard does not scan).
   { file: 'lib/web/legacy-redirects.ts', text: '/stores', reason: 'the old address that redirects to /locations (ruling T-1)' },
   { file: 'lib/web/legacy-redirects.ts', text: '/admin/stores', reason: 'the old address that redirects to /admin/locations (ruling T-1)' },
-  { file: 'components/layout/NewVersionBanner.tsx', text: 'no-store', partial: true, reason: HTTP },
   { file: 'lib/jobs/engine.ts', text: 'store', reason: 'option name of the job engine\'s persistence ("JobStore"), nothing to do with shops' },
-  { file: 'lib/jobs/testing.ts', text: 'store', partial: true, reason: 'option name and test ids of the job engine\'s persistence ("JobStore"), nothing to do with shops' },
+  { file: 'lib/jobs/testing.ts', text: 'store', reason: 'option name of the job engine\'s persistence ("JobStore"), nothing to do with shops' },
   // --- values already saved in the database (history keeps them) ---------------------------------------------------------------------
   { file: 'lib/auth/access-audit.ts', text: 'store', reason: "audit entity_type 'store' of rows already written; P2-5a renames the schema" },
-  { file: 'components/admin/access-labels.ts', text: 'migrated:store', reason: 'reason code saved on grants moved over from the old location grants; the label next to it says what it means' },
-  { file: 'lib/admin/access-rules.ts', text: 'store-viewer', reason: 'preset id kept in saved grants; the visible label says "Location CCTV viewer"' },
-  { file: 'lib/admin/access-rules.ts', text: 'store-it-viewer', reason: 'preset id kept in saved grants; the visible label says "Location IT viewer"' },
-  { file: 'components/admin/AccessBuilder.tsx', text: 'store-viewer', reason: 'preset id (see lib/admin/access-rules.ts)' },
-  { file: 'components/admin/AccessBuilder.tsx', text: 'store-it-viewer', reason: 'preset id (see lib/admin/access-rules.ts)' },
   // --- the kind of a location: "Store" stays one of the kinds (Store, Head office, DC, Warehouse, Office, Other) -------------------------
   { file: 'lib/inventory/forms.ts', text: 'Store', reason: KIND },
   { file: 'lib/inventory/forms.ts', text: 'store', reason: 'the stored value of the kind: ' + KIND },
@@ -45,9 +29,7 @@ export const ALLOWED: Allowed[] = [
   { file: 'lib/import/locations-csv.ts', text: 'store', reason: 'spellings of the kind in a file ("store", "shop"): ' + KIND },
   { file: 'lib/import/locations-csv.ts', text: 'Not a kind of location: use store, head office, DC, warehouse or other.', reason: 'names the kinds: ' + KIND },
   { file: 'lib/queries/live.ts', text: 'store', reason: 'scope kind value ("store" | "group" | "camera"), code only; the description people read says "Location"' },
-  // --- the database still uses these names until P2-5a --------------------------------------------------------------------------------
-  { file: 'lib/admin/access.ts', text: 'stores:', partial: true, reason: POSTGREST },
-  { file: 'lib/queries/groups.ts', text: 'stores', partial: true, reason: POSTGREST },
-  { file: 'lib/queries/inventory.ts', text: 'stores', partial: true, reason: POSTGREST },
-  { file: 'lib/queries/live.ts', text: 'stores', partial: true, reason: POSTGREST },
+  // --- release 1 (T-1 review L1): the import help names the old column spelling that older files still use --------------------------
+  { file: 'lib/import/help.ts', text: 'in older files, store_code', partial: true, reason: 'the import help names the older column name store_code, which files made before T-1 still carry and the reader accepts' },
+  { file: 'lib/import/help.ts', text: 'the older name store_code', partial: true, reason: 'the device import help names the older column name store_code, which the reader still accepts' },
 ]
