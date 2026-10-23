@@ -55,6 +55,40 @@ const openedAt = new Map<string, number>()
 const recently = (kind: 'sub' | 'main', now: number) => (id: string) => now - (openedAt.get(`${kind}:${id}`) ?? 0) < REOPEN_AFTER_MS
 const oldestOpen = (kind: 'sub' | 'main', ids: string[]) => Math.min(...ids.map((id) => openedAt.get(`${kind}:${id}`) ?? 0))
 
+// Fix round 2 (re-review N-1): what the page last asked for, per kind, kept at MODULE level (one per page, not per component), so the
+// first request of the next wall — another component after a route change — releases the cameras of the wall that was left.
+const lastAsked = new Map<'sub' | 'main', string[]>()
+
+// Fix round 2 (re-review N-6): this window's id (one per page load), sent with every request; the database stamps the window's media
+// sessions with it and a release on a request only reaches that window's own tokens. Made with getRandomValues (randomUUID needs https).
+let windowIdValue: string | null = null
+export function windowId(): string {
+  if (windowIdValue) return windowIdValue
+  const b = new Uint8Array(16)
+  globalThis.crypto.getRandomValues(b)
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('')
+  windowIdValue = `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+  return windowIdValue
+}
+
+// Fix round 2 (N-1): leaving (route change = unmount, pagehide, the tab hidden, the idle prompt, the large picture over the grid) hands
+// the tokens the wall holds back to the server (POST /api/live/release, keepalive, best effort): the unused ones — the one-minute
+// renewal's — stop counting against the person's cap at once instead of for up to 90 s. Each token is handed back once.
+const handedBack = new Set<string>()
+export function releaseHeld(tokens: string[]): void {
+  const fresh = tokens.filter((t) => !handedBack.has(t))
+  if (fresh.length === 0 || typeof fetch !== 'function') return
+  if (handedBack.size > 2_000) handedBack.clear()
+  for (const t of fresh) handedBack.add(t)
+  try {
+    void fetch('/api/live/release', { method: 'POST', keepalive: true, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tokens: fresh }) }).catch(() => {})
+  } catch {
+    // best effort: the tokens run out on their own (90 s), and the next wall's first request releases these cameras anyway
+  }
+}
+
 /**
  * Opens the streams for `ids` while `active`, and keeps their tokens fresh (P2-4: a token connects within 90 s): every minute the
  * tokens alone are renewed (renewStreamTokensAction: cctv.live and the person's stream cap checked again, new media sessions, no NVR or
@@ -63,7 +97,8 @@ const oldestOpen = (kind: 'sub' | 'main', ids: string[]) => Math.min(...ids.map(
  * hidden, the large picture is open, nobody is at the screen) everything is dropped, so tiles close their sockets; becoming active again
  * asks for new tokens. Only cameras on `ids` are ever asked for. P4-L1 review I-1: when the list changes, the cameras that left it are
  * released with the next request (their unused tokens stop counting against the cap at once), and `release` adds what another part of
- * the wall let go of (the grid behind the large picture).
+ * the wall let go of (the grid behind the large picture). Fix round 2 (N-1): what was last asked is kept per page (so the next wall
+ * releases it too), and leaving hands the held tokens back (releaseHeld); N-6: every request names this window (windowId).
  */
 export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: boolean, opts: { release?: StreamRelease[] } = {}) {
   const key = `${active ? 'on' : 'off'}|${kind}|${ids.join(',')}`
@@ -71,17 +106,29 @@ export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: bo
   // A different list, kind or activity starts again from nothing (nothing from the old list is kept).
   if (state.key !== key) setState(fresh(key))
   const current = state.key === key ? state : fresh(key)
-  // What this hook last asked for, so the cameras that left the list can be released (review I-1).
-  const lastAsked = useRef<string[]>([])
+  // The tokens this hook holds as of the last commit, for the leave release (read in the cleanups below, before they are replaced).
+  const heldTokens = useRef<string[]>([])
+  useEffect(() => {
+    heldTokens.current = active ? Object.values(current.streams).map((s) => s.token) : []
+  })
+  useEffect(() => {
+    if (!active) return
+    const onPageHide = () => releaseHeld(heldTokens.current)
+    window.addEventListener('pagehide', onPageHide)
+    return () => {
+      window.removeEventListener('pagehide', onPageHide)
+      releaseHeld(heldTokens.current) // unmount (a route change) or no longer active (hidden tab, idle prompt, large picture)
+    }
+  }, [active])
 
   const failed = (error: string) =>
     setState((prev) => (prev.key !== key ? prev : { ...prev, phase: Object.keys(prev.streams).length > 0 ? 'ready' : 'error', error, triedAt: Date.now(), refreshFailed: true }))
 
   const run = (which: string[], mode: 'open' | 'full' | 'tokens', first: boolean) => {
-    const own = first ? releaseFor(lastAsked.current, ids) : []
+    const own = first ? releaseFor(lastAsked.get(kind) ?? [], ids) : []
     const release = [...(own.length > 0 ? [{ cameraIds: own, kind }] : []), ...(first ? (opts.release ?? []) : [])].filter((r) => r.cameraIds.length > 0)
-    const options = release.length > 0 ? { release } : undefined
-    lastAsked.current = ids
+    const options = release.length > 0 ? { release, client: windowId() } : { client: windowId() }
+    lastAsked.set(kind, ids)
     if (mode === 'tokens') {
       renewStreamTokensAction(which, kind, options)
         .then((res) => {

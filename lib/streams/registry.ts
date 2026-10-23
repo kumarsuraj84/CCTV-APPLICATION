@@ -169,7 +169,7 @@ export async function createMediaSessions(
  */
 export async function createLiveSessions(
   admin: AdminClient,
-  o: { orgId: string; userId: string; cameras: { id: string; stream: string }[]; max: number; release?: string[] },
+  o: { orgId: string; userId: string; cameras: { id: string; stream: string }[]; max: number; release?: string[]; client?: string | null },
 ): Promise<{ sids: Map<string, string>; paused: string[] }> {
   const sids = new Map<string, string>()
   const paused: string[] = []
@@ -177,6 +177,7 @@ export async function createLiveSessions(
   const { data, error } = await admin.rpc('media_session_create_live', {
     p_org: o.orgId, p_user: o.userId, p_cameras: o.cameras.map((c) => c.id), p_streams: o.cameras.map((c) => c.stream), p_max: o.max,
     ...(o.release && o.release.length > 0 ? { p_release: o.release } : {}),
+    ...(o.client ? { p_client: o.client } : {}),
   })
   if (error || !Array.isArray(data)) throw new Error(`Could not register the video sessions (${error?.code ?? 'error'}).`)
   for (const r of data as { camera_id: string; sid: string | null; paused: boolean }[]) {
@@ -184,6 +185,17 @@ export async function createLiveSessions(
     else if (r.sid) sids.set(r.camera_id, r.sid)
   }
   return { sids, paused }
+}
+
+/**
+ * Fix round 2 (N-1, N-6): a page that was left lets go of the media sessions of the tokens it held. Revokes only those of them that were
+ * never used (a socket that is open is never ended here); returns how many were revoked; throws when it cannot be asked.
+ */
+export async function releaseLiveSessions(admin: AdminClient, o: { orgId: string; userId: string; sids: string[] }): Promise<number> {
+  if (o.sids.length === 0) return 0
+  const { data, error } = await admin.rpc('media_sessions_release_live', { p_org: o.orgId, p_user: o.userId, p_sids: o.sids })
+  if (error) throw new Error(`Could not release the video sessions (${error.code ?? 'error'}).`)
+  return typeof data === 'number' ? data : 0
 }
 
 /** Ends every open video session of a person at once (deactivation, password reset, role change; D-3). Best effort: false on failure. */

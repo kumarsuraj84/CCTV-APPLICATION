@@ -7,9 +7,9 @@ import { getSecret } from '@/lib/secrets'
 import { checkRecorderTarget } from '@/lib/security/targets'
 import type { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { maxStreamsPerUser } from '@/lib/streams/concurrency'
-import { createLiveSessions } from '@/lib/streams/registry'
+import { createLiveSessions, releaseLiveSessions } from '@/lib/streams/registry'
 import { buildRtspUrl, demoSource, isDemoRecorder } from '@/lib/streams/source'
-import { signStreamToken, streamName, TOKEN_LIFETIME_SEC } from '@/lib/streams/token'
+import { signStreamToken, streamName, TOKEN_LIFETIME_SEC, verifyStreamToken } from '@/lib/streams/token'
 
 // Opens live streams for the cameras a person may watch live: registers each in go2rtc under its stream name and signs a token for it.
 // The RTSP address (with the camera password) exists only inside this function, on its way to go2rtc. What comes back holds no
@@ -44,15 +44,55 @@ export type OpenDeps = {
 export type RenewedToken = { cameraId: string; token: string }
 /** What the wall let go of (P4-L1 review I-1): those cameras' unused tokens are revoked and no longer count against the cap. */
 export type StreamRelease = { cameraIds: string[]; kind: 'sub' | 'main' }
-export type StreamOptions = { release?: StreamRelease[] }
+/**
+ * `client` (fix round 2, N-6): the id of the browser window (one per page load) that asks. Its sessions carry it, and a release only
+ * ever revokes that window's own unused tokens, never another window's token for the same camera.
+ */
+export type StreamOptions = { release?: StreamRelease[]; client?: string }
 
 const cleanIds = (ids: unknown): string[] =>
   Array.isArray(ids) ? [...new Set(ids.filter((id): id is string => typeof id === 'string' && UUID.test(id)).map((id) => id.toLowerCase()))] : []
 
+/** The window id the browser sent, when it is one (anything else: none). */
+export const cleanClient = (c: unknown): string | null => (typeof c === 'string' && UUID.test(c) ? c.toLowerCase() : null)
+
 /** The stream names to release, from what the browser sent (ids only; at most two requests' worth). */
-function releasedStreams(o: StreamOptions | undefined): string[] {
+function releasedStreams(o: Pick<StreamOptions, 'release'> | undefined): string[] {
   if (!o || !Array.isArray(o.release)) return []
   return o.release.slice(0, 4).flatMap((r) => (r && (r.kind === 'sub' || r.kind === 'main') ? cleanIds(r.cameraIds).slice(0, MAX_STREAMS_PER_REQUEST).map((c) => streamName({ c, k: r.kind })) : []))
+}
+
+/** The most tokens one leave release may name (a 6 by 6 wall and its large picture, twice). */
+export const MAX_RELEASE_TOKENS = 76
+
+/**
+ * Fix round 2 (N-1): a page that is left (pagehide, hidden, route change) hands back the live tokens it holds, so the unused ones (the
+ * one-minute renewal's) stop counting against the person's cap at once instead of for up to 90 s. Only tokens this server signed, for
+ * live video and for this person, count; their media sessions are revoked when never used. So a release reaches neither another window's
+ * token for the same camera (N-6) nor a token handed out after the page was left (a next wall on the same camera); a socket that is open
+ * is never ended here (the page closes its sockets itself), and nothing is opened or read. When it cannot be done the tokens simply run
+ * out (90 s).
+ */
+export async function releaseStreams(
+  deps: Pick<OpenDeps, 'admin' | 'now'>,
+  actor: Pick<Actor, 'id' | 'orgId'>,
+  tokens: unknown,
+): Promise<Result<{ released: number }>> {
+  const secret = getSecret('stream_token')
+  if (!secret) return { ok: false, error: MSG_NOT_SET_UP }
+  const now = (deps.now ?? Date.now)()
+  const list = Array.isArray(tokens) ? tokens.slice(0, MAX_RELEASE_TOKENS) : []
+  const sids = [...new Set(list.flatMap((t) => {
+    const c = typeof t === 'string' ? verifyStreamToken(t, now, secret) : null
+    return c && c.u === actor.id && (c.k === 'sub' || c.k === 'main') ? [c.sid] : []
+  }))]
+  if (sids.length === 0) return { ok: true, released: 0 }
+  try {
+    return { ok: true, released: await releaseLiveSessions(deps.admin, { orgId: actor.orgId, userId: actor.id, sids }) }
+  } catch {
+    logger.error({ event: 'release_streams_failed' })
+    return { ok: false, error: MSG_FAILED }
+  }
 }
 
 /**
@@ -84,7 +124,7 @@ export async function renewStreams(
   try {
     made = await createLiveSessions(deps.admin, {
       orgId: actor.orgId, userId: actor.id, cameras: mayWatch.map((id) => ({ id, stream: streamName({ c: id, k: kind }) })),
-      max: maxStreamsPerUser(deps.env ?? process.env), release: releasedStreams(opts),
+      max: maxStreamsPerUser(deps.env ?? process.env), release: releasedStreams(opts), client: cleanClient(opts?.client),
     })
   } catch {
     // Fail closed (review I-1): the cap could not be checked, so nothing new is handed out.
@@ -149,7 +189,7 @@ export async function openStreams(
   try {
     made = await createLiveSessions(deps.admin, {
       orgId: actor.orgId, userId: actor.id, cameras: routable.map((r) => ({ id: r.camera.id, stream: streamName({ c: r.camera.id, k: kind }) })),
-      max: maxStreamsPerUser(env), release: releasedStreams(opts),
+      max: maxStreamsPerUser(env), release: releasedStreams(opts), client: cleanClient(opts?.client),
     })
   } catch {
     logger.error({ event: 'open_streams_sessions_failed' })

@@ -39,7 +39,7 @@ export type StoreStatusRow = {
 export type StateRow = { target_id: string; status: Status; down_since: string | null; last_checked_at: string | null; last_up_at: string | null; error: string | null }
 type KindCounts = { total: number; up: number; down: number; unknown: number; stale: number }
 export type Dashboard = {
-  /** live excludes stale; the five numbers add up to total. */
+  /** live excludes stale; live, down, unknown, stale and unreachable (recorder not reachable, P4-L1 MC-4) add up to total less the cameras whose monitoring is off. */
   cameras: { total: number; live: number; down: number; unknown: number; stale: number; unreachable: number }
   /**
    * P2-5b: `nvrDown` lists every NVR (recorder) that is down — one entry per recorder, with its location — and `nvrStale` counts the
