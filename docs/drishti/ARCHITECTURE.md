@@ -226,7 +226,7 @@ RLS summary (0011, 0014): cameras visible with any CCTV capability covering them
 | `asset_dependencies` | `(child, parent, kind ∈ network/power/recording)`; cycles rejected; cameras depend on their recorder through the mapping | P2-5a schema, WP-4.1 logic (D-5) | PLANNED |
 | `device_capabilities` | per vendor/model/firmware/mode and operation: supported / unsupported / unverified, doc reference, verification state; seeded from the research with nothing `lab_validated` | P2-5a/c (W-2) | PLANNED |
 | History re-keying | `check_state`/`outages` of type `nvr` → `recorder`; soft delete instead of the delete triggers that erase history | P2-5a | PLANNED |
-| `media_sessions` | session registry for video and remote sessions (section 6.6) | P2-4 (D-3) | PLANNED |
+| `media_sessions` | session registry for video and remote sessions (section 6.6) | P2-4 (D-3) | BUILT (migrations `20261021000029`, `…032`; caps and budgets `…040`, `…042`, `…043`; release 1 `…044`) |
 | `worker_leases` | atomic lease with fencing token (section 6.8); `check_requested_at` stays in `worker_state` (no `monitor_requests`, `docs/drishti/worker-lease.md` section 5) | P2-7 (D-8) | BUILT (migration `20261021000036`) |
 | `rate_limit_hits`, `vault_reads`, `security_settings` | shared rate limiter; credential-read log; per-organisation lock of the service key on NVR logins | P2-6 (D-11, D-14) | BUILT (migration `20261021000033`) |
 | Observation states and facets | `check_state.state` ∈ {healthy, degraded, failed, unreachable, unknown_parent, maintenance, unsupported, not_checked}; `stale` computed on read; `evidence jsonb`; per-camera facets reachability / stream / recording | WP-4.1 (D-7) | PLANNED |
@@ -304,9 +304,9 @@ Store / zone / home-store / camera grants became explicit `cctv.live` + `cctv.pl
 
 Not yet enforced anywhere (does not exist): clip export jobs and downloads, remote view/control, diagnostics, scripts, software, configuration, patches, credentials, OS deployment, Wi-Fi operations.
 
-### 5.8 Revocation (design; P2-4 PLANNED)
+### 5.8 Revocation (BUILT, P2-4; section 6.6)
 
-Today: deactivation and password reset end GoTrue sessions (`revoke_user_sessions`, `tests/integration/users-admin.test.ts`); pages and RLS stop at once. **Open video does not stop**: the gateway never re-checks, so a socket can stay open up to its 30-minute cap after being opened with a token valid for 10 minutes (+60 s skew) — about 41 minutes worst case (AC-14, Not implemented). The planned registry (D-3, `p2-4-brief.md`): `media_sessions`; tokens carry `sid` with a 90 s connect window; the gateway calls `media_session_open(sid)` before any upstream connection and `media_sessions_still_valid(sids[])` every 15 s, closing invalid sockets with code 4403 "Access changed" and closing everything after 45 s without an answer (fail closed); admin actions revoke the person's sessions at once; the VOD response re-validates on a timer. Target: ≤ 25 s normally, ≤ 60 s with the database unreachable, both tested.
+Deactivation and password reset end GoTrue sessions (`revoke_user_sessions`, `tests/integration/users-admin.test.ts`); pages and RLS stop at once. Open video stops too (AC-14): the registry `media_sessions` (D-3); tokens carry `sid` with a 90 s connect window; the gateway calls `media_session_open(sid)` before any upstream connection and `media_sessions_still_valid(sids[])` every 15 s, closing invalid sockets with code 4403 "Access changed" and closing everything after 45 s without an answer (fail closed); admin actions revoke the person's sessions at once and access changes mark them at commit (bounded: opened sessions only, once per person per transaction, 1,000 re-checks, 2 s lock wait); the export and fast playback responses re-validate on a timer. Measured 14.7-14.8 s at the 15 s interval; at most 20 s normally, 50 s with the database unreachable (`docs/drishti/access-model.md` "Revoking open video (P2-4)").
 
 ### 5.9 Multi-factor, fresh sign-in and sessions (BUILT in P3-1, D-10, ruling D-10a; migration `20261021000034_p31_mfa_sessions.sql`)
 
@@ -376,7 +376,7 @@ sequenceDiagram
   end
 ```
 
-Open sessions of the person are not touched yet (P2-4).
+Open video sessions of the person end within a minute (P2-4).
 
 ### 6.3 Live video (BUILT; awaiting hardware validation)
 
@@ -456,12 +456,14 @@ Decision D-L1: fast playback is part of `cctv.playback` and reaches the browser 
   - the speed is **signed** in the token (`sp`); the stream layer (`lib/streams/pace.ts`) releases the fragmented MP4 by its own timestamps (mdhd timescale, tfdt) at no more than speed × real time plus a 60 s start burst, for every remux adapter (ffmpeg also reads with `-readrate`, which needs **ffmpeg 5.0 or newer** — checked at start-up and by the availability check); a body that is not a fragmented MP4 is never passed on unpaced. **An hour of recording takes at least 3.75 minutes at 16x and 30 minutes at 2x** (measured in the browser: 16 s of recording per second, 61 s ahead);
   - a **byte cap** per stream (its span × 16 Mbit/s of recording, never above the 2 GB transfer cap), and the NVR transfer is capped the same;
   - a **budget** per person in the database (migration `20261021000042`, `media_session_create_fast` under one advisory lock per person, so every tab and app instance counts): `FAST_PLAYBACK_MINUTES_PER_HOUR` (default 120) and `FAST_PLAYBACK_MINUTES_PER_DAY` (default 480) minutes of recording; a finished stream counts what it released (`media_sessions.fast_media_sec`), a pending or running one its whole span, one never opened nothing; a refusal is audited (`cctv_fast_playback_denied`, reason `budget_hour` / `budget_day`) and the screen says to play at 1x or try later;
-  - **one fast playback per person at a time**: a new one revokes the others (`superseded`; a running one stops within its 15 s check, at once in the same process); **a token plays once**: at its end `media_session_finish` records the seconds and revokes it (`finished`), so it cannot be replayed to restart the clip, and a stream that never started is charged nothing;
+  - **one fast playback per person at a time**: a new one revokes the others (`superseded`; a running one stops within its 15 s check, at once in the same process); **a token plays once**: at its end `media_session_finish` records the seconds and revokes it (`finished`), so it cannot be replayed to restart the clip, and a stream that never started is charged nothing; release 1 (migration `20261021000044`, re-review N-1): `media_session_open` also refuses to reopen a fast session whose first stream closed, so the moment between the close and the finish no longer lets a replay restart it;
+  - **release 1 clean-ups (P4-L2 re-review N-2, N-3, N-6, N-4)**: a stream that released any recording is charged at least 60 s (a one-fragment stream used to cost nothing) and the released time is a running maximum; a reader that over 2 minutes takes less than a quarter of the signed speed while the stream mostly waits for it (not for the NVR) is ended (`slow`) and gives its viewer place back (before, one fragment every ~50 s held a place for the whole clip); after the initialisation only small boxes without time (≤ 64 KB, at most 4 in a row) may go out between fragments, anything else ends the stream as not a recording; a dated git ffmpeg build ("ffmpeg version 2024-05-13-git-…") is accepted when its help lists `-readrate`;
   - the body is **framed** (`lib/streams/framing.ts`: XOR with the token's 32-byte signature, header `x-stream-framing: x32`) so saved bytes are not a playable file — **obfuscation, not encryption**: the key is in the page;
   - **slots (I-2)**: viewers and exports have separate conversion pools (`FAST_PLAYBACK_MAX_CONVERSIONS`, `EXPORT_MAX_CONVERSIONS`, default 8 each; `conversion_busy` logged), one per person, and a stream nobody reads for 60 s (a paused or hidden player) ends and gives its place back; the page then offers "Continue from here" (also at an early end of a clip: m-3);
   - the stream requests have their own count (`fast_stream`, 30 a minute) taken before any refusal is audited (m-1); a viewer never sees ffmpeg configuration words (m-2);
   - what an hour of dumping now costs a playback-only person: at least 3.75 minutes per hour of recording at 16x, at most 2 hours of recording per hour and 8 hours per day, one stream at a time, the bytes framed, every playback and refusal audited with the person, camera and minutes. The export path (`/api/vod`, administrators with `cctv.export`) is not paced and has no budget; it keeps its fresh sign-in, export count and own pool.
 - **What it cannot prevent:** a person can film the screen; developer tools can copy and unframe bytes a page has received, at the paced speed and within the budget. There is no address that hands a recording file to a playback-only person.
+- **Residual risk stated at sign-off (P4-L2 re-review):** the conversion pools (8 viewer streams, 8 exports) are counted **per web process** (`processSingleton`): with N web processes up to N × 8 viewer streams can run at once. Only the budget and the one-fast-stream-per-person rule are database-wide (cross-process). Release 1 runs one web process, so the limit is as stated; a second process must be counted against the NVRs' and the server's capacity before it is added.
 - **Not built:** next-chunk prefetch for gapless 30-minute boundaries (a clip ends and "Continue from here" opens the next), same-time multi-camera playback (LG-8, Release 1.1), the H.265 transcode option (P4-L5 / WP-4.4), automatic clock-offset measurement (WP-5.2).
 
 ```mermaid
@@ -483,7 +485,12 @@ sequenceDiagram
   Note over R,S: re-checked every 15 s; revoked -> NVR transfer and remux stop
 ```
 
-### 6.6 Session revocation (PLANNED, P2-4)
+### 6.6 Session revocation (BUILT, P2-4; migrations `20261021000029`, `20261021000032`, release 1 `20261021000044`; details and measured times in `docs/drishti/access-model.md` "Revoking open video (P2-4)")
+
+Open video of a person who loses access stops within a minute: measured 14.7-14.8 s at the 15 s interval; by design at most 20 s
+normally (15 s + the 5 s call) and 50 s with the database unreachable (fail closed after 45 s). Access changes also mark the affected
+sessions at commit (the deferred trigger on `profiles`: opened sessions only, once per person per transaction, at most 1,000 re-checks,
+a 2 s lock wait whose failure is left to the gateway check; a statement timeout or cancel is not swallowed).
 
 ```mermaid
 sequenceDiagram
@@ -502,7 +509,7 @@ sequenceDiagram
   alt registry unreachable for 45 s
     W->>B: close all ("Cannot verify access")
   end
-  Note over B,W: an earlier token cannot open a new socket: media_session_open(sid) fails -> 1008
+  Note over B,W: a revoked session never opens again: media_session_open(sid) fails -> 1008 (a closed one reopens only within its 90 s window, at most 3 opens; a fast playback session never)
 ```
 
 ### 6.7 Monitoring state machine (BUILT) and check-now (BUILT)
@@ -519,7 +526,7 @@ stateDiagram-v2
   down --> unknown: target switched off (outage closed, state cleared)
 ```
 
-`monitor_apply_results` (`supabase/migrations/20261021000006_monitoring_fixes.sql`, fenced since P2-7: `20261021000036`) applies batches atomically; only the worker's role and the service role may call it, with the current lease token (section 6.8); a result older than its target's last check is skipped; a failure left from before a worker stop is discarded when a recorded gap overlaps the silent period; results for switched-off targets are ignored. Display: Live / Offline / Not checked yet / Not checked lately (last good result older than 20 minutes, excluded from Live counts).
+`monitor_apply_results` (`supabase/migrations/20261021000006_monitoring_fixes.sql`, fenced since P2-7: `20261021000036`) applies batches atomically; only the worker's role and the service role may call it, with the current lease token (section 6.8); a result older than its target's last check is skipped when it comes from the same lease epoch and is less than 10 minutes late (a newer epoch always applies; 10 minutes or more is a clock step and applies: migrations `20261021000039`, `20261021000044`); a failure left from before a worker stop is discarded when a recorded gap overlaps the silent period; results for switched-off targets are ignored. Display: Live / Offline / Not checked yet / Not checked lately (last good result older than 20 minutes, excluded from Live counts).
 
 ```mermaid
 sequenceDiagram
@@ -562,9 +569,18 @@ sequenceDiagram
 
 Built with it (migration `20261021000036`): every worker write is a function that checks the token first in its own transaction
 (`worker_fence`: `FOR SHARE` on the lease row, so a takeover waits for a write in progress and a later write sees the new token;
-SQLSTATE WL001, the whole call rolled back); the SQL guard skipping results older than `last_checked_at`; check-now requests surviving
-a takeover (the new holder repeats the open run once). The lease name is a parameter (`monitor:shard-n` later), but targets are not yet
-split between shards.
+SQLSTATE WL001, the whole call rolled back); check-now requests surviving a takeover (the new holder repeats the open run once).
+Review round 1 (migration `20261021000039`): the fences are scoped to the rows they protect (`worker_fence_global` for the global
+worker rows: lease `monitor` only; `worker_fence_org` for results: `monitor`, `monitor:<shard>`, `test:` on test organisations); every
+acquisition is a new epoch (token + 1, also for the live holder asking again); a result more than 30 s ahead of the database clock is
+dated `now()`; the late-result guard is **per epoch** — a result older than `last_checked_at` is skipped only when it comes from the same
+lease and the same or an older token (a newer epoch always applies); the heartbeat answers the worker-clock difference
+(`clockSkewSec`, warning beyond 30 s, shown on the Monitoring and Health pages); direct writes of `worker_state` / `monitor_gaps` by the
+service key are refused (`worker_rows_guard`). Release 1 (migration `20261021000044`): the late-result guard skips only results less
+than 10 minutes late (10 minutes or more in one epoch is a worker clock stepped back, and applies); the fixtures' header that lets the
+test fixtures write the worker rows is honoured only where `public.test_fixture_switch` is on (the local stack; off in production);
+`stop()` waits at most 3 s for an acquisition in flight. The lease name is a parameter (`monitor:shard-n` later), but targets are not
+yet split between shards.
 
 ### 6.9 Agent check-in and signed command (PLANNED, WP-6.1 / WP-7.1, D-9)
 
@@ -768,7 +784,7 @@ The requirement-level status is the tracker (`docs/drishti/DELIVERY-STATUS.md`, 
 | P2-2 enforcement | migrations 0013-0014, `34b8809`, `3fe957a` | BUILT, reviewed |
 | P2-3 access administration | migrations 0015-0016, `78fd7d8`, docs `ce55736`, `0a33411` | BUILT; **independent review in progress** |
 | T-1 Store → Location wording and routes (+ P2-5c re-review cleanups) | `t1-brief.md`, `.superpowers/sdd/drishti/t1-report.md` | BUILT (see the tracker) |
-| P2-4 session registry, ≤ 60 s revocation (WP-2.2) | `p2-4-brief.md` | PLANNED |
+| P2-4 session registry, ≤ 60 s revocation (WP-2.2) | `p2-4-brief.md`, `p2-4-report.md` | BUILT (re-review approved; release 1 clean-ups N1-N3) |
 | P2-5a/b/c locations, assets, recorders, mappings, network definitions, Wi-Fi inventory, import + discover-all (WP-2.3) | `p2-5-brief.md` | PLANNED |
 | P2-6 credential/SQL hardening, service roles, outbound restriction, shared rate limits (WP-2.4, D-11, D-14) | `p2-6-brief.md`, `p2-6-report.md` | BUILT (review pending) |
 | P2-7 worker lease and fencing (WP-2.5) | `p2-7-brief.md`, `p2-7-report.md`, `docs/drishti/worker-lease.md` | BUILT (review pending) |
@@ -789,7 +805,7 @@ Working tree at writing: `docs/drishti/DECISIONS.md` and `DELIVERY-STATUS.md` ha
 ### 12.1 Limitations of the built parts
 
 1. One NVR per store row; camera identity tied to `(store_id, channel)`; deleting a camera erases its monitoring state (P2-5).
-2. Open video survives revocation and deactivation for up to about 41 minutes (P2-4).
+2. Open video stops within a minute of a revocation or deactivation (P2-4, measured 14.7 s at the 15 s interval; 50 s at most with the database unreachable).
 3. P3-1: two-step sign-in (TOTP), the per-organisation switch, fresh sign-in and session limits are built (section 5.9). Left: the switch is off on the local stack; TOTP needs the local stack restarted to be on (`supabase/config.toml`); one authenticator app per person (no second factor or recovery codes: a super administrator resets); the idle timer counts the Live wall's own renewals as activity.
 4. NVR-down marks cameras down; no unreachable/unknown/maintenance states; no recording health (WP-4.1, WP-5.2).
 5. P2-7 replaced the heartbeat guard with a fenced lease and moved the late-result guard into SQL. Left: check-now is global across organisations; the NVR login back-off is in the worker's memory only; one lease for all targets (sharding needs the targets split first).
@@ -832,7 +848,7 @@ Hikvision ISAPI variants across firmware (search paging, times without `Z`, `dai
 
 Pilot blockers, each a named package:
 
-1. **Revocation**: removing a person's access does not stop video they already opened (P2-4; directive target ≤ 60 s, tested).
+1. **Revocation**: (resolved by P2-4) removing a person's access stops video they already opened within a minute (directive target ≤ 60 s, tested: `tests/integration/media-revocation.test.ts`).
 2. **Real data model**: one NVR per store; locations with several NVRs, head office without an NVR and stable camera identity across remaps do not exist; the real estate is not imported (P2-5; D-L4).
 3. **Hardening required "before any real pilot"** by the directive: MFA and fresh authentication for privileged people (P3), per-service least privilege and closed outbound targets (P2-6), go2rtc API credentials and listener review (D-13), shared rate limits (D-11), CSP (D-12), TLS for app and gateway (external certificates), atomic worker lease (P2-7).
 4. **Honest monitoring**: NVR or WAN loss is reported as camera failure (WP-4.1) — a pilot would produce misleading outage figures.
