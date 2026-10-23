@@ -1,0 +1,164 @@
+{
+  "mode": "ci",
+  "at": "2026-10-23T02:20:32.591Z",
+  "machine": {
+    "cpu": "Intel(R) Core(TM) i9-14900KS",
+    "logicalCpus": 32,
+    "ramGb": 128,
+    "freeRamGbAtStart": 91,
+    "os": "Windows_NT 10.0.26200",
+    "node": "v24.14.0"
+  },
+  "workload": {
+    "viewers": 10,
+    "subStreams": 100,
+    "mainStreams": 20,
+    "rampSec": 10,
+    "holdSec": 60,
+    "profiles": {
+      "sub": {
+        "kbps": 512,
+        "fps": 15
+      },
+      "main": {
+        "kbps": 2048,
+        "fps": 25
+      }
+    },
+    "proxyHops": 0,
+    "gatewayCheckEverySec": 15
+  },
+  "sessionStartMs": {
+    "n": 100,
+    "p50": 125.2,
+    "p95": 184.4,
+    "p99": 200.4,
+    "max": 200.4
+  },
+  "parts": {
+    "tokenIssueMs": {
+      "n": 20,
+      "p50": 35.5,
+      "p95": 53.5,
+      "p99": 67.3,
+      "max": 67.3
+    },
+    "socketOpenMs": {
+      "n": 100,
+      "p50": 3.5,
+      "p95": 17.7,
+      "p99": 19.6,
+      "max": 20.4
+    },
+    "openToFirstFragmentMs": {
+      "n": 100,
+      "p50": 83.5,
+      "p95": 100.4,
+      "p99": 112.3,
+      "max": 113.1
+    }
+  },
+  "failures": 20,
+  "failureReasons": [
+    "1013 Too many open videos from this address."
+  ],
+  "droppedDuringHold": 20,
+  "droppedReasons": [
+    "1013 Too many open videos from this address."
+  ],
+  "stalls": 0,
+  "silentAtEnd": 0,
+  "fragmentsPerSecond": {
+    "sub": {
+      "n": 90,
+      "p50": 15,
+      "p95": 15.1,
+      "p99": 15.1,
+      "max": 15.1
+    },
+    "main": {
+      "n": 18,
+      "p50": 25.1,
+      "p95": 25.1,
+      "p99": 25.1,
+      "max": 25.1
+    }
+  },
+  "throughputMbitPerSec": 62.9,
+  "revocationUnderLoad": {
+    "sockets": 12,
+    "closeMs": {
+      "n": 12,
+      "p50": 12986.1,
+      "p95": 12986.3,
+      "p99": 12986.3,
+      "max": 12986.3
+    },
+    "allClosed4403": true
+  },
+  "gateway": {
+    "idle": {
+      "type": "sample",
+      "at": 1792721957820,
+      "cpuPctOfOneCore": 0,
+      "rssMb": 76.921875,
+      "heapUsedMb": 12.322364807128906,
+      "openSessions": 0,
+      "loopDelayP99Ms": 16.408575
+    },
+    "cpuPctOfOneCore": {
+      "n": 31,
+      "p50": 6.2,
+      "p95": 26.4,
+      "p99": 31.8,
+      "max": 31.8
+    },
+    "rssMb": {
+      "n": 31,
+      "p50": 117.9,
+      "p95": 120.3,
+      "p99": 123.3,
+      "max": 123.3
+    },
+    "heapUsedMb": {
+      "n": 31,
+      "p50": 25.9,
+      "p95": 27.5,
+      "p99": 28.2,
+      "max": 28.2
+    },
+    "loopDelayP99Ms": {
+      "n": 31,
+      "p50": 16.4,
+      "p95": 20.7,
+      "p99": 41.3,
+      "max": 41.3
+    },
+    "openSessionsMax": 100,
+    "events": {
+      "started": 100,
+      "full": 20,
+      "revoked": 12
+    }
+  },
+  "registry": {
+    "openMs": {
+      "n": 100,
+      "p50": 9.9,
+      "p95": 30.2,
+      "p99": 34.9,
+      "max": 37.1
+    },
+    "stillValidMs": {
+      "n": 5,
+      "p50": 38.6,
+      "p95": 54.5,
+      "p99": 54.5,
+      "max": 54.5
+    },
+    "stillValidChecks": 5,
+    "stillValidSessionsMax": 100,
+    "closes": 12
+  },
+  "tokenCheckMicroseconds": 2.88
+}

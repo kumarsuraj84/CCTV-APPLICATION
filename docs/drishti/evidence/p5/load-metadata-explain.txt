@@ -1,0 +1,500 @@
+# EXPLAIN (ANALYZE, BUFFERS) — synthetic estate of 216 locations, 4637 cameras (2026-10-23T02:43:15.063Z)
+                                     set_config                                     
+------------------------------------------------------------------------------------
+ {"sub":"<id>","role":"authenticated","aal":"aal1"}
+(1 row)
+
+--- organisation (control room, IT view): location_status (Locations list, Home) ---
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Hash Left Join (actual time=16.010..16.116 rows=216 loops=1)
+   Hash Cond: (l.id = rec.location_id)
+   Buffers: shared hit=2413
+   InitPlan 1
+     ->  Result (actual time=0.081..0.081 rows=1 loops=1)
+           Buffers: shared hit=2
+   ->  Hash Join (actual time=13.978..14.054 rows=216 loops=1)
+         Hash Cond: (l.id = (any_grant_location_ids()))
+         Buffers: shared hit=2287
+         ->  Hash Right Join (actual time=9.741..9.798 rows=216 loops=1)
+               Hash Cond: (c.location_id = l.id)
+               Buffers: shared hit=1192
+               ->  HashAggregate (actual time=9.608..9.639 rows=216 loops=1)
+                     Group Key: c.location_id
+                     Batches: 1  Memory Usage: 93kB
+                     Buffers: shared hit=1182
+                     InitPlan 2
+                       ->  Result (actual time=0.039..0.039 rows=1 loops=1)
+                             Buffers: shared hit=2
+                     ->  Hash Left Join (actual time=6.772..8.794 rows=4637 loops=1)
+                           Hash Cond: (c.recorder_id = ra.id)
+                           Buffers: shared hit=1182
+                           ->  Hash Left Join (actual time=6.701..8.367 rows=4637 loops=1)
+                                 Hash Cond: (c.recorder_id = r.id)
+                                 Buffers: shared hit=1173
+                                 ->  Hash Right Join (actual time=6.623..7.924 rows=4637 loops=1)
+                                       Hash Cond: (cs.target_id = c.id)
+                                       Buffers: shared hit=1161
+                                       ->  Seq Scan on check_state cs (actual time=0.032..0.791 rows=4637 loops=1)
+                                             Filter: ((target_type = 'camera'::text) AND (org_id = (InitPlan 2).col1))
+                                             Rows Removed by Filter: 216
+                                             Buffers: shared hit=216
+                                       ->  Hash (actual time=6.588..6.591 rows=4637 loops=1)
+                                             Buckets: 8192 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 499kB
+                                             Buffers: shared hit=945
+                                             ->  Hash Join (actual time=5.581..6.213 rows=4637 loops=1)
+                                                   Hash Cond: (c.id = (any_cctv_camera_ids()))
+                                                   Buffers: shared hit=945
+                                                   ->  Seq Scan on cameras c (actual time=0.761..1.060 rows=4637 loops=1)
+                                                         Filter: (is_active AND (archived_at IS NULL) AND (org_id = (InitPlan 2).col1))
+                                                         Rows Removed by Filter: 4637
+                                                         Buffers: shared hit=158
+                                                   ->  Hash (actual time=4.814..4.816 rows=4637 loops=1)
+                                                         Buckets: 8192 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 282kB
+                                                         Buffers: shared hit=787
+                                                         ->  HashAggregate (actual time=4.387..4.576 rows=4637 loops=1)
+                                                               Group Key: any_cctv_camera_ids()
+                                                               Batches: 1  Memory Usage: 481kB
+                                                               Buffers: shared hit=787
+                                                               ->  ProjectSet (actual time=2.361..3.783 rows=4637 loops=1)
+                                                                     Buffers: shared hit=787
+                                                                     ->  Result (actual time=0.000..0.001 rows=1 loops=1)
+                                 ->  Hash (actual time=0.073..0.073 rows=432 loops=1)
+                                       Buckets: 1024  Batches: 1  Memory Usage: 29kB
+                                       Buffers: shared hit=12
+                                       ->  Seq Scan on recorders r (actual time=0.004..0.046 rows=432 loops=1)
+                                             Buffers: shared hit=12
+                           ->  Hash (actual time=0.068..0.068 rows=432 loops=1)
+                                 Buckets: 1024  Batches: 1  Memory Usage: 29kB
+                                 Buffers: shared hit=9
+                                 ->  Seq Scan on assets ra (actual time=0.003..0.041 rows=432 loops=1)
+                                       Buffers: shared hit=9
+               ->  Hash (actual time=0.128..0.128 rows=216 loops=1)
+                     Buckets: 1024  Batches: 1  Memory Usage: 22kB
+                     Buffers: shared hit=10
+                     ->  Seq Scan on locations l (actual time=0.085..0.113 rows=216 loops=1)
+                           Filter: (is_active AND (archived_at IS NULL) AND (org_id = (InitPlan 1).col1))
+                           Rows Removed by Filter: 216
+                           Buffers: shared hit=10
+         ->  Hash (actual time=4.227..4.228 rows=216 loops=1)
+               Buckets: 1024  Batches: 1  Memory Usage: 19kB
+               Buffers: shared hit=1095
+               ->  HashAggregate (actual time=4.204..4.213 rows=216 loops=1)
+                     Group Key: any_grant_location_ids()
+                     Batches: 1  Memory Usage: 48kB
+                     Buffers: shared hit=1095
+                     ->  ProjectSet (actual time=4.005..4.178 rows=216 loops=1)
+                           Buffers: shared hit=1095
+                           ->  Result (actual time=0.000..0.001 rows=1 loops=1)
+   ->  Hash (actual time=2.025..2.028 rows=216 loops=1)
+         Buckets: 1024  Batches: 1  Memory Usage: 29kB
+         Buffers: shared hit=126
+         ->  Subquery Scan on rec (actual time=1.965..2.003 rows=216 loops=1)
+               Buffers: shared hit=126
+               ->  HashAggregate (actual time=1.963..1.990 rows=216 loops=1)
+                     Group Key: r_1.location_id
+                     Batches: 1  Memory Usage: 160kB
+                     Buffers: shared hit=126
+                     InitPlan 3
+                       ->  Result (actual time=0.068..0.069 rows=1 loops=1)
+                             Buffers: shared hit=2
+                     ->  Hash Right Join (actual time=1.773..1.847 rows=216 loops=1)
+                           Hash Cond: (rs.target_id = r_1.id)
+                           Buffers: shared hit=126
+                           ->  Bitmap Heap Scan on check_state rs (actual time=0.072..0.116 rows=216 loops=1)
+                                 Recheck Cond: ((org_id = (InitPlan 3).col1) AND (target_type = 'recorder'::text))
+                                 Heap Blocks: exact=15
+                                 Buffers: shared hit=18
+                                 ->  Bitmap Index Scan on check_state_status_idx (actual time=0.059..0.060 rows=216 loops=1)
+                                       Index Cond: ((org_id = (InitPlan 3).col1) AND (target_type = 'recorder'::text))
+                                       Buffers: shared hit=3
+                           ->  Hash (actual time=1.696..1.698 rows=216 loops=1)
+                                 Buckets: 1024  Batches: 1  Memory Usage: 26kB
+                                 Buffers: shared hit=108
+                                 ->  Hash Join (actual time=1.552..1.655 rows=216 loops=1)
+                                       Hash Cond: (a.id = (it_view_recorder_ids()))
+                                       Buffers: shared hit=108
+                                       ->  Hash Join (actual time=0.118..0.201 rows=216 loops=1)
+                                             Hash Cond: (a.id = r_1.id)
+                                             Buffers: shared hit=23
+                                             ->  Seq Scan on assets a (actual time=0.002..0.038 rows=432 loops=1)
+                                                   Filter: (archived_at IS NULL)
+                                                   Buffers: shared hit=9
+                                             ->  Hash (actual time=0.106..0.107 rows=216 loops=1)
+                                                   Buckets: 1024  Batches: 1  Memory Usage: 26kB
+                                                   Buffers: shared hit=14
+                                                   ->  Seq Scan on recorders r_1 (actual time=0.073..0.094 rows=216 loops=1)
+                                                         Filter: (org_id = (InitPlan 3).col1)
+                                                         Rows Removed by Filter: 216
+                                                         Buffers: shared hit=14
+                                       ->  Hash (actual time=1.424..1.425 rows=216 loops=1)
+                                             Buckets: 1024  Batches: 1  Memory Usage: 19kB
+                                             Buffers: shared hit=85
+                                             ->  HashAggregate (actual time=1.403..1.411 rows=216 loops=1)
+                                                   Group Key: it_view_recorder_ids()
+                                                   Batches: 1  Memory Usage: 48kB
+                                                   Buffers: shared hit=85
+                                                   ->  ProjectSet (actual time=1.232..1.375 rows=216 loops=1)
+                                                         Buffers: shared hit=85
+                                                         ->  Result (actual time=0.000..0.001 rows=1 loops=1)
+ Planning:
+   Buffers: shared hit=873
+ Planning Time: 2.104 ms
+ Execution Time: 16.461 ms
+(134 rows)
+
+--- organisation (control room, IT view): status_rollups(cctv.live) (Live tree, Home cards) ---
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
+ Function Scan on status_rollups (actual time=14.960..14.966 rows=252 loops=1)
+   Buffers: shared hit=1504
+ Planning Time: 0.014 ms
+ Execution Time: 15.054 ms
+(4 rows)
+
+--- organisation (control room, IT view): recorder_status (NVR states, IT view) ---
+                                             QUERY PLAN                                              
+-----------------------------------------------------------------------------------------------------
+ Hash Right Join (actual time=1.071..1.129 rows=216 loops=1)
+   Hash Cond: (rs.target_id = r.id)
+   Buffers: shared hit=126
+   InitPlan 1
+     ->  Result (actual time=0.046..0.047 rows=1 loops=1)
+           Buffers: shared hit=2
+   ->  Bitmap Heap Scan on check_state rs (actual time=0.012..0.037 rows=216 loops=1)
+         Recheck Cond: ((org_id = (InitPlan 1).col1) AND (target_type = 'recorder'::text))
+         Heap Blocks: exact=15
+         Buffers: shared hit=18
+         ->  Bitmap Index Scan on check_state_status_idx (actual time=0.009..0.009 rows=216 loops=1)
+               Index Cond: ((org_id = (InitPlan 1).col1) AND (target_type = 'recorder'::text))
+               Buffers: shared hit=3
+   ->  Hash (actual time=1.055..1.057 rows=216 loops=1)
+         Buckets: 1024  Batches: 1  Memory Usage: 27kB
+         Buffers: shared hit=108
+         ->  Hash Join (actual time=0.968..1.038 rows=216 loops=1)
+               Hash Cond: (a.id = (it_view_recorder_ids()))
+               Buffers: shared hit=108
+               ->  Hash Join (actual time=0.089..0.143 rows=216 loops=1)
+                     Hash Cond: (a.id = r.id)
+                     Buffers: shared hit=23
+                     ->  Seq Scan on assets a (actual time=0.001..0.034 rows=432 loops=1)
+                           Filter: (archived_at IS NULL)
+                           Buffers: shared hit=9
+                     ->  Hash (actual time=0.082..0.082 rows=216 loops=1)
+                           Buckets: 1024  Batches: 1  Memory Usage: 26kB
+                           Buffers: shared hit=14
+                           ->  Seq Scan on recorders r (actual time=0.049..0.069 rows=216 loops=1)
+                                 Filter: (org_id = (InitPlan 1).col1)
+                                 Rows Removed by Filter: 216
+                                 Buffers: shared hit=14
+               ->  Hash (actual time=0.878..0.879 rows=216 loops=1)
+                     Buckets: 1024  Batches: 1  Memory Usage: 19kB
+                     Buffers: shared hit=85
+                     ->  HashAggregate (actual time=0.858..0.866 rows=216 loops=1)
+                           Group Key: it_view_recorder_ids()
+                           Batches: 1  Memory Usage: 48kB
+                           Buffers: shared hit=85
+                           ->  ProjectSet (actual time=0.694..0.834 rows=216 loops=1)
+                                 Buffers: shared hit=85
+                                 ->  Result (actual time=0.000..0.000 rows=1 loops=1)
+ Planning:
+   Buffers: shared hit=41
+ Planning Time: 0.280 ms
+ Execution Time: 1.158 ms
+(46 rows)
+
+--- organisation (control room, IT view): cameras under row security (any CCTV right) ---
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Seq Scan on cameras (actual time=3.785..4.339 rows=4637 loops=1)
+   Filter: ((ANY (id = (hashed SubPlan 2).col1)) AND (org_id = (InitPlan 1).col1))
+   Rows Removed by Filter: 4637
+   Buffers: shared hit=933
+   InitPlan 1
+     ->  Result (actual time=0.093..0.093 rows=1 loops=1)
+           Buffers: shared hit=2
+   SubPlan 2
+     ->  ProjectSet (actual time=1.795..2.934 rows=4637 loops=1)
+           Buffers: shared hit=775
+           ->  Result (actual time=0.000..0.000 rows=1 loops=1)
+ Planning:
+   Buffers: shared hit=3
+ Planning Time: 0.040 ms
+ Execution Time: 4.447 ms
+(15 rows)
+
+--- organisation (control room, IT view): my_access_summary() (every request) ---
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Function Scan on my_access_summary (actual time=1.717..1.718 rows=4 loops=1)
+   Buffers: shared hit=109
+ Planning Time: 0.014 ms
+ Execution Time: 1.760 ms
+(4 rows)
+
+--- organisation (control room, IT view): cameras_with_capability(cctv.live, 25 ids) (opening a wall) ---
+                                                     QUERY PLAN                                                     
+--------------------------------------------------------------------------------------------------------------------
+ ProjectSet (actual time=6.172..6.233 rows=25 loops=1)
+   Buffers: shared hit=921
+   InitPlan 3
+     ->  Aggregate (actual time=5.154..5.156 rows=1 loops=1)
+           Buffers: shared hit=783
+           ->  Limit (actual time=5.122..5.148 rows=25 loops=1)
+                 Buffers: shared hit=783
+                 InitPlan 1
+                   ->  Result (actual time=0.113..0.114 rows=1 loops=1)
+                         Buffers: shared hit=2
+                 ->  Index Only Scan using cameras_id_org_key on cameras (actual time=5.121..5.145 rows=25 loops=1)
+                       Index Cond: (org_id = (InitPlan 1).col1)
+                       Filter: (ANY (id = (hashed SubPlan 2).col1))
+                       Heap Fetches: 2
+                       Buffers: shared hit=783
+                       SubPlan 2
+                         ->  ProjectSet (actual time=2.775..4.410 rows=4637 loops=1)
+                               Buffers: shared hit=775
+                               ->  Result (actual time=0.000..0.001 rows=1 loops=1)
+   ->  Result (actual time=0.000..0.001 rows=1 loops=1)
+ Planning Time: 0.103 ms
+ Execution Time: 6.261 ms
+(22 rows)
+
+                                     set_config                                     
+------------------------------------------------------------------------------------
+ {"sub":"<id>","role":"authenticated","aal":"aal1"}
+(1 row)
+
+--- cluster: location_status (Locations list, Home) ---
+                                                               QUERY PLAN                                                               
+----------------------------------------------------------------------------------------------------------------------------------------
+ Hash Left Join (actual time=5.456..5.486 rows=7 loops=1)
+   Hash Cond: (l.id = rec.location_id)
+   Buffers: shared hit=793
+   InitPlan 1
+     ->  Result (actual time=0.052..0.052 rows=1 loops=1)
+           Buffers: shared hit=2
+   ->  Hash Join (actual time=4.443..4.469 rows=7 loops=1)
+         Hash Cond: (l.id = (any_grant_location_ids()))
+         Buffers: shared hit=700
+         ->  Hash Right Join (actual time=3.077..3.094 rows=216 loops=1)
+               Hash Cond: (c.location_id = l.id)
+               Buffers: shared hit=580
+               ->  HashAggregate (actual time=2.982..2.987 rows=7 loops=1)
+                     Group Key: c.location_id
+                     Batches: 1  Memory Usage: 37kB
+                     Buffers: shared hit=570
+                     InitPlan 2
+                       ->  Result (actual time=0.036..0.036 rows=1 loops=1)
+                             Buffers: shared hit=2
+                     ->  Hash Left Join (actual time=2.284..2.941 rows=150 loops=1)
+                           Hash Cond: (c.recorder_id = ra.id)
+                           Buffers: shared hit=570
+                           ->  Hash Left Join (actual time=2.234..2.879 rows=150 loops=1)
+                                 Hash Cond: (c.recorder_id = r.id)
+                                 Buffers: shared hit=561
+                                 ->  Hash Right Join (actual time=2.175..2.807 rows=150 loops=1)
+                                       Hash Cond: (cs.target_id = c.id)
+                                       Buffers: shared hit=549
+                                       ->  Seq Scan on check_state cs (actual time=0.010..0.520 rows=4637 loops=1)
+                                             Filter: ((target_type = 'camera'::text) AND (org_id = (InitPlan 2).col1))
+                                             Rows Removed by Filter: 216
+                                             Buffers: shared hit=216
+                                       ->  Hash (actual time=2.097..2.098 rows=150 loops=1)
+                                             Buckets: 1024  Batches: 1  Memory Usage: 23kB
+                                             Buffers: shared hit=333
+                                             ->  Hash Join (actual time=1.667..2.085 rows=150 loops=1)
+                                                   Hash Cond: (c.id = (any_cctv_camera_ids()))
+                                                   Buffers: shared hit=333
+                                                   ->  Seq Scan on cameras c (actual time=0.225..0.474 rows=4637 loops=1)
+                                                         Filter: (is_active AND (archived_at IS NULL) AND (org_id = (InitPlan 2).col1))
+                                                         Rows Removed by Filter: 4637
+                                                         Buffers: shared hit=158
+                                                   ->  Hash (actual time=1.438..1.439 rows=150 loops=1)
+                                                         Buckets: 1024  Batches: 1  Memory Usage: 16kB
+                                                         Buffers: shared hit=175
+                                                         ->  HashAggregate (actual time=1.422..1.429 rows=150 loops=1)
+                                                               Group Key: any_cctv_camera_ids()
+                                                               Batches: 1  Memory Usage: 40kB
+                                                               Buffers: shared hit=175
+                                                               ->  ProjectSet (actual time=1.366..1.406 rows=150 loops=1)
+                                                                     Buffers: shared hit=175
+                                                                     ->  Result (actual time=0.000..0.000 rows=1 loops=1)
+                                 ->  Hash (actual time=0.056..0.057 rows=432 loops=1)
+                                       Buckets: 1024  Batches: 1  Memory Usage: 29kB
+                                       Buffers: shared hit=12
+                                       ->  Seq Scan on recorders r (actual time=0.002..0.035 rows=432 loops=1)
+                                             Buffers: shared hit=12
+                           ->  Hash (actual time=0.049..0.049 rows=432 loops=1)
+                                 Buckets: 1024  Batches: 1  Memory Usage: 29kB
+                                 Buffers: shared hit=9
+                                 ->  Seq Scan on assets ra (actual time=0.002..0.027 rows=432 loops=1)
+                                       Buffers: shared hit=9
+               ->  Hash (actual time=0.093..0.093 rows=216 loops=1)
+                     Buckets: 1024  Batches: 1  Memory Usage: 22kB
+                     Buffers: shared hit=10
+                     ->  Seq Scan on locations l (actual time=0.054..0.081 rows=216 loops=1)
+                           Filter: (is_active AND (archived_at IS NULL) AND (org_id = (InitPlan 1).col1))
+                           Rows Removed by Filter: 216
+                           Buffers: shared hit=10
+         ->  Hash (actual time=1.363..1.364 rows=7 loops=1)
+               Buckets: 1024  Batches: 1  Memory Usage: 9kB
+               Buffers: shared hit=120
+               ->  HashAggregate (actual time=1.361..1.362 rows=7 loops=1)
+                     Group Key: any_grant_location_ids()
+                     Batches: 1  Memory Usage: 40kB
+                     Buffers: shared hit=120
+                     ->  ProjectSet (actual time=1.344..1.359 rows=7 loops=1)
+                           Buffers: shared hit=120
+                           ->  Result (actual time=0.000..0.000 rows=1 loops=1)
+   ->  Hash (actual time=1.009..1.011 rows=0 loops=1)
+         Buckets: 1024  Batches: 1  Memory Usage: 8kB
+         Buffers: shared hit=93
+         ->  Subquery Scan on rec (actual time=1.009..1.011 rows=0 loops=1)
+               Buffers: shared hit=93
+               ->  HashAggregate (actual time=1.008..1.010 rows=0 loops=1)
+                     Group Key: r_1.location_id
+                     Batches: 1  Memory Usage: 24kB
+                     Buffers: shared hit=93
+                     InitPlan 3
+                       ->  Result (never executed)
+                     ->  Hash Right Join (actual time=1.007..1.009 rows=0 loops=1)
+                           Hash Cond: (rs.target_id = r_1.id)
+                           Buffers: shared hit=93
+                           ->  Bitmap Heap Scan on check_state rs (never executed)
+                                 Recheck Cond: ((org_id = (InitPlan 3).col1) AND (target_type = 'recorder'::text))
+                                 ->  Bitmap Index Scan on check_state_status_idx (never executed)
+                                       Index Cond: ((org_id = (InitPlan 3).col1) AND (target_type = 'recorder'::text))
+                           ->  Hash (actual time=1.006..1.007 rows=0 loops=1)
+                                 Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                                 Buffers: shared hit=93
+                                 ->  Hash Join (actual time=1.006..1.006 rows=0 loops=1)
+                                       Hash Cond: (a.id = (it_view_recorder_ids()))
+                                       Buffers: shared hit=93
+                                       ->  Hash Join (never executed)
+                                             Hash Cond: (a.id = r_1.id)
+                                             ->  Seq Scan on assets a (never executed)
+                                                   Filter: (archived_at IS NULL)
+                                             ->  Hash (never executed)
+                                                   ->  Seq Scan on recorders r_1 (never executed)
+                                                         Filter: (org_id = (InitPlan 3).col1)
+                                       ->  Hash (actual time=1.002..1.002 rows=0 loops=1)
+                                             Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                                             Buffers: shared hit=93
+                                             ->  HashAggregate (actual time=1.001..1.001 rows=0 loops=1)
+                                                   Group Key: it_view_recorder_ids()
+                                                   Batches: 1  Memory Usage: 40kB
+                                                   Buffers: shared hit=93
+                                                   ->  ProjectSet (actual time=1.000..1.000 rows=0 loops=1)
+                                                         Buffers: shared hit=93
+                                                         ->  Result (actual time=0.000..0.000 rows=1 loops=1)
+ Planning:
+   Buffers: shared hit=48
+ Planning Time: 0.759 ms
+ Execution Time: 5.572 ms
+(124 rows)
+
+--- cluster: status_rollups(cctv.live) (Live tree, Home cards) ---
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
+ Function Scan on status_rollups (actual time=7.333..7.333 rows=9 loops=1)
+   Buffers: shared hit=797
+ Planning Time: 0.011 ms
+ Execution Time: 7.413 ms
+(4 rows)
+
+--- cluster: recorder_status (NVR states, IT view) ---
+                                          QUERY PLAN                                           
+-----------------------------------------------------------------------------------------------
+ Hash Right Join (actual time=0.834..0.836 rows=0 loops=1)
+   Hash Cond: (rs.target_id = r.id)
+   Buffers: shared hit=93
+   InitPlan 1
+     ->  Result (never executed)
+   ->  Bitmap Heap Scan on check_state rs (never executed)
+         Recheck Cond: ((org_id = (InitPlan 1).col1) AND (target_type = 'recorder'::text))
+         ->  Bitmap Index Scan on check_state_status_idx (never executed)
+               Index Cond: ((org_id = (InitPlan 1).col1) AND (target_type = 'recorder'::text))
+   ->  Hash (actual time=0.833..0.834 rows=0 loops=1)
+         Buckets: 1024  Batches: 1  Memory Usage: 8kB
+         Buffers: shared hit=93
+         ->  Hash Join (actual time=0.833..0.833 rows=0 loops=1)
+               Hash Cond: (a.id = (it_view_recorder_ids()))
+               Buffers: shared hit=93
+               ->  Hash Join (never executed)
+                     Hash Cond: (a.id = r.id)
+                     ->  Seq Scan on assets a (never executed)
+                           Filter: (archived_at IS NULL)
+                     ->  Hash (never executed)
+                           ->  Seq Scan on recorders r (never executed)
+                                 Filter: (org_id = (InitPlan 1).col1)
+               ->  Hash (actual time=0.831..0.832 rows=0 loops=1)
+                     Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                     Buffers: shared hit=93
+                     ->  HashAggregate (actual time=0.831..0.831 rows=0 loops=1)
+                           Group Key: it_view_recorder_ids()
+                           Batches: 1  Memory Usage: 40kB
+                           Buffers: shared hit=93
+                           ->  ProjectSet (actual time=0.830..0.830 rows=0 loops=1)
+                                 Buffers: shared hit=93
+                                 ->  Result (actual time=0.000..0.000 rows=1 loops=1)
+ Planning:
+   Buffers: shared hit=25
+ Planning Time: 0.246 ms
+ Execution Time: 0.858 ms
+(36 rows)
+
+--- cluster: cameras under row security (any CCTV right) ---
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Seq Scan on cameras (actual time=1.775..1.971 rows=150 loops=1)
+   Filter: ((ANY (id = (hashed SubPlan 2).col1)) AND (org_id = (InitPlan 1).col1))
+   Rows Removed by Filter: 9124
+   Buffers: shared hit=333
+   InitPlan 1
+     ->  Result (actual time=0.085..0.085 rows=1 loops=1)
+           Buffers: shared hit=2
+   SubPlan 2
+     ->  ProjectSet (actual time=1.432..1.471 rows=150 loops=1)
+           Buffers: shared hit=175
+           ->  Result (actual time=0.000..0.000 rows=1 loops=1)
+ Planning Time: 0.027 ms
+ Execution Time: 1.985 ms
+(13 rows)
+
+--- cluster: my_access_summary() (every request) ---
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Function Scan on my_access_summary (actual time=0.921..0.921 rows=2 loops=1)
+   Buffers: shared hit=89
+ Planning Time: 0.008 ms
+ Execution Time: 0.927 ms
+(4 rows)
+
+--- cluster: cameras_with_capability(cctv.live, 25 ids) (opening a wall) ---
+                                                     QUERY PLAN                                                     
+--------------------------------------------------------------------------------------------------------------------
+ ProjectSet (actual time=2.323..2.371 rows=25 loops=1)
+   Buffers: shared hit=387
+   InitPlan 3
+     ->  Aggregate (actual time=1.576..1.577 rows=1 loops=1)
+           Buffers: shared hit=217
+           ->  Limit (actual time=1.386..1.572 rows=25 loops=1)
+                 Buffers: shared hit=217
+                 InitPlan 1
+                   ->  Result (actual time=0.072..0.073 rows=1 loops=1)
+                         Buffers: shared hit=2
+                 ->  Index Only Scan using cameras_id_org_key on cameras (actual time=1.385..1.570 rows=25 loops=1)
+                       Index Cond: (org_id = (InitPlan 1).col1)
+                       Filter: (ANY (id = (hashed SubPlan 2).col1))
+                       Rows Removed by Filter: 520
+                       Heap Fetches: 16
+                       Buffers: shared hit=217
+                       SubPlan 2
+                         ->  ProjectSet (actual time=1.254..1.292 rows=150 loops=1)
+                               Buffers: shared hit=175
+                               ->  Result (actual time=0.000..0.000 rows=1 loops=1)
+   ->  Result (actual time=0.000..0.000 rows=1 loops=1)
+ Planning Time: 0.045 ms
+ Execution Time: 2.388 ms
+(23 rows)
+

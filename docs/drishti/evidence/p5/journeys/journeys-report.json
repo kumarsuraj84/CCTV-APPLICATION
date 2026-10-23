@@ -1,0 +1,807 @@
+{
+  "app": "http://localhost:3551",
+  "startedAt": "2026-10-23T02:55:19.763Z",
+  "shots": [
+    {
+      "name": "Ja-01-sign-in-1366.png",
+      "url": "/login",
+      "width": 1366,
+      "height": 768,
+      "scrollWidth": 1366,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-01-sign-in-1920.png",
+      "url": "/login",
+      "width": 1920,
+      "height": 1080,
+      "scrollWidth": 1920,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-01-sign-in-375.png",
+      "url": "/login",
+      "width": 375,
+      "height": 812,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-02-regions-and-clusters-1366.png",
+      "url": "/admin/regions",
+      "width": 1366,
+      "height": 1532,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-02-regions-and-clusters-1920.png",
+      "url": "/admin/regions",
+      "width": 1920,
+      "height": 1532,
+      "scrollWidth": 1905,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-02-regions-and-clusters-375.png",
+      "url": "/admin/regions",
+      "width": 375,
+      "height": 2404,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-03-location-with-nvr-1366.png",
+      "url": "/admin/locations/9aed8032-3c28-4fdf-ae4f-58c91ae44640/nvrs/d94d2fda-fcf4-4627-a5a4-29a0e394ff6d",
+      "width": 1366,
+      "height": 2296,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-03-location-with-nvr-1920.png",
+      "url": "/admin/locations/9aed8032-3c28-4fdf-ae4f-58c91ae44640/nvrs/d94d2fda-fcf4-4627-a5a4-29a0e394ff6d",
+      "width": 1920,
+      "height": 2260,
+      "scrollWidth": 1905,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-03-location-with-nvr-375.png",
+      "url": "/admin/locations/9aed8032-3c28-4fdf-ae4f-58c91ae44640/nvrs/d94d2fda-fcf4-4627-a5a4-29a0e394ff6d",
+      "width": 375,
+      "height": 3000,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-04-nvr-cameras-found-1366.png",
+      "url": "/admin/locations/9aed8032-3c28-4fdf-ae4f-58c91ae44640/nvrs/d94d2fda-fcf4-4627-a5a4-29a0e394ff6d",
+      "width": 1366,
+      "height": 2300,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-04-nvr-cameras-found-1920.png",
+      "url": "/admin/locations/9aed8032-3c28-4fdf-ae4f-58c91ae44640/nvrs/d94d2fda-fcf4-4627-a5a4-29a0e394ff6d",
+      "width": 1920,
+      "height": 2264,
+      "scrollWidth": 1905,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-04-nvr-cameras-found-375.png",
+      "url": "/admin/locations/9aed8032-3c28-4fdf-ae4f-58c91ae44640/nvrs/d94d2fda-fcf4-4627-a5a4-29a0e394ff6d",
+      "width": 375,
+      "height": 3000,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-05-import-preview-1366.png",
+      "url": "/admin/import",
+      "width": 1366,
+      "height": 1544,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-05-import-preview-1920.png",
+      "url": "/admin/import",
+      "width": 1920,
+      "height": 1364,
+      "scrollWidth": 1905,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-05-import-preview-375.png",
+      "url": "/admin/import",
+      "width": 375,
+      "height": 2532,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-06-import-result-1366.png",
+      "url": "/admin/import",
+      "width": 1366,
+      "height": 910,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-06-import-result-1920.png",
+      "url": "/admin/import",
+      "width": 1920,
+      "height": 1080,
+      "scrollWidth": 1920,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-06-import-result-375.png",
+      "url": "/admin/import",
+      "width": 375,
+      "height": 1470,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-07-group-1366.png",
+      "url": "/groups/80fe68c7-92d4-472b-aa0b-a605f65443ed?location=9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 1366,
+      "height": 1209,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-07-group-1920.png",
+      "url": "/groups/80fe68c7-92d4-472b-aa0b-a605f65443ed?location=9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 1920,
+      "height": 1189,
+      "scrollWidth": 1905,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-07-group-375.png",
+      "url": "/groups/80fe68c7-92d4-472b-aa0b-a605f65443ed?location=9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 375,
+      "height": 1759,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-08-person-created-1366.png",
+      "url": "/admin/users",
+      "width": 1366,
+      "height": 1216,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-08-person-created-1920.png",
+      "url": "/admin/users",
+      "width": 1920,
+      "height": 1080,
+      "scrollWidth": 1920,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-08-person-created-375.png",
+      "url": "/admin/users",
+      "width": 375,
+      "height": 2058,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-09-access-preview-1366.png",
+      "url": "/admin/users/ceb82191-0517-4a01-992c-d2cb84a82660/access",
+      "width": 1366,
+      "height": 2295,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-09-access-preview-1920.png",
+      "url": "/admin/users/ceb82191-0517-4a01-992c-d2cb84a82660/access",
+      "width": 1920,
+      "height": 2175,
+      "scrollWidth": 1905,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-09-access-preview-375.png",
+      "url": "/admin/users/ceb82191-0517-4a01-992c-d2cb84a82660/access",
+      "width": 375,
+      "height": 3600,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-10-access-saved-1366.png",
+      "url": "/admin/users/ceb82191-0517-4a01-992c-d2cb84a82660/access",
+      "width": 1366,
+      "height": 1897,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-10-access-saved-1920.png",
+      "url": "/admin/users/ceb82191-0517-4a01-992c-d2cb84a82660/access",
+      "width": 1920,
+      "height": 1837,
+      "scrollWidth": 1905,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Ja-10-access-saved-375.png",
+      "url": "/admin/users/ceb82191-0517-4a01-992c-d2cb84a82660/access",
+      "width": 375,
+      "height": 3147,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jb-01-choose-password-1366.png",
+      "url": "/change-password",
+      "width": 1366,
+      "height": 768,
+      "scrollWidth": 1366,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jb-01-choose-password-1920.png",
+      "url": "/change-password",
+      "width": 1920,
+      "height": 1080,
+      "scrollWidth": 1920,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jb-01-choose-password-375.png",
+      "url": "/change-password",
+      "width": 375,
+      "height": 812,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jb-02-cluster-viewer-live-tree-1366.png",
+      "url": "/live",
+      "width": 1366,
+      "height": 768,
+      "scrollWidth": 1366,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jb-02-cluster-viewer-live-tree-1920.png",
+      "url": "/live",
+      "width": 1920,
+      "height": 1080,
+      "scrollWidth": 1920,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jb-02-cluster-viewer-live-tree-375.png",
+      "url": "/live",
+      "width": 375,
+      "height": 878,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jb-03-cluster-viewer-wall-playing-1366.png",
+      "url": "/live?location=9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 1366,
+      "height": 831,
+      "scrollWidth": 1351,
+      "videos": 4,
+      "playing": 4
+    },
+    {
+      "name": "Jb-03-cluster-viewer-wall-playing-1920.png",
+      "url": "/live?location=9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 1920,
+      "height": 1106,
+      "scrollWidth": 1905,
+      "videos": 4,
+      "playing": 4
+    },
+    {
+      "name": "Jb-03-cluster-viewer-wall-playing-375.png",
+      "url": "/live?location=9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 375,
+      "height": 812,
+      "scrollWidth": 375,
+      "videos": 1,
+      "playing": 1
+    },
+    {
+      "name": "Jb-04-second-viewer-live-tree-1366.png",
+      "url": "/live",
+      "width": 1366,
+      "height": 768,
+      "scrollWidth": 1366,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jb-04-second-viewer-live-tree-1920.png",
+      "url": "/live",
+      "width": 1920,
+      "height": 1080,
+      "scrollWidth": 1920,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jb-04-second-viewer-live-tree-375.png",
+      "url": "/live",
+      "width": 375,
+      "height": 812,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jc-01-live-only-playback-refused-1366.png",
+      "url": "/home",
+      "width": 1366,
+      "height": 794,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jc-01-live-only-playback-refused-1920.png",
+      "url": "/home",
+      "width": 1920,
+      "height": 1080,
+      "scrollWidth": 1920,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jc-01-live-only-playback-refused-375.png",
+      "url": "/home",
+      "width": 375,
+      "height": 1020,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Je-01-cctv-only-location-page-1366.png",
+      "url": "/locations/9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 1366,
+      "height": 768,
+      "scrollWidth": 1366,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Je-01-cctv-only-location-page-1920.png",
+      "url": "/locations/9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 1920,
+      "height": 1080,
+      "scrollWidth": 1920,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Je-01-cctv-only-location-page-375.png",
+      "url": "/locations/9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 375,
+      "height": 854,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Je-02-cctv-only-devices-refused-1366.png",
+      "url": "/home",
+      "width": 1366,
+      "height": 794,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Je-02-cctv-only-devices-refused-1920.png",
+      "url": "/home",
+      "width": 1920,
+      "height": 1080,
+      "scrollWidth": 1920,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Je-02-cctv-only-devices-refused-375.png",
+      "url": "/home",
+      "width": 375,
+      "height": 1020,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Je-03-cctv-only-home-1366.png",
+      "url": "/home",
+      "width": 1366,
+      "height": 794,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Je-03-cctv-only-home-1920.png",
+      "url": "/home",
+      "width": 1920,
+      "height": 1080,
+      "scrollWidth": 1920,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Je-03-cctv-only-home-375.png",
+      "url": "/home",
+      "width": 375,
+      "height": 1020,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jd-01-watching-before-revocation-1366.png",
+      "url": "/live?location=9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 1366,
+      "height": 831,
+      "scrollWidth": 1351,
+      "videos": 4,
+      "playing": 4
+    },
+    {
+      "name": "Jd-01-watching-before-revocation-1920.png",
+      "url": "/live?location=9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 1920,
+      "height": 1106,
+      "scrollWidth": 1905,
+      "videos": 4,
+      "playing": 4
+    },
+    {
+      "name": "Jd-01-watching-before-revocation-375.png",
+      "url": "/live?location=9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 375,
+      "height": 812,
+      "scrollWidth": 375,
+      "videos": 1,
+      "playing": 1
+    },
+    {
+      "name": "Jd-02-removal-preview-1366.png",
+      "url": "/admin/users/ceb82191-0517-4a01-992c-d2cb84a82660/access",
+      "width": 1366,
+      "height": 2204,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jd-02-removal-preview-1920.png",
+      "url": "/admin/users/ceb82191-0517-4a01-992c-d2cb84a82660/access",
+      "width": 1920,
+      "height": 2124,
+      "scrollWidth": 1905,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jd-02-removal-preview-375.png",
+      "url": "/admin/users/ceb82191-0517-4a01-992c-d2cb84a82660/access",
+      "width": 375,
+      "height": 3578,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jd-03-video-stopped-after-revocation-1366.png",
+      "url": "/live?location=9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 1366,
+      "height": 831,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jd-03-video-stopped-after-revocation-1920.png",
+      "url": "/live?location=9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 1920,
+      "height": 1106,
+      "scrollWidth": 1905,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jd-03-video-stopped-after-revocation-375.png",
+      "url": "/live?location=9aed8032-3c28-4fdf-ae4f-58c91ae44640",
+      "width": 375,
+      "height": 812,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jf-01-health-1366.png",
+      "url": "/admin/health",
+      "width": 1366,
+      "height": 1110,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jf-01-health-1920.png",
+      "url": "/admin/health",
+      "width": 1920,
+      "height": 1080,
+      "scrollWidth": 1920,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jf-01-health-375.png",
+      "url": "/admin/health",
+      "width": 375,
+      "height": 2090,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jf-02-audit-log-1366.png",
+      "url": "/admin/audit",
+      "width": 1366,
+      "height": 2546,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jf-02-audit-log-1920.png",
+      "url": "/admin/audit",
+      "width": 1920,
+      "height": 2126,
+      "scrollWidth": 1905,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jf-02-audit-log-375.png",
+      "url": "/admin/audit",
+      "width": 375,
+      "height": 3000,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jg-01-two-step-set-up-1366.png",
+      "url": "/mfa/enrol",
+      "width": 1366,
+      "height": 1024,
+      "scrollWidth": 1351,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jg-01-two-step-set-up-1920.png",
+      "url": "/mfa/enrol",
+      "width": 1920,
+      "height": 1080,
+      "scrollWidth": 1920,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jg-01-two-step-set-up-375.png",
+      "url": "/mfa/enrol",
+      "width": 375,
+      "height": 980,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jg-02-two-step-challenge-1366.png",
+      "url": "/mfa?next=%2Fhome",
+      "width": 1366,
+      "height": 768,
+      "scrollWidth": 1366,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jg-02-two-step-challenge-1920.png",
+      "url": "/mfa?next=%2Fhome",
+      "width": 1920,
+      "height": 1080,
+      "scrollWidth": 1920,
+      "videos": 0,
+      "playing": 0
+    },
+    {
+      "name": "Jg-02-two-step-challenge-375.png",
+      "url": "/mfa?next=%2Fhome",
+      "width": 375,
+      "height": 812,
+      "scrollWidth": 375,
+      "videos": 0,
+      "playing": 0
+    }
+  ],
+  "checks": [
+    {
+      "journey": "a",
+      "check": "the super administrator signs in on the sign-in page",
+      "ok": true
+    },
+    {
+      "journey": "a",
+      "check": "a region and two clusters in it are made on the Regions and clusters screen",
+      "ok": true,
+      "detail": "JC1, JC2"
+    },
+    {
+      "journey": "a",
+      "check": "Find cameras on the fake NVR lists its four cameras by name",
+      "ok": true,
+      "detail": "4 cameras"
+    },
+    {
+      "journey": "a",
+      "check": "the synthetic CSV imports two locations (one with two NVRs) into the clusters",
+      "ok": true
+    },
+    {
+      "journey": "a",
+      "check": "a camera group is made with the location's cameras",
+      "ok": true,
+      "detail": "4 cameras"
+    },
+    {
+      "journey": "a",
+      "check": "the effect preview lists what the cluster right gives before anything is saved",
+      "ok": true
+    },
+    {
+      "journey": "a",
+      "check": "the cluster-scoped live and playback rights are saved",
+      "ok": true,
+      "detail": "[\"cctv.live\",\"cctv.playback\"]"
+    },
+    {
+      "journey": "a",
+      "check": "the second viewer holds live only, for one location",
+      "ok": true,
+      "detail": "[{\"capability\":\"cctv.live\",\"scope_kind\":\"location\"}]"
+    },
+    {
+      "journey": "b",
+      "check": "the cluster viewer's Live tree shows the cluster's locations JL1 and JL2 and not JL3",
+      "ok": true
+    },
+    {
+      "journey": "b",
+      "check": "the location wall plays the four cameras (go2rtc test picture through the gateway)",
+      "ok": true,
+      "detail": "{\"videos\":4,\"playing\":4}"
+    },
+    {
+      "journey": "b",
+      "check": "the second viewer (other scope) sees JL3 only",
+      "ok": true
+    },
+    {
+      "journey": "c",
+      "check": "the live-only viewer has no Playback in the menu and the playback address does not play the camera",
+      "ok": true,
+      "detail": "/home"
+    },
+    {
+      "journey": "e",
+      "check": "the location page shows the cameras but no NVR name, address, login or device",
+      "ok": true
+    },
+    {
+      "journey": "e",
+      "check": "the Devices page is not open to a CCTV-only viewer",
+      "ok": true,
+      "detail": "/home"
+    },
+    {
+      "journey": "e",
+      "check": "Home shows the camera figures and no NVR or device section",
+      "ok": true
+    },
+    {
+      "journey": "d",
+      "check": "the open live video stops within 60 s of saving the removal",
+      "ok": true,
+      "detail": "12268 ms; rights left: cctv.playback"
+    },
+    {
+      "journey": "f",
+      "check": "the Health page opens for the super administrator",
+      "ok": true
+    },
+    {
+      "journey": "f",
+      "check": "the audit log shows the access changes of the journey",
+      "ok": true
+    },
+    {
+      "journey": "g",
+      "check": "after set-up, the next sign-in asks for the code, and a correct code signs in",
+      "ok": true,
+      "detail": "/home"
+    }
+  ],
+  "timings": {
+    "playing_when_saved": 4,
+    "revocation_video_stopped_ms": 12268
+  },
+  "console": [
+    "info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+    "log: [HMR] connected",
+    "log: [Fast Refresh] rebuilding",
+    "log: [Fast Refresh] done in 192ms",
+    "log: [Fast Refresh] done in 169ms",
+    "debug: stream.oninit",
+    "debug: stream.onconnect",
+    "debug: stream.onopen",
+    "debug: stream.onmessge Object",
+    "debug: stream.ondisconnect",
+    "warning: Event",
+    "log: [Fast Refresh] done in 155ms"
+  ],
+  "finishedAt": "2026-10-23T02:58:01.837Z"
+}

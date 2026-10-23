@@ -44,7 +44,7 @@ browser ──https/wss──► Caddy (443, the only listener on the network)
 | `NEXT_PUBLIC_STREAM_GATEWAY_URL=/` | `/` | the gateway is on the same address (`/g/*`); the pages derive `wss://<name>` themselves. It is built into the pages: rebuild after a change |
 | `GATEWAY_ALLOWED_ORIGINS` | `https://drishti.citykart.local` | the gateway accepts sockets only from the app's address |
 | `GATEWAY_HOST` | `127.0.0.1` | the gateway listens on this computer only (default `0.0.0.0`) |
-| `TRUSTED_PROXY_HOPS` | `1` | the app believes the client address Caddy adds (sign-in delays per IP) |
+| `TRUSTED_PROXY_HOPS` | `1` | the app believes the client address Caddy adds (sign-in delays per IP). Set it in the **gateway's** environment too (P5.5): without it every video socket comes from 127.0.0.1 and the gateway's per-address limits (100 open videos, 240 attempts a minute) apply to all users together |
 | `CSP_REPORT_ONLY` | empty (enforce); `1` for a first rollout week | `1` = the browser reports what it would block (logged as `csp_violation`) but blocks nothing |
 | `CSP_CONNECT_EXTRA` | normally empty | extra origins the pages may connect to, comma separated (origins only, no wildcard) |
 | `SESSION_MAX_HOURS` / `SESSION_IDLE_MINUTES_ADMIN` / `SESSION_IDLE_MINUTES` / `FRESH_AUTH_MINUTES` | 12 / 60 / 480 / 10 (defaults) | sign-in lifetime, idle limits (administrators / others), fresh sign-in window |
