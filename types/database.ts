@@ -797,14 +797,14 @@ isOneToOne: false
                   ]
                 },"organizations": {
                   Row: {
-                    "created_at": string,"id": string,"is_owner": boolean,"name": string,"slug": string,"status": string,"updated_at": string
+                    "created_as_test": boolean,"created_at": string,"id": string,"is_owner": boolean,"name": string,"slug": string,"status": string,"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "created_at"?: string,"id"?: string,"is_owner"?: boolean,"name": string,"slug": string,"status"?: string,"updated_at"?: string
+                    "created_as_test"?: boolean,"created_at"?: string,"id"?: string,"is_owner"?: boolean,"name": string,"slug": string,"status"?: string,"updated_at"?: string
                   }
                   Update: {
-                    "created_at"?: string,"id"?: string,"is_owner"?: boolean,"name"?: string,"slug"?: string,"status"?: string,"updated_at"?: string
+                    "created_as_test"?: boolean,"created_at"?: string,"id"?: string,"is_owner"?: boolean,"name"?: string,"slug"?: string,"status"?: string,"updated_at"?: string
                   }
                   Relationships: [
                     
@@ -975,6 +975,20 @@ isOneToOne: true
                   }
                   Update: {
                     "failures"?: number,"key"?: string,"last_attempt_at"?: string | null,"window_start"?: string
+                  }
+                  Relationships: [
+                    
+                  ]
+                },"test_fixture_switch": {
+                  Row: {
+                    "honoured": boolean,"id": boolean
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "honoured"?: boolean,"id"?: boolean
+                  }
+                  Update: {
+                    "honoured"?: boolean,"id"?: boolean
                   }
                   Relationships: [
                     

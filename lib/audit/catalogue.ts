@@ -115,6 +115,8 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   A('group_rule_removed', 'groups', 'Group rule removed', GROUPS),
   // Security settings (written by the database when the owner changes them).
   A('mfa_enforced_changed', 'security', 'Two-step sign-in requirement switched', 'supabase/migrations/20261021000037_p31_review_fixes.sql'),
+  // Release 1 (P3-1 re-review N-4): the owner deleted an organisation's security settings row (the defaults apply again).
+  A('security_settings_deleted', 'security', 'Security settings removed (defaults apply again)', 'supabase/migrations/20261021000044_release1_cleanups.sql'),
   // Sign-in events (auth_events).
   E('sign_in', 'sign_in', 'Signed in', 'lib/actions/auth.ts'),
   E('sign_in_failed', 'sign_in', 'Sign-in failed', 'lib/actions/auth.ts'),
