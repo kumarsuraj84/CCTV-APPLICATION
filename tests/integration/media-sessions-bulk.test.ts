@@ -80,7 +80,8 @@ describe('the re-check at commit of a bulk access change is bounded (review I-1)
     expect(res.error).toBeNull()
     expect((res.data as { archived_locations: number }).archived_locations).toBe(LOCATIONS)
     console.log(JSON.stringify({ bulk_commit_ms: { archived_locations: LOCATIONS, admins: ADMINS, open_sessions_each: WALL, never_opened_each: 108, transaction_ms: Math.round(ms) } }))
-    expect(ms).toBeLessThan(20_000)
+    // Release 1 clean-up (P2-4 re-review N3): measured about 0.9 s; the bound is 5 s so that a five-fold regression fails.
+    expect(ms).toBeLessThan(5_000)
 
     // The re-check still did its job: the archived camera's session ended; every wall session stays.
     const { data: doomedRow } = await admin().from('media_sessions').select('revoke_reason').eq('id', doomedSid).single()

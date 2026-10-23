@@ -873,6 +873,11 @@ describe('capability access model (P2-1)', () => {
       media_session_create_live: ['service_role', 'media_service'],
       media_sessions_release_live: ['service_role', 'media_service'],
       media_sessions_held_live: [],
+      // Release 1 clean-ups (20261021000044): the security settings delete audit and truncate guard, and the guard of the tests'
+      // organisation namespace, are trigger functions with no grant at all (the replaced functions keep the grants listed above).
+      security_settings_audit_delete: [],
+      security_settings_no_truncate: [],
+      organizations_test_namespace: [],
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)

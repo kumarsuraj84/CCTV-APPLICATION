@@ -92,7 +92,9 @@ describe('worker lease and fencing (P2-7)', () => {
   beforeAll(async () => {
     saved = await workerState()
     orgId = await createOrg()
-    const site = await createSite(orgId, { code: 'LSE', host: '127.0.0.1', username: 'u', secret: 'lease-pass', cameras: 20 })
+    // Release 1 clean-up: cameras 20 and 21 for the I-1 clock tests (they used race cameras 6 and 7, whose last state depends on which
+    // race batch won, so "consecutive_failures: 1" was timing-dependent).
+    const site = await createSite(orgId, { code: 'LSE', host: '127.0.0.1', username: 'u', secret: 'lease-pass', cameras: 22 })
     recorderId = site.recorderId
     cams = site.cameraIds
   })
@@ -473,7 +475,7 @@ describe('worker lease and fencing (P2-7)', () => {
       (await admin().from('check_state').select('status, last_checked_at, consecutive_failures').eq('target_type', 'camera').eq('target_id', id).maybeSingle()).data
 
     it('I-1: a worker clock days ahead does not freeze a camera: its result is dated the database now, and the next normal result applies', async () => {
-      const cam = cams[6]
+      const cam = cams[20]
       const a = await takeTestLease(testLeaseName(), randomUUID(), 60, worker())
       expect((await apply(worker(), a.name, a.token, [camResult(cam, false, new Date(Date.now() + 3 * DAY).toISOString())])).error).toBeNull()
       const first = await stateOf(cam)
@@ -485,7 +487,7 @@ describe('worker lease and fencing (P2-7)', () => {
     })
 
     it('I-1: after a takeover by a worker whose clock is an hour behind, its results apply (a newer epoch always wins over an older time)', async () => {
-      const cam = cams[7]
+      const cam = cams[21]
       const name = testLeaseName()
       const a = await takeTestLease(name, randomUUID(), 60, worker())
       expect((await apply(worker(), name, a.token, [camResult(cam, true)])).error).toBeNull()
@@ -496,9 +498,27 @@ describe('worker lease and fencing (P2-7)', () => {
       expect((await apply(worker(), name, b.token, [camResult(cam, false, behind)])).error).toBeNull()
       expect(await stateOf(cam)).toMatchObject({ status: 'down', consecutive_failures: 1 })
       expect(Date.parse((await stateOf(cam))!.last_checked_at!)).toBe(Date.parse(behind))
-      // Within B's own epoch the late-result rule still holds: an even older result of B is skipped.
-      expect((await apply(worker(), name, b.token, [camResult(cam, true, new Date(Date.now() - 7_200_000).toISOString())])).error).toBeNull()
+      // Within B's own epoch the late-result rule still holds for a plausibly late result: 2 minutes older than the last one is skipped.
+      expect((await apply(worker(), name, b.token, [camResult(cam, true, new Date(Date.parse(behind) - 120_000).toISOString())])).error).toBeNull()
       expect(await stateOf(cam)).toMatchObject({ status: 'down' })
+    })
+
+    it('re-review R-1: a backward step of the worker clock inside one epoch does not freeze a target (10 minutes or more "late" is a clock step, applied)', async () => {
+      const cam = cams[18] // not used by any other test of this file
+      const name = testLeaseName()
+      const a = await takeTestLease(name, randomUUID(), 60, worker())
+      expect((await apply(worker(), name, a.token, [camResult(cam, true)])).error).toBeNull()
+      // The worker's clock steps back by an hour; same lease, same epoch. Before 0044 every result was skipped until the clock caught up.
+      const stepped = new Date(Date.now() - 3_600_000).toISOString()
+      expect((await apply(worker(), name, a.token, [camResult(cam, false, stepped)])).error).toBeNull()
+      expect(await stateOf(cam)).toMatchObject({ status: 'down', consecutive_failures: 1 })
+      expect(Date.parse((await stateOf(cam))!.last_checked_at!)).toBe(Date.parse(stepped))
+      // From the stepped clock on, results are in order again and apply normally.
+      expect((await apply(worker(), name, a.token, [camResult(cam, true, new Date(Date.parse(stepped) + 5000).toISOString())])).error).toBeNull()
+      expect(await stateOf(cam)).toMatchObject({ status: 'up', consecutive_failures: 0 })
+      // A result 9 minutes older than the last applied one is still a late result of the same epoch: skipped.
+      expect((await apply(worker(), name, a.token, [camResult(cam, false, new Date(Date.parse(stepped) + 5000 - 540_000).toISOString())])).error).toBeNull()
+      expect(await stateOf(cam)).toMatchObject({ status: 'up', consecutive_failures: 0 })
     })
 
     it('I-1: the heartbeat answers the worker-clock difference, and the worker status shows it with a warning beyond 30 s', async () => {
