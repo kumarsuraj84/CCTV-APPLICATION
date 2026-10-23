@@ -14,8 +14,11 @@
   Review C-2: before anything is written, Install creates and LOCKS the installation's folders (InstallRoot, bin, services, scripts,
   app, ConfigDir, DataDir, LogDir and each log folder, BackupDir, the key folder, go2rtc's folder): inherited entries removed, SYSTEM
   and Administrators only, then exactly the service accounts' reads and their own log folder's modify. The scripts are copied to
-  <InstallRoot>\scripts (the copy the scheduled backup runs). -Action Audit lists every entry that lets anybody else write;
-  -Action RepairAcl applies the locks again; -Action Status shows the services, the health and the audit's verdict.
+  <InstallRoot>\scripts (the copy the scheduled backup runs). Fix round 2 (review N-1): each lock takes ownership for the
+  Administrators and rebuilds the access list from nothing (no explicit entry of anybody else survives, nothing below keeps its own
+  entries); a folder that existed already with another owner is named in a warning; a junction inside one is refused. -Action Audit
+  (run it elevated) lists every foreign owner, every entry that lets anybody else write, and on the secret paths every entry that lets
+  anybody else read; -Action RepairAcl applies the locks again; -Action Status shows the services, the health and the audit's verdict.
   Why not NSSM: it is a separate download and global install, and it keeps the environment (the secrets) in the registry; the host
   reads the service's ACL-protected env file instead (docs/drishti/runbooks/windows-services.md).
   -WhatIf / -DryRun: says what would be done, changes nothing (no administrator rights needed).
@@ -69,7 +72,7 @@ $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 function Set-DrishtiFolderLocks {
   # Every folder created and locked BEFORE anything is written into it (review C-2, I-3).
   foreach ($p in (Get-DrishtiAclPlan -Config $config -Definitions $allDefs)) {
-    Set-DrishtiAcl -Path $p.Path -ReadAccounts $p.Read -ModifyAccounts $p.Modify -DryRun:$dry
+    Set-DrishtiAcl -Path $p.Path -ReadAccounts $p.Read -ModifyAccounts $p.Modify -ListAccounts $p.List -AllowedLinks $p.AllowedLinks -DryRun:$dry
   }
 }
 
@@ -90,7 +93,7 @@ function Set-DrishtiFileLocks {
 function Copy-DrishtiScripts {
   # The scheduled backup and the operator run THIS admin-only copy, never a release or a checkout that others may change (review C-2).
   if ([IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') -ieq [IO.Path]::GetFullPath($scriptsCopy).TrimEnd('\')) { return }
-  Invoke-DrishtiCommand -FilePath 'robocopy.exe' -ArgumentList @($PSScriptRoot, $scriptsCopy, '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/NP') -DryRun:$dry -Display "robocopy $PSScriptRoot -> $scriptsCopy (the admin-only copy of the scripts)" -AllowExitCodes @(0, 1, 2, 3)
+  Invoke-DrishtiCommand -FilePath $script:RobocopyExe -ArgumentList @($PSScriptRoot, $scriptsCopy, '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/NP') -DryRun:$dry -Display "robocopy $PSScriptRoot -> $scriptsCopy (the admin-only copy of the scripts)" -AllowExitCodes @(0, 1, 2, 3)
 }
 
 function Install-DrishtiHost {
@@ -125,20 +128,33 @@ function Install-DrishtiService {
     Write-DrishtiStep -Kind ok -Message "created $($d.Name)"
   }
   # Delayed automatic start (after the network and Docker), under the service's own account (a virtual account has no password).
-  Invoke-DrishtiCommand -FilePath 'sc.exe' -ArgumentList @('config', $d.Name, 'start=', 'delayed-auto', 'obj=', $account) -DryRun:$dry
+  Invoke-DrishtiCommand -FilePath $script:ScExe -ArgumentList @('config', $d.Name, 'start=', 'delayed-auto', 'obj=', $account) -DryRun:$dry
   # A virtual account needs the service's own SID; then the restart rules of the Service Control Manager for the host itself.
-  Invoke-DrishtiCommand -FilePath 'sc.exe' -ArgumentList @('sidtype', $d.Name, 'unrestricted') -DryRun:$dry
-  Invoke-DrishtiCommand -FilePath 'sc.exe' -ArgumentList @('failure', $d.Name, 'reset=', '86400', 'actions=', 'restart/5000/restart/10000/restart/60000') -DryRun:$dry
-  Invoke-DrishtiCommand -FilePath 'sc.exe' -ArgumentList @('failureflag', $d.Name, '1') -DryRun:$dry
+  Invoke-DrishtiCommand -FilePath $script:ScExe -ArgumentList @('sidtype', $d.Name, 'unrestricted') -DryRun:$dry
+  Invoke-DrishtiCommand -FilePath $script:ScExe -ArgumentList @('failure', $d.Name, 'reset=', '86400', 'actions=', 'restart/5000/restart/10000/restart/60000') -DryRun:$dry
+  Invoke-DrishtiCommand -FilePath $script:ScExe -ArgumentList @('failureflag', $d.Name, '1') -DryRun:$dry
 }
 
-<# Review C-2: every entry that lets anybody but SYSTEM, the Administrators and the path's own service account write. #>
+<#
+  Review C-2 and N-1: every owner that is not SYSTEM, the Administrators or TrustedInstaller; every entry that lets anybody but them and
+  the path's own service account write; and on the secret paths (the configuration folder and file, the env files, go2rtc.yaml, the
+  data, backup and key folders) every entry that lets anybody else even read. The person running this is never trusted here (review
+  M-new-2): run it elevated; a path whose rules cannot be read is reported as such.
+#>
 function Get-DrishtiAuditProblems {
   $problems = @()
-  foreach ($p in (Get-DrishtiAclPlan -Config $config -Definitions $allDefs)) { $problems += @(Test-DrishtiPathAcl -Path $p.Path -AllowedAccounts $p.Modify) }
-  $files = @($hostExe, $ConfigPath, (Join-Path $config.ConfigDir 'go2rtc.yaml'))
-  foreach ($d in $allDefs) { $files += @($d.EnvFile, (Join-Path $servicesDir "$($d.Name).conf")) }
-  foreach ($f in $files) { $problems += @(Test-DrishtiPathAcl -Path $f) }
+  foreach ($p in (Get-DrishtiAclPlan -Config $config -Definitions $allDefs)) {
+    $problems += @(Test-DrishtiPathAcl -Path $p.Path -AllowedAccounts $p.Modify -ReadAccounts (@($p.Read) + @($p.List)) -Secret:$p.Secret)
+  }
+  $problems += @(Test-DrishtiPathAcl -Path $hostExe)
+  $problems += @(Test-DrishtiPathAcl -Path $ConfigPath -Secret)
+  $go = @($allDefs | Where-Object { $_.Name -eq 'DrishtiGo2rtc' })
+  if ($go.Count -gt 0) { $problems += @(Test-DrishtiPathAcl -Path (Join-Path $config.ConfigDir 'go2rtc.yaml') -ReadAccounts @(Get-DrishtiServiceAccount -Config $config -Name 'DrishtiGo2rtc') -Secret) }
+  foreach ($d in $allDefs) {
+    $account = Get-DrishtiServiceAccount -Config $config -Name $d.Name
+    $problems += @(Test-DrishtiPathAcl -Path $d.EnvFile -ReadAccounts @($account) -Secret)
+    $problems += @(Test-DrishtiPathAcl -Path (Join-Path $servicesDir "$($d.Name).conf"))
+  }
   return $problems
 }
 
@@ -170,6 +186,7 @@ function Start-DrishtiServices {
 
 switch ($Action) {
   'Install' {
+    Assert-DrishtiConfigConsistent -Config $config # review M-13
     Write-DrishtiStep -Message "install $($inStartOrder.Name -join ', ')$(if ($dry) { ' (dry run: nothing is changed)' })"
     Set-DrishtiFolderLocks
     Copy-DrishtiScripts
@@ -185,10 +202,10 @@ switch ($Action) {
   }
   'Audit' {
     $problems = @(Get-DrishtiAuditProblems)
-    if ($problems.Count -eq 0) { Write-DrishtiStep -Kind ok -Message 'access rules: only SYSTEM, the Administrators and each service on its own log folder may write' }
+    if ($problems.Count -eq 0) { Write-DrishtiStep -Kind ok -Message 'access rules: ok (owners SYSTEM or the Administrators; only they and each service on its own log folder may write; secrets readable only by their own service)' }
     else {
       foreach ($p in $problems) { Write-DrishtiStep -Kind fail -Message $p }
-      Write-DrishtiStep -Kind fail -Message "$($problems.Count) problem(s): run -Action RepairAcl as an administrator"
+      Write-DrishtiStep -Kind fail -Message "$($problems.Count) problem(s): run -Action RepairAcl as an administrator (and run -Action Audit itself elevated)"
       exit 1
     }
   }
@@ -196,7 +213,7 @@ switch ($Action) {
     Stop-DrishtiServices
     foreach ($d in $inStopOrder) {
       if ($dry -or (Get-Service -Name $d.Name -ErrorAction SilentlyContinue)) {
-        if ($PSCmdlet.ShouldProcess($d.Name, 'delete the service (logs, config and releases are kept)')) { Invoke-DrishtiCommand -FilePath 'sc.exe' -ArgumentList @('delete', $d.Name) -DryRun:$dry }
+        if ($PSCmdlet.ShouldProcess($d.Name, 'delete the service (logs, config and releases are kept)')) { Invoke-DrishtiCommand -FilePath $script:ScExe -ArgumentList @('delete', $d.Name) -DryRun:$dry }
         elseif ($dry) { Write-DrishtiStep -Kind plan -Message "would run: sc.exe delete $($d.Name)" }
       }
     }

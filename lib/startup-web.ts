@@ -12,6 +12,8 @@ export type WebStartupDeps = {
   /** How many active organisations still allow NVR login reads with the service key (security_unlocked_organizations()). */
   unlockedOrganizations: () => Promise<number>
   probeGo2rtc: () => Promise<{ ok: true } | { ok: false; error: string }>
+  /** P5.4 fix round 2 (re-review N-2): test_fixtures_enabled(), whether this database was seeded for tests. */
+  testFixturesOn: () => Promise<boolean>
 }
 
 export async function webStartupProblems(env: Env, deps: WebStartupDeps): Promise<string[]> {
@@ -30,6 +32,14 @@ export async function webStartupProblems(env: Env, deps: WebStartupDeps): Promis
     }
   } catch {
     problems.push('The lock of the service key on NVR logins could not be checked (is the database reachable with SUPABASE_APP_WEB_KEY?).')
+  }
+  // P5.4 fix round 2 (re-review N-2): the test helpers and the fixtures header work only while the switch is on (supabase/seed.sql).
+  try {
+    if (await deps.testFixturesOn()) {
+      problems.push('The test fixture switch is on in this database (public.test_fixture_switch): it was seeded for tests (supabase/seed.sql), which a production database must never be. As the database owner: UPDATE public.test_fixture_switch SET honoured = false; then find out how the seed was applied (docs/drishti/runbooks/windows-services.md section 4).')
+    }
+  } catch {
+    problems.push('The test fixture switch could not be checked (test_fixtures_enabled(); is the database at migration 20261021000046 and reachable with SUPABASE_APP_WEB_KEY?).')
   }
   return problems
 }

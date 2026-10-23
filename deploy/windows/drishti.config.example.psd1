@@ -16,8 +16,13 @@
 
   # Node.js 20 or later (the same major version the release was built with).
   NodeExe     = 'C:\Program Files\nodejs\node.exe'
-  # go2rtc for Windows (amd64), the pinned version (1.9.9), downloaded with the owner's approval; its hash checked.
+  # go2rtc for Windows (amd64), the pinned version (1.9.9), downloaded with the owner's approval; its hash checked. Copy it into
+  # this folder only AFTER drishti-services.ps1 -Action Install has made and locked it (review N-1: never into a folder made before).
   Go2rtcExe   = 'C:\Drishti\go2rtc\go2rtc.exe'
+  # Review M-new-6: the programs that are not part of Windows, by full path (the nightly SYSTEM task never looks them up on PATH).
+  # npm and npx are taken from NodeExe's folder.
+  DockerExe   = 'C:\Program Files\Docker\Docker\resources\bin\docker.exe'
+  GitExe      = 'C:\Program Files\Git\cmd\git.exe'
 
   # Which services this computer runs (all four on a single server).
   Services    = @('DrishtiGo2rtc', 'DrishtiWorker', 'DrishtiGateway', 'DrishtiWeb')
@@ -32,9 +37,10 @@
   # Releases kept under app\releases after a good update (the current one and the ones before it, for a quick roll back).
   KeepReleases     = 3
 
-  # The database server.
-  #   Container: a Supabase stack in Docker on this computer (the local stack, or self-hosted Supabase): client tools run inside the
-  #              database container as a superuser (supabase_admin), and the Vault root key is read from the container.
+  # The database server (review M-13: the pair with MigrationMode below is checked by install and update, which refuse one that
+  # does not fit).
+  #   Container: a self-hosted Supabase stack in Docker on this computer: client tools run inside the database container as a
+  #              superuser (supabase_admin), and the Vault root key is read from the container. Production: with MigrationMode 'DbUrl'.
   #   Direct:    a PostgreSQL server reached over the network with the client tools of PgBin; the password comes from the environment
   #              variable named in PasswordEnv (set it in the session that runs the script; never write it here).
   Database = @{
@@ -52,11 +58,16 @@
     MigrateUser = 'postgres'
     PasswordEnv = 'DRISHTI_DB_PASSWORD'
   }
-  # Migrations (review M-13):
-  #   'DbUrl' (self-hosted Supabase in Docker, or Direct mode): npx supabase migration up --db-url postgresql://<MigrateUser>@<Host>:<Port>/<Name>
-  #           with the password from PasswordEnv as PGPASSWORD of that one program. Set $env:DRISHTI_DB_PASSWORD in the session first.
-  #   'Local' (only the Supabase CLI's own local stack, a test server): npx supabase migration up --local; no password needed.
+  # Migrations (review M-13). The pairs:
+  #   Container + 'DbUrl'   production, a self-hosted Supabase in Docker here (this example).
+  #   Direct    + 'DbUrl'   production, PostgreSQL elsewhere.
+  #   Container + 'Local'   the Supabase CLI's own local stack ("supabase start"), which is SEEDED for tests (supabase/seed.sql turns
+  #                         the test fixture switch on): a TEST server only, and only with TestServer = $true below.
+  #   Direct    + 'Local'   refused.
+  # 'DbUrl': npx supabase migration up --db-url postgresql://<MigrateUser>@<Host>:<Port>/<Name>, the password from PasswordEnv as
+  # PGPASSWORD of that one program. Set $env:DRISHTI_DB_PASSWORD in the session first.
   MigrationMode = 'DbUrl'
+  # TestServer = $true   # only on a test server running the CLI's local stack (MigrationMode 'Local')
 
   # The Vault root key (supabase_vault: every NVR password is encrypted with keys derived from it; a dump holds the ciphertext only).
   #   ContainerFile: copy it from the database container (Path inside the container).

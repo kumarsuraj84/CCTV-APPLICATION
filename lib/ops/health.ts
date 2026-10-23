@@ -10,7 +10,7 @@ import type { GatewayHealthView } from '@/lib/streams/gateway-health'
 // an address or an error text from the database: only states, ages, counts and the migration level.
 
 export type CheckState = 'ok' | 'warning' | 'failed' | 'unknown'
-export type CheckKey = 'database' | 'vault' | 'gateway' | 'worker' | 'clock' | 'migrations' | 'disk' | 'cleanup'
+export type CheckKey = 'database' | 'vault' | 'gateway' | 'worker' | 'clock' | 'migrations' | 'disk' | 'cleanup' | 'fixtures'
 export type HealthCheck = { key: CheckKey; label: string; state: CheckState; summary: string; facts: [string, string][] }
 export type DetailedHealth = { status: 'ok' | 'degraded'; build: string; checkedAt: string; checks: HealthCheck[] }
 
@@ -20,6 +20,8 @@ export type OpsDbStatus = {
   migration: { level: string | null; applied: number }
   vault: { ok: boolean }
   housekeeping: { task: string; last_run_at: string; removed: number; db_role: string }[]
+  /** Migration 0046: whether the test fixture switch is on, and whether the database is marked as a production one. */
+  test_fixtures?: { on: boolean; production: boolean }
 }
 export type DiskInfo = { path: string; freeBytes: number; totalBytes: number }
 
@@ -33,6 +35,8 @@ export type HealthInputs = {
   expectedMigration: string | null
   /** One disk, or each disk of diskDirs() (null = could not be read). */
   disk: DiskInfo | null | (DiskInfo | null)[]
+  /** Production mode (DRISHTI_ENV=production): the test fixture switch must be off. */
+  production?: boolean
 }
 
 /** More than this between two clocks is a warning (the same 30 s as the worker's own warning, docs/drishti/worker-lease.md section 9). */
@@ -191,9 +195,26 @@ function cleanup(i: HealthInputs): HealthCheck {
   return { ...base, state: 'ok', facts, summary: `Unused video sessions were last cleaned up ${ago(ageMs / 1000)} (${run.removed} removed).` }
 }
 
+// P5.4 fix round 2 (re-review N-2): the test helpers (and the test fixtures header) run only while this switch is on; supabase/seed.sql
+// turns it on, so on a production database it means the database was seeded for tests.
+function fixtures(i: HealthInputs): HealthCheck {
+  const base = { key: 'fixtures' as const, label: 'Test fixture switch' }
+  if (!i.db.ok || !i.db.status.test_fixtures) return { ...base, state: 'unknown', summary: 'Not known: the database does not report it (migration 20261021000046).', facts: [] }
+  const t = i.db.status.test_fixtures
+  const facts: [string, string][] = [['Switch', t.on ? 'on' : 'off'], ['Marked as a production database', t.production ? 'yes' : 'no']]
+  if (!t.on) return { ...base, state: 'ok', facts, summary: `Off: the test helpers cannot run on this database${t.production ? ' (marked as a production one)' : ''}.` }
+  if (i.production) {
+    return {
+      ...base, state: 'failed', facts,
+      summary: 'On: this database was seeded for tests (supabase/seed.sql), which a production database must never be. As the database owner: UPDATE public.test_fixture_switch SET honoured = false; then find out how the seed was applied.',
+    }
+  }
+  return { ...base, state: 'ok', facts, summary: 'On: expected on a development or test stack (supabase/seed.sql); never on a production database.' }
+}
+
 /** The judgement of every check. "degraded" when any check failed; warnings and unknowns alone keep "ok". */
 export function assessHealth(i: HealthInputs): DetailedHealth {
-  const checks = [database(i), vault(i), gateway(i), worker(i), clock(i), migrations(i), disk(i), cleanup(i)]
+  const checks = [database(i), vault(i), gateway(i), worker(i), clock(i), migrations(i), disk(i), cleanup(i), fixtures(i)]
   return { status: checks.some((c) => c.state === 'failed') ? 'degraded' : 'ok', build: i.build, checkedAt: i.now.toISOString(), checks }
 }
 
@@ -210,6 +231,7 @@ export type HealthDeps = {
   disk: () => Promise<DiskInfo | null | (DiskInfo | null)[]>
   expectedMigration: () => string | null
   timeoutMs?: number
+  production?: boolean
 }
 
 const within = <T>(p: Promise<T>, ms: number): Promise<T> =>
@@ -231,7 +253,7 @@ export async function collectHealth(d: HealthDeps): Promise<DetailedHealth> {
   } catch {
     expected = null
   }
-  return assessHealth({ build: d.build, now: d.now(), db, worker: w, gateway: g, expectedMigration: expected, disk })
+  return assessHealth({ build: d.build, now: d.now(), db, worker: w, gateway: g, expectedMigration: expected, disk, production: d.production })
 }
 
 /**

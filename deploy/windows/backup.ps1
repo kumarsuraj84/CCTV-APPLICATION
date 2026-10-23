@@ -64,8 +64,15 @@ if ($keyDir) {
   }
 }
 if (-not $dry) { Assert-DrishtiSafeToRun -Config $config -ConfigPath $ConfigPath -ScriptRoot $PSScriptRoot }
+# The web app may read the free space of the backup disk (review M-4), nothing in it.
+$webReader = @(Get-DrishtiServiceAccount -Config $config -Name 'DrishtiWeb')
 # Created locked, before anything is written (review C-2, I-6).
-if (-not (Test-Path -LiteralPath $root)) { Set-DrishtiAcl -Path $root -DryRun:$dry }
+if (-not (Test-Path -LiteralPath $root)) { Set-DrishtiAcl -Path $root -ListAccounts $webReader -DryRun:$dry }
+elseif (-not $dry) {
+  # Fix round 2 (re-review M-new-8): the backup itself refuses a folder others may change, as the retention does.
+  $rootProblems = @(Test-DrishtiPathAcl -Path $root -ReadAccounts $webReader -Secret -TrustOperator)
+  if ($rootProblems.Count -gt 0) { throw "Backup refused: others may change or read the backup folder ($($rootProblems -join '; ')). Run drishti-services.ps1 -Action RepairAcl." }
+}
 
 if (-not $RetentionOnly) {
   Write-DrishtiStep -Message "backup of database '$dbName' to $folder$(if ($dry) { ' (dry run: nothing is written)' })"
@@ -75,6 +82,8 @@ if (-not $RetentionOnly) {
     if ($IncludeVaultKey) { Write-DrishtiStep -Kind plan -Message "would copy the Vault root key ($($config.VaultKey.Mode)) to $keyDir\vault-root-$stamp.key (the folder locked first: Administrators only)" }
     if ($IncludeConfig) { Write-DrishtiStep -Kind plan -Message "would copy the configuration ($($config.ConfigDir): env files, go2rtc.yaml, drishti.config.psd1) to $keyDir\config-$stamp (Administrators only; it holds the services' secrets)" }
   } else {
+    # The folder name is predictable: one that exists already was not made by this run (re-review M-new-8).
+    if (Test-Path -LiteralPath $folder) { throw "$folder exists already: it was not made by this backup. Look at it; nothing was written." }
     Set-DrishtiAcl -Path $folder
     $session = Open-DrishtiPsql -Config $config -Database $dbName
     try {
@@ -85,11 +94,12 @@ if (-not $RetentionOnly) {
       $version = ($session.Query('SHOW server_version;'))[0]
       if ($db.Mode -eq 'Container') {
         $inside = "/tmp/drishti-backup-$stamp.dump"
+        $docker = Get-DrishtiTool -Config $config -Name docker
         Invoke-DrishtiPgTool -Config $config -Tool pg_dump -Arguments "-d $dbName -Fc --snapshot=$snapshot -f $inside" | Out-Null
         try {
-          & docker cp "$($db.Container):$inside" $dump
+          & $docker cp "$($db.Container):$inside" $dump
           if ($LASTEXITCODE -ne 0) { throw 'docker cp of the dump failed.' }
-        } finally { & docker exec $db.Container rm -f $inside | Out-Null }
+        } finally { & $docker exec $db.Container rm -f $inside | Out-Null }
       } else {
         Invoke-DrishtiPgTool -Config $config -Tool pg_dump -Arguments "-d $dbName -Fc --snapshot=$snapshot -f `"$dump`"" | Out-Null
       }
@@ -105,7 +115,7 @@ if (-not $RetentionOnly) {
       if ($vk.Mode -eq 'None') { throw 'VaultKey.Mode is None: the root key cannot be copied from here (hosted project: the platform keeps it).' }
       $keyCopy = Join-Path $keyDir "vault-root-$stamp.key"
       if ($vk.Mode -eq 'ContainerFile') {
-        & docker cp "$($db.Container):$($vk.Path)" $keyCopy
+        & (Get-DrishtiTool -Config $config -Name docker) cp "$($db.Container):$($vk.Path)" $keyCopy
         if ($LASTEXITCODE -ne 0) { throw 'docker cp of the Vault root key failed.' }
       } else { Copy-Item -LiteralPath $vk.Path -Destination $keyCopy }
       Set-DrishtiAcl -Path $keyCopy -IsFile
@@ -137,8 +147,8 @@ if ($ApplyRetention -or $RetentionOnly) {
   $days = 30; $keep = 7
   if ($config.ContainsKey('Retention')) { $days = [int]$config.Retention.Days; $keep = [int]$config.Retention.KeepAtLeast }
   if (-not (Test-Path -LiteralPath $root)) { return }
-  $rootProblems = @(Test-DrishtiPathAcl -Path $root)
-  if ($rootProblems.Count -gt 0) { throw "Retention refused: others may change the backup folder ($($rootProblems -join '; ')). Run drishti-services.ps1 -Action RepairAcl." }
+  $rootProblems = @(Test-DrishtiPathAcl -Path $root -ReadAccounts $webReader -Secret -TrustOperator)
+  if ($rootProblems.Count -gt 0) { throw "Retention refused: others may change or read the backup folder ($($rootProblems -join '; ')). Run drishti-services.ps1 -Action RepairAcl." }
   $candidates = @()
   foreach ($e in [IO.Directory]::GetDirectories($root)) {
     $name = [IO.Path]::GetFileName($e)
@@ -161,7 +171,7 @@ if ($ApplyRetention -or $RetentionOnly) {
     if (Test-DrishtiHasReparsePoint -Path $path) { Write-DrishtiStep -Kind warn -Message "kept ${path}: it contains a junction or link (not made by this script; look at it by hand)"; continue }
     if ($dry) { Write-DrishtiStep -Kind plan -Message "would remove the old backup $path (older than $days days, beyond the newest $keep)"; continue }
     if ($PSCmdlet.ShouldProcess($path, 'remove old backup')) {
-      & cmd.exe /d /c "rmdir /s /q `"$path`"" | Out-Host
+      & $script:CmdExe /d /c "rmdir /s /q `"$path`"" | Out-Host
       if (Test-Path -LiteralPath $path) { Write-DrishtiStep -Kind warn -Message "could not remove $path" } else { Write-DrishtiStep -Message "removed the old backup $name" }
     }
   }

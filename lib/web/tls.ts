@@ -33,14 +33,19 @@ export function authUrlProblem(env: Env = process.env): string | null {
   if (!isProductionMode(env)) return null
   const configured = env.NEXT_PUBLIC_SUPABASE_URL?.trim() || env.SUPABASE_URL?.trim() || ''
   let host = ''
+  let origin = ''
   try {
-    host = new URL(configured).hostname
+    const u = new URL(configured)
+    host = u.hostname
+    origin = u.origin
   } catch {
     return 'NEXT_PUBLIC_SUPABASE_URL is not an address; it must be this computer or the private network (docs/drishti/runbook-tls.md section 3).'
   }
   if (loopbackHost(host)) return null
   try {
-    if (env.NEXT_PUBLIC_APP_URL && new URL(env.NEXT_PUBLIC_APP_URL).hostname === host) return null
+    // Behind the app's own address: the same ORIGIN (scheme, host and port), so through the one reverse proxy. The same host name on
+    // another port is the Supabase port itself (release 1 clean-up review Minor 6), judged below like any other address.
+    if (env.NEXT_PUBLIC_APP_URL && new URL(env.NEXT_PUBLIC_APP_URL).origin === origin) return null
   } catch {
     // no app address to compare with
   }

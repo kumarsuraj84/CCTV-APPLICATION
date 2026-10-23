@@ -38,6 +38,8 @@ param(
   [string]$ExpectedMigration,
   [string]$SourcePath,
   [string]$ResultPath,
+  # Tests only, on a disposable database named drishti_restore*: makes the swap fail after one of its steps (re-review M-new-3).
+  [ValidateSet('', 'AfterClose', 'AfterFirstRename')][string]$SimulateSwapFailure = '',
   [switch]$DryRun
 )
 
@@ -58,6 +60,7 @@ if ($isLive -and -not $AllowLiveDatabase) { throw "'$TargetDatabase' is the live
 if (-not $isLive -and -not $CreateDatabase) { throw 'Restoring into a database other than the live one needs -CreateDatabase (a new, empty database made by this run).' }
 if ($isLive -and $CreateDatabase) { throw '-CreateDatabase cannot be used with the live database.' }
 if ($isLive -and $DropAfterVerify) { throw '-DropAfterVerify never applies to the live database.' }
+if ($SimulateSwapFailure -and $TargetDatabase -notmatch '^drishti_restore') { throw '-SimulateSwapFailure is for the disposable test databases (drishti_restore...) only.' }
 
 $manifestPath = Join-Path $BackupPath 'manifest.json'
 $dump = Join-Path $BackupPath 'db.dump'
@@ -93,10 +96,15 @@ if ($isLive -and -not $SkipServiceCheck) {
 
 $created = $false
 $swapped = $false
+# Re-review M-new-3: each step of the swap is recorded, so a failure says exactly where the databases are, and the restored copy is
+# never dropped once the live database has been renamed.
+$closed = $false
+$renamedOld = $false
+$swapState = $null
 try {
   if ($isLive -and $PreRestoreBackup) {
     Write-DrishtiStep -Message "backing up the live database $TargetDatabase before the restore"
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'backup.ps1') -ConfigPath $ConfigPath -Database $TargetDatabase -Tag 'before-restore'
+    & $script:PowerShellExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'backup.ps1') -ConfigPath $ConfigPath -Database $TargetDatabase -Tag 'before-restore'
     if ($LASTEXITCODE -ne 0) { throw 'The backup before the restore failed: nothing was restored, the live database is unchanged.' }
   }
   $exists = Invoke-DrishtiSql -Config $config -Database $maint -Sql "SELECT count(*) FROM pg_database WHERE datname = '$work';"
@@ -108,10 +116,11 @@ try {
   }
   if ($db.Mode -eq 'Container') {
     $inside = "/tmp/drishti-restore-$suffix.dump"
-    & docker cp $dump "$($db.Container):$inside"
+    $docker = Get-DrishtiTool -Config $config -Name docker
+    & $docker cp $dump "$($db.Container):$inside"
     if ($LASTEXITCODE -ne 0) { throw 'docker cp of the dump into the database container failed.' }
     try { Invoke-DrishtiPgTool -Config $config -Tool pg_restore -Arguments "-d $work --exit-on-error $inside" | Out-Null }
-    finally { & docker exec $db.Container rm -f $inside | Out-Null }
+    finally { & $docker exec $db.Container rm -f $inside | Out-Null }
   } else {
     Invoke-DrishtiPgTool -Config $config -Tool pg_restore -Arguments "-d $work --exit-on-error `"$dump`"" | Out-Null
   }
@@ -153,19 +162,26 @@ WHERE d.datname = '$TargetDatabase';
 "@
     $sql = @("ALTER DATABASE $work OWNER TO `"$owner`";") + @($grants | Where-Object { $_ })
     Invoke-DrishtiSql -Config $config -Database $maint -Sql ($sql -join "`n") | Out-Null
-    Invoke-DrishtiSql -Config $config -Database $maint -Sql @"
-ALTER DATABASE $TargetDatabase ALLOW_CONNECTIONS false;
-SELECT count(pg_catalog.pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = '$TargetDatabase' AND pid <> pg_backend_pid();
-ALTER DATABASE $TargetDatabase RENAME TO $kept;
-ALTER DATABASE $work RENAME TO $TargetDatabase;
-ALTER DATABASE $kept ALLOW_CONNECTIONS true;
-"@ | Out-Null
+    Invoke-DrishtiSql -Config $config -Database $maint -Sql "ALTER DATABASE $TargetDatabase ALLOW_CONNECTIONS false;" | Out-Null
+    $closed = $true
+    if ($SimulateSwapFailure -eq 'AfterClose') { throw 'simulated failure after closing the live database' }
+    # Every session ended, then waited for (a backend can take a moment to exit; the rename needs none left).
+    $left = 1
+    for ($i = 0; $i -lt 20 -and $left -gt 0; $i++) {
+      $left = [int](Invoke-DrishtiSql -Config $config -Database $maint -Sql "SELECT count(*) FROM (SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$TargetDatabase' AND pid <> pg_backend_pid()) x;")[0]
+      if ($left -gt 0) { Start-Sleep -Milliseconds 500 }
+    }
+    Invoke-DrishtiSql -Config $config -Database $maint -Sql "ALTER DATABASE $TargetDatabase RENAME TO $kept;" | Out-Null
+    $renamedOld = $true
+    if ($SimulateSwapFailure -eq 'AfterFirstRename') { throw 'simulated failure after renaming the live database' }
+    Invoke-DrishtiSql -Config $config -Database $maint -Sql "ALTER DATABASE $work RENAME TO $TargetDatabase;" | Out-Null
     $swapped = $true
+    Invoke-DrishtiSql -Config $config -Database $maint -Sql "ALTER DATABASE $kept ALLOW_CONNECTIONS true;" | Out-Null
     Write-DrishtiStep -Kind ok -Message "the restored copy is now $TargetDatabase; the database as it was is kept as $kept (drop it once everything works)"
   }
 
   $result = [ordered]@{
-    backup = (Split-Path -Leaf $BackupPath); target = $TargetDatabase; live = $isLive; swapped = $swapped; keptAs = $(if ($swapped) { $kept } else { $null })
+    backup = (Split-Path -Leaf $BackupPath); target = $TargetDatabase; live = $isLive; swapped = $swapped; keptAs = $(if ($swapped) { $kept } else { $null }); swapState = $swapState
     preRestoreBackup = [bool]($isLive -and $PreRestoreBackup); dumpSha256Ok = $true
     counts = $countRows; allCountsEqual = $allEqual
     migration = [ordered]@{ backup = $manifest.migration; restored = $level; expected = $ExpectedMigration; equalToBackup = ($level -eq $manifest.migration); pending = [bool]($ExpectedMigration -and $level -lt $ExpectedMigration) }
@@ -188,9 +204,37 @@ ALTER DATABASE $kept ALLOW_CONNECTIONS true;
 } catch {
   $script:restoreFailed = $true
   Write-DrishtiStep -Kind fail -Message "restore failed: $($_.Exception.Message)"
-  if ($isLive) { Write-DrishtiStep -Kind fail -Message $(if ($swapped) { "the restored copy was already in place as $TargetDatabase (the old one kept as $kept)" } else { "the live database $TargetDatabase was NOT changed" }) }
+  if ($isLive) {
+    if ($swapped) {
+      $swapState = 'swapped'
+      Write-DrishtiStep -Kind fail -Message "the restored copy is in place as $TargetDatabase; the old one is kept as $kept (it may still refuse connections: ALTER DATABASE $kept ALLOW_CONNECTIONS true)"
+    } elseif ($renamedOld) {
+      # The live name is free: there is no live database. Put the old one back under its name.
+      try {
+        Invoke-DrishtiSql -Config $config -Database $maint -Sql "ALTER DATABASE $kept RENAME TO $TargetDatabase; ALTER DATABASE $TargetDatabase ALLOW_CONNECTIONS true;" | Out-Null
+        $swapState = 'put back'
+        Write-DrishtiStep -Kind fail -Message "STOPPED half way through the swap: the old database was put back as $TargetDatabase and accepts connections again (as it was before the restore). The restored copy is kept as $work (not dropped); drop it once you have looked."
+      } catch {
+        $swapState = 'no live database'
+        Write-DrishtiStep -Kind fail -Message "STOPPED half way through the swap: THERE IS NO DATABASE NAMED $TargetDatabase NOW. The old one is $kept, the proven restored copy is $work. As the database owner, from template1: ALTER DATABASE $kept RENAME TO $TargetDatabase; ALTER DATABASE $TargetDatabase ALLOW_CONNECTIONS true; (or the restored copy instead). Nothing is dropped."
+      }
+    } elseif ($closed) {
+      try {
+        Invoke-DrishtiSql -Config $config -Database $maint -Sql "ALTER DATABASE $TargetDatabase ALLOW_CONNECTIONS true;" | Out-Null
+        $swapState = 'reopened'
+        Write-DrishtiStep -Kind fail -Message "STOPPED before anything was renamed: $TargetDatabase was closed to new connections for the swap and is open again; its data was not changed."
+      } catch {
+        $swapState = 'closed'
+        Write-DrishtiStep -Kind fail -Message "STOPPED before anything was renamed: $TargetDatabase still REFUSES CONNECTIONS (its data was not changed). As the database owner: ALTER DATABASE $TargetDatabase ALLOW_CONNECTIONS true;"
+      }
+    } else {
+      $swapState = 'not started'
+      Write-DrishtiStep -Kind fail -Message "the live database $TargetDatabase was NOT changed (the swap had not started)"
+    }
+    if ($ResultPath) { [ordered]@{ target = $TargetDatabase; live = $true; swapped = $swapped; swapState = $swapState; keptAs = $(if ($renamedOld -and $swapState -ne 'put back') { $kept } else { $null }); restoredCopy = $work; passed = $false } | ConvertTo-Json | Set-Content -LiteralPath $ResultPath -Encoding UTF8 }
+  }
 } finally {
-  if ($created -and -not $swapped -and ($DropAfterVerify -or $isLive)) {
+  if ($created -and -not $swapped -and -not $renamedOld -and ($DropAfterVerify -or $isLive)) {
     # A rehearsal's database when asked; on the live path the unused copy (the live database itself is never dropped here).
     Invoke-DrishtiSql -Config $config -Database $maint -Sql "DROP DATABASE IF EXISTS $work WITH (FORCE);" | Out-Null
     Write-DrishtiStep -Message "dropped $work"

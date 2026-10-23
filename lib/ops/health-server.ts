@@ -1,6 +1,7 @@
 import { statfs } from 'node:fs/promises'
 import { getWorkerStatus } from '@/lib/monitor/health'
 import { logger } from '@/lib/observability/logger'
+import { isProductionMode } from '@/lib/runtime-mode'
 import { collectHealth, diskDirs, expectedMigration, type DetailedHealth, type DiskInfo, type OpsDbStatus } from '@/lib/ops/health'
 import { readGatewayHealth } from '@/lib/streams/gateway-health'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -33,6 +34,7 @@ export function readDetailedHealth(env: Record<string, string | undefined> = pro
     gateway: () => readGatewayHealth(),
     disk: () => Promise.all(diskDirs(env, process.cwd()).map((d) => diskInfo(d))),
     expectedMigration: () => expectedMigration(process.cwd(), env),
+    production: isProductionMode(env),
   })
 }
 

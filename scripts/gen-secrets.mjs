@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url'
 import { parseEnvOutput } from './lib/env-output.mjs'
 import { ALL_KEYS, plan, render, SERVICE_KEYS, valueFor } from './lib/gen-secrets-core.mjs'
 import { insideDir, PRODUCTION_FILES, productionEnvFiles } from './lib/prod-env.mjs'
-import { lockPath, windowsAcl } from './lib/win-acl.mjs'
+import { lockPath, lockedWorkDir, windowsAcl } from './lib/win-acl.mjs'
 
 const args = process.argv.slice(2)
 const flag = (name) => args.find((a) => a === `--${name}` || a.startsWith(`--${name}=`))
@@ -62,12 +62,18 @@ if (args.includes('--production')) {
     mkdirSync(target, { recursive: true })
     lockPath(target, { folder: true })
   }
-  for (const [name, text] of Object.entries(files)) {
-    const tmp = path.join(target, `${name}.tmp-${process.pid}`)
-    writeFileSync(tmp, '', { mode: 0o600, flag: 'wx' })
-    lockPath(tmp)
-    writeFileSync(tmp, text, { mode: 0o600 })
-    renameSync(tmp, path.join(target, name))
+  // Re-review M-new-5: an existing folder may not be locked: the temporary copies are made in a locked folder of their own.
+  const work = lockedWorkDir(target)
+  try {
+    for (const [name, text] of Object.entries(files)) {
+      const tmp = path.join(work.dir, `${name}.tmp-${process.pid}`)
+      writeFileSync(tmp, '', { mode: 0o600, flag: 'wx' })
+      lockPath(tmp)
+      writeFileSync(tmp, text, { mode: 0o600 })
+      renameSync(tmp, path.join(target, name))
+    }
+  } finally {
+    work.done()
   }
   console.log(`Wrote ${Object.keys(files).join(', ')} to ${target} (each readable by SYSTEM and the Administrators only, until the install grants its service).`)
   if (!jwtSecret) console.log('The four database keys are empty: run again per file with --file <file> --jwt-secret-env NAME --only=<KEY> (prints names only).')
@@ -114,15 +120,21 @@ if (dryRun) {
   // Review I-7: the temporary copy is locked before the secrets go in. A file that exists is then rewritten IN PLACE (on Windows), so
   // its ACL (the service account's read right) is kept: a rename would give it the temporary file's ACL instead. The temporary copy,
   // complete, is removed afterwards (it is the recovery copy if the in-place write were interrupted).
-  const tmp = `${file}.tmp-${process.pid}`
-  const text = render(before, steps, values)
-  writeFileSync(tmp, '', { mode: 0o600, flag: 'wx' })
-  lockPath(tmp)
-  writeFileSync(tmp, text, { mode: 0o600 })
-  if (windowsAcl && existsSync(file)) {
-    writeFileSync(file, text)
-    rmSync(tmp, { force: true })
-  } else renameSync(tmp, file)
+  // Re-review M-new-5: the temporary copy is made in a locked folder of its own (the file's folder may not be locked).
+  const work = lockedWorkDir(path.dirname(file))
+  try {
+    const tmp = path.join(work.dir, `${path.basename(file)}.tmp-${process.pid}`)
+    const text = render(before, steps, values)
+    writeFileSync(tmp, '', { mode: 0o600, flag: 'wx' })
+    lockPath(tmp)
+    writeFileSync(tmp, text, { mode: 0o600 })
+    if (windowsAcl && existsSync(file)) {
+      writeFileSync(file, text)
+      rmSync(tmp, { force: true })
+    } else renameSync(tmp, file)
+  } finally {
+    work.done()
+  }
   console.log(`Wrote ${path.basename(file)}.`)
 } else {
   console.log(`${path.basename(file)} already has every key; nothing written.`)

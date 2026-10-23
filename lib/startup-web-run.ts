@@ -25,6 +25,11 @@ export async function runWebStartupCheck(env: Record<string, string | undefined>
       return data.length
     },
     probeGo2rtc: () => probeGo2rtcLogin(env.GO2RTC_URL?.trim() || 'http://127.0.0.1:1984'),
+    testFixturesOn: async () => {
+      const { data, error } = await createAdminClient().rpc('test_fixtures_enabled' as never)
+      if (error || typeof data !== 'boolean') throw new Error('not readable')
+      return data
+    },
   })
   if (problems.length > 0) {
     logger.error({ event: 'web_config_refused', message: refusalMessage('web', problems) })

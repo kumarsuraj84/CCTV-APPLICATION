@@ -5,6 +5,8 @@
 // keeps its ACL (for example the service account's read right granted by drishti-services.ps1). Well-known SIDs, never localised names.
 // Nothing here prints; on other systems these do nothing (the 0600 mode applies there).
 import { execFileSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import { mkdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
 
 const isWindows = process.platform === 'win32'
@@ -12,17 +14,25 @@ const isWindows = process.platform === 'win32'
 const sys32 = (exe) => path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', exe)
 let operator
 
-/** The current user's SID when the process is NOT elevated (net session needs elevation), else null. */
+/**
+ * Whether this process runs elevated: its token carries the high (or system) mandatory level, S-1-16-12288 / S-1-16-16384, as
+ * `whoami /groups` lists it (re-review M-new-7: `net session` also fails when the Server service is stopped, which made an elevated
+ * administrator look non-elevated). Exported for the test.
+ */
+export function isElevated(groupsCsv) {
+  return /"S-1-16-(12288|16384)"/.test(groupsCsv)
+}
+
+/** The current user's SID when the process is NOT elevated, else null. */
 function operatorSid() {
   if (operator !== undefined) return operator
-  let elevated = false
+  let groups = ''
   try {
-    execFileSync(sys32('net.exe'), ['session'], { stdio: 'ignore' })
-    elevated = true
+    groups = execFileSync(sys32('whoami.exe'), ['/groups', '/fo', 'csv', '/nh'], { encoding: 'utf8' })
   } catch {
-    elevated = false
+    groups = ''
   }
-  if (elevated) return (operator = null)
+  if (isElevated(groups)) return (operator = null)
   let sid = null
   try {
     const out = execFileSync(sys32('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' })
@@ -44,6 +54,19 @@ export function lockPath(p, { folder = false } = {}) {
   const me = operatorSid()
   if (me) args.push('/grant:r', `*${me}:${inh}F`)
   execFileSync(sys32('icacls.exe'), args, { stdio: 'ignore' })
+}
+
+/**
+ * Re-review M-new-5: a folder for the temporary copies, next to the target, created and locked BEFORE any file is made in it. A file
+ * made inside then takes the locked rules from the start, even when the target's own folder is not locked (a user who opens a
+ * handle early could otherwise keep it). Elsewhere (not Windows) it is the target's folder itself. Returns { dir, done() }.
+ */
+export function lockedWorkDir(parent) {
+  if (!isWindows) return { dir: parent, done: () => {} }
+  const dir = path.join(parent, `.gen-secrets-${process.pid}-${randomBytes(4).toString('hex')}`)
+  mkdirSync(dir) // fails if it exists: never a folder someone else made
+  lockPath(dir, { folder: true })
+  return { dir, done: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
 export const windowsAcl = isWindows
