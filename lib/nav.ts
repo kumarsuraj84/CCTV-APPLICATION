@@ -10,8 +10,11 @@ export type { Role }
  *   anyOf: at least one of these capabilities, at any scope
  *   anyLocationGrant: any CCTV, IT or Wi-Fi grant (what shows locations)
  *   admin: an administrative role AND this admin.* capability for the whole organisation
+ *   superAdmin: the super administrator role AND some admin.* capability for the whole organisation (P5.4: the Health page)
  */
-export type NavNeed = { anyOf?: Capability[]; anyLocationGrant?: true; admin?: AdminCapability }
+export type NavNeed = { anyOf?: Capability[]; anyLocationGrant?: true; admin?: AdminCapability; superAdmin?: true }
+
+const ADMIN_CAPABILITIES: AdminCapability[] = ['admin.users', 'admin.access', 'admin.inventory', 'admin.alerts', 'admin.audit.read']
 
 export type NavItem = {
   href: string
@@ -38,6 +41,8 @@ export const NAV: NavItem[] = [
   // P2-3 review: the review of migrated grants (the editor itself is opened from Users). No count here: the items are static data.
   { href: '/admin/access-review', label: 'Access review', icon: 'users', group: 'Admin', needs: { admin: 'admin.access' } },
   { href: '/admin/monitoring', label: 'Monitoring', icon: 'activity', group: 'Admin', needs: { admin: 'admin.inventory' } },
+  // P5.4: the installation's health (database, Vault, gateway, worker, migrations, disk, clean-up) for super administrators.
+  { href: '/admin/health', label: 'Health', icon: 'activity', group: 'Admin', needs: { superAdmin: true } },
   // P2-5c-1: the hierarchy, NVRs, mapping editor and reconciliation; the asset inventory. T-1: the old "Manage stores" page is gone;
   // /admin/stores redirects to /admin/locations.
   { href: '/admin/locations', label: 'Locations and NVRs', icon: 'building', group: 'Admin', needs: { admin: 'admin.inventory' } },
@@ -45,6 +50,8 @@ export const NAV: NavItem[] = [
   { href: '/admin/assets', label: 'Assets', icon: 'boxes', group: 'Admin', needs: { admin: 'admin.inventory' } },
   { href: '/admin/devices', label: 'Manage devices', icon: 'server', group: 'Admin', needs: { admin: 'admin.inventory' } },
   { href: '/admin/import', label: 'Import', icon: 'upload', group: 'Admin', needs: { admin: 'admin.inventory' } },
+  // P5.4 brief item 5: the audit log (admin_audit_log and sign-in events) with filters and search.
+  { href: '/admin/audit', label: 'Audit log', icon: 'history', group: 'Admin', needs: { admin: 'admin.audit.read' } },
 ]
 
 /** Whether a viewer meets a need. Exported for pages that show the same links in their own place. */
@@ -53,6 +60,7 @@ export function meets(v: NavViewer, need: NavNeed | undefined): boolean {
   if (need.anyOf && !holdsAny(v.capabilities, need.anyOf)) return false
   if (need.anyLocationGrant && !holdsAnyLocationGrant(v.capabilities)) return false
   if (need.admin && !(isAdminRole(v.role) && holdsOrgWide(v.capabilities, need.admin))) return false
+  if (need.superAdmin && !(v.role === 'platform_owner' && ADMIN_CAPABILITIES.some((c) => holdsOrgWide(v.capabilities, c)))) return false
   return true
 }
 

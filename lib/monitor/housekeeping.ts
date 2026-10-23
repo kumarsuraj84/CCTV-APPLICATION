@@ -28,3 +28,27 @@ export async function runHousekeeping(db: { rpc: Rpc }, log: Log): Promise<House
   log({ event: 'housekeeping_done', removed: out })
   return out
 }
+
+/**
+ * P5.4: the worker's schedule of the clean-up (P2-4: unused media session rows pile up until media_sessions_prune runs; each run is
+ * now recorded in housekeeping_runs and shown on the Health page). First 30 s after the start, then every 10 minutes; a tick does
+ * nothing while the worker is in standby (`isActive` false) or while the previous run is still busy. Returns stop().
+ */
+export function scheduleHousekeeping(o: { isActive: () => boolean; run: () => Promise<unknown>; firstAfterMs?: number; everyMs?: number }): () => void {
+  let busy = false
+  const tick = () => {
+    if (busy || !o.isActive()) return
+    busy = true
+    void o.run().catch(() => undefined).finally(() => {
+      busy = false
+    })
+  }
+  const first = setTimeout(tick, o.firstAfterMs ?? 30_000)
+  const every = setInterval(tick, o.everyMs ?? HOUSEKEEPING_EVERY_MS)
+  first.unref?.()
+  every.unref?.()
+  return () => {
+    clearTimeout(first)
+    clearInterval(every)
+  }
+}

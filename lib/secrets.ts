@@ -46,6 +46,19 @@ export function getSecret(purpose: SecretPurpose, env: Record<string, string | u
 
 export const secretEnvName = (purpose: SecretPurpose) => SPEC[purpose].env
 export const secretMinLength = (purpose: SecretPurpose) => SPEC[purpose].min
+export const SECRET_PURPOSES = Object.keys(SPEC) as SecretPurpose[]
+
+/** P5.4 brief item 3: in production every per-purpose secret has at least this many characters (development keeps `min`). */
+export const PRODUCTION_SECRET_LENGTH = 32
+const PLACEHOLDER = /change.?me|replace.?me|example|placeholder|your.?secret|secret.?here|^password|^secret|^todo|xxxx/i
+
+/** Why a secret value is easy to guess (too few different characters, a repeated pattern, a placeholder), or null. Never the value. */
+export function secretWeakness(v: string): string | null {
+  if (new Set(v).size < 10) return 'uses too few different characters'
+  if (/^([\s\S]{1,12})\1{2,}[\s\S]{0,12}$/.test(v)) return 'is a repeated pattern'
+  if (PLACEHOLDER.test(v)) return 'looks like a placeholder'
+  return null
+}
 
 const processKeys = processSingleton('secrets.processKeys', () => new Map<SecretPurpose, string>())
 

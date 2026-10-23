@@ -7,7 +7,7 @@ import { realProbes } from '@/lib/monitor/probes'
 import { MonitorRunner } from '@/lib/monitor/runner'
 import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
 import { WorkerSupervisor } from '@/lib/monitor/supervisor'
-import { HOUSEKEEPING_EVERY_MS, runHousekeeping } from '@/lib/monitor/housekeeping'
+import { runHousekeeping, scheduleHousekeeping } from '@/lib/monitor/housekeeping'
 import { logger } from '@/lib/observability/logger'
 import { refusalMessage, startupProblems } from '@/lib/startup-checks'
 import { createServiceClient, serviceKeyFor } from '@/lib/supabase/service-clients'
@@ -79,12 +79,11 @@ async function main() {
   if (stopping) return
   // P2-6: housekeeping under the worker's role (ended rate-limit windows, old media sessions, old credential-read log rows). P2-7: only
   // while this worker holds the lease (the prunes are harmless twice, but a worker in standby does no work at all).
-  const tidy = () => {
-    if (!supervisor.isActive()) return
-    void runHousekeeping({ rpc: (name, args) => admin.rpc(name as never, args as never) }, (e) => (e.event === 'housekeeping_failed' ? logger.warn(e) : logger.info(e)))
-  }
-  setTimeout(tidy, 30_000).unref()
-  setInterval(tidy, HOUSEKEEPING_EVERY_MS).unref()
+  // P5.4: each run is recorded in the database (housekeeping_runs) and shown on the Health page ("clean-up of unused video sessions").
+  scheduleHousekeeping({
+    isActive: () => supervisor.isActive(),
+    run: () => runHousekeeping({ rpc: (name, args) => admin.rpc(name as never, args as never) }, (e) => (e.event === 'housekeeping_failed' ? logger.warn(e) : logger.info(e))),
+  })
   await supervisor.run()
 }
 

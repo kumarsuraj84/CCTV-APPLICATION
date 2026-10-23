@@ -10,13 +10,19 @@
 //   node scripts/gen-secrets.mjs --rotate=A,B            replace only these keys
 //   node scripts/gen-secrets.mjs --only=A,B              look only at these keys
 //   node scripts/gen-secrets.mjs --dry-run               say what would change, write nothing
+//   node scripts/gen-secrets.mjs --production --out-dir C:\Drishti\config [--jwt-secret-env NAME]
+//                                                        P5.4: the production skeleton, one file per Windows service (web.env,
+//                                                        worker.env, gateway.env, go2rtc.env), outside the repository only, never over
+//                                                        an existing file
 //
 // After writing: restart the processes that read the changed keys (docs/drishti/runbooks/secret-rotation.md says which).
 import { execSync } from 'node:child_process'
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parseEnvOutput } from './lib/env-output.mjs'
 import { ALL_KEYS, plan, render, SERVICE_KEYS, valueFor } from './lib/gen-secrets-core.mjs'
+import { insideDir, PRODUCTION_FILES, productionEnvFiles } from './lib/prod-env.mjs'
 
 const args = process.argv.slice(2)
 const flag = (name) => args.find((a) => a === `--${name}` || a.startsWith(`--${name}=`))
@@ -31,6 +37,40 @@ const fail = (message) => {
   process.exit(1)
 }
 const list = (v) => new Set(String(v).split(',').map((s) => s.trim()).filter(Boolean))
+
+// P5.4: --production --out-dir <folder> writes the production skeleton, one file per Windows service (web.env, worker.env,
+// gateway.env, go2rtc.env), to a folder OUTSIDE the repository, never over an existing file. Names only are printed.
+if (args.includes('--production')) {
+  const outDir = valueOf('out-dir')
+  if (!outDir) fail('--production needs --out-dir <folder> (outside the repository, for example C:\\Drishti\\config).')
+  const target = path.resolve(outDir)
+  const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  if (insideDir(target, repo)) fail('The production env files must not be written inside the repository: choose a folder outside it (for example C:\\Drishti\\config).')
+  const existing = Object.keys(PRODUCTION_FILES).filter((f) => existsSync(path.join(target, f)))
+  if (existing.length) fail(`Not written: ${existing.join(', ')} already exist in that folder (nothing is overwritten; edit them, or rotate single values with --file <file> --rotate=NAME).`)
+  const envName = valueOf('jwt-secret-env')
+  const jwtSecret = envName ? process.env[envName] : undefined
+  if (envName && (typeof jwtSecret !== 'string' || jwtSecret.length < 32)) fail(`Environment variable ${envName} does not hold a JWT secret of 32 characters or more.`)
+  const files = productionEnvFiles({ jwtSecret })
+  if (args.includes('--dry-run')) {
+    console.log(`Dry run (nothing written): would write ${Object.keys(files).join(', ')} to ${target}.`)
+    process.exit(0)
+  }
+  mkdirSync(target, { recursive: true })
+  for (const [name, text] of Object.entries(files)) {
+    const tmp = path.join(target, `${name}.tmp-${process.pid}`)
+    writeFileSync(tmp, text, { mode: 0o600, flag: 'wx' })
+    renameSync(tmp, path.join(target, name))
+  }
+  console.log(`Wrote ${Object.keys(files).join(', ')} to ${target}.`)
+  if (!jwtSecret) console.log('The four database keys are empty: run again per file with --file <file> --jwt-secret-env NAME --only=<KEY> (prints names only).')
+  console.log('Fill the addresses (NEXT_PUBLIC_SUPABASE_URL, SUPABASE_URL, NEXT_PUBLIC_APP_URL, GATEWAY_ALLOWED_ORIGINS) and the project keys in web.env,')
+  console.log('then restrict each file to its service account, for example:')
+  for (const [name, svc] of [['web.env', 'DrishtiWeb'], ['worker.env', 'DrishtiWorker'], ['gateway.env', 'DrishtiGateway'], ['go2rtc.env', 'DrishtiGo2rtc']]) {
+    console.log(`  icacls "${path.join(target, name)}" /inheritance:r /grant:r "NT SERVICE\\${svc}:R" /grant:r "Administrators:F"`)
+  }
+  process.exit(0)
+}
 
 const file = path.resolve(valueOf('file') ?? '.env.local')
 const rotateFlag = flag('rotate')

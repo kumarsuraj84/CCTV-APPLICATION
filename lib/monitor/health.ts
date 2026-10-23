@@ -1,7 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { DEFAULT_LEASE_NAME } from '@/lib/monitor/lease'
 import { logger } from '@/lib/observability/logger'
-import { maskSecrets } from '@/lib/observability/mask'
 import type { Database } from '@/types/database'
 
 export type WorkerHealth = { ok: boolean; heartbeatAgeSec: number | null }
@@ -114,32 +113,7 @@ export async function getWorkerStatus(admin: Admin, now = new Date()): Promise<W
   }
 }
 
-export type PublicHealth = { status: 'ok' | 'degraded'; db: boolean; worker: WorkerHealth }
-
-/**
- * What the public health page says. Never throws and never carries the reason for a problem (that goes to the log, with secrets removed):
- * the answer is only whether the database and the worker are alive.
- */
-export async function readPublicHealth(makeAdmin: () => Admin): Promise<PublicHealth> {
-  try {
-    const worker = await getWorkerHealth(makeAdmin())
-    if (!worker.ok) logDegraded({ reason: 'The worker heartbeat is missing or too old.', heartbeatAgeSec: worker.heartbeatAgeSec })
-    return { status: worker.ok ? 'ok' : 'degraded', db: true, worker }
-  } catch (e) {
-    logDegraded({ reason: 'The database could not be read.', detail: maskSecrets(e instanceof Error ? e.message : String(e)) })
-    return { status: 'degraded', db: false, worker: { ok: false, heartbeatAgeSec: null } }
-  }
-}
-
-/** A problem that lasts would otherwise be logged on every request; once a minute is enough. */
-const DEGRADED_LOG_EVERY_MS = 60_000
-let lastDegradedLog = Number.NEGATIVE_INFINITY
-function logDegraded(fields: Record<string, unknown>): void {
-  const now = Date.now()
-  if (now - lastDegradedLog < DEGRADED_LOG_EVERY_MS) return
-  lastDegradedLog = now
-  logger.warn({ event: 'health_degraded', ...fields })
-}
+// P5.4: the public /api/health answer (status only) and the detailed health of super administrators are in lib/ops/health.ts.
 
 /** Remembers the answer of load() for ttlMs, and shares one call among requests that arrive meanwhile. A failed load is not remembered. */
 export function cachedFor<T>(ttlMs: number, load: () => Promise<T>, nowMs: () => number = () => Date.now()): () => Promise<T> {

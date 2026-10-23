@@ -1,5 +1,5 @@
 import { isProductionMode } from '@/lib/runtime-mode'
-import { getSecret, secretEnvName, type SecretPurpose } from '@/lib/secrets'
+import { getSecret, PRODUCTION_SECRET_LENGTH, SECRET_PURPOSES, secretEnvName, secretWeakness, type SecretPurpose } from '@/lib/secrets'
 import { connectRefusal } from '@/lib/security/targets'
 import { SERVICE_KEY_ENV, serviceKeyFor, type ServiceRole } from '@/lib/supabase/service-clients'
 
@@ -58,7 +58,12 @@ export function startupProblems(proc: ProcessName, env: Env = process.env, now: 
   }
 
   for (const purpose of SECRETS[proc]) {
-    if (!getSecret(purpose, env)) add(`${secretEnvName(purpose)} is not set (or too short).`)
+    const name = secretEnvName(purpose)
+    // P5.4 brief item 3: production refuses a missing, short (under 32 characters) or weak secret; development keeps the old minimum.
+    if (production) {
+      const p = productionSecretProblem(name, env[name])
+      if (p) problems.push(p)
+    } else if (!getSecret(purpose, env)) add(`${name} is not set (or too short).`)
   }
 
   if (GO2RTC[proc]) {
@@ -66,10 +71,23 @@ export function startupProblems(proc: ProcessName, env: Env = process.env, now: 
     const pass = env.GO2RTC_API_PASSWORD?.trim()
     if (!user || !pass || !getSecret('go2rtc_api', env)) {
       add('GO2RTC_API_USERNAME and GO2RTC_API_PASSWORD (32 characters or more) are required: go2rtc\'s API must ask for its login.')
+    } else if (production) {
+      const weak = secretWeakness(pass)
+      if (weak) problems.push(`GO2RTC_API_PASSWORD ${weak} (easy to guess): make a new one with node scripts/gen-secrets.mjs --rotate=GO2RTC_API_PASSWORD.`)
     }
   }
 
   if (production) {
+    // P5.4: one value per purpose. Every secret set in this process's environment counts, needed by it or not.
+    const byValue = new Map<string, string[]>()
+    for (const purpose of SECRET_PURPOSES) {
+      const name = secretEnvName(purpose)
+      const v = env[name]?.trim()
+      if (v) byValue.set(v, [...(byValue.get(v) ?? []), name])
+    }
+    for (const names of byValue.values()) {
+      if (names.length > 1) problems.push(`${names.join(' and ')} have the same value: every purpose needs its own secret (node scripts/gen-secrets.mjs --rotate=${names.slice(1).join(',')}).`)
+    }
     const entries = (env.OUTBOUND_TARGET_ALLOWLIST ?? '').split(',').map((s) => s.trim()).filter(Boolean)
     for (const entry of entries) {
       const m = /^\[?([^\]]+?)\]?:(\d{1,5})$/.exec(entry)
@@ -81,6 +99,16 @@ export function startupProblems(proc: ProcessName, env: Env = process.env, now: 
     if (env.DEMO_VIDEO?.trim()) problems.push('DEMO_VIDEO must not be set in production.')
   }
   return { problems, warnings }
+}
+
+/** Production: why one needed secret cannot be used (not set, under 32 characters, easy to guess), or null. Never the value. */
+function productionSecretProblem(name: string, value: string | undefined): string | null {
+  const v = value?.trim() ?? ''
+  const fix = `make one with node scripts/gen-secrets.mjs --rotate=${name}`
+  if (!v) return `${name} is not set (${fix}).`
+  if (v.length < PRODUCTION_SECRET_LENGTH) return `${name} must be at least ${PRODUCTION_SECRET_LENGTH} characters in production (${fix}).`
+  const weak = secretWeakness(v)
+  return weak ? `${name} ${weak}, so it is weak (easy to guess): ${fix}.` : null
 }
 
 /** The plain line a process logs when it refuses to start. */
