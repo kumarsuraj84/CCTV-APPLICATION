@@ -1,0 +1,24 @@
+# go2rtc on Windows as the service DrishtiGo2rtc (P5.4). Copied to C:\Drishti\config\go2rtc.yaml by drishti-services.ps1 -Action Install.
+# No credential in this file: the API login comes from the service's environment (C:\Drishti\config\go2rtc.env, made by
+# `node scripts/gen-secrets.mjs --production`), the same two values the web app and the gateway send (deploy/go2rtc.yaml explains the
+# rest; verified there on the pinned 1.9.9 Docker image, NOT yet on the Windows binary: record the first run in the tracker, SO-9).
+# Streams are registered at run time by the web app through the API (registered targets only); nothing is listed here.
+api:
+  # This computer only: the video gateway (127.0.0.1:3412) is the only thing a browser reaches.
+  listen: "127.0.0.1:1984"
+  # Not set = empty = no login; the gateway and the web app then refuse to start in production ("answers without its login").
+  username: ${GO2RTC_API_USERNAME:}
+  password: ${GO2RTC_API_PASSWORD:}
+  local_auth: true
+# No RTSP server, no WebRTC, SRTP or RTMP listener: live video goes through the API and the gateway only (D-13).
+rtsp:
+  listen: ""
+webrtc:
+  listen: ""
+srtp:
+  listen: ""
+rtmp:
+  listen: ""
+log:
+  level: info
+streams: {}
