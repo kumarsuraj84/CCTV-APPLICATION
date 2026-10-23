@@ -1,13 +1,13 @@
 import { statfs } from 'node:fs/promises'
 import { getWorkerStatus } from '@/lib/monitor/health'
 import { logger } from '@/lib/observability/logger'
-import { collectHealth, expectedMigration, type DetailedHealth, type DiskInfo, type OpsDbStatus } from '@/lib/ops/health'
+import { collectHealth, diskDirs, expectedMigration, type DetailedHealth, type DiskInfo, type OpsDbStatus } from '@/lib/ops/health'
 import { readGatewayHealth } from '@/lib/streams/gateway-health'
 import { createAdminClient } from '@/lib/supabase/admin'
 
 // P5.4: the real inputs of lib/ops/health.ts on the web server. The database part goes through the web app's own role (app_web:
-// ops_health_status, worker_state, worker_leases); the gateway through its /g/health (lib/streams/gateway-health.ts); the disk is the
-// one holding DRISHTI_DATA_DIR (backups and logs, deploy/windows) or, without it, the server's own folder.
+// ops_health_status, worker_state, worker_leases); the gateway through its /g/health (lib/streams/gateway-health.ts); the disks are
+// those holding DRISHTI_DATA_DIR (data and logs) and DRISHTI_BACKUP_DIR (backups, deploy/windows), or the server's own folder.
 
 export async function diskInfo(dir: string): Promise<DiskInfo | null> {
   try {
@@ -21,7 +21,8 @@ export async function diskInfo(dir: string): Promise<DiskInfo | null> {
 export function readDetailedHealth(env: Record<string, string | undefined> = process.env): Promise<DetailedHealth> {
   const admin = createAdminClient()
   return collectHealth({
-    build: env.NEXT_PUBLIC_BUILD_ID || 'dev',
+    // The literal next.config inlines at build time (review M-15), as app/api/version/route.ts reads it.
+    build: process.env.NEXT_PUBLIC_BUILD_ID || 'dev',
     now: () => new Date(),
     opsStatus: async () => {
       const { data, error } = await admin.rpc('ops_health_status')
@@ -30,7 +31,7 @@ export function readDetailedHealth(env: Record<string, string | undefined> = pro
     },
     workerStatus: () => getWorkerStatus(admin),
     gateway: () => readGatewayHealth(),
-    disk: () => diskInfo(env.DRISHTI_DATA_DIR?.trim() || process.cwd()),
+    disk: () => Promise.all(diskDirs(env, process.cwd()).map((d) => diskInfo(d))),
     expectedMigration: () => expectedMigration(process.cwd(), env),
   })
 }

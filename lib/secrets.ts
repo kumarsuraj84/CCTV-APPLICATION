@@ -50,12 +50,18 @@ export const SECRET_PURPOSES = Object.keys(SPEC) as SecretPurpose[]
 
 /** P5.4 brief item 3: in production every per-purpose secret has at least this many characters (development keeps `min`). */
 export const PRODUCTION_SECRET_LENGTH = 32
-const PLACEHOLDER = /change.?me|replace.?me|example|placeholder|your.?secret|secret.?here|^password|^secret|^todo|xxxx/i
+// `xxxx` only as a part of its own (between separators or at an end), and a leading word only when no letter follows it: inside a
+// generated value "…rxxXXx5…" or a start "ToDo…" is chance (about once in 26,000 and once in a million values), and a generated
+// secret must not be refused (found by the P5.4 review round 1 test of generated values; 600,000 checked, none refused).
+const PLACEHOLDER = /change.?me|replace.?me|example|placeholder|your.?secret|secret.?here|^(?:password|secret|todo)(?:[^a-z]|$)|(?:^|[^a-z0-9])x{4,}(?:[^a-z0-9]|$)/i
 
 /** Why a secret value is easy to guess (too few different characters, a repeated pattern, a placeholder), or null. Never the value. */
 export function secretWeakness(v: string): string | null {
   if (new Set(v).size < 10) return 'uses too few different characters'
   if (/^([\s\S]{1,12})\1{2,}[\s\S]{0,12}$/.test(v)) return 'is a repeated pattern'
+  // Review M-6: a part of 6 or more characters that comes twice (a word and a year typed twice). A generated value (43 random
+  // base64url characters) has one by chance about once in 50 million.
+  if (/([\s\S]{6,})[\s\S]*?\1/.test(v)) return 'repeats a part of itself'
   if (PLACEHOLDER.test(v)) return 'looks like a placeholder'
   return null
 }

@@ -29,8 +29,8 @@ export const PRODUCTION_FILES = {
       ['TRUSTED_PROXY_HOPS', '1'], ['OUTBOUND_TARGET_ALLOWLIST', ''], ['DEMO_VIDEO', ''],
       ['# The Next.js standalone server listens on this computer only (Caddy is the one listener on the network).', undefined],
       ['PORT', '3212'], ['HOSTNAME', '127.0.0.1'],
-      ['# The folder of backups and logs: the Health page reports the free space of its disk.', undefined],
-      ['DRISHTI_DATA_DIR', 'C:\\Drishti\\data'],
+      ['# The data folder and the backup folder (BackupDir of drishti.config.psd1): the Health page reports the free space of both disks.', undefined],
+      ['DRISHTI_DATA_DIR', 'C:\\Drishti\\data'], ['DRISHTI_BACKUP_DIR', 'D:\\DrishtiBackups'],
     ],
   },
   'worker.env': {

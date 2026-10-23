@@ -87,12 +87,14 @@ function ConvertTo-DrishtiHostConf {
 
 <# Runs an external program, or in a dry run only says what it would run. Throws on a non-zero exit code. #>
 function Invoke-DrishtiCommand {
-  param([Parameter(Mandatory)][string]$FilePath, [string[]]$ArgumentList = @(), [switch]$DryRun, [string]$Display)
+  param([Parameter(Mandatory)][string]$FilePath, [string[]]$ArgumentList = @(), [switch]$DryRun, [string]$Display, [int[]]$AllowExitCodes = @(0))
   $shown = if ($Display) { $Display } else { "$FilePath $($ArgumentList -join ' ')" }
   if ($DryRun) { Write-DrishtiStep -Kind plan -Message "would run: $shown"; return }
   Write-DrishtiStep -Message "run: $shown"
-  & $FilePath @ArgumentList
-  if ($LASTEXITCODE -ne 0) { throw "Failed ($LASTEXITCODE): $shown" }
+  & $FilePath @ArgumentList | Out-Host
+  $code = $LASTEXITCODE
+  if ($AllowExitCodes -notcontains $code) { throw "Failed ($code): $shown" }
+  $global:LASTEXITCODE = 0
 }
 
 function Test-DrishtiDbName {
@@ -227,23 +229,163 @@ function Get-DrishtiExpectedMigration {
   return $m
 }
 
+# ── Access control (review C-2, I-6, I-7, M-11) ───────────────────────────────
+# Well-known SIDs, never the localised names ("Administrators" is "Administratoren" on a German Windows).
+$script:SidSystem = 'S-1-5-18'
+$script:SidAdmins = 'S-1-5-32-544'
+$script:SidTrustedInstaller = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+$script:SidCreatorOwner = 'S-1-3-0'
+
+function Test-DrishtiAdministrator {
+  $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+  return (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 <#
-  Restricts a file or folder to the Administrators, SYSTEM, the person running the script (so a non-elevated operator never locks
-  themselves out of what they just made) and the given accounts (read, or modify for log folders).
+  The person running the script, but only when they are NOT elevated (a test run under the system temp folder): an elevated
+  administrator is covered by the Administrators entry, and production never gives a person's own account any right.
+#>
+function Get-DrishtiOperatorGrant {
+  if (Test-DrishtiAdministrator) { return @() }
+  return @('*' + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+}
+
+<#
+  Locks a file or folder: inherited entries removed; SYSTEM and Administrators full; the non-elevated operator (tests only, see above);
+  plus the given accounts (read, read and execute for folders, or modify). Creates a missing folder first, BEFORE anything is written
+  into it (review C-2, I-3), so nothing ever exists there with the drive's inherited ACL.
 #>
 function Set-DrishtiAcl {
   param([Parameter(Mandatory)][string]$Path, [string[]]$ReadAccounts = @(), [string[]]$ModifyAccounts = @(), [switch]$IsFile, [switch]$DryRun)
   $leaf = $IsFile -or (Test-Path -LiteralPath $Path -PathType Leaf)
-  $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-  $icaclsArgs = if ($leaf) { @($Path, '/inheritance:r', '/grant:r', 'Administrators:F', '/grant:r', 'SYSTEM:F', '/grant:r', "${me}:F") } else { @($Path, '/inheritance:r', '/grant:r', 'Administrators:(OI)(CI)F', '/grant:r', 'SYSTEM:(OI)(CI)F', '/grant:r', "${me}:(OI)(CI)F") }
+  if (-not $leaf -and -not (Test-Path -LiteralPath $Path)) {
+    if ($DryRun) { Write-DrishtiStep -Kind plan -Message "would create $Path" } else { New-Item -ItemType Directory -Force -Path $Path | Out-Null }
+  }
+  $inh = if ($leaf) { '' } else { '(OI)(CI)' }
+  $icaclsArgs = @($Path, '/inheritance:r', '/grant:r', "*$($script:SidSystem):$($inh)F", '/grant:r', "*$($script:SidAdmins):$($inh)F")
+  foreach ($o in (Get-DrishtiOperatorGrant)) { $icaclsArgs += @('/grant:r', "$($o):$($inh)F") }
   foreach ($a in $ReadAccounts) { $icaclsArgs += @('/grant:r', $(if ($leaf) { "${a}:R" } else { "${a}:(OI)(CI)RX" })) }
   foreach ($a in $ModifyAccounts) { $icaclsArgs += @('/grant:r', $(if ($leaf) { "${a}:M" } else { "${a}:(OI)(CI)M" })) }
   Invoke-DrishtiCommand -FilePath 'icacls.exe' -ArgumentList $icaclsArgs -DryRun:$DryRun
 }
 
-function Test-DrishtiAdministrator {
-  $id = [Security.Principal.WindowsIdentity]::GetCurrent()
-  return (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+<#
+  Review C-2: what the installation's folders must look like. One entry per path: Lock = inheritance removed, SYSTEM and Administrators
+  only (then the listed accounts); Grant = an extra entry added to an already locked (inherited) path. Every folder is created before
+  anything is granted on it. Pure: no side effect (tests/unit/windows-scripts.test.ts reads it through -Action Install -WhatIf).
+#>
+function Get-DrishtiAclPlan {
+  param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)]$Definitions)
+  $plan = New-Object System.Collections.Generic.List[object]
+  $add = { param($Path, $Kind, $Mode, $Read, $Modify) $plan.Add([pscustomobject]@{ Path = $Path; Kind = $Kind; Mode = $Mode; Read = @($Read); Modify = @($Modify) }) }
+  $accounts = @{}
+  foreach ($d in $Definitions) { $accounts[$d.Name] = Get-DrishtiServiceAccount -Config $Config -Name $d.Name }
+  $node = @($Definitions | Where-Object { $_.Name -ne 'DrishtiGo2rtc' } | ForEach-Object { $accounts[$_.Name] })
+  $all = @($Definitions | ForEach-Object { $accounts[$_.Name] })
+  $root = $Config.InstallRoot
+  & $add $root 'Folder' 'Lock' @() @()
+  & $add (Join-Path $root 'bin') 'Folder' 'Lock' $all @()
+  & $add (Join-Path $root 'services') 'Folder' 'Lock' @() @()
+  & $add (Join-Path $root 'scripts') 'Folder' 'Lock' @() @()
+  & $add (Join-Path $root 'app') 'Folder' 'Lock' $node @()
+  & $add $Config.ConfigDir 'Folder' 'Lock' @() @()
+  & $add $Config.DataDir 'Folder' 'Lock' @() @()
+  & $add $Config.LogDir 'Folder' 'Lock' @() @()
+  foreach ($d in $Definitions) { & $add (Join-Path $Config.LogDir $d.Name) 'Folder' 'Lock' @() @($accounts[$d.Name]) }
+  & $add $Config.BackupDir 'Folder' 'Lock' @() @()
+  if ($Config.ContainsKey('VaultKey') -and $Config.VaultKey -and $Config.VaultKey.KeyBackupDir) { & $add $Config.VaultKey.KeyBackupDir 'Folder' 'Lock' @() @() }
+  $go = @($Definitions | Where-Object { $_.Name -eq 'DrishtiGo2rtc' })
+  if ($go.Count -gt 0 -and $Config.Go2rtcExe) { & $add (Split-Path -Parent $Config.Go2rtcExe) 'Folder' 'Lock' @($accounts['DrishtiGo2rtc']) @() }
+  return $plan.ToArray()
+}
+
+<#
+  Review C-2: which entries of an ACL give write access (write, append, create, delete, change permissions, take ownership; on their
+  own or inside Modify / FullControl) to anybody but SYSTEM, the Administrators, TrustedInstaller, CREATOR OWNER and the accounts the
+  path is meant for. Input: objects with Sid, Rights ([Security.AccessControl.FileSystemRights] or its name) and Type (Allow/Deny).
+  Pure (tested with synthetic entries).
+#>
+function Find-DrishtiAclProblems {
+  param([object[]]$Rules = @(), [string[]]$AllowedSids = @())
+  # Plus GENERIC_ALL (0x10000000) and GENERIC_WRITE (0x40000000): inherit-only entries such as C:\'s "Authenticated Users: M" carry them.
+  $mask = [int]([Security.AccessControl.FileSystemRights]'WriteData, AppendData, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership') -bor 0x10000000 -bor 0x40000000
+  $trusted = @($script:SidSystem, $script:SidAdmins, $script:SidTrustedInstaller, $script:SidCreatorOwner) + $AllowedSids
+  $out = @()
+  foreach ($r in $Rules) {
+    if ([string]$r.Type -ne 'Allow') { continue }
+    $rights = if ($r.Rights -is [int] -or $r.Rights -is [long]) { [int]$r.Rights } else { [int]([Security.AccessControl.FileSystemRights]$r.Rights) }
+    if (($rights -band $mask) -eq 0) { continue }
+    if ($trusted -contains [string]$r.Sid) { continue }
+    $out += "$($r.Sid) may write (rights 0x$('{0:X8}' -f $rights))"
+  }
+  return $out
+}
+
+<# The write problems of one existing path (Get-Acl). Accounts: names or SIDs the path is meant for (for example its log folder's). #>
+function Test-DrishtiPathAcl {
+  param([Parameter(Mandatory)][string]$Path, [string[]]$AllowedAccounts = @())
+  if (-not (Test-Path -LiteralPath $Path)) { return "$Path is missing" }
+  $sids = @()
+  foreach ($a in $AllowedAccounts) {
+    try { $sids += if ($a.StartsWith('*')) { $a.Substring(1) } else { (New-Object Security.Principal.NTAccount($a)).Translate([Security.Principal.SecurityIdentifier]).Value } } catch { }
+  }
+  foreach ($o in (Get-DrishtiOperatorGrant)) { $sids += $o.Substring(1) }
+  $rules = @((Get-Acl -LiteralPath $Path).Access | ForEach-Object {
+    $sid = try { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { [string]$_.IdentityReference }
+    [pscustomobject]@{ Sid = $sid; Rights = $_.FileSystemRights; Type = [string]$_.AccessControlType }
+  })
+  return @(Find-DrishtiAclProblems -Rules $rules -AllowedSids $sids | ForEach-Object { "${Path}: $_" })
+}
+
+<#
+  Review C-2: refuse to run on a configuration or scripts folder that others may change (a SYSTEM task or an administrator would run
+  what they put there). The scripts folder is checked when it is the installed copy (under InstallRoot); a checkout elsewhere is the
+  operator's own working copy and only warned about.
+#>
+function Assert-DrishtiSafeToRun {
+  param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$ConfigPath, [Parameter(Mandatory)][string]$ScriptRoot)
+  $problems = @(Test-DrishtiPathAcl -Path $ConfigPath)
+  $installed = $ScriptRoot.StartsWith([IO.Path]::GetFullPath($Config.InstallRoot), [StringComparison]::OrdinalIgnoreCase)
+  $scriptProblems = @(Test-DrishtiPathAcl -Path $ScriptRoot)
+  if ($installed) { $problems += $scriptProblems }
+  elseif ($scriptProblems.Count -gt 0) { Write-DrishtiStep -Kind warn -Message "these scripts run from $ScriptRoot, which others may change; production runs them from $(Join-Path $Config.InstallRoot 'scripts')" }
+  if ($problems.Count -gt 0) { throw "Refused: others may change what this script runs or reads ($($problems -join '; ')). Run drishti-services.ps1 -Action RepairAcl as an administrator." }
+}
+
+<# Review I-6: true when the path or anything below it is a junction or symbolic link (never followed: GetFileSystemEntries per level). #>
+function Test-DrishtiHasReparsePoint {
+  param([Parameter(Mandatory)][string]$Path)
+  $item = Get-Item -LiteralPath $Path -Force
+  if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $true }
+  if (-not $item.PSIsContainer) { return $false }
+  $stack = New-Object System.Collections.Generic.Stack[string]
+  $stack.Push($item.FullName)
+  while ($stack.Count -gt 0) {
+    foreach ($e in [IO.Directory]::GetFileSystemEntries($stack.Pop())) {
+      $a = [IO.File]::GetAttributes($e)
+      if ($a -band [IO.FileAttributes]::ReparsePoint) { return $true }
+      if ($a -band [IO.FileAttributes]::Directory) { $stack.Push($e) }
+    }
+  }
+  return $false
+}
+
+<#
+  Review M-1: one update or live restore at a time. A lock file opened without sharing in InstallRoot, held until Close(); a second run
+  is refused with a plain line.
+#>
+function Enter-DrishtiLock {
+  param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$What)
+  $path = Join-Path $Config.InstallRoot 'drishti.lock'
+  if (-not (Test-Path -LiteralPath $Config.InstallRoot)) { New-Item -ItemType Directory -Force -Path $Config.InstallRoot | Out-Null }
+  try {
+    $fs = [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+  } catch {
+    throw "Another update or restore is running ($path is held). Wait for it to finish; nothing was changed."
+  }
+  $bytes = [Text.Encoding]::UTF8.GetBytes("$What by $([Security.Principal.WindowsIdentity]::GetCurrent().Name), process $PID, $((Get-Date).ToString('o'))")
+  $fs.SetLength(0); $fs.Write($bytes, 0, $bytes.Length); $fs.Flush()
+  return $fs
 }
 
 <# Polls the public health and the version until the build answers "ok" (or the time is up). Returns $true / $false. #>

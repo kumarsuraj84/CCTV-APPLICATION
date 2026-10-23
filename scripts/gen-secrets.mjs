@@ -17,12 +17,13 @@
 //
 // After writing: restart the processes that read the changed keys (docs/drishti/runbooks/secret-rotation.md says which).
 import { execSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnvOutput } from './lib/env-output.mjs'
 import { ALL_KEYS, plan, render, SERVICE_KEYS, valueFor } from './lib/gen-secrets-core.mjs'
 import { insideDir, PRODUCTION_FILES, productionEnvFiles } from './lib/prod-env.mjs'
+import { lockPath, windowsAcl } from './lib/win-acl.mjs'
 
 const args = process.argv.slice(2)
 const flag = (name) => args.find((a) => a === `--${name}` || a.startsWith(`--${name}=`))
@@ -56,19 +57,22 @@ if (args.includes('--production')) {
     console.log(`Dry run (nothing written): would write ${Object.keys(files).join(', ')} to ${target}.`)
     process.exit(0)
   }
-  mkdirSync(target, { recursive: true })
+  // Review I-7: a folder made here is locked at once; each file is created EMPTY, locked, and only then given its secrets.
+  if (!existsSync(target)) {
+    mkdirSync(target, { recursive: true })
+    lockPath(target, { folder: true })
+  }
   for (const [name, text] of Object.entries(files)) {
     const tmp = path.join(target, `${name}.tmp-${process.pid}`)
-    writeFileSync(tmp, text, { mode: 0o600, flag: 'wx' })
+    writeFileSync(tmp, '', { mode: 0o600, flag: 'wx' })
+    lockPath(tmp)
+    writeFileSync(tmp, text, { mode: 0o600 })
     renameSync(tmp, path.join(target, name))
   }
-  console.log(`Wrote ${Object.keys(files).join(', ')} to ${target}.`)
+  console.log(`Wrote ${Object.keys(files).join(', ')} to ${target} (each readable by SYSTEM and the Administrators only, until the install grants its service).`)
   if (!jwtSecret) console.log('The four database keys are empty: run again per file with --file <file> --jwt-secret-env NAME --only=<KEY> (prints names only).')
   console.log('Fill the addresses (NEXT_PUBLIC_SUPABASE_URL, SUPABASE_URL, NEXT_PUBLIC_APP_URL, GATEWAY_ALLOWED_ORIGINS) and the project keys in web.env,')
-  console.log('then restrict each file to its service account, for example:')
-  for (const [name, svc] of [['web.env', 'DrishtiWeb'], ['worker.env', 'DrishtiWorker'], ['gateway.env', 'DrishtiGateway'], ['go2rtc.env', 'DrishtiGo2rtc']]) {
-    console.log(`  icacls "${path.join(target, name)}" /inheritance:r /grant:r "NT SERVICE\\${svc}:R" /grant:r "Administrators:F"`)
-  }
+  console.log('then run deploy\\windows\\drishti-services.ps1 -Action Install (or -Action RepairAcl): it gives each service read access to its own file.')
   process.exit(0)
 }
 
@@ -107,9 +111,18 @@ const kept = say('keep')
 if (dryRun) {
   console.log(`Dry run for ${path.basename(file)} (nothing written).`)
 } else if (writing.length > 0) {
+  // Review I-7: the temporary copy is locked before the secrets go in. A file that exists is then rewritten IN PLACE (on Windows), so
+  // its ACL (the service account's read right) is kept: a rename would give it the temporary file's ACL instead. The temporary copy,
+  // complete, is removed afterwards (it is the recovery copy if the in-place write were interrupted).
   const tmp = `${file}.tmp-${process.pid}`
-  writeFileSync(tmp, render(before, steps, values), { mode: 0o600 })
-  renameSync(tmp, file)
+  const text = render(before, steps, values)
+  writeFileSync(tmp, '', { mode: 0o600, flag: 'wx' })
+  lockPath(tmp)
+  writeFileSync(tmp, text, { mode: 0o600 })
+  if (windowsAcl && existsSync(file)) {
+    writeFileSync(file, text)
+    rmSync(tmp, { force: true })
+  } else renameSync(tmp, file)
   console.log(`Wrote ${path.basename(file)}.`)
 } else {
   console.log(`${path.basename(file)} already has every key; nothing written.`)

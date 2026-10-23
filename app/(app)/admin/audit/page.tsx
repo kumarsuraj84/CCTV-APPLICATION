@@ -13,7 +13,8 @@ import { formatDateTime } from '@/lib/time'
 export const metadata = { title: 'Audit log' }
 
 // P5.4 brief item 5: the audit log with filters and search. Administrators with admin.audit.read for the whole organisation; the rows
-// are read through the person's own sign-in (the database checks the right again). Reads only. Rows can never be changed or removed.
+// are read through the person's own sign-in (the database checks the right again). Reads only. No API role may change or remove a row
+// (migration 0041; the test clean-up only on the test stack, migration 0045); a database superuser still could (review M-12).
 export default async function AuditPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const me = await requireAdministration('admin.audit.read')
   const f: AuditFilters = parseAuditFilters(await searchParams)
@@ -24,7 +25,7 @@ export default async function AuditPage({ searchParams }: { searchParams: Promis
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Audit log" description="Who did what, and every sign-in. Newest first; times in India time. Entries can never be changed or removed." />
+      <PageHeader title="Audit log" description="Who did what, and every sign-in. Newest first; times in India time. The application cannot change or remove entries." />
       <nav aria-label="Kind of entry" className="flex flex-wrap gap-2 text-sm">
         {(['actions', 'sign_ins'] as const).map((k) => (
           <Link

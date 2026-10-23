@@ -31,7 +31,8 @@ export type HealthInputs = {
   worker: WorkerStatus | null
   gateway: GatewayHealthView
   expectedMigration: string | null
-  disk: DiskInfo | null
+  /** One disk, or each disk of diskDirs() (null = could not be read). */
+  disk: DiskInfo | null | (DiskInfo | null)[]
 }
 
 /** More than this between two clocks is a warning (the same 30 s as the worker's own warning, docs/drishti/worker-lease.md section 9). */
@@ -142,14 +143,37 @@ function migrations(i: HealthInputs): HealthCheck {
 
 function disk(i: HealthInputs): HealthCheck {
   const base = { key: 'disk' as const, label: 'Free disk space' }
-  if (!i.disk || i.disk.totalBytes <= 0) return { ...base, state: 'unknown', summary: 'Not known: the disk could not be read.', facts: [] }
-  const { freeBytes, totalBytes } = i.disk
-  const percent = Math.round((freeBytes / totalBytes) * 100)
-  const summary = `${gb(freeBytes)} free of ${gb(totalBytes)} (${percent} %) on ${i.disk.path}.`
-  const facts: [string, string][] = [['Free', `${gb(freeBytes)} (${percent} %)`]]
-  if (freeBytes < DISK_FAIL.bytes || percent < DISK_FAIL.percent) return { ...base, state: 'failed', facts, summary: `${summary} Backups and logs will fail soon: free some space.` }
-  if (freeBytes < DISK_WARN.bytes || percent < DISK_WARN.percent) return { ...base, state: 'warning', facts, summary: `${summary} Plan to free some space.` }
+  // P5.4 review M-4: the data folder and the backup folder may be on different disks; each is reported and the fuller one decides.
+  const many = Array.isArray(i.disk)
+  const disks = (many ? (i.disk as (DiskInfo | null)[]) : [i.disk as DiskInfo | null]).filter((d): d is DiskInfo => d !== null && d.totalBytes > 0)
+  if (disks.length === 0) return { ...base, state: 'unknown', summary: 'Not known: the disk could not be read.', facts: [] }
+  let worst: 'ok' | 'warning' | 'failed' = 'ok'
+  const parts: string[] = []
+  const facts: [string, string][] = []
+  for (const d of disks) {
+    const percent = Math.round((d.freeBytes / d.totalBytes) * 100)
+    parts.push(`${gb(d.freeBytes)} free of ${gb(d.totalBytes)} (${percent} %) on ${d.path}.`)
+    facts.push([many ? `Free on ${d.path}` : 'Free', `${gb(d.freeBytes)} (${percent} %)`])
+    if (d.freeBytes < DISK_FAIL.bytes || percent < DISK_FAIL.percent) worst = 'failed'
+    else if ((d.freeBytes < DISK_WARN.bytes || percent < DISK_WARN.percent) && worst === 'ok') worst = 'warning'
+  }
+  const summary = parts.join(' ')
+  if (worst === 'failed') return { ...base, state: 'failed', facts, summary: `${summary} Backups and logs will fail soon: free some space.` }
+  if (worst === 'warning') return { ...base, state: 'warning', facts, summary: `${summary} Plan to free some space.` }
   return { ...base, state: 'ok', facts, summary }
+}
+
+/**
+ * The folders whose disks the Health page reports: DRISHTI_DATA_DIR (data and logs) and DRISHTI_BACKUP_DIR (the backups, often on
+ * another disk), each once (compared without case, as on Windows); the server's own folder when neither is set.
+ */
+export function diskDirs(env: Record<string, string | undefined>, fallback: string): string[] {
+  const out: string[] = []
+  for (const v of [env.DRISHTI_DATA_DIR, env.DRISHTI_BACKUP_DIR]) {
+    const d = v?.trim()
+    if (d && !out.some((o) => o.toLowerCase() === d.toLowerCase())) out.push(d)
+  }
+  return out.length > 0 ? out : [fallback]
 }
 
 function cleanup(i: HealthInputs): HealthCheck {
@@ -183,7 +207,7 @@ export type HealthDeps = {
   opsStatus: () => Promise<OpsDbStatus>
   workerStatus: () => Promise<WorkerStatus>
   gateway: () => Promise<GatewayHealthView>
-  disk: () => Promise<DiskInfo | null>
+  disk: () => Promise<DiskInfo | null | (DiskInfo | null)[]>
   expectedMigration: () => string | null
   timeoutMs?: number
 }

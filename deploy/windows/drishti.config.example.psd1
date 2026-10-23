@@ -39,17 +39,23 @@
   #              variable named in PasswordEnv (set it in the session that runs the script; never write it here).
   Database = @{
     Mode      = 'Container'
+    # Container mode: the database container and the superuser its client tools run as (no password: docker exec inside the container).
     Container = 'supabase_db_drishti'
     User      = 'supabase_admin'
     Name      = 'postgres'
-    # Direct mode only:
+    # Direct mode (all client tools) AND MigrationMode 'DbUrl' (in either mode): where the server listens and which account applies the
+    # migrations. The password is NEVER here: it is read from the environment variable named in PasswordEnv and handed to each client
+    # program as PGPASSWORD in its own environment only (never on a command line, review I-2).
     PgBin       = 'C:\Program Files\PostgreSQL\17\bin'
     Host        = '127.0.0.1'
     Port        = 5432
+    MigrateUser = 'postgres'
     PasswordEnv = 'DRISHTI_DB_PASSWORD'
   }
-  # Migrations: 'Local' (npx supabase migration up --local, the local stack of the release folder) or 'DbUrl' (npx supabase migration
-  # up --db-url built from Database Host/Port/User/Name and the password in PasswordEnv).
+  # Migrations (review M-13):
+  #   'DbUrl' (self-hosted Supabase in Docker, or Direct mode): npx supabase migration up --db-url postgresql://<MigrateUser>@<Host>:<Port>/<Name>
+  #           with the password from PasswordEnv as PGPASSWORD of that one program. Set $env:DRISHTI_DB_PASSWORD in the session first.
+  #   'Local' (only the Supabase CLI's own local stack, a test server): npx supabase migration up --local; no password needed.
   MigrationMode = 'DbUrl'
 
   # The Vault root key (supabase_vault: every NVR password is encrypted with keys derived from it; a dump holds the ciphertext only).
@@ -59,7 +65,9 @@
   VaultKey = @{
     Mode = 'ContainerFile'
     Path = '/etc/postgresql-custom/pgsodium_root.key'
-    # Where the copy goes: NOT the backup folder of the dumps (keep key and ciphertext apart); readable by the Administrators only.
+    # Where the copy goes: NOT the backup folder of the dumps, nor inside it (refused; review M-8); created Administrators-only before
+    # anything is copied. A second disk of the server is a first step only: the off-server copy must be ENCRYPTED (the key and the
+    # dumps both: the dumps hold the GoTrue two-step secrets and refresh tokens too) and kept apart from the dumps.
     KeyBackupDir = 'E:\DrishtiKeys'
   }
 

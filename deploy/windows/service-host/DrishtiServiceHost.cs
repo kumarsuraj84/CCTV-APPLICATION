@@ -15,7 +15,7 @@
 //                                                 it the same way a service stop does
 //
 // The .conf file: name=, exe=, arg= (repeatable, in order), workdir=, envfile=, logdir=, logmaxbytes=, logkeep=, stoptimeoutsec=,
-// restartdelaysec=, restartmaxdelaysec=. It holds no secret (the env file is named, not copied).
+// restartdelaysec=, restartmaxdelaysec=, rollretrysec= (default 60). It holds no secret (the env file is named, not copied).
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -41,6 +41,7 @@ namespace Drishti
         public int StopTimeoutSec = 20;
         public int RestartDelaySec = 5;
         public int RestartMaxDelaySec = 60;
+        public int RollRetrySec = 60;
 
         public static HostConfig Load(string path)
         {
@@ -66,6 +67,7 @@ namespace Drishti
                     case "stoptimeoutsec": c.StopTimeoutSec = int.Parse(v); break;
                     case "restartdelaysec": c.RestartDelaySec = int.Parse(v); break;
                     case "restartmaxdelaysec": c.RestartMaxDelaySec = int.Parse(v); break;
+                    case "rollretrysec": c.RollRetrySec = int.Parse(v); break;
                     default: throw new InvalidDataException("Unknown key '" + k + "' in " + path);
                 }
             }
@@ -96,7 +98,12 @@ namespace Drishti
         }
     }
 
-    /// <summary>One log file per service, rolled by size: name.log, name.1.log ... name.(keep-1).log.</summary>
+    /// <summary>
+    /// One log file per service, rolled by size: name.log, name.1.log ... name.(keep-1).log. Review I-4: logging never ends the host. A
+    /// roll that cannot rename (somebody holds the file open without delete sharing, for example a tail) keeps writing to the current
+    /// file and tries again a minute later; a file that cannot be opened at all is retried on every line, the lines in between go to
+    /// standard error and are counted; nothing is written after Close().
+    /// </summary>
     public sealed class RollingLog
     {
         private readonly object gate = new object();
@@ -104,57 +111,120 @@ namespace Drishti
         private readonly string name;
         private readonly long maxBytes;
         private readonly int keep;
+        private readonly int retrySec;
         private StreamWriter writer;
+        private bool closed;
+        private DateTime nextRollUtc = DateTime.MinValue;
+        private long dropped;
+        private string pendingNote;
 
-        public RollingLog(string dir, string name, long maxBytes, int keep)
+        public RollingLog(string dir, string name, long maxBytes, int keep, int retrySec)
         {
-            this.dir = dir; this.name = name; this.maxBytes = maxBytes; this.keep = keep;
+            this.dir = dir; this.name = name; this.maxBytes = maxBytes; this.keep = keep; this.retrySec = retrySec < 1 ? 1 : retrySec;
             Directory.CreateDirectory(dir);
-            Open();
+            TryOpen();
         }
 
         private string PathOf(int i) { return Path.Combine(dir, i == 0 ? name + ".log" : name + "." + i + ".log"); }
 
-        private void Open()
+        private void TryOpen()
         {
-            writer = new StreamWriter(new FileStream(PathOf(0), FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete), new UTF8Encoding(false));
-            writer.AutoFlush = true;
+            try
+            {
+                writer = new StreamWriter(new FileStream(PathOf(0), FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete), new UTF8Encoding(false));
+                writer.AutoFlush = true;
+            }
+            catch (Exception e)
+            {
+                writer = null;
+                pendingNote = "the log file could not be opened: " + e.GetType().Name;
+            }
+        }
+
+        private static string Json(string text) { return text.Replace("\\", "\\\\").Replace("\"", "'").Replace("\r", " ").Replace("\n", " "); }
+
+        private string HostLine(string message)
+        {
+            return "{\"level\":\"info\",\"time\":\"" + DateTime.UtcNow.ToString("o") + "\",\"event\":\"service_host\",\"service\":\"" + name + "\",\"message\":\"" + Json(message) + "\"}";
         }
 
         public void Write(string line)
         {
             lock (gate)
             {
+                if (closed) return;
                 try
                 {
+                    if (writer == null) TryOpen();
+                    if (writer == null)
+                    {
+                        dropped++;
+                        try { Console.Error.WriteLine(line); } catch (Exception) { }
+                        return;
+                    }
+                    if (dropped > 0 || pendingNote != null)
+                    {
+                        string note = (pendingNote ?? "the log file was not writable") + (dropped > 0 ? "; " + dropped + " lines went to standard error only" : "");
+                        dropped = 0; pendingNote = null;
+                        writer.WriteLine(HostLine(note));
+                    }
                     writer.WriteLine(line);
-                    if (writer.BaseStream.Length >= maxBytes) Roll();
+                    if (writer.BaseStream.Length >= maxBytes && DateTime.UtcNow >= nextRollUtc) Roll();
                 }
-                catch (IOException) { }
+                catch (Exception)
+                {
+                    // A broken writer is dropped and reopened at the next line; the host goes on.
+                    try { if (writer != null) writer.Dispose(); } catch (Exception) { }
+                    writer = null;
+                    dropped++;
+                }
             }
         }
 
-        public void Host(string message)
-        {
-            Write("{\"level\":\"info\",\"time\":\"" + DateTime.UtcNow.ToString("o") + "\",\"event\":\"service_host\",\"service\":\"" + name + "\",\"message\":\"" + message.Replace("\\", "\\\\").Replace("\"", "'") + "\"}");
-        }
+        public void Host(string message) { Write(HostLine(message)); }
 
         private void Roll()
         {
-            writer.Dispose();
-            string oldest = PathOf(keep - 1);
-            if (keep > 1 && File.Exists(oldest)) File.Delete(oldest);
-            for (int i = keep - 2; i >= 0; i--)
+            try { writer.Dispose(); } catch (Exception) { }
+            writer = null;
+            try
             {
-                if (keep == 1) break;
-                string from = PathOf(i);
-                if (File.Exists(from)) File.Move(from, PathOf(i + 1));
+                if (keep <= 1)
+                {
+                    if (File.Exists(PathOf(0))) File.Delete(PathOf(0));
+                }
+                else
+                {
+                    string oldest = PathOf(keep - 1);
+                    if (File.Exists(oldest)) File.Delete(oldest);
+                    for (int i = keep - 2; i >= 0; i--)
+                    {
+                        string from = PathOf(i);
+                        if (File.Exists(from)) File.Move(from, PathOf(i + 1));
+                    }
+                }
             }
-            if (keep == 1 && File.Exists(PathOf(0))) File.Delete(PathOf(0));
-            Open();
+            catch (Exception e)
+            {
+                // Typically the file is held open by a reader without delete sharing: write on in the current file, try again in a minute.
+                nextRollUtc = DateTime.UtcNow.AddSeconds(retrySec);
+                pendingNote = "the log could not be rolled (" + e.GetType().Name + "): writing on in the current file, trying again in " + retrySec + " s";
+            }
+            finally
+            {
+                TryOpen();
+            }
         }
 
-        public void Close() { lock (gate) { try { writer.Dispose(); } catch (IOException) { } } }
+        public void Close()
+        {
+            lock (gate)
+            {
+                closed = true;
+                try { if (writer != null) writer.Dispose(); } catch (Exception) { }
+                writer = null;
+            }
+        }
     }
 
     internal static class Native
@@ -209,7 +279,7 @@ namespace Drishti
         public Supervisor(HostConfig cfg)
         {
             this.cfg = cfg;
-            log = new RollingLog(cfg.LogDir, cfg.Name, cfg.LogMaxBytes, cfg.LogKeep);
+            log = new RollingLog(cfg.LogDir, cfg.Name, cfg.LogMaxBytes, cfg.LogKeep, cfg.RollRetrySec);
         }
 
         public void Start()

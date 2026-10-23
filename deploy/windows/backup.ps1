@@ -15,7 +15,13 @@
   VaultKey.KeyBackupDir (a different place from the dumps, Administrators only); without it the manifest still records its SHA-256, so
   restore.ps1 can tell whether the server it restores on has the right key. docs/drishti/runbooks/backup-restore.md.
 
-  -DryRun / -WhatIf: says what would be done, writes and deletes nothing.
+  Review C-2 / I-6 / M-8: BackupDir and KeyBackupDir are created locked (SYSTEM and Administrators only) before anything is written;
+  the key folder must not be the backup folder or lie inside it (or the other way round); the script refuses to run from a
+  configuration or an installed scripts folder that others may change. Retention never follows a junction or symbolic link: it only
+  removes folders named like a backup whose manifest says kind drishti-backup and that contain no reparse point, with rmdir (which
+  removes a link, never its target), and only when the backup folder itself cannot be changed by others.
+
+  -DryRun / -WhatIf: says what would be done, writes and deletes nothing. -RetentionOnly: no dump, only the retention.
 
 .EXAMPLE
   .\backup.ps1 -ConfigPath C:\Drishti\config\drishti.config.psd1 -Tag nightly -ApplyRetention
@@ -30,6 +36,7 @@ param(
   [switch]$IncludeVaultKey,
   [switch]$IncludeConfig,
   [switch]$ApplyRetention,
+  [switch]$RetentionOnly,
   [string]$ResultPath,
   [switch]$DryRun
 )
@@ -46,83 +53,116 @@ $root = if ($OutDir) { $OutDir } else { $config.BackupDir }
 $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
 $folder = Join-Path $root "$stamp-$Tag"
 $dump = Join-Path $folder 'db.dump'
+$keyDir = if ($config.ContainsKey('VaultKey') -and $config.VaultKey -and $config.VaultKey.KeyBackupDir) { [string]$config.VaultKey.KeyBackupDir } else { $null }
 
-Write-DrishtiStep -Message "backup of database '$dbName' to $folder$(if ($dry) { ' (dry run: nothing is written)' })"
-if ($dry) {
-  Write-DrishtiStep -Kind plan -Message "would open one REPEATABLE READ snapshot, count $($script:DrishtiCountTables.Count) tables in it and pg_dump -Fc --snapshot=<it>"
-  Write-DrishtiStep -Kind plan -Message "would write $dump and $(Join-Path $folder 'manifest.json') (SHA-256 of the dump and of the Vault root key)"
-  if ($IncludeVaultKey) { Write-DrishtiStep -Kind plan -Message "would copy the Vault root key ($($config.VaultKey.Mode)) to $($config.VaultKey.KeyBackupDir)\vault-root-$stamp.key (Administrators only)" }
-  if ($IncludeConfig) { Write-DrishtiStep -Kind plan -Message "would copy the configuration ($($config.ConfigDir): env files, go2rtc.yaml, drishti.config.psd1) to $($config.VaultKey.KeyBackupDir)\config-$stamp (Administrators only; it holds the services' secrets)" }
-} else {
-  New-Item -ItemType Directory -Force -Path $folder | Out-Null
-  Set-DrishtiAcl -Path $folder
-  $session = Open-DrishtiPsql -Config $config -Database $dbName
-  try {
-    $snapshot = ($session.Query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT pg_export_snapshot();'))[0]
-    if ($snapshot -notmatch '^[0-9A-F-]+$') { throw 'The database did not give a snapshot.' }
-    $counts = ConvertFrom-DrishtiCounts -Lines $session.Query((Get-DrishtiCountSql))
-    $migration = ($session.Query("SELECT coalesce(max(version), '') FROM supabase_migrations.schema_migrations;"))[0]
-    $version = ($session.Query('SHOW server_version;'))[0]
-    if ($db.Mode -eq 'Container') {
-      $inside = "/tmp/drishti-backup-$stamp.dump"
-      Invoke-DrishtiPgTool -Config $config -Tool pg_dump -Arguments "-d $dbName -Fc --snapshot=$snapshot -f $inside" | Out-Null
-      try {
-        & docker cp "$($db.Container):$inside" $dump
-        if ($LASTEXITCODE -ne 0) { throw 'docker cp of the dump failed.' }
-      } finally { & docker exec $db.Container rm -f $inside | Out-Null }
-    } else {
-      Invoke-DrishtiPgTool -Config $config -Tool pg_dump -Arguments "-d $dbName -Fc --snapshot=$snapshot -f `"$dump`"" | Out-Null
+# Review M-8: the key copies (and the configuration copy) never live with the dumps.
+if ($keyDir) {
+  $a = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+  $b = [IO.Path]::GetFullPath($keyDir).TrimEnd('\') + '\'
+  if ($a.StartsWith($b, [StringComparison]::OrdinalIgnoreCase) -or $b.StartsWith($a, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "VaultKey.KeyBackupDir ($keyDir) must not be the backup folder ($root), or inside it, or contain it: whoever has both has every NVR password."
+  }
+}
+if (-not $dry) { Assert-DrishtiSafeToRun -Config $config -ConfigPath $ConfigPath -ScriptRoot $PSScriptRoot }
+# Created locked, before anything is written (review C-2, I-6).
+if (-not (Test-Path -LiteralPath $root)) { Set-DrishtiAcl -Path $root -DryRun:$dry }
+
+if (-not $RetentionOnly) {
+  Write-DrishtiStep -Message "backup of database '$dbName' to $folder$(if ($dry) { ' (dry run: nothing is written)' })"
+  if ($dry) {
+    Write-DrishtiStep -Kind plan -Message "would open one REPEATABLE READ snapshot, count $($script:DrishtiCountTables.Count) tables in it and pg_dump -Fc --snapshot=<it>"
+    Write-DrishtiStep -Kind plan -Message "would write $dump and $(Join-Path $folder 'manifest.json') (SHA-256 of the dump and of the Vault root key)"
+    if ($IncludeVaultKey) { Write-DrishtiStep -Kind plan -Message "would copy the Vault root key ($($config.VaultKey.Mode)) to $keyDir\vault-root-$stamp.key (the folder locked first: Administrators only)" }
+    if ($IncludeConfig) { Write-DrishtiStep -Kind plan -Message "would copy the configuration ($($config.ConfigDir): env files, go2rtc.yaml, drishti.config.psd1) to $keyDir\config-$stamp (Administrators only; it holds the services' secrets)" }
+  } else {
+    Set-DrishtiAcl -Path $folder
+    $session = Open-DrishtiPsql -Config $config -Database $dbName
+    try {
+      $snapshot = ($session.Query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT pg_export_snapshot();'))[0]
+      if ($snapshot -notmatch '^[0-9A-F-]+$') { throw 'The database did not give a snapshot.' }
+      $counts = ConvertFrom-DrishtiCounts -Lines $session.Query((Get-DrishtiCountSql))
+      $migration = ($session.Query("SELECT coalesce(max(version), '') FROM supabase_migrations.schema_migrations;"))[0]
+      $version = ($session.Query('SHOW server_version;'))[0]
+      if ($db.Mode -eq 'Container') {
+        $inside = "/tmp/drishti-backup-$stamp.dump"
+        Invoke-DrishtiPgTool -Config $config -Tool pg_dump -Arguments "-d $dbName -Fc --snapshot=$snapshot -f $inside" | Out-Null
+        try {
+          & docker cp "$($db.Container):$inside" $dump
+          if ($LASTEXITCODE -ne 0) { throw 'docker cp of the dump failed.' }
+        } finally { & docker exec $db.Container rm -f $inside | Out-Null }
+      } else {
+        Invoke-DrishtiPgTool -Config $config -Tool pg_dump -Arguments "-d $dbName -Fc --snapshot=$snapshot -f `"$dump`"" | Out-Null
+      }
+      $session.Query('COMMIT;') | Out-Null
+    } finally { $session.Close() }
+
+    $keyHash = Get-DrishtiVaultKeyHash -Config $config
+    $keyCopy = $null
+    if (($IncludeVaultKey -or $IncludeConfig) -and -not $keyDir) { throw 'VaultKey.KeyBackupDir is needed for the key and configuration copies (they hold secrets: never the dump folder).' }
+    if (($IncludeVaultKey -or $IncludeConfig) -and -not (Test-Path -LiteralPath $keyDir)) { Set-DrishtiAcl -Path $keyDir }
+    if ($IncludeVaultKey) {
+      $vk = $config.VaultKey
+      if ($vk.Mode -eq 'None') { throw 'VaultKey.Mode is None: the root key cannot be copied from here (hosted project: the platform keeps it).' }
+      $keyCopy = Join-Path $keyDir "vault-root-$stamp.key"
+      if ($vk.Mode -eq 'ContainerFile') {
+        & docker cp "$($db.Container):$($vk.Path)" $keyCopy
+        if ($LASTEXITCODE -ne 0) { throw 'docker cp of the Vault root key failed.' }
+      } else { Copy-Item -LiteralPath $vk.Path -Destination $keyCopy }
+      Set-DrishtiAcl -Path $keyCopy -IsFile
+      if ((Get-DrishtiFileSha256 -Path $keyCopy) -ne $keyHash) { throw 'The copy of the Vault root key does not match the key in use.' }
     }
-    $session.Query('COMMIT;') | Out-Null
-  } finally { $session.Close() }
-
-  $keyHash = Get-DrishtiVaultKeyHash -Config $config
-  $keyCopy = $null
-  if ($IncludeVaultKey) {
-    $vk = $config.VaultKey
-    if (-not $vk -or $vk.Mode -eq 'None') { throw 'VaultKey.Mode is None: the root key cannot be copied from here (hosted project: the platform keeps it).' }
-    New-Item -ItemType Directory -Force -Path $vk.KeyBackupDir | Out-Null
-    $keyCopy = Join-Path $vk.KeyBackupDir "vault-root-$stamp.key"
-    if ($vk.Mode -eq 'ContainerFile') {
-      & docker cp "$($db.Container):$($vk.Path)" $keyCopy
-      if ($LASTEXITCODE -ne 0) { throw 'docker cp of the Vault root key failed.' }
-    } else { Copy-Item -LiteralPath $vk.Path -Destination $keyCopy }
-    Set-DrishtiAcl -Path $keyCopy -IsFile
-    if ((Get-DrishtiFileSha256 -Path $keyCopy) -ne $keyHash) { throw 'The copy of the Vault root key does not match the key in use.' }
+    # The configuration (the services' env files hold their secrets): kept with the key copies, never with the dumps.
+    $configCopy = $null
+    if ($IncludeConfig) {
+      $configCopy = Join-Path $keyDir "config-$stamp"
+      Set-DrishtiAcl -Path $configCopy
+      Copy-Item -Path (Join-Path $config.ConfigDir '*') -Destination $configCopy -Recurse
+    }
+    $manifest = [ordered]@{
+      kind = 'drishti-backup'; version = 1; createdAt = (Get-Date).ToUniversalTime().ToString('o'); tag = $Tag; database = $dbName; serverVersion = $version
+      migration = $migration; counts = $counts; dump = [ordered]@{ file = 'db.dump'; bytes = (Get-Item -LiteralPath $dump).Length; sha256 = (Get-DrishtiFileSha256 -Path $dump) }
+      vaultKey = [ordered]@{ sha256 = $keyHash; copied = [bool]$keyCopy; copiedTo = $keyCopy; mode = $(if ($config.ContainsKey('VaultKey') -and $config.VaultKey) { $config.VaultKey.Mode } else { 'None' }) }
+      config = [ordered]@{ copied = [bool]$configCopy; copiedTo = $configCopy }
+    }
+    $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $folder 'manifest.json') -Encoding UTF8
+    Write-DrishtiStep -Kind ok -Message "backup written: $folder ($([math]::Round($manifest.dump.bytes / 1MB, 1)) MB, migration $migration, $($counts['public.cameras']) cameras, $($counts['vault.secrets']) Vault secrets)"
+    if ($ResultPath) { @{ folder = $folder; manifest = $manifest } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $ResultPath -Encoding UTF8 }
   }
-  # The configuration (the services' env files hold their secrets): kept with the key copies, never with the dumps.
-  $configCopy = $null
-  if ($IncludeConfig) {
-    if (-not $config.VaultKey -or -not $config.VaultKey.KeyBackupDir) { throw 'VaultKey.KeyBackupDir is needed for the configuration copy (it holds secrets: never the dump folder).' }
-    $configCopy = Join-Path $config.VaultKey.KeyBackupDir "config-$stamp"
-    New-Item -ItemType Directory -Force -Path $configCopy | Out-Null
-    Set-DrishtiAcl -Path $configCopy
-    Copy-Item -Path (Join-Path $config.ConfigDir '*') -Destination $configCopy -Recurse
-  }
-  $manifest = [ordered]@{
-    kind = 'drishti-backup'; version = 1; createdAt = (Get-Date).ToUniversalTime().ToString('o'); tag = $Tag; database = $dbName; serverVersion = $version
-    migration = $migration; counts = $counts; dump = [ordered]@{ file = 'db.dump'; bytes = (Get-Item -LiteralPath $dump).Length; sha256 = (Get-DrishtiFileSha256 -Path $dump) }
-    vaultKey = [ordered]@{ sha256 = $keyHash; copied = [bool]$keyCopy; copiedTo = $keyCopy; mode = $(if ($config.VaultKey) { $config.VaultKey.Mode } else { 'None' }) }
-    config = [ordered]@{ copied = [bool]$configCopy; copiedTo = $configCopy }
-  }
-  $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $folder 'manifest.json') -Encoding UTF8
-  Write-DrishtiStep -Kind ok -Message "backup written: $folder ($([math]::Round($manifest.dump.bytes / 1MB, 1)) MB, migration $migration, $($counts['public.cameras']) cameras, $($counts['vault.secrets']) Vault secrets)"
-  if ($ResultPath) { @{ folder = $folder; manifest = $manifest } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $ResultPath -Encoding UTF8 }
 }
 
-if ($ApplyRetention) {
+if ($ApplyRetention -or $RetentionOnly) {
   # Keep: every backup younger than Retention.Days, and always the newest Retention.KeepAtLeast whatever their age. Only folders this
-  # script made (name <yyyyMMdd-HHmmss>-<tag> with a manifest.json of kind drishti-backup) are ever considered.
+  # script made are ever considered: a plain folder (not a junction or link) named <yyyyMMdd-HHmmss>-<tag> whose manifest.json says
+  # kind drishti-backup; one that contains a reparse point anywhere is refused, never entered.
   $days = 30; $keep = 7
   if ($config.ContainsKey('Retention')) { $days = [int]$config.Retention.Days; $keep = [int]$config.Retention.KeepAtLeast }
-  $all = @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d{8}-\d{6}-[a-z0-9-]+$' -and (Test-Path -LiteralPath (Join-Path $_.FullName 'manifest.json')) } | Sort-Object Name -Descending)
+  if (-not (Test-Path -LiteralPath $root)) { return }
+  $rootProblems = @(Test-DrishtiPathAcl -Path $root)
+  if ($rootProblems.Count -gt 0) { throw "Retention refused: others may change the backup folder ($($rootProblems -join '; ')). Run drishti-services.ps1 -Action RepairAcl." }
+  $candidates = @()
+  foreach ($e in [IO.Directory]::GetDirectories($root)) {
+    $name = [IO.Path]::GetFileName($e)
+    if ($name -notmatch '^\d{8}-\d{6}-[a-z0-9-]+$') { continue }
+    if ([IO.File]::GetAttributes($e) -band [IO.FileAttributes]::ReparsePoint) { Write-DrishtiStep -Kind warn -Message "skipped ${name}: a junction or link, not a backup"; continue }
+    $m = Join-Path $e 'manifest.json'
+    if (-not [IO.File]::Exists($m) -or ([IO.File]::GetAttributes($m) -band [IO.FileAttributes]::ReparsePoint)) { continue }
+    $kind = $null
+    try { $kind = (Get-Content -LiteralPath $m -Raw | ConvertFrom-Json).kind } catch { $kind = $null }
+    if ($kind -ne 'drishti-backup') { continue }
+    $candidates += $name
+  }
   $cutoff = (Get-Date).AddDays(-$days)
   $i = 0
-  foreach ($b in $all) {
+  foreach ($name in ($candidates | Sort-Object -Descending)) {
     $i++
-    $made = [datetime]::ParseExact($b.Name.Substring(0, 15), 'yyyyMMdd-HHmmss', $null)
+    $made = [datetime]::ParseExact($name.Substring(0, 15), 'yyyyMMdd-HHmmss', $null)
     if ($i -le $keep -or $made -ge $cutoff) { continue }
-    if ($dry) { Write-DrishtiStep -Kind plan -Message "would remove the old backup $($b.FullName) (older than $days days, beyond the newest $keep)"; continue }
-    if ($PSCmdlet.ShouldProcess($b.FullName, 'remove old backup')) { Remove-Item -LiteralPath $b.FullName -Recurse -Force; Write-DrishtiStep -Message "removed the old backup $($b.Name)" }
+    $path = Join-Path $root $name
+    if (Test-DrishtiHasReparsePoint -Path $path) { Write-DrishtiStep -Kind warn -Message "kept ${path}: it contains a junction or link (not made by this script; look at it by hand)"; continue }
+    if ($dry) { Write-DrishtiStep -Kind plan -Message "would remove the old backup $path (older than $days days, beyond the newest $keep)"; continue }
+    if ($PSCmdlet.ShouldProcess($path, 'remove old backup')) {
+      & cmd.exe /d /c "rmdir /s /q `"$path`"" | Out-Host
+      if (Test-Path -LiteralPath $path) { Write-DrishtiStep -Kind warn -Message "could not remove $path" } else { Write-DrishtiStep -Message "removed the old backup $name" }
+    }
   }
 }
