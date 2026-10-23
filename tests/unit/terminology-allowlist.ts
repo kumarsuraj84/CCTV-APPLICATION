@@ -20,6 +20,8 @@ export const ALLOWED: Allowed[] = [
   { file: 'app/api/playback/stream/route.ts', text: 'no-store', partial: true, reason: HTTP },
   { file: 'lib/streams/vod.ts', text: 'no-store', partial: true, reason: HTTP },
   { file: 'app/api/health/route.ts', text: 'no-store', partial: true, reason: HTTP },
+  { file: 'app/api/health/detail/route.ts', text: 'no-store', partial: true, reason: HTTP },
+  { file: 'lib/audit/catalogue.ts', text: 'lib/inventory/stores.ts', reason: 'P5.4: the repository path of the legacy writer of three audit actions (a file name, never shown to people)' },
   { file: 'app/api/vod/route.ts', text: 'no-store', partial: true, reason: HTTP },
   // P3-1: the old addresses of ruling T-1, now redirected by proxy.ts (they were in next.config.ts, which this guard does not scan).
   { file: 'lib/web/legacy-redirects.ts', text: '/stores', reason: 'the old address that redirects to /locations (ruling T-1)' },

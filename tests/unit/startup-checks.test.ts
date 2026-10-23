@@ -18,10 +18,13 @@ const key = (role: 'app_web' | 'media_service' | 'monitor_worker' | 'video_gatew
   signServiceJwt(SECRET, role, { now: NOW, lifetimeSec })
 const at = NOW * 1000
 
+// P5.4 brief item 3: production now also refuses a weak secret (one repeated character, a repeated pattern, a placeholder), so the
+// fixtures are strong random-looking values (as gen-secrets makes: 43 characters of base64url), one per purpose.
+const strong = (seed: string) => `${seed}-Qw7xK2pLm9Zr4Tb8Nc1Vh6Yd3Fs5Gj0Ek`.slice(0, 43)
 const prodBase = {
   DRISHTI_ENV: 'production', NEXT_PUBLIC_SUPABASE_URL: 'https://db.example.test',
-  STREAM_TOKEN_SECRET: 's'.repeat(43), ACCESS_PREVIEW_SECRET: 'p'.repeat(43), MERGE_CONFIRM_SECRET: 'm'.repeat(43), VERIFIED_USER_SECRET: 'v'.repeat(43),
-  GO2RTC_API_USERNAME: 'drishti', GO2RTC_API_PASSWORD: 'g'.repeat(43),
+  STREAM_TOKEN_SECRET: strong('st'), ACCESS_PREVIEW_SECRET: strong('ap'), MERGE_CONFIRM_SECRET: strong('mc'), VERIFIED_USER_SECRET: strong('vu'),
+  GO2RTC_API_USERNAME: 'drishti', GO2RTC_API_PASSWORD: strong('go'),
 }
 const webEnv = () => ({ ...prodBase, SUPABASE_APP_WEB_KEY: key('app_web'), SUPABASE_MEDIA_SERVICE_KEY: key('media_service'), SUPABASE_SERVICE_ROLE_KEY: 'service-key-for-gotrue-admin' })
 const workerEnv = () => ({ DRISHTI_ENV: 'production', NEXT_PUBLIC_SUPABASE_URL: 'https://db.example.test', SUPABASE_MONITOR_WORKER_KEY: key('monitor_worker') })
@@ -105,6 +108,39 @@ describe('startupProblems', () => {
     const dev = startupProblems('worker', { SUPABASE_MONITOR_WORKER_KEY: key('monitor_worker', 10 * 24 * 3600) }, at)
     expect(dev.problems).toEqual([])
     expect(dev.warnings.length).toBe(1)
+  })
+
+  it('P5.4: production refuses a needed secret under 32 characters (16 was enough before), naming it and never showing it', () => {
+    const short = 'Qw7xK2pLm9Zr4Tb8Nc1Vh6Yd3Fs5' // 28 characters
+    for (const [proc, env] of [['web', webEnv()], ['gateway', gatewayEnv()]] as const) {
+      const r = startupProblems(proc, { ...env, STREAM_TOKEN_SECRET: short }, at)
+      expect(r.problems.join(' '), proc).toMatch(/STREAM_TOKEN_SECRET.*32 characters/)
+      expect(JSON.stringify(r)).not.toContain(short)
+    }
+    expect(startupProblems('web', { ...webEnv(), ACCESS_PREVIEW_SECRET: short }, at).problems.join(' ')).toContain('ACCESS_PREVIEW_SECRET')
+    // Development keeps the old minimum and only warns.
+    const dev = startupProblems('gateway', { SUPABASE_SERVICE_ROLE_KEY: 'svc', STREAM_TOKEN_SECRET: short }, at)
+    expect(dev.problems).toEqual([])
+  })
+
+  it('P5.4: production refuses weak secrets (one character, a repeated pattern, a placeholder), naming each, never showing it', () => {
+    for (const weak of ['s'.repeat(43), 'abcd'.repeat(11), 'change-me-change-me-change-me-change-me-1', 'your-secret-goes-here-0123456789-abcdefgh', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab1']) {
+      const r = startupProblems('web', { ...webEnv(), MERGE_CONFIRM_SECRET: weak }, at)
+      expect(r.problems.join(' '), weak).toMatch(/MERGE_CONFIRM_SECRET.*(weak|guess)/)
+      expect(JSON.stringify(r), weak).not.toContain(weak)
+    }
+  })
+
+  it('P5.4: production refuses the same value for two purposes (per-purpose secrets must be distinct), naming both', () => {
+    const env = { ...webEnv(), ACCESS_PREVIEW_SECRET: prodBase.STREAM_TOKEN_SECRET }
+    const p = startupProblems('web', env, at).problems.join(' ')
+    expect(p).toMatch(/ACCESS_PREVIEW_SECRET/)
+    expect(p).toMatch(/STREAM_TOKEN_SECRET/)
+    expect(p).not.toContain(prodBase.STREAM_TOKEN_SECRET)
+    // A secret the process does not need, but which is set, counts too (one value must never serve two purposes anywhere).
+    expect(startupProblems('gateway', { ...gatewayEnv(), CRON_SECRET: prodBase.STREAM_TOKEN_SECRET }, at).problems.join(' ')).toMatch(/CRON_SECRET/)
+    // go2rtc's API password is a secret like the others.
+    expect(startupProblems('gateway', { ...gatewayEnv(), GO2RTC_API_PASSWORD: prodBase.STREAM_TOKEN_SECRET }, at).problems.join(' ')).toMatch(/GO2RTC_API_PASSWORD/)
   })
 
   it('development: no problem without the keys (the service key is the fallback), only warnings', () => {

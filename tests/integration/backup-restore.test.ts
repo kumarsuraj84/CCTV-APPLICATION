@@ -1,0 +1,142 @@
+// P5.4 brief item 4: backup and restore PROVEN in a disposable database. deploy/windows/backup.ps1 dumps the local database (the
+// owner's data: read only, pg_dump in one snapshot with the row counts) to a temporary folder; deploy/windows/restore.ps1 restores it
+// into a NEW database `drishti_restore_test` on the same local server, then compares the row counts of the key tables, checks the
+// migration level against this checkout's migrations, decrypts every Vault secret and the canary secret, and compares the SHA-256 of
+// the server's Vault root key with the one recorded in the backup (the key itself never leaves the database container here). The
+// disposable database is dropped and the temporary folder removed. The live database is never written.
+// Needs Docker (the database container); DRISHTI_SKIP_DOCKER_TESTS=1 says on purpose that this run has none.
+// DRISHTI_EVIDENCE_DIR=<folder>: also copies the proof (counts and verdicts only, no secret) there.
+import { execFileSync, spawnSync } from 'node:child_process'
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+
+const ROOT = path.resolve(__dirname, '../..')
+const CONTAINER = 'supabase_db_cctv_hub'
+const TARGET = 'drishti_restore_test'
+const skip = process.platform !== 'win32' || process.env.DRISHTI_SKIP_DOCKER_TESTS === '1'
+const highestMigration = () => readdirSync(path.join(ROOT, 'supabase', 'migrations')).filter((f) => /^\d{14}_/.test(f)).map((f) => f.slice(0, 14)).sort().at(-1)
+
+let dir = ''
+let config = ''
+const ps = (script: string, args: string[]) =>
+  spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'deploy', 'windows', script), ...args], { encoding: 'utf8', timeout: 240_000 })
+const psql = (sql: string) => execFileSync('docker', ['exec', CONTAINER, 'psql', '-U', 'supabase_admin', '-d', 'postgres', '-Atc', sql], { encoding: 'utf8' }).trim()
+
+beforeAll(() => {
+  if (skip) return
+  dir = mkdtempSync(path.join(os.tmpdir(), 'drishti-backup-'))
+  config = path.join(dir, 'drishti.config.psd1')
+  mkdirSync(path.join(dir, 'config'))
+  writeFileSync(path.join(dir, 'config', 'web.env'), 'DRISHTI_ENV=production\r\nSTREAM_TOKEN_SECRET=p54-test-only-value-not-a-real-secret-0123\r\n')
+  writeFileSync(config, [
+    '@{',
+    `  InstallRoot = '${dir}'; ConfigDir = '${path.join(dir, 'config')}'; DataDir = '${dir}'; LogDir = '${dir}'; BackupDir = '${path.join(dir, 'backups')}'`,
+    `  NodeExe = '${process.execPath}'; Go2rtcExe = '${path.join(dir, 'go2rtc.exe')}'; Services = @('DrishtiWeb')`,
+    `  Database = @{ Mode = 'Container'; Container = '${CONTAINER}'; User = 'supabase_admin'; Name = 'postgres' }`,
+    `  VaultKey = @{ Mode = 'ContainerFile'; Path = '/etc/postgresql-custom/pgsodium_root.key'; KeyBackupDir = '${path.join(dir, 'keys')}' }`,
+    '  Retention = @{ Days = 30; KeepAtLeast = 7 }',
+    '}',
+  ].join('\r\n'))
+  psql(`DROP DATABASE IF EXISTS ${TARGET} WITH (FORCE)`)
+})
+afterAll(() => {
+  if (skip) return
+  try {
+    psql(`DROP DATABASE IF EXISTS ${TARGET} WITH (FORCE)`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+type Proof = {
+  passed: boolean; allCountsEqual: boolean; live: boolean
+  counts: Record<string, { backup: number; restored: number; equal: boolean }>
+  migration: { backup: string; restored: string; expected: string; equalToBackup: boolean; pending: boolean }
+  vault: { secrets: number; decryptable: number; allDecrypt: boolean; canaryOk: boolean }
+  vaultKeyMatchesBackup: boolean | null
+}
+
+describe.skipIf(skip)('backup and restore into a disposable database (P5.4)', () => {
+  let folder = ''
+
+  it('backup.ps1 writes the dump and a manifest (counts in the dump\'s own snapshot, no secret)', () => {
+    const res = path.join(dir, 'backup-result.json')
+    const r = ps('backup.ps1', ['-ConfigPath', config, '-Tag', 'restore-test', '-IncludeConfig', '-ResultPath', res])
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    folder = (JSON.parse(readFileSync(res, 'utf8').replace(/^﻿/, '')) as { folder: string }).folder
+    const manifest = JSON.parse(readFileSync(path.join(folder, 'manifest.json'), 'utf8').replace(/^﻿/, ''))
+    expect(manifest.kind).toBe('drishti-backup')
+    expect(manifest.migration).toBe(highestMigration())
+    expect(manifest.counts['public.cameras']).toBeGreaterThan(0)
+    expect(manifest.counts['vault.secrets']).toBeGreaterThan(0)
+    expect(manifest.vaultKey.sha256).toMatch(/^[0-9a-f]{64}$/)
+    expect(manifest.vaultKey.copied).toBe(false) // the key stays in the container in this test
+    expect(readdirSync(path.join(dir, 'keys')).filter((f) => f.endsWith('.key'))).toEqual([])
+    // -IncludeConfig: the configuration (the services' secrets) goes with the key copies, never into the dump folder.
+    expect(manifest.config.copied).toBe(true)
+    expect(readFileSync(path.join(manifest.config.copiedTo, 'web.env'), 'utf8')).toContain('STREAM_TOKEN_SECRET=')
+    expect(readdirSync(folder).sort()).toEqual(['db.dump', 'manifest.json'])
+    const text = JSON.stringify(manifest) + r.stdout
+    expect(text).not.toMatch(/drishti-vault-canary-v1|password|PGPASSWORD|p54-test-only-value/i)
+  }, 240_000)
+
+  it('restore.ps1 restores into a NEW database and proves it: counts, migration level, every Vault secret, the canary, the root key', () => {
+    const res = path.join(dir, 'restore-result.json')
+    const r = ps('restore.ps1', ['-ConfigPath', config, '-BackupPath', folder, '-TargetDatabase', TARGET, '-CreateDatabase', '-DropAfterVerify', '-SourcePath', ROOT, '-ResultPath', res])
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    const proof = JSON.parse(readFileSync(res, 'utf8').replace(/^﻿/, '')) as Proof
+    expect(proof.passed).toBe(true)
+    expect(proof.live).toBe(false)
+    expect(proof.allCountsEqual).toBe(true)
+    for (const [t, c] of Object.entries(proof.counts)) expect(c.restored, t).toBe(c.backup)
+    expect(Object.keys(proof.counts)).toEqual(expect.arrayContaining(['public.locations', 'public.recorders', 'public.cameras', 'public.access_grants', 'public.admin_audit_log', 'auth.users', 'vault.secrets']))
+    expect(proof.migration).toMatchObject({ restored: highestMigration(), expected: highestMigration(), equalToBackup: true, pending: false })
+    expect(proof.vault.secrets).toBeGreaterThan(0)
+    expect(proof.vault).toMatchObject({ allDecrypt: true, canaryOk: true })
+    expect(proof.vault.decryptable).toBe(proof.vault.secrets)
+    expect(proof.vaultKeyMatchesBackup).toBe(true)
+    // The disposable database is gone again; the live one was never the target.
+    expect(psql(`SELECT count(*) FROM pg_database WHERE datname = '${TARGET}'`)).toBe('0')
+    const evidence = process.env.DRISHTI_EVIDENCE_DIR
+    if (evidence) {
+      mkdirSync(evidence, { recursive: true })
+      writeFileSync(path.join(evidence, 'backup-restore-proof.json'), JSON.stringify({ ranAt: new Date().toISOString(), restoreOutput: r.stdout.split(/\r?\n/).filter(Boolean), proof }, null, 2))
+    }
+  }, 240_000)
+
+  it('refuses the live database without -AllowLiveDatabase, a bad name, an existing database and a damaged dump, changing nothing', () => {
+    const before = psql("SELECT count(*) FROM public.cameras WHERE org_id IN (SELECT id FROM public.organizations WHERE slug NOT LIKE 'test-%')")
+    const live = ps('restore.ps1', ['-ConfigPath', config, '-BackupPath', folder, '-TargetDatabase', 'postgres'])
+    expect(live.status).not.toBe(0)
+    expect(live.stdout + live.stderr).toMatch(/live database/)
+    expect(ps('restore.ps1', ['-ConfigPath', config, '-BackupPath', folder, '-TargetDatabase', 'Bad-Name;', '-CreateDatabase']).status).not.toBe(0)
+    expect(ps('restore.ps1', ['-ConfigPath', config, '-BackupPath', folder, '-TargetDatabase', 'postgres_copy']).status).not.toBe(0) // needs -CreateDatabase
+    const existing = ps('restore.ps1', ['-ConfigPath', config, '-BackupPath', folder, '-TargetDatabase', 'template1', '-CreateDatabase'])
+    expect(existing.status).not.toBe(0)
+    expect(existing.stdout + existing.stderr).toMatch(/exists already/)
+    const damaged = path.join(dir, 'damaged')
+    mkdirSync(damaged)
+    copyFileSync(path.join(folder, 'manifest.json'), path.join(damaged, 'manifest.json'))
+    const bytes = readFileSync(path.join(folder, 'db.dump'))
+    bytes[Math.floor(bytes.length / 2)] ^= 0xff
+    writeFileSync(path.join(damaged, 'db.dump'), bytes)
+    const bad = ps('restore.ps1', ['-ConfigPath', config, '-BackupPath', damaged, '-TargetDatabase', TARGET, '-CreateDatabase'])
+    expect(bad.status).not.toBe(0)
+    expect(bad.stdout + bad.stderr).toMatch(/SHA-256 differs/)
+    expect(psql(`SELECT count(*) FROM pg_database WHERE datname = '${TARGET}'`)).toBe('0')
+    expect(psql("SELECT count(*) FROM public.cameras WHERE org_id IN (SELECT id FROM public.organizations WHERE slug NOT LIKE 'test-%')")).toBe(before)
+  }, 240_000)
+
+  it('the dry runs plan only: no backup folder, no database', () => {
+    const b = ps('backup.ps1', ['-ConfigPath', config, '-Tag', 'dry', '-DryRun', '-ApplyRetention'])
+    expect(b.status, b.stderr).toBe(0)
+    expect(b.stdout).toMatch(/PLAN would open one REPEATABLE READ snapshot/)
+    expect(readdirSync(path.join(dir, 'backups')).filter((f) => f.endsWith('-dry'))).toEqual([])
+    const r = ps('restore.ps1', ['-ConfigPath', config, '-BackupPath', folder, '-TargetDatabase', TARGET, '-CreateDatabase', '-DropAfterVerify', '-DryRun'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/PLAN would create the database drishti_restore_test/)
+    expect(psql(`SELECT count(*) FROM pg_database WHERE datname = '${TARGET}'`)).toBe('0')
+  }, 240_000)
+})

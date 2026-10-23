@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { DetailedHealth } from '@/lib/ops/health'
 
-// What the admin client does in this test: by default there is no database.
-const admin = vi.hoisted(() => ({
-  create: (): unknown => {
+// P5.4 brief item 3 replaces the public answer of P2 ({ status, db, worker }): /api/health is now the PUBLIC MINIMAL variant — the
+// status word only — and is worked out from every check of the detailed health (database, Vault, gateway, worker, migrations, disk,
+// clean-up; lib/ops/health.ts). The details are for super administrators only (/api/health/detail, the Health page).
+
+const h = vi.hoisted(() => ({
+  read: async (): Promise<DetailedHealth> => {
     throw new Error('no database in a unit test')
   },
   calls: 0,
@@ -10,17 +14,26 @@ const admin = vi.hoisted(() => ({
 
 vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: () => {
-    admin.calls += 1
-    return admin.create()
+    throw new Error('no database in a unit test')
+  },
+}))
+vi.mock('@/lib/ops/health-server', async (orig) => ({
+  ...(await orig<typeof import('@/lib/ops/health-server')>()),
+  readDetailedHealth: () => {
+    h.calls += 1
+    return h.read()
   },
 }))
 
 import { GET as health } from '@/app/api/health/route'
 import { GET as version } from '@/app/api/version/route'
 
-/** A client whose worker_state row holds the given heartbeat. */
-const clientWithHeartbeat = (lastHeartbeat: string | null) => ({
-  from: () => ({ select: () => ({ eq: () => ({ single: async () => ({ data: { last_heartbeat: lastHeartbeat }, error: null }) }) }) }),
+const detailed = (status: 'ok' | 'degraded', failed: string[] = []): DetailedHealth => ({
+  status, build: 'b1', checkedAt: new Date().toISOString(),
+  checks: [
+    { key: 'database', label: 'Database', state: failed.includes('database') ? 'failed' : 'ok', summary: 'connect ECONNREFUSED 10.1.2.3:5432 password=hunter2', facts: [] },
+    { key: 'gateway', label: 'Video gateway', state: failed.includes('gateway') ? 'failed' : 'ok', summary: 'x', facts: [['Open video connections', '4']] },
+  ],
 })
 
 const saved = process.env.NEXT_PUBLIC_BUILD_ID
@@ -29,10 +42,10 @@ beforeEach(() => {
   delete process.env.NEXT_PUBLIC_BUILD_ID
   // Each test starts well after the previous one, so the short-lived health cache is empty.
   vi.useFakeTimers({ toFake: ['Date'] })
-  testClock += 60_000
+  testClock += 120_000
   vi.setSystemTime(testClock)
-  admin.calls = 0
-  admin.create = () => {
+  h.calls = 0
+  h.read = async () => {
     throw new Error('no database in a unit test')
   }
 })
@@ -43,63 +56,56 @@ afterEach(() => {
 })
 
 describe('health and version routes', () => {
-  it('health reports degraded, with the database and the worker marked down, when the database cannot be reached', async () => {
+  it('health is the status word only: ok when every check is ok', async () => {
+    h.read = async () => detailed('ok')
     const res = await health()
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ status: 'degraded', db: false, worker: { ok: false, heartbeatAgeSec: null } })
+    expect(await res.json()).toEqual({ status: 'ok' })
   })
 
-  it('health reports ok, with the age of the worker heartbeat, when the database answers and the worker is beating', async () => {
-    admin.create = () => clientWithHeartbeat(new Date(Date.now() - 4000).toISOString())
+  it('health is degraded when a check failed, and says nothing about which or why', async () => {
+    h.read = async () => detailed('degraded', ['database'])
+    const body = await (await health()).json()
+    expect(body).toEqual({ status: 'degraded' })
+    expect(JSON.stringify(body)).not.toMatch(/ECONNREFUSED|hunter2|10\.1\.2\.3|database|gateway/)
+  })
+
+  it('health is degraded, not an error, when the health could not be gathered at all', async () => {
     const res = await health()
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ status: 'ok', db: true, worker: { ok: true, heartbeatAgeSec: 4 } })
-  })
-
-  it('health is degraded, with the database up, when the worker has stopped beating', async () => {
-    admin.create = () => clientWithHeartbeat(new Date(Date.now() - 120_000).toISOString())
-    expect(await (await health()).json()).toEqual({ status: 'degraded', db: true, worker: { ok: false, heartbeatAgeSec: 120 } })
+    expect(await res.json()).toEqual({ status: 'degraded' })
   })
 
   it('health is never cached by browsers or proxies', async () => {
     expect((await health()).headers.get('cache-control')).toBe('no-store')
   })
 
-  it('health asks the database at most once every two seconds', async () => {
-    admin.create = () => clientWithHeartbeat(new Date(Date.now() - 4000).toISOString())
+  it('health gathers the checks at most once every two seconds', async () => {
+    h.read = async () => detailed('ok')
     await health()
     await health()
     await health()
-    expect(admin.calls).toBe(1)
+    expect(h.calls).toBe(1)
     testClock += 2500
     vi.setSystemTime(testClock)
     await health()
-    expect(admin.calls).toBe(2)
+    expect(h.calls).toBe(2)
   })
 
-  it('health says nothing about why it is degraded', async () => {
-    admin.create = () => {
-      throw new Error('connect ECONNREFUSED 10.1.2.3:5432 password=hunter2')
-    }
-    const text = JSON.stringify(await (await health()).json())
-    expect(text).not.toMatch(/ECONNREFUSED|hunter2|10\.1\.2\.3/)
-  })
-
-  it('health logs why it is degraded, with secrets masked, at most once a minute', async () => {
+  it('health logs the names of the failed checks (never their text) at most once a minute', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     try {
-      admin.create = () => {
-        throw new Error('connect failed password=hunter2 Bearer abc.def-ghi')
-      }
+      h.read = async () => detailed('degraded', ['database', 'gateway'])
       await health()
-      testClock += 3000 // past the 2 second cache: the database is asked again, but the log stays quiet
+      testClock += 3000 // past the 2 second cache: the checks are gathered again, but the log stays quiet
       vi.setSystemTime(testClock)
       await health()
-      expect(admin.calls).toBe(2)
+      expect(h.calls).toBe(2)
       expect(log).toHaveBeenCalledTimes(1)
       const line = String(log.mock.calls[0][0])
       expect(line).toContain('health_degraded')
-      expect(line).not.toMatch(/hunter2|abc.def-ghi/)
+      expect(line).toContain('database')
+      expect(line).not.toMatch(/hunter2|ECONNREFUSED/)
       testClock += 61_000
       vi.setSystemTime(testClock)
       await health()

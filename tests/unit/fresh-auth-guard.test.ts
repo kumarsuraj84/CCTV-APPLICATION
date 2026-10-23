@@ -72,6 +72,7 @@ const ALLOWED: Record<string, string> = {
   'app/api/playback/stream/route.ts#HEAD': 'always answers 405; never starts anything',
   'app/api/csp-report/route.ts#POST': 'public report sink: logs the directive and blocked origin only, size- and rate-limited',
   'app/api/health/route.ts#GET': 'reads only (public health)',
+  'app/api/health/detail/route.ts#GET': 'reads only (P5.4 detailed health, super administrators who finished signing in)',
   'app/api/version/route.ts#GET': 'reads only (public build stamp)',
   'app/auth/callback/route.ts#GET': 'the reset-password link of the sign-in flow (a one-time code from the e-mail)',
 }

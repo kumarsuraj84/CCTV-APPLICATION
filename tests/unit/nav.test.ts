@@ -47,7 +47,9 @@ describe('navigation by capability', () => {
   it('administrative capabilities show admin pages only together with an administrative role, and never data pages', () => {
     const adminSet = caps(['admin.users', 'admin.access', 'admin.inventory'], ORG)
     expect(hrefs('admin', adminSet)).toEqual(['/home', '/admin/users', '/admin/access-review', '/admin/monitoring', '/admin/locations', '/admin/regions', '/admin/assets', '/admin/devices', '/admin/import'])
-    expect(hrefs('platform_owner', adminSet)).toEqual(hrefs('admin', adminSet))
+    // P5.4 brief item 3 (replaces "a super administrator sees exactly the administrator's list"): the Health page is for super
+    // administrators only, next to Monitoring.
+    expect(hrefs('platform_owner', adminSet)).toEqual(['/home', '/admin/users', '/admin/access-review', '/admin/monitoring', '/admin/health', '/admin/locations', '/admin/regions', '/admin/assets', '/admin/devices', '/admin/import'])
     for (const role of ['user', 'operator', 'manager'] as const) expect(hrefs(role, adminSet), role).toEqual(['/home'])
   })
 
@@ -64,6 +66,12 @@ describe('navigation by capability', () => {
     expect(['/admin/locations', '/admin/regions', '/admin/assets'].map((h) => NAV.find((i) => i.href === h)?.label)).toEqual(['Locations and NVRs', 'Regions and clusters', 'Assets'])
     // An administrator role with no admin.* capability sees no admin page (P2-2 rule: role AND capability).
     expect(hrefs('admin', caps(['cctv.live'], ORG))).toEqual(['/home', '/locations', '/live', '/groups'])
+    // P5.4 brief item 5: the audit page needs admin.audit.read organisation-wide; Health needs the super administrator role.
+    expect(hrefs('admin', caps(['admin.audit.read'], ORG))).toEqual(['/home', '/admin/audit'])
+    expect(hrefs('admin', caps(['admin.audit.read'], AT_ONE))).toEqual(['/home'])
+    expect(hrefs('platform_owner', caps(['admin.audit.read'], ORG))).toEqual(['/home', '/admin/health', '/admin/audit'])
+    expect(NAV.find((i) => i.href === '/admin/health')?.label).toBe('Health')
+    expect(NAV.find((i) => i.href === '/admin/audit')?.label).toBe('Audit log')
   })
 
   it('the old role rules are gone: a manager or admin role alone opens nothing', () => {

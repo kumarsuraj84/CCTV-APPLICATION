@@ -16,6 +16,9 @@ const dir = mkdtempSync(path.join(os.tmpdir(), 'drishti-startup-'))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const SECRET = 'a-test-jwt-secret-that-is-long-enough-1234567890'
+// P5.4: production refuses weak or repeated secrets, so the fixtures are strong, distinct values (as gen-secrets makes).
+const STREAM = 'st-Qw7xK2pLm9Zr4Tb8Nc1Vh6Yd3Fs5Gj0Ek-aaaaaa'.slice(0, 43)
+const GO2RTC = 'go-Qw7xK2pLm9Zr4Tb8Nc1Vh6Yd3Fs5Gj0Ek-bbbbbb'.slice(0, 43)
 const base = () => ({ PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? '', TEMP: os.tmpdir(), TMP: os.tmpdir() })
 
 function run(script: 'worker' | 'gateway', env: Record<string, string>): Promise<{ code: number | null; out: string }> {
@@ -44,8 +47,8 @@ describe('worker and gateway start-up in production mode (DRISHTI_ENV, no NODE_E
 
   it('the gateway refuses without its own key', async () => {
     const r = await run('gateway', {
-      DRISHTI_ENV: 'production', SUPABASE_URL: 'http://127.0.0.1:1', SUPABASE_SERVICE_ROLE_KEY: 'the-old-full-service-key', STREAM_TOKEN_SECRET: 's'.repeat(43),
-      GATEWAY_ALLOWED_ORIGINS: 'http://localhost:3212', GO2RTC_API_USERNAME: 'drishti', GO2RTC_API_PASSWORD: 'g'.repeat(43),
+      DRISHTI_ENV: 'production', SUPABASE_URL: 'http://127.0.0.1:1', SUPABASE_SERVICE_ROLE_KEY: 'the-old-full-service-key', STREAM_TOKEN_SECRET: STREAM,
+      GATEWAY_ALLOWED_ORIGINS: 'http://localhost:3212', GO2RTC_API_USERNAME: 'drishti', GO2RTC_API_PASSWORD: GO2RTC,
     })
     expect(r.code).toBe(1)
     expect(r.out).toContain('SUPABASE_VIDEO_GATEWAY_KEY')
@@ -54,7 +57,7 @@ describe('worker and gateway start-up in production mode (DRISHTI_ENV, no NODE_E
 
   it('the gateway refuses without go2rtc\'s API login (I-2), with its own key present', async () => {
     const r = await run('gateway', {
-      DRISHTI_ENV: 'production', SUPABASE_URL: 'http://127.0.0.1:1', STREAM_TOKEN_SECRET: 's'.repeat(43), GATEWAY_ALLOWED_ORIGINS: 'http://localhost:3212',
+      DRISHTI_ENV: 'production', SUPABASE_URL: 'http://127.0.0.1:1', STREAM_TOKEN_SECRET: STREAM, GATEWAY_ALLOWED_ORIGINS: 'http://localhost:3212',
       SUPABASE_VIDEO_GATEWAY_KEY: signServiceJwt(SECRET, 'video_gateway'),
     })
     expect(r.code).toBe(1)
@@ -67,9 +70,9 @@ describe('worker and gateway start-up in production mode (DRISHTI_ENV, no NODE_E
     const port = await new Promise<number>((resolve) => open.listen(0, '127.0.0.1', () => resolve((open.address() as { port: number }).port)))
     try {
       const r = await run('gateway', {
-        DRISHTI_ENV: 'production', SUPABASE_URL: 'http://127.0.0.1:1', STREAM_TOKEN_SECRET: 's'.repeat(43), GATEWAY_ALLOWED_ORIGINS: 'http://localhost:3212',
+        DRISHTI_ENV: 'production', SUPABASE_URL: 'http://127.0.0.1:1', STREAM_TOKEN_SECRET: STREAM, GATEWAY_ALLOWED_ORIGINS: 'http://localhost:3212',
         SUPABASE_VIDEO_GATEWAY_KEY: signServiceJwt(SECRET, 'video_gateway'), GO2RTC_URL: `http://127.0.0.1:${port}`,
-        GO2RTC_API_USERNAME: 'drishti', GO2RTC_API_PASSWORD: 'g'.repeat(43),
+        GO2RTC_API_USERNAME: 'drishti', GO2RTC_API_PASSWORD: GO2RTC,
       })
       expect(r.code).toBe(1)
       expect(r.out).toContain('without its login')

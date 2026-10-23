@@ -862,6 +862,12 @@ describe('capability access model (P2-1)', () => {
       status_rollups: ['authenticated'],
       media_sessions_live_open: ['service_role', 'media_service'],
       media_sessions_before_insert: [],
+      // P5.4 (20261021000041): the Health page's database answer for the web app; the audit guards and the test/demo clean-up of audit
+      // rows for the service role only; the append-only trigger has no grant at all.
+      ops_health_status: web,
+      audit_guard_status: server,
+      audit_purge_test_org: server,
+      admin_audit_log_append_only: [],
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)

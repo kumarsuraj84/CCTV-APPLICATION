@@ -7,11 +7,13 @@ import { webStartupProblems } from '@/lib/startup-web'
 // active organisation has not locked the service key out of NVR logins (security_unlocked_organizations()). Development: no check.
 
 const SECRET = 'a-test-jwt-secret-that-is-long-enough-1234567890'
+const strong = (seed: string) => `${seed}-Qw7xK2pLm9Zr4Tb8Nc1Vh6Yd3Fs5Gj0Ek`.slice(0, 43)
 const prod = () => ({
   DRISHTI_ENV: 'production', NEXT_PUBLIC_SUPABASE_URL: 'https://db.example.test', SUPABASE_SERVICE_ROLE_KEY: 'svc',
   SUPABASE_APP_WEB_KEY: signServiceJwt(SECRET, 'app_web'), SUPABASE_MEDIA_SERVICE_KEY: signServiceJwt(SECRET, 'media_service'),
-  STREAM_TOKEN_SECRET: 's'.repeat(43), ACCESS_PREVIEW_SECRET: 'p'.repeat(43), MERGE_CONFIRM_SECRET: 'm'.repeat(43), VERIFIED_USER_SECRET: 'v'.repeat(43),
-  GO2RTC_API_USERNAME: 'drishti', GO2RTC_API_PASSWORD: 'g'.repeat(43),
+  // P5.4: production refuses weak secrets, so the fixtures are strong, distinct values (as gen-secrets makes).
+  STREAM_TOKEN_SECRET: strong('st'), ACCESS_PREVIEW_SECRET: strong('ap'), MERGE_CONFIRM_SECRET: strong('mc'), VERIFIED_USER_SECRET: strong('vu'),
+  GO2RTC_API_USERNAME: 'drishti', GO2RTC_API_PASSWORD: strong('go'),
 })
 const deps = (unlocked: number | Error, probe: { ok: true } | { ok: false; error: string } = { ok: true }) => ({
   unlockedOrganizations: vi.fn(async () => {
