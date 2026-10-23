@@ -13,7 +13,7 @@ import { createMediaSessions } from '@/lib/streams/registry'
 import { MSG_TOO_MANY_REQUESTS, type RequestLimiter } from '@/lib/streams/request-limit'
 import { buildPlaybackUrl, demoSource, isDemoRecorder } from '@/lib/streams/source'
 import { nvrMonthsFor, shownRecordedDays } from '@/lib/streams/calendar'
-import { isPlayableStart, parseDay, PLAYABLE_FUTURE_SLACK_MS, shownNowMs } from '@/lib/streams/timeline'
+import { isPlayableStart, parseDay, PLAYABLE_FUTURE_SLACK_MS, shownNowMs, shownToday } from '@/lib/streams/timeline'
 import { signStreamToken, streamName, TOKEN_LIFETIME_SEC } from '@/lib/streams/token'
 
 // Playback by day and time. Which cameras may be looked at is decided by the person's own client (cctv.playback, checked by the database
@@ -62,7 +62,11 @@ export type PlaybackDeps = {
   /** Counts requests per person; a refused request does nothing else. */
   limiter?: RequestLimiter
 }
-export type LookupDeps = PlaybackDeps & { nvr?: (ep: NvrEndpoint) => NvrClient }
+export type LookupDeps = PlaybackDeps & {
+  nvr?: (ep: NvrEndpoint) => NvrClient
+  /** Milliseconds since the epoch (default Date.now): "today" for the calendar, "now" for the oldest recording. */
+  now?: () => number
+}
 export type OpenPlaybackDeps = PlaybackDeps & {
   go2rtc: Go2rtcClient
   /** Milliseconds since the epoch (default Date.now). */
@@ -233,7 +237,10 @@ export async function listRecordedDays(deps: LookupDeps, actor: Who, cameraId: s
     const months = nvrMonthsFor(year, month, shift).filter((m) => m.year >= 2000 && m.year <= 2100)
     const nvrDays: { year: number; month: number; days: number[] }[] = []
     for (const m of months) nvrDays.push({ ...m, days: await recordedDays(client, { channel: camera.channel, year: m.year, month: m.month }) })
-    return { ok: true, days: shownRecordedDays(nvrDays, shift, year, month) }
+    // Review m-4: a positive offset spills today's NVR day into tomorrow (shown): no day after today is marked.
+    const today = shownToday((deps.now ?? Date.now)())
+    const days = shownRecordedDays(nvrDays, shift, year, month).filter((d) => `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}` <= today)
+    return { ok: true, days }
   } catch (e) {
     return await nvrFailure(e, 'playback_days_failed', deps.rls, recorder.id)
   }
@@ -243,7 +250,7 @@ export async function listRecordedDays(deps: LookupDeps, actor: Who, cameraId: s
  * P4-L2 (LG-9): the start of the oldest recording of this camera as a shown time (ISO), or null when the NVR has none in the last 400 days.
  * The recorder's own clock offset applies like everywhere else.
  */
-export async function listOldestRecording(deps: LookupDeps & { now?: () => number }, actor: Who, cameraId: string, offsetMin: number): Promise<Result<{ oldest: string | null }>> {
+export async function listOldestRecording(deps: LookupDeps, actor: Who, cameraId: string, offsetMin: number): Promise<Result<{ oldest: string | null }>> {
   if (!validOffset(offsetMin)) return { ok: false, error: MSG_BAD_REQUEST }
   if (deps.limiter && !(await deps.limiter.allow(actor.id))) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
   const c = await findCamera(deps, cameraId, { password: 'always', capability: 'cctv.playback', orgId: actor.orgId, actorId: actor.id })

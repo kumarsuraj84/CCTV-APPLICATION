@@ -46,12 +46,16 @@ export const FORMAT_WHITELIST = 'mpeg,mpegts,mov,mp4,h264,hevc'
  * standard output. `-xerror` is left out on purpose: a recording with one damaged frame should still play. Ruling E-2: a remux (`-c:v
  * copy`), never a re-encode.
  */
-export function buildFfmpegArgs(o: { hevc?: boolean } = {}): string[] {
+export function buildFfmpegArgs(o: { hevc?: boolean; readrate?: number } = {}): string[] {
+  // P4-L2 review I-1: fast playback reads its input at the signed speed (`-readrate`, an input option, ffmpeg 5.0 or newer); the export
+  // path (/api/vod) is not paced. The stream layer (lib/streams/pace.ts) paces by the output's timestamps as well.
+  const rate = o.readrate !== undefined && Number.isFinite(o.readrate) && o.readrate > 0 && o.readrate <= 64 ? ['-readrate', String(o.readrate)] : []
   return [
     '-nostdin',
     '-loglevel', 'error',
     '-protocol_whitelist', 'pipe',
     '-format_whitelist', FORMAT_WHITELIST,
+    ...rate,
     '-i', 'pipe:0',
     '-an',
     '-c:v', 'copy',
@@ -72,6 +76,7 @@ export function videoFamily(name: string | undefined): 'h264' | 'h265' | null {
 }
 
 let warnedFfmpeg = false
+let warnedVersion = false
 const CONTROL = /[\u0000-\u001f\u007f]/
 export type FfmpegProgram = { ok: true; path: string } | { ok: false; error: string }
 export type ProgramLookup = {
@@ -155,6 +160,8 @@ export type ConversionOptions = {
   ffmpeg: string
   /** The recording is H.265: the picture is tagged `hvc1`. */
   hevc?: boolean
+  /** Read the input at this many times real time (`-readrate`; fast playback only). */
+  readrate?: number
   /** The NVR's bytes. */
   source: ReadableStream<Uint8Array>
   /** Ends the NVR transfer (called at most once per ending; safe to call again). */
@@ -202,7 +209,7 @@ export function startConversion(o: ConversionOptions): Promise<ConversionResult>
   return new Promise<ConversionResult>((resolve) => {
     let child: Child
     try {
-      child = (o.spawn ?? defaultSpawn)(o.ffmpeg, buildFfmpegArgs({ hevc: o.hevc }))
+      child = (o.spawn ?? defaultSpawn)(o.ffmpeg, buildFfmpegArgs({ hevc: o.hevc, readrate: o.readrate }))
     } catch (e) {
       o.abortSource()
       o.onExit?.()
@@ -361,9 +368,23 @@ export function startConversion(o: ConversionOptions): Promise<ConversionResult>
 
 // ── is ffmpeg there? ─────────────────────────────────────────────────────────
 
+/** P4-L2 review I-1: the oldest ffmpeg that has `-readrate` (fast playback is paced with it). */
+export const FFMPEG_MIN_MAJOR = 5
+
 /**
- * A check that the program runs (`ffmpeg -version` ends with 0 within a few seconds). The answer is remembered for a minute per program,
- * and a check that is already running is shared. Used to decide what the Playback screen offers.
+ * True when the first line of `ffmpeg -version` names release 5.0 or newer ("ffmpeg version 6.1.1…", "n7.0.2"), or a dated development
+ * build ("N-112345-g…", newer than any release). Anything else — an older release, no version at all — is not enough.
+ */
+export function ffmpegVersionOk(text: string): boolean {
+  const m = /ffmpeg version\s+(?:n)?(\d+)\.(\d+)/i.exec(text ?? '')
+  if (m) return Number(m[1]) >= FFMPEG_MIN_MAJOR
+  return /ffmpeg version\s+N-\d+/.test(text ?? '')
+}
+
+/**
+ * A check that the program runs (`ffmpeg -version` ends with 0 within a few seconds) and is 5.0 or newer (review I-1: `-readrate`). The
+ * answer is remembered for a minute per program, and a check that is already running is shared. Used to decide what the Playback screen
+ * offers and by the start-up check.
  */
 export function createFfmpegCheck(o: { spawn?: SpawnFn; now?: () => number; ttlMs?: number; timeoutMs?: number; lookup?: ProgramLookup } = {}) {
   const run = o.spawn ?? defaultSpawn
@@ -394,6 +415,10 @@ export function createFfmpegCheck(o: { spawn?: SpawnFn; now?: () => number; ttlM
         }
         resolve(ok)
       }
+      let out = ''
+      child.stdout.on('data', (c: Buffer) => {
+        if (out.length < 4096) out += c.toString('utf8')
+      })
       for (const s of [child.stdout, child.stderr]) {
         s.on('error', () => {})
         s.resume()
@@ -401,7 +426,17 @@ export function createFfmpegCheck(o: { spawn?: SpawnFn; now?: () => number; ttlM
       child.stdin.on('error', () => {})
       child.stdin.end()
       child.once('error', () => finish(false))
-      child.once('close', (code: number | null) => finish(code === 0))
+      // Read what is still buffered before judging the version (the close can come before the last data event).
+      child.once('close', (code: number | null) =>
+        setImmediate(() => {
+          const ok = code === 0 && ffmpegVersionOk(out)
+          if (code === 0 && !ok && !warnedVersion) {
+            warnedVersion = true
+            logger.warn({ event: 'ffmpeg_too_old', note: `fast playback needs ffmpeg ${FFMPEG_MIN_MAJOR}.0 or newer (-readrate); it is off` })
+          }
+          finish(ok)
+        }),
+      )
     })
   return async function available(env: Record<string, string | undefined> = process.env): Promise<boolean> {
     const found = resolveFfmpeg(env, o.lookup)

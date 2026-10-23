@@ -55,7 +55,7 @@ export async function GET(request: Request) {
   } catch (e) {
     // The kind of error only: its text can carry an address or a password.
     logger.error({ event: 'vod_route_failed', errorName: e instanceof Error ? e.name : typeof e })
-    return error(500, 'Fast playback could not start. Please try again.')
+    return error(500, 'The recording could not be prepared. Please try again.') // review m-2: the export path, not fast playback
   }
 }
 

@@ -3,6 +3,7 @@ import { isProductionMode } from '@/lib/runtime-mode'
 import { refusalMessage, startupProblems } from '@/lib/startup-checks'
 import { webStartupProblems } from '@/lib/startup-web'
 import { probeGo2rtcLogin } from '@/lib/streams/go2rtc-auth'
+import { fastPlaybackStartupNote } from '@/lib/streams/remux'
 import { createAdminClient } from '@/lib/supabase/admin'
 
 /**
@@ -10,6 +11,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
  * as one plain line and the server stops (exit 1) before it serves a request. Development: the findings are warnings.
  */
 export async function runWebStartupCheck(env: Record<string, string | undefined> = process.env): Promise<void> {
+  // P4-L2 review I-1: fast playback is optional, so this is a warning, never a refusal: it needs ffmpeg 5.0 or newer (-readrate).
+  void fastPlaybackStartupNote(env).then((note) => note && logger.warn({ event: 'fast_playback_unavailable', message: note }))
   if (!isProductionMode(env)) {
     for (const w of startupProblems('web', env).warnings) logger.warn({ event: 'web_startup_warning', message: w })
     return

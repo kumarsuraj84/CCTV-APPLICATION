@@ -4,7 +4,9 @@ import {
   FIRST_BYTE_MS,
   MSG_NO_FFMPEG,
   resolveFfmpeg,
+  SOURCE_IDLE_MS,
   startConversion,
+  VOD_MAX_MS,
   type ConversionResult,
   type ProgramLookup,
   type SpawnFn,
@@ -31,6 +33,8 @@ export type RemuxStart = {
   signal?: AbortSignal
   /** The recording is H.265 (tagged hvc1 by ffmpeg). */
   hevc?: boolean
+  /** Review I-1: read the input at this many times real time (ffmpeg -readrate; fast playback only). */
+  readrate?: number
   /** Called exactly once, when the work is really over (the place to give a slot back and close the session). */
   onExit?: () => void
   maxMs?: number
@@ -67,7 +71,7 @@ export function ffmpegRemux(o: { spawn?: SpawnFn; lookup?: ProgramLookup; availa
         return { ok: false, reason: 'missing' }
       }
       return startConversion({
-        spawn: o.spawn, ffmpeg: program.path, hevc: s.hevc, source: s.source, abortSource: s.abortSource, signal: s.signal, onExit: s.onExit,
+        spawn: o.spawn, ffmpeg: program.path, hevc: s.hevc, readrate: s.readrate, source: s.source, abortSource: s.abortSource, signal: s.signal, onExit: s.onExit,
         maxMs: s.maxMs, firstByteMs: s.firstByteMs, idleMs: s.idleMs, killGraceMs: s.killGraceMs,
       })
     },
@@ -76,26 +80,43 @@ export function ffmpegRemux(o: { spawn?: SpawnFn; lookup?: ProgramLookup; availa
 
 const LOOPBACK = /^(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|localhost)$/i
 
+/** Review m-6: the pass-through ends after this long in all, and after this long without NVR data, whatever the caller passes. */
+export const PASS_THROUGH_DEFAULTS = { maxMs: VOD_MAX_MS, idleMs: SOURCE_IDLE_MS }
+
 /** Development only: the NVR's bytes unchanged (see the top of this file). */
 export function passThroughRemux(): RemuxAdapter {
   return {
     name: 'passthrough',
     async check(env, o) {
       if (isProductionMode(env)) return { ok: false, error: MSG_NO_FFMPEG }
-      if (o?.recorderHost !== undefined && o.recorderHost !== null && !LOOPBACK.test(o.recorderHost)) return { ok: false, error: MSG_NO_FFMPEG }
+      // Review m-6: a recorder host must be a known loopback address; a missing or empty one is refused (only the page's "is it set up"
+      // question, which names no recorder, gets a yes).
+      if (o && 'recorderHost' in o && !(typeof o.recorderHost === 'string' && LOOPBACK.test(o.recorderHost.trim()))) return { ok: false, error: MSG_NO_FFMPEG }
       return { ok: true }
     },
     async start(s) {
       let ended = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let idle: ReturnType<typeof setTimeout> | undefined
+      const reader = s.source.getReader()
+      const onAbort = () => {
+        void reader.cancel().catch(() => {})
+        end()
+      }
       const end = () => {
         if (ended) return
         ended = true
         clearTimeout(timer)
+        clearTimeout(idle)
+        s.signal?.removeEventListener('abort', onAbort)
         s.abortSource()
         s.onExit?.()
       }
-      const reader = s.source.getReader()
-      let timer: ReturnType<typeof setTimeout> | undefined
+      const idleMs = s.idleMs ?? PASS_THROUGH_DEFAULTS.idleMs
+      const armIdle = () => {
+        clearTimeout(idle)
+        idle = setTimeout(onAbort, idleMs)
+      }
       const first = await new Promise<ReadableStreamReadResult<Uint8Array> | null>((resolve) => {
         timer = setTimeout(() => resolve(null), s.firstByteMs ?? FIRST_BYTE_MS)
         reader.read().then(resolve, () => resolve(null))
@@ -106,16 +127,7 @@ export function passThroughRemux(): RemuxAdapter {
         end()
         return { ok: false, reason: first === null ? 'timeout' : 'failed' }
       }
-      if (s.maxMs) {
-        timer = setTimeout(() => {
-          void reader.cancel().catch(() => {})
-          end()
-        }, s.maxMs)
-      }
-      const onAbort = () => {
-        void reader.cancel().catch(() => {})
-        end()
-      }
+      timer = setTimeout(onAbort, s.maxMs ?? PASS_THROUGH_DEFAULTS.maxMs)
       if (s.signal?.aborted) onAbort()
       else s.signal?.addEventListener('abort', onAbort, { once: true })
       let sentFirst = false
@@ -135,7 +147,9 @@ export function passThroughRemux(): RemuxAdapter {
             return
           }
           try {
+            armIdle() // the NVR is being waited for
             const next = await reader.read()
+            clearTimeout(idle)
             if (next.done) {
               c.close()
               end()
@@ -156,6 +170,19 @@ export function passThroughRemux(): RemuxAdapter {
       })
       return { ok: true, body }
     },
+  }
+}
+
+/**
+ * Review I-1: the start-up note about fast playback (null when it can work): the remux adapter is asked whether it is ready — for ffmpeg
+ * that is a program that runs AND is 5.0 or newer (-readrate) — and the plain reason is given when not.
+ */
+export async function fastPlaybackStartupNote(env: Record<string, string | undefined> = process.env, adapter: RemuxAdapter = remuxFromEnv(env)): Promise<string | null> {
+  try {
+    const ready = await adapter.check(env)
+    return ready.ok ? null : `Fast playback (2x-16x) is off: ${ready.error} (it needs ffmpeg 5.0 or newer; see docs/drishti/runbooks/ffmpeg.md).`
+  } catch {
+    return 'Fast playback (2x-16x) is off: the remux check failed.'
   }
 }
 

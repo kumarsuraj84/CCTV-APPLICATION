@@ -1,7 +1,11 @@
+import { framingKey, xorFrame } from '@/lib/streams/framing'
 import { initSegment, mimeFor, videoCodecOf } from '@/lib/streams/mp4'
 import {
+  bufferTargetSec,
   createStallWatch,
   downshift,
+  FAST_FRAMING,
+  FAST_FRAMING_HEADER,
   FAST_STREAM_PATH,
   FAST_TOKEN_HEADER,
   isSpeed,
@@ -77,6 +81,7 @@ export function startFastStream(o: { token: string; speed: Speed; video: VideoLi
   let complete = false
   let failed = false
   let wake: (() => void) | null = null
+  let origin = 0
   const listeners: [string, () => void][] = []
 
   const ms = new env.MediaSource()
@@ -103,7 +108,14 @@ export function startFastStream(o: { token: string; speed: Speed; video: VideoLi
     callbacks.onError(message)
     callbacks.onState('failed')
   }
+  let originSet = false
   const tryStart = () => {
+    // The clip's own first time (ffmpeg may keep the recording's timestamps): progress counts from it, and the picture starts there.
+    if (!originSet && video.buffered.length > 0) {
+      originSet = true
+      origin = video.buffered.start(0)
+      if (video.currentTime < origin) video.currentTime = origin
+    }
     if (started || stopped || failed) return
     if (!readyToStart(aheadOf(video), speed, complete)) return
     started = true
@@ -120,6 +132,8 @@ export function startFastStream(o: { token: string; speed: Speed; video: VideoLi
   })
   listen('waiting', () => {
     if (stopped || !started) return
+    // A stall is the recording running out (less than the start target buffered ahead), not the browser catching up on decoding.
+    if (aheadOf(video) >= bufferTargetSec(speed)) return
     if (!stalls.stall(env.now())) return
     const lower = downshift(speed)
     if (lower === speed) return
@@ -131,12 +145,12 @@ export function startFastStream(o: { token: string; speed: Speed; video: VideoLi
   })
   listen('timeupdate', () => {
     if (stopped) return
-    callbacks.onProgress(Math.max(0, Math.floor(video.currentTime)))
+    callbacks.onProgress(Math.max(0, Math.floor(video.currentTime - origin)))
     nudge()
   })
   listen('ended', () => {
     if (stopped || failed) return
-    callbacks.onProgress(Math.max(0, Math.floor(video.currentTime)))
+    callbacks.onProgress(Math.max(0, Math.floor(video.currentTime - origin)))
     callbacks.onState('finished')
   })
   listen('error', () => fail(MSG_BROWSER_CANNOT_PLAY))
@@ -184,14 +198,31 @@ export function startFastStream(o: { token: string; speed: Speed; video: VideoLi
       return fail(message)
     }
     const reader = res.body.getReader()
+    // Review round 1: a framed body (obfuscation, lib/streams/framing.ts) is unframed with the key from this page's own token.
+    let key: Uint8Array | null = null
+    if (res.headers.get(FAST_FRAMING_HEADER) === FAST_FRAMING) {
+      try {
+        key = framingKey(o.token)
+      } catch {
+        return fail(MSG_BROWSER_CANNOT_PLAY)
+      }
+    }
+    let at = 0
+    const unframe = (bytes: Uint8Array): Uint8Array => {
+      if (!key) return bytes
+      const out = xorFrame(bytes, key, at)
+      at += bytes.length
+      return out
+    }
     let head = new Uint8Array(0)
     let sb: SourceBufferLike | null = null
     try {
       for (;;) {
         await roomToRead()
         if (stopped || failed) break
-        const { done, value } = await reader.read()
+        const { done, value: raw } = await reader.read()
         if (stopped || failed) break
+        const value = done ? new Uint8Array(0) : unframe(raw)
         if (done) {
           if (!sb) return fail(MSG_BROWSER_CANNOT_PLAY)
           complete = true

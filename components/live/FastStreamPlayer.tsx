@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { startFastStream, type FastState, type FastStreamEnv, type MediaSourceLike, type VideoLike } from '@/lib/streams/fast-client'
-import { MSG_BROWSER_CANNOT_PLAY, speedLabel, type Speed } from '@/lib/streams/speed'
+import { clipEnd, MSG_BROWSER_CANNOT_PLAY, speedLabel, type Speed } from '@/lib/streams/speed'
 
 /** Give up on a picture that has not started after this long (the server gives up on its side after 30 seconds). */
 const START_TIMEOUT_MS = 45_000
@@ -71,7 +71,7 @@ export function FastStreamPlayer({
       callbacks: {
         onState: (s) => {
           if (s !== 'preparing') clearTimeout(watchdog)
-          if (s === 'failed') setPlayedAtStop(played.current)
+          if (s === 'failed' || s === 'finished') setPlayedAtStop(played.current)
           setState(s)
         },
         onError: (m) => setMessage(m),
@@ -100,7 +100,11 @@ export function FastStreamPlayer({
 
   const shown: FastState = supported ? state : 'failed'
   const words = supported ? message : MSG_BROWSER_CANNOT_PLAY
-  const status = shown === 'preparing' ? 'Getting the recording…' : shown === 'finished' ? 'End of the chosen time.' : null
+  // Review m-3: a clip that ends before the chosen time (an NVR keeps recordings in parts, or the viewer was paused too long) says so
+  // and offers to carry on.
+  const end = clipEnd(playedAtStop, minutes)
+  const status = shown === 'preparing' ? 'Getting the recording…' : shown === 'finished' ? end.message : null
+  const canContinue = (shown === 'failed' && playedAtStop > 0) || (shown === 'finished' && end.canContinue && playedAtStop > 0)
 
   return (
     <div className="space-y-2">
@@ -134,7 +138,7 @@ export function FastStreamPlayer({
       )}
       <div className="flex flex-wrap items-center gap-2">
         <Button type="button" variant="outline" onClick={onStop}>Stop</Button>
-        {shown === 'failed' && playedAtStop > 0 && <Button type="button" onClick={() => onContinue(playedAtStop)}>Continue from here</Button>}
+        {canContinue && <Button type="button" onClick={() => onContinue(playedAtStop)}>Continue from here</Button>}
         <p className="text-xs text-muted-foreground">
           No sound. Plays {minutes} {minutes === 1 ? 'minute' : 'minutes'} of recording at {speedLabel(now)}.
         </p>

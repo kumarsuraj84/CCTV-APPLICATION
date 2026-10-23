@@ -4,6 +4,7 @@ import { getCurrentProfile, mfaGateOf } from '@/lib/auth/profile'
 import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { logger } from '@/lib/observability/logger'
 import { serveFastStream } from '@/lib/streams/fast'
+import { fastStreamRequestLimiter, MSG_TOO_MANY_REQUESTS } from '@/lib/streams/request-limit'
 import { FAST_PLAYBACK_CAPABILITY, FAST_TOKEN_HEADER, MSG_FAST_NOT_FOR_YOU } from '@/lib/streams/speed'
 import { createClient } from '@/lib/supabase/server'
 import { createMediaClient } from '@/lib/supabase/service-clients'
@@ -45,6 +46,8 @@ export async function GET(request: Request) {
     if (mfaGateOf(profile) !== 'ok') return error(403, MSG_CODE_FIRST)
     if (profile.capabilities.failed) return error(503, MSG_ACCESS_CHECK_FAILED)
     if (!holds(profile.capabilities, FAST_PLAYBACK_CAPABILITY)) return error(403, MSG_FAST_NOT_FOR_YOU)
+    // Review m-1: counted before anything is read or a refusal is audited (a loop of junk tokens cannot flood the audit log).
+    if (!(await fastStreamRequestLimiter.allow(profile.id))) return error(429, MSG_TOO_MANY_REQUESTS)
 
     const url = new URL(request.url)
     if (url.search !== '' || !scriptFetchOnly(request)) return error(400, MSG_STREAM_ONLY)

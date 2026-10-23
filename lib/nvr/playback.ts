@@ -219,24 +219,33 @@ export async function findSegments(client: NvrClient, o: { channel: number; day:
   }
 }
 
-/** How far back the oldest-recording search looks: a little more than the year the Playback screen can show. */
-export const OLDEST_SEARCH_DAYS = 400
+/** How many months back the oldest-recording search looks: the year the Playback screen can play, and the current month. */
+export const OLDEST_SEARCH_MONTHS = 12
 
 /**
- * P4-L2 (LG-9): the start of the OLDEST recording of camera `channel`, as a shown time (NVR time + offset), or null when there is none in
- * the last 400 days. One search over the whole span asking for one result: the NVR lists matches in time order, earliest first (the fake
- * NVR does; a real NVR's order is to be confirmed with hardware). `nowShownMs` is the shown clock now.
+ * P4-L2 (LG-9), review I-3: the start of the OLDEST recording of camera `channel` within the year that can be played, as a shown time
+ * (NVR time + offset), or null when there is none. Nothing is assumed about the order in which the NVR lists its matches: the NVR's own
+ * calendar is read month by month from 12 months back until the first month with a recorded day, then that day's recordings are listed
+ * (all pages) and the earliest start is taken. At most 13 calendar requests and one day search. `nowShownMs` is the shown clock now.
+ * It is a hint for the screen, never a navigation bound.
  */
 export async function findOldestRecording(client: NvrClient, o: { channel: number; nowShownMs: number } & ClockOffset): Promise<Date | null> {
   const offset = clockOffsetMs(o)
   if (!isChannel(o.channel) || offset === null || !Number.isFinite(o.nowShownMs)) throw new Error(BAD_INPUT)
-  const nvrNow = o.nowShownMs - offset
-  const start = new Date(nvrNow - OLDEST_SEARCH_DAYS * 86_400_000)
-  const end = new Date(nvrNow + 86_400_000)
-  const p = parsePage(await client.post(SEARCH_PATH, buildSearchBody({ channel: o.channel, start, end, position: 0, limit: 1, searchId: randomUUID() }), client.deadline()))
-  if (!p.valid) throw new NvrError('bad_response', 'no search result in the answer')
-  const first = p.segments[0]
-  return first ? new Date(first.start.getTime() + offset) : null
+  const nvrNow = new Date(o.nowShownMs - offset)
+  const base = nvrNow.getUTCFullYear() * 12 + nvrNow.getUTCMonth()
+  for (let i = base - OLDEST_SEARCH_MONTHS; i <= base; i++) {
+    const year = Math.floor(i / 12)
+    const month = (i % 12) + 1
+    const days = await recordedDays(client, { channel: o.channel, year, month })
+    if (days.length === 0) continue
+    const first = Math.min(...days)
+    const day = `${String(year).padStart(4, '0')}-${two(month)}-${two(first)}`
+    const found = await findSegments(client, { channel: o.channel, day, offsetSec: 0 }) // NVR day `day`, in NVR time
+    const earliest = found.segments.reduce<number | null>((m, s) => (m === null || s.start.getTime() < m ? s.start.getTime() : m), null)
+    return earliest === null ? null : new Date(earliest + offset)
+  }
+  return null
 }
 
 /**

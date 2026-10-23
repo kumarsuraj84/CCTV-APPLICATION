@@ -29,5 +29,8 @@ export const playbackRequestLimiter: RequestLimiter = processSingleton('cctv.pla
 export const LOOKUPS_PER_MINUTE = 60
 export const lookupRequestLimiter: RequestLimiter = processSingleton('cctv.lookupRequestLimiter', () => counted('playback_lookup'))
 
-/** cctv.export: fast playback (/api/vod, its probe). The conversion limits of lib/streams/vod.ts apply on top. */
+/** P4-L2 review m-1: requests to the fast playback stream (/api/playback/stream), counted before anything is read or audited. */
+export const fastStreamRequestLimiter: RequestLimiter = processSingleton('cctv.fastStreamRequestLimiter', () => counted('fast_stream'))
+
+/** cctv.export: the saveable file (/api/vod, its probe). The conversion limits of lib/streams/vod.ts apply on top. */
 export const exportRequestLimiter: RequestLimiter = processSingleton('cctv.exportRequestLimiter', () => counted('vod_open'))

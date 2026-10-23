@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { listDaySegmentsAction, listRecordedDaysAction, oldestRecordingAction, openFastPlaybackAction, openPlaybackAction } from '@/lib/actions/playback'
-import { clampDay, dayLabel, monthAllowed, shiftMonth } from '@/lib/streams/calendar'
+import { clampDay, dayLabel, dayNavigation, monthInBounds, shiftMonth } from '@/lib/streams/calendar'
 import { fastMinutes, isSpeed, MAX_FAST_MINUTES, SPEEDS, speedLabel, type Speed } from '@/lib/streams/speed'
 import {
   DAY_SECONDS,
@@ -141,14 +141,14 @@ export function PlaybackView({ camera, today, initialDay, fastPlayback = 'not-se
   const playingMs = session && progress?.id === session.id ? Date.parse(session.startIso) + progress.sec * 1000 : null
   const position = playingMs !== null && dayOfMs(playingMs) === day ? secOfMs(playingMs) : null
 
-  // The calendar goes back 12 months and never before the month of the oldest recording; never past the current month.
+  // The calendar goes back 12 months and never past the current month. Review I-3: the oldest recording is a hint ("Go to it") and
+  // NEVER limits navigation (an NVR's answer may not be the true oldest).
   const before = shiftMonth(month.year, month.month, -1)
   const after = shiftMonth(month.year, month.month, 1)
-  const canPrev = monthAllowed(before.year, before.month, today, oldestDay)
-  const canNext = monthAllowed(after.year, after.month, today, oldestDay)
+  const canPrev = monthInBounds(before.year, before.month, today)
+  const canNext = monthInBounds(after.year, after.month, today)
   const previousDay = shiftTime(day, 0, -DAY_SECONDS).day
-  const canPreviousDay = monthAllowed(Number(previousDay.slice(0, 4)), Number(previousDay.slice(5, 7)), today, oldestDay) && (oldestDay === null || previousDay >= oldestDay)
-  const canNextDay = day < today
+  const { canPreviousDay, canNextDay } = dayNavigation(day, today)
 
   const choose = (s: number, d = day) => {
     setPick({ day: d, sec: s })
@@ -166,7 +166,7 @@ export function PlaybackView({ camera, today, initialDay, fastPlayback = 'not-se
   }
   const changeMonth = (delta: number) => setMonth((v) => {
     const to = shiftMonth(v.year, v.month, delta)
-    return monthAllowed(to.year, to.month, today, oldestDay) ? to : v
+    return monthInBounds(to.year, to.month, today) ? to : v
   })
   const selectDay = (d: string, o: { keepZoom?: boolean } = {}) => {
     setDay(d)
@@ -310,7 +310,7 @@ export function PlaybackView({ camera, today, initialDay, fastPlayback = 'not-se
               : oldestNow.error
                 ? `Could not find the oldest recording: ${oldestNow.error}`
                 : oldestNow.iso
-                  ? <>Oldest recording: {shownLabel(oldestNow.iso)}.{' '}
+                  ? <>Oldest recording in the last year: {shownLabel(oldestNow.iso)}.{' '}
                       {oldestDay && oldestDay !== day && (
                         <button type="button" className="underline" onClick={() => { selectDay(oldestDay); choose(secOfMs(Date.parse(oldestNow.iso!)), oldestDay) }}>Go to it</button>
                       )}

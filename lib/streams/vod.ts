@@ -11,6 +11,7 @@ import { findCamera, readRecorderLogin, MSG_CAMERA_NOT_FOUND, MSG_BAD_START, MSG
 import { adminRegistry, createMediaSessions, type RegistryClient } from '@/lib/streams/registry'
 import { ffmpegRemux, type RemuxAdapter } from '@/lib/streams/remux'
 import { MSG_TOO_MANY_REQUESTS, type RequestLimiter } from '@/lib/streams/request-limit'
+import { MSG_FAST_NOT_SET_UP } from '@/lib/streams/speed'
 import { watchSession, type SessionWatch } from '@/lib/streams/session-watch'
 import { parseStartIso } from '@/lib/streams/timeline'
 
@@ -29,7 +30,7 @@ import { parseStartIso } from '@/lib/streams/timeline'
 
 // The ffmpeg program moved to lib/streams/ffmpeg.ts (P4-L2); everything is still available from here.
 export {
-  AVAILABILITY_TTL_MS, buildFfmpegArgs, classifyFfmpegFailure, createFfmpegCheck, createSpawn, defaultSpawn, fastPlaybackAvailable, FIRST_BYTE_MS,
+  AVAILABILITY_TTL_MS, buildFfmpegArgs, classifyFfmpegFailure, createFfmpegCheck, createSpawn, defaultSpawn, fastPlaybackAvailable, FFMPEG_MIN_MAJOR, ffmpegVersionOk, FIRST_BYTE_MS,
   FORMAT_WHITELIST, KILL_GRACE_MS, MSG_FFMPEG_PATH, MSG_NO_FFMPEG, resolveFfmpeg, sanitizeStderr, SOURCE_IDLE_MS, startConversion, STDERR_CAP_BYTES,
   videoFamily, VOD_MAX_MS,
 } from '@/lib/streams/ffmpeg'
@@ -139,8 +140,22 @@ export function createConversionLimiter(perPerson = MAX_CONVERSIONS_PER_PERSON, 
   }
 }
 
-/** The conversions running in this process: one count for route handlers, actions and reloaded modules alike. */
-export const conversionLimiter: ConversionLimiter = processSingleton('cctv.conversionLimiter', () => createConversionLimiter())
+const poolSize = (raw: string | undefined, fallback: number) => {
+  const n = /^\s*\d{1,3}\s*$/.test(raw ?? '') ? Number(raw) : Number.NaN
+  return Number.isInteger(n) && n >= 1 && n <= 64 ? n : fallback
+}
+
+/**
+ * The EXPORT pool (/api/vod, cctv.export): its conversions in this process, one count for route handlers, actions and reloaded modules
+ * alike (EXPORT_MAX_CONVERSIONS, default 8). P4-L2 review I-2: viewers' fast playback has its own pool, so viewers never block exports.
+ */
+export const exportConversionLimiter = (): ConversionLimiter =>
+  processSingleton('cctv.conversionLimiter', () => createConversionLimiter(MAX_CONVERSIONS_PER_PERSON, poolSize(process.env.EXPORT_MAX_CONVERSIONS, MAX_CONVERSIONS_TOTAL)))
+/** The export pool as it was when this module loaded (kept for older callers). */
+export const conversionLimiter: ConversionLimiter = exportConversionLimiter()
+/** The VIEWERS' pool (fast playback, cctv.playback): FAST_PLAYBACK_MAX_CONVERSIONS, default 8; one per person. */
+export const fastConversionLimiter = (): ConversionLimiter =>
+  processSingleton('cctv.fastConversionLimiter', () => createConversionLimiter(MAX_CONVERSIONS_PER_PERSON, poolSize(process.env.FAST_PLAYBACK_MAX_CONVERSIONS, MAX_CONVERSIONS_TOTAL)))
 
 // ── the NVR's playback address ───────────────────────────────────────────────
 
@@ -226,7 +241,11 @@ export type VodDeps = {
   /** The media session registry (default: through `admin`). P2-4: every download is a session of kind vod, re-checked while it runs. */
   registry?: RegistryClient
   /** Test settings (validateMs / failClosedMs: the session re-check, default 15 s / 45 s). */
-  timing?: { maxMs?: number; transferMs?: number; firstByteMs?: number; idleMs?: number; killGraceMs?: number; maxBytes?: number; supersedeMs?: number; validateMs?: number; failClosedMs?: number }
+  timing?: {
+    maxMs?: number; transferMs?: number; firstByteMs?: number; idleMs?: number; killGraceMs?: number; maxBytes?: number; supersedeMs?: number; validateMs?: number; failClosedMs?: number
+    /** Fast playback (review round 1): the pacing burst, the byte cap per second of recording, the viewer-idle time. */
+    burstSec?: number; maxBytesPerSec?: number; viewerIdleMs?: number
+  }
 }
 
 /** P2-4 (D-3): how often a running download's media session is re-checked, and how long without an answer before it is cut. */
@@ -302,6 +321,7 @@ export async function serveVod(deps: VodDeps, actor: { id: string; orgId: string
       end: () => auditAccess(deps.admin, { ...exported, action: 'cctv_export_ended' }),
     },
     headers: () => ({ 'Content-Type': 'video/mp4' }),
+    pool: 'export', // review I-1: exports (cctv.export) are not paced and have no budget; they keep their own limits
   })
 }
 
@@ -324,6 +344,13 @@ export type DeliverOptions = {
   audit: { start: () => Promise<void>; end: () => Promise<void> }
   /** The headers of a successful answer, for the video format read from the recording list. */
   headers: (family: 'h264' | 'h265' | null) => Record<string, string>
+  /** Review I-2: which conversion pool — viewers' fast playback or exports — so viewers can never block exports. */
+  pool: 'fast' | 'export'
+  /** Review I-1 (fast playback): the remux reads at this speed (ffmpeg -readrate), the NVR transfer is capped at `maxBytes`. */
+  readrate?: number
+  maxBytes?: number
+  /** Review I-1 (fast playback): the paced, capped, framed body made from the remux output (lib/streams/pace.ts). */
+  transform?: (body: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>
 }
 
 /**
@@ -338,7 +365,9 @@ export async function deliverRecording(o: DeliverOptions): Promise<Response> {
   const { deps, route, registry, sid, signal } = o
   const { camera, recorder } = route
   const env = deps.env ?? process.env
-  const limits = deps.conversions ?? conversionLimiter
+  const limits = deps.conversions ?? (o.pool === 'fast' ? fastConversionLimiter() : exportConversionLimiter())
+  // Review m-2: a viewer never reads configuration words (ffmpeg, FFMPEG); the export path (administrators) keeps them.
+  const notSetUp = (error: string) => (o.pool === 'fast' ? MSG_FAST_NOT_SET_UP : error)
   const transfer = new AbortController() // ends everything of this request: the NVR transfer and the conversion
   let slot: Extract<ConversionSlot, { ok: true }> | null = null
   // "ended" is written only after "started", and only for a conversion that started (the process can end before this code goes on).
@@ -373,6 +402,7 @@ export async function deliverRecording(o: DeliverOptions): Promise<Response> {
     }
     if (!taken.ok) {
       endSession()
+      logger.warn({ event: 'conversion_busy', pool: o.pool, reason: taken.reason, running: limits.running })
       return fail(429, taken.reason === 'person' ? MSG_ALREADY_RUNNING : MSG_SERVER_BUSY)
     }
     slot = taken
@@ -427,12 +457,12 @@ export async function deliverRecording(o: DeliverOptions): Promise<Response> {
     // Can the remux work at all? Asked before the NVR is bothered with a download that nothing could use.
     const remux = deps.remux ?? ffmpegRemux({ spawn: deps.spawn, lookup: deps.lookup, available: deps.ffmpegAvailable })
     const ready = await remux.check(env, { recorderHost: recorder.host })
-    if (!ready.ok) return fail(500, ready.error)
+    if (!ready.ok) return fail(500, notSetUp(ready.error))
     if (o.probe) return Response.json({ ok: true, codec: family }, { headers: VOD_HEADERS })
 
     let source: ReadableStream<Uint8Array>
     try {
-      source = await client.postStream(DOWNLOAD_PATH, body, { signal: transfer.signal, maxMs: deps.timing?.transferMs ?? MAX_DOWNLOAD_MS, maxBytes: deps.timing?.maxBytes ?? MAX_DOWNLOAD_BYTES })
+      source = await client.postStream(DOWNLOAD_PATH, body, { signal: transfer.signal, maxMs: deps.timing?.transferMs ?? MAX_DOWNLOAD_MS, maxBytes: Math.min(o.maxBytes ?? MAX_DOWNLOAD_BYTES, deps.timing?.maxBytes ?? MAX_DOWNLOAD_BYTES) })
     } catch (e) {
       if (transfer.signal.aborted) return new Response(null, { status: 499 })
       return await nvrFailure(e, camera.code, 'vod_download_failed', deps.rls, recorder.id)
@@ -442,6 +472,7 @@ export async function deliverRecording(o: DeliverOptions): Promise<Response> {
     const converted = await remux.start({
       env,
       hevc: family === 'h265',
+      readrate: o.readrate,
       source,
       abortSource: () => transfer.abort(),
       signal: transfer.signal,
@@ -460,7 +491,7 @@ export async function deliverRecording(o: DeliverOptions): Promise<Response> {
     if (!converted.ok) {
       if (converted.reason === 'missing') {
         logger.error({ event: 'vod_ffmpeg_missing', location: camera.code })
-        return fail(500, MSG_NO_FFMPEG)
+        return fail(500, notSetUp(MSG_NO_FFMPEG))
       }
       if (converted.reason === 'cancelled') return new Response(null, { status: 499 })
       if (converted.reason === 'timeout') return fail(502, await recorderMessage(deps.rls, recorder.id, describeNvrError(new NvrError('timeout', 'slow')), 'nvr_timeout'))
@@ -470,7 +501,7 @@ export async function deliverRecording(o: DeliverOptions): Promise<Response> {
     audit.started = o.audit.start()
     if (audit.exited) auditEnded()
     await audit.started
-    return new Response(converted.body, { status: 200, headers: { ...VOD_HEADERS, ...o.headers(family) } })
+    return new Response(o.transform ? o.transform(converted.body) : converted.body, { status: 200, headers: { ...VOD_HEADERS, ...o.headers(family) } })
   } finally {
     if (!handedOver) {
       signal?.removeEventListener('abort', forward)

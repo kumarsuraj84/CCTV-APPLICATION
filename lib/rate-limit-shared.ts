@@ -28,6 +28,7 @@ export type LimitName =
   | 'forgot_password' | 'change_password' | 'admin_action' | 'users_change' | 'access_preview' | 'access_apply' | 'access_keep'
   | 'hierarchy_preview' | 'camera_search' | 'check_now' | 'import_check' | 'import_apply' | 'discovery' | 'discover_all'
   | 'connection_test' | 'merge_preview' | 'live_open' | 'playback_open' | 'playback_lookup' | 'vod_open' | 'agent_enrol' | 'agent_checkin'
+  | 'fast_stream'
 
 /**
  * Per person (or per e-mail address + IP), per window. `failClosed`: refused when the database cannot be asked (sensitive); otherwise
@@ -59,6 +60,9 @@ export const LIMITS: Record<LimitName, { limit: number; windowSec: number; failC
   playback_open: { limit: 30, windowSec: 60, failClosed: false },
   playback_lookup: { limit: 60, windowSec: 60, failClosed: false },
   vod_open: { limit: 30, windowSec: 60, failClosed: false },
+  // P4-L2 review m-1: requests to the fast playback stream (each needs a token, itself counted as a playback opening); counted before a
+  // refusal is written to the audit log, so a loop of junk tokens cannot flood it.
+  fast_stream: { limit: 30, windowSec: 60, failClosed: false },
   agent_enrol: { limit: 10, windowSec: 3600, failClosed: true },
   agent_checkin: { limit: 120, windowSec: 3600, failClosed: true },
 }
