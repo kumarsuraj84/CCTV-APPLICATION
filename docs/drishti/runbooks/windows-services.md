@@ -18,6 +18,14 @@ host keeps running when its log cannot be rolled. The ACL plan, the empty-root i
 back plans, the retention junction trap and the host's log-roll failure are tested; the ACLs themselves were only applied to temporary
 folders of the test run, never to a real `C:\Drishti`.
 
+**Fix round 2 (re-review of 2026-10-23).** A lock now takes ownership and rebuilds the list from nothing (a foreign entry, read or
+write, does not survive RepairAcl), and the Audit also reports foreign owners and any read entry on the secret paths (tested on real
+scratch folders: an explicit `Authenticated Users:M`, `Users:R` on `web.env` and `Everyone:F` below are all gone after a second lock;
+a planted junction is refused). Taking ownership needs elevation, so in the tests (not elevated) that step is shown in the plan only.
+The web account may read the free space of the data and backup disks (proved with a real `statfs` call under the same entry). The
+install and the update refuse a database mode and migration mode that do not fit, the update refuses a database seeded for tests and
+marks a production database, and every Windows tool is called by its full path.
+
 ## 1. What runs
 
 | Service | Program | Listens | Env file | Account |
@@ -70,10 +78,23 @@ Default: one **virtual service account** per service, `NT SERVICE\<service name>
 password and nothing to create or rotate. Network access from a virtual account uses the computer's account: enough for the database on
 this server and for the NVRs (RTSP/HTTP over the VPN).
 
-**Folder locks (review C-2).** On Windows 10/11 `C:\` lets every signed-in user create and change files below it, and the services run
-what is in these folders (as their accounts, and the nightly task as SYSTEM). So before the install writes anything, every Drishti
-folder is created if missing and locked with `icacls /inheritance:r`: SYSTEM and Administrators full control (by their SIDs `*S-1-5-18`
-and `*S-1-5-32-544`, so it works on a Windows in any language), then only:
+**Folder locks (review C-2; fix round 2: N-1).** On Windows 10/11 `C:\` lets every signed-in user create and change files below it,
+and the services run what is in these folders (as their accounts, and the nightly task as SYSTEM). So before the install writes
+anything, every Drishti folder is created if missing and locked:
+
+- ownership is taken for the Administrators (`takeown /A`, with everything below a folder): a folder somebody else made before the
+  install (`C:\Drishti`, `C:\Drishti\bin`, `D:\DrishtiBackups`…) no longer lets them change its rules. Such a folder is named in a
+  WARNING ("existed already and belongs to …"): look at what is in it;
+- the access list is rebuilt from nothing, in one call: no inherited entry and no explicit entry of anybody else survives. SYSTEM and
+  Administrators get full control (by their SIDs `*S-1-5-18` and `*S-1-5-32-544`, so it works on a Windows in any language), then
+  only the entries below. Everything inside the folder loses its own entries and inherits the new list (`icacls /reset /T`); the
+  sub-folders and files that need their own entries are locked after their parent;
+- a folder that holds a junction or link the installation did not make (only `app\current` is allowed) is REFUSED: a junction in a
+  folder made before the install could point at `C:\Windows`, and nothing is followed;
+- the virtual accounts are given by their SIDs, computed from the service names (as `sc.exe showsid` does), so the folders can be
+  locked before the services exist.
+
+Locking `app` resets everything below it, `node_modules` included: on a server with several releases it can take a few minutes.
 
 | Folder | Service accounts | Nobody else |
 |---|---|---|
@@ -82,14 +103,18 @@ and `*S-1-5-32-544`, so it works on a Windows in any language), then only:
 | `app` (releases, `current`) | web, worker, gateway read and run | |
 | go2rtc's folder | go2rtc read and run | |
 | `config` | none on the folder; each env file read by its own service only; `drishti.config.psd1` administrators only | |
-| `data` | none | |
+| `data` | the web app may read the free space of its disk only (`(RA,S)` on the folder itself, nothing inside; review M-4) | |
 | `logs` | each service modify on its own log folder only | |
-| `BackupDir`, `KeyBackupDir` | none (backups are made as an administrator or SYSTEM) | |
+| `BackupDir` | the web app: the free space of its disk only, as for `data` (backups are made as an administrator or SYSTEM) | |
+| `KeyBackupDir` | none | |
 
-Check them at any time (no elevation needed): `drishti-services.ps1 -Action Audit` lists every folder or file where somebody other than
-SYSTEM, Administrators, TrustedInstaller or that folder's own service account may write, and ends with exit code 1 when there is one.
-`-Action Status` says `access rules: ok` or how many problems. Put them right with `-Action RepairAcl` (elevated): it applies the same
-plan again. update.ps1, restore.ps1 and backup.ps1 refuse to run (`Run drishti-services.ps1 -Action RepairAcl`) while the configuration
+Check them at any time, from an elevated PowerShell: `drishti-services.ps1 -Action Audit` lists every owner other than SYSTEM, the
+Administrators or TrustedInstaller; every folder or file where anybody but that folder's own service account may write; and on the
+secret paths (the configuration folder and file, every env file, `go2rtc.yaml`, `data`, `BackupDir`, `KeyBackupDir`) every entry that
+lets anybody else even READ, so `Users:(R)` on `web.env` fails it. It never trusts the person running it. A path whose rules it
+cannot read (not elevated) is reported as such. It ends with exit code 1 when there is a problem. `-Action Status` says
+`access rules: ok` or how many problems. Put them right with `-Action RepairAcl` (elevated): it applies the same plan again and
+removes foreign entries, so a repair really repairs. update.ps1, restore.ps1 and backup.ps1 refuse to run (`Run drishti-services.ps1 -Action RepairAcl`) while the configuration
 file or the scripts folder may be written by others.
 
 Named accounts instead (only if a policy requires it, for example a domain where the database is on another server and logs in with
@@ -107,9 +132,13 @@ one the owner published, then `Get-ChildItem <folder> -Recurse | Unblock-File`; 
 which runs the install scripts of every dependency, here as an Administrator: use a checkout of a tag the owner approved, with its
 `package-lock.json` unchanged. Better, when there is one: build on a separate build computer and copy the finished release folder.
 
-1. Node.js 20 or later (the version the release is built with) at `C:\Program Files\nodejs`; Git (to stamp the build id). go2rtc for
-   Windows amd64, the pinned 1.9.9, at `C:\Drishti\go2rtc\go2rtc.exe` (download with the owner's approval, check its SHA-256 against the
-   release page). Caddy as in runbook-tls.md.
+0. Before anything: `C:\Drishti`, `D:\DrishtiBackups` and `E:\DrishtiKeys` should not exist yet. If one does and you did not make it,
+   look at what is in it before going on (the install takes it over, locks it and warns about it).
+1. Node.js 20 or later (the version the release is built with) at `C:\Program Files\nodejs`; Git (to stamp the build id); Docker
+   Desktop for a self-hosted Supabase here. `DockerExe` and `GitExe` in the configuration give their full paths (the scripts never
+   take a program from PATH). go2rtc for Windows amd64, the pinned 1.9.9: download it into YOUR OWN folder (Downloads), with the
+   owner's approval, check its SHA-256 against the release page and `Unblock-File` it. It is copied to `C:\Drishti\go2rtc\go2rtc.exe`
+   only after step 4 has made and locked that folder. Caddy as in runbook-tls.md.
 2. The env files, first, because they create `C:\Drishti\config` locked:
    `node scripts\gen-secrets.mjs --production --out-dir C:\Drishti\config --jwt-secret-env DRISHTI_JWT_SECRET` (set
    `$env:DRISHTI_JWT_SECRET` in this session to the project's JWT secret first, then remove it). It creates the folder locked (SYSTEM
@@ -122,9 +151,10 @@ which runs the install scripts of every dependency, here as an Administrator: us
    characters, weak (a repeated pattern or part, a placeholder) or used for two purposes, or when the full service key is in the
    worker's or the gateway's file (`lib/startup-checks.ts`).
 3. The configuration: copy `deploy\windows\drishti.config.example.psd1` into that locked folder as
-   `C:\Drishti\config\drishti.config.psd1` (a file copied into it takes the folder's lock) and adjust the folders, the database
-   (`Container` with `MigrationMode = 'Local'` for a Supabase stack in Docker on this server; `Direct` with `MigrationMode = 'DbUrl'`
-   otherwise) and the Vault key location (`KeyBackupDir`, not inside `BackupDir`: backup.ps1 refuses that). For `DbUrl` the database
+   `C:\Drishti\config\drishti.config.psd1` (a file copied into it takes the folder's lock) and adjust the folders, the database (review
+   M-13; the install and the update refuse a pair that does not fit): `Container` + `MigrationMode = 'DbUrl'` for a self-hosted
+   Supabase in Docker on this server, `Direct` + `'DbUrl'` for PostgreSQL elsewhere. `Container` + `'Local'` is the Supabase CLI's own
+   stack, which is seeded for tests: only on a test server, with `TestServer = $true`. Then the Vault key location (`KeyBackupDir`, not inside `BackupDir`: backup.ps1 refuses that). For `DbUrl` the database
    password is never written in the file or on a command line: set `$env:DRISHTI_DB_PASSWORD` (the name in `PasswordEnv`) in the
    elevated session before an update and remove it after; the scripts hand it to `pg_dump`, `pg_restore`, `psql` and the Supabase CLI
    as `PGPASSWORD` of that child process only.
@@ -132,12 +162,15 @@ which runs the install scripts of every dependency, here as an Administrator: us
    order it creates and locks every folder (section 3), copies `deploy\windows` to `C:\Drishti\scripts`, compiles the host, writes the
    `.conf` files, creates the four services (stopped; delayed automatic start, own account, restart on failure) and gives each service
    read access to its own env file only. They point at `C:\Drishti\app\current`, which step 8 creates. From here on, run the scripts
-   from `C:\Drishti\scripts`.
-5. `C:\Drishti\scripts\drishti-services.ps1 -Action Audit`: it must say `access rules: ok`.
+   from `C:\Drishti\scripts`. Now copy `go2rtc.exe` from your Downloads into the locked `C:\Drishti\go2rtc`.
+5. `C:\Drishti\scripts\drishti-services.ps1 -Action Audit` (elevated): it must say `access rules: ok`.
 6. Production checklist before the first start: the service key locked out of NVR logins (runbook `secret-rotation.md` section 5),
    multi-factor (runbook-tls.md section 5), go2rtc's login (section 4 of the rotation runbook), Caddy and the certificate.
 7. `drishti-services.ps1 -Action Start -Service DrishtiGo2rtc` (go2rtc first: the gateway checks its login at start).
-8. The first release: `C:\Drishti\scripts\update.ps1 -SourcePath <checkout> -DryRun` (read the plan), then without `-DryRun`. It builds
+8. The first release: `C:\Drishti\scripts\update.ps1 -SourcePath <checkout> -DryRun` (read the plan), then without `-DryRun`. It first
+   refuses a database whose test fixture switch is on: such a database was seeded for tests (`supabase/seed.sql` must never be applied
+   to a production database). After the migrations it marks the database as a production one, so the switch can never be turned on
+   there (the seed fails). It builds
    into `app\releases\<id>`, backs up the database, applies the migrations, points `app\current` at the release, starts the worker, the
    gateway and the web app, and waits until `/api/version` shows the new build and `/api/health` says `ok`. Then `-Action Status` and the
    Health page (super administrators, `/admin/health`): every check "OK".

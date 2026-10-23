@@ -31,8 +31,18 @@ What it does, in order (and why):
 After a good update the newest `KeepReleases` (3) releases are kept; the open pages show "A new version is available" (the version
 banner compares their build id with `/api/version`) and people refresh.
 
-Only one update (or live restore) runs at a time: the script holds `C:\Drishti\drishti.lock` and a second run refuses. It also refuses
-while `drishti.config.psd1` or `C:\Drishti\scripts` may be written by non-administrators (`drishti-services.ps1 -Action RepairAcl`).
+Only one update (or live restore) runs at a time: the script holds `C:\Drishti\drishti.lock` and a second run refuses (and an install
+that was never done is refused: the lock is never made in an unlocked new folder). It also refuses while `drishti.config.psd1` or
+`C:\Drishti\scripts` may be written by non-administrators (`drishti-services.ps1 -Action RepairAcl`), when the database mode and the
+migration mode do not fit (review M-13), and, fix round 2 (re-review N-2), while the database's test fixture switch is on: that
+database was seeded for tests (`supabase/seed.sql`), which a production database must never be; the test helpers would run on it.
+Nothing is changed then; the message gives the statement to switch it off as the database owner, and asks you to find out how the
+seed was applied. After the migrations, the update marks the database as a production one (`test_fixture_switch.production`, migration
+0046): from then on the switch cannot be turned on there by anybody's UPDATE, so `seed.sql` fails loudly on it, and the mark cannot be
+taken back. The production web app also refuses to start, and the Health page shows "Test fixture switch: Problem", while it is on.
+The Supabase CLI reads the password from `PGPASSWORD` with a password-free `--db-url` (verified with the pinned CLI 2.121.0 against
+the local stack, read only: `migration list` with the right `PGPASSWORD` connects, with a wrong one it fails with "password
+authentication failed"; the CLI's own `SUPABASE_DB_PASSWORD` would also work).
 The services are stopped and started by calling `drishti-services.ps1` inside the same PowerShell (review C-1), and for `DbUrl`
 migrations the password goes to the Supabase CLI as `PGPASSWORD` of that one child process, never on its command line (review I-2).
 
@@ -51,8 +61,10 @@ On a failure in steps 4–8 the script:
 3. points `app\current` back to the previous release, starts every service and checks it the same way.
 
 Exit code 1 when the roll back worked. When any part of the roll back fails (the restore, the switch back, or there is no earlier
-release), the script stops everything again and prints **THE SYSTEM IS STOPPED**, the reason and the folder of the pre-update backup,
-then ends with exit code 2. It never starts the old release on the new database level in that case: follow section 3 by hand.
+release), the script stops everything again and prints **THE SYSTEM IS STOPPED**, the reason, each service's real state as Windows
+reports it (and "NOT stopped: …" with what to do when a stop timed out; re-review M-new-4), the restore's own lines on where the
+databases are, and the folder of the pre-update backup, then ends with exit code 2. It never starts the old release on the new
+database level in that case: follow section 3 by hand.
 
 `-RollbackDatabase None` skips the database restore and starts the old release on the new level, with a loud WARNING: use it only when
 the new migrations are additive.
@@ -89,3 +101,10 @@ P5.4 then reports the database part of the Health page as "could not be read".
 `20261021000045_p54_review_fixes.sql` (review round 1) changes two function bodies only: `audit_purge_test_org` refuses unless the test
 fixture switch is on (the local test stack) and the organisation was made as a test one (`created_as_test`, migration 0044), and
 `media_sessions_prune` records its run only for the whole clean-up. Its rollback puts back the 0041 bodies (dry run as above).
+
+`20261021000046_p54_fixture_guards.sql` (fix round 2) adds `organizations.created_as_demo` (fixed when the organisation is made; an API
+role cannot rename an organisation into `demo-sample-data`), makes every test helper need the test fixture switch on AND an organisation
+made as a test one (or as the demo one, for the clean-ups), adds the production mark of the switch (`test_fixture_switch.production`:
+then the switch can never be turned on, and the mark and the row cannot go), `test_fixtures_enabled()` for the web app, and the switch
+in `ops_health_status()`. Its rollback (dry run as above) puts back the earlier bodies and drops what it added. Roll back 0046 before
+0045, and both before 0044.

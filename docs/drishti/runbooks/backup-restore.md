@@ -86,7 +86,8 @@ A backup that has not been restored once is not a backup: rehearse a restore eve
 ```powershell
 # C:\Drishti\scripts is the administrators-only copy the install and every update keep current (never a folder users can write to:
 # the task runs as SYSTEM).
-$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\Drishti\scripts\backup.ps1 -ConfigPath C:\Drishti\config\drishti.config.psd1 -Tag nightly -ApplyRetention'
+# Windows PowerShell by its full path (re-review M-new-6: never a powershell.exe found on PATH).
+$a = New-ScheduledTaskAction -Execute 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\Drishti\scripts\backup.ps1 -ConfigPath C:\Drishti\config\drishti.config.psd1 -Tag nightly -ApplyRetention'
 $t = New-ScheduledTaskTrigger -Daily -At 02:00
 Register-ScheduledTask -TaskName 'Drishti nightly backup' -Action $a -Trigger $t -User 'SYSTEM' -RunLevel Highest
 ```
@@ -94,6 +95,10 @@ Register-ScheduledTask -TaskName 'Drishti nightly backup' -Action $a -Trigger $t
 (Direct mode: the task needs the database password in its environment; use a dedicated backup account with the variable set for that
 account, never in the task's arguments.) Check the next morning: a new folder, `manifest.json` with the expected counts, and the task's
 last result 0.
+
+Fix round 2 (re-review M-new-8): a backup also refuses a `BackupDir` that anybody but SYSTEM, the Administrators and the web app's
+free-space entry may write or read, and it refuses a dated backup folder that exists already (the names are predictable: one that is
+there was not made by this run). Both say `Run drishti-services.ps1 -Action RepairAcl` or what to look at.
 
 ## 5. Restore
 
@@ -123,6 +128,14 @@ from its manifest. Every line of its output says what was checked; exit code 0 o
      `postgres` to `postgres_before_restore_<time>` and the copy to `postgres`. The replaced database is kept (drop it yourself once the
      restored one is known good); its connections are allowed again so you can read from it.
    - when anything fails before the swap: "the live database postgres was NOT changed", the unused copy is dropped, exit code 1.
+   - the swap itself is four steps (close the live database to new connections, end its sessions and wait for them, rename it, rename
+     the copy), each recorded (re-review M-new-3). A failure part way never says "NOT changed"; it says STOPPED and exactly where:
+     closed but not renamed: it is opened again ("open again; its data was not changed"), or, if that fails, "still REFUSES
+     CONNECTIONS" with the statement to run; renamed but the copy not yet in its place: the old one is put back under its name ("put
+     back … accepts connections again"), or, if that fails, "THERE IS NO DATABASE NAMED postgres NOW" with both names and the
+     statements. Once the live database has been renamed, the restored copy is never dropped. The result file says `swapState`
+     (`not started`, `reopened`, `closed`, `put back`, `no live database`, `swapped`). Tested by making the swap fail on purpose after
+     each of the first two steps on the disposable "live" database (`-SimulateSwapFailure`, refused for any other database).
 4. If the migration level is below the release's ("migrations of this release are not applied yet"): `npx supabase migration up`
    (runbook `update-rollback.md`).
 5. Start the services, open the Health page: every check "OK", especially "Vault" and "Database version".

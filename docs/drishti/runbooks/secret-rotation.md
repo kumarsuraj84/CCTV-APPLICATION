@@ -19,7 +19,11 @@ Rules that hold for every step below:
   `--out-dir` folder) is locked before any secret is written into it: inheritance removed, SYSTEM and Administrators full control (plus
   the person running it, only when the prompt is not elevated). An EXISTING file, including every `--rotate`, is rewritten in place,
   so it keeps the ACL it has: the service account's read right that `drishti-services.ps1 -Action Install` gave it stays. The
-  generator fills an empty `KEY=` line in place and keeps the file's Windows line ends.
+  generator fills an empty `KEY=` line in place and keeps the file's Windows line ends. Fix round 2: every temporary copy is made in
+  a work folder of its own (`.gen-secrets-<pid>-…` next to the file), created and locked before any file is made in it, so even an
+  empty copy never carries the rules of a folder that is not locked (re-review M-new-5); the work folder is removed afterwards.
+  "Elevated" is read from the token's integrity level (`whoami /groups` lists `S-1-16-12288`), not from `net session`, which also
+  fails when the Server service is stopped (re-review M-new-7).
   To put a production env file's ACL right by hand, use `C:\Drishti\scripts\drishti-services.ps1 -Action RepairAcl` (it applies the
   whole plan of `windows-services.md` section 3), or for one file (well-known SIDs, so it works in any Windows language):
   `icacls C:\Drishti\config\web.env /inheritance:r /grant:r *S-1-5-18:F /grant:r *S-1-5-32-544:F /grant:r "NT SERVICE\DrishtiWeb:R"`
