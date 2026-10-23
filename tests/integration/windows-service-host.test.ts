@@ -38,7 +38,7 @@ const alive = (pid: number) => {
 }
 
 /** Starts the host in console mode for one stand-in program; stop() asks it to stop and resolves with its exit code. */
-function host(name: string, fakeArgs: string[], o: { maxBytes?: number; keep?: number; stopTimeoutSec?: number } = {}) {
+function host(name: string, fakeArgs: string[], o: { maxBytes?: number; keep?: number; stopTimeoutSec?: number; rollRetrySec?: number } = {}) {
   const logdir = path.join(dir, name)
   const env = path.join(dir, `${name}.env`)
   writeFileSync(env, `# test\r\nDRISHTI_TEST_SETTING="${SETTING}"\r\n`)
@@ -46,13 +46,19 @@ function host(name: string, fakeArgs: string[], o: { maxBytes?: number; keep?: n
   writeFileSync(conf, [
     `name=${name}`, `exe=${process.execPath}`, `arg=${FAKE}`, ...fakeArgs.map((a) => `arg=${a}`), `workdir=${dir}`, `envfile=${env}`, `logdir=${logdir}`,
     `logmaxbytes=${o.maxBytes ?? 1048576}`, `logkeep=${o.keep ?? 3}`, `stoptimeoutsec=${o.stopTimeoutSec ?? 10}`, 'restartdelaysec=1', 'restartmaxdelaysec=2',
+    ...(o.rollRetrySec ? [`rollretrysec=${o.rollRetrySec}`] : []),
   ].join('\r\n'))
   const child = spawn(exe, ['--console', conf], { stdio: 'ignore', windowsHide: true })
-  const exited = new Promise<number | null>((r) => child.on('exit', (code) => r(code)))
+  let ended: number | null | undefined
+  const exited = new Promise<number | null>((r) => child.on('exit', (code) => {
+    ended = code
+    r(code)
+  }))
   const logText = () => readdirSync(logdir).filter((f) => f.endsWith('.log')).sort().map((f) => readFileSync(path.join(logdir, f), 'utf8')).join('\n')
   return {
     logdir,
     logText,
+    running: () => ended === undefined,
     async waitFor(text: string, ms = 15_000) {
       const end = Date.now() + ms
       while (Date.now() < end) {
@@ -100,6 +106,27 @@ describe.skipIf(!windows)('Windows service host (P5.4, console mode, nothing ins
     expect(files).toEqual(['roll.1.log', 'roll.2.log', 'roll.log'])
     for (const f of files) expect(statSync(path.join(h.logdir, f)).size).toBeLessThan(65536 + 4096)
   }, 40_000)
+
+  // Review I-4: a roll that cannot rename (a reader holds the log without delete sharing, as a tail or an editor does) used to leave
+  // the writer disposed; the next line crashed the host, the Job Object took the program with it, and every restart crashed again.
+  it('keeps running and logging while somebody holds the log open without delete sharing, and rolls once it is released', async () => {
+    const h = host('held', ['--spam-every-ms', '3'], { maxBytes: 65536, keep: 3, rollRetrySec: 1 })
+    await h.waitFor('fake_tick')
+    const file = path.join(h.logdir, 'held.log')
+    // Read access, sharing read and write but NOT delete: the host's rename of held.log fails for as long as this is open.
+    const holder = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `$f = [IO.File]::Open('${file.replace(/'/g, "''")}', 'Open', 'Read', 'ReadWrite'); Start-Sleep -Seconds 4; $f.Close()`], { stdio: 'ignore', windowsHide: true })
+    const released = new Promise<void>((r) => holder.on('exit', () => r()))
+    await h.waitFor('the log could not be rolled', 10_000)
+    await released
+    expect(h.running()).toBe(true)
+    // The program was never restarted: one start only, and the log went on growing.
+    expect(h.logText().match(/fake_started/g)!.length).toBe(1)
+    await sleep(2500)
+    expect(readdirSync(h.logdir).filter((f) => f.endsWith('.log')).sort()).toEqual(expect.arrayContaining(['held.1.log', 'held.log']))
+    expect(h.running()).toBe(true)
+    expect(await h.stop()).toBe(0)
+  }, 60_000)
 
   it('ends a program that ignores the stop after its timeout, together with what it started', async () => {
     const pidFile = path.join(dir, 'grandchild.pid')

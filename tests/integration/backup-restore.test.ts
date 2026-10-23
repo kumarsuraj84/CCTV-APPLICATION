@@ -39,16 +39,28 @@ beforeAll(() => {
     '  Retention = @{ Days = 30; KeepAtLeast = 7 }',
     '}',
   ].join('\r\n'))
-  psql(`DROP DATABASE IF EXISTS ${TARGET} WITH (FORCE)`)
+  // Review I-1: the live path is rehearsed with a DISPOSABLE database playing the live one (Name below); the owner's is never touched.
+  configLive = path.join(dir, 'drishti.live.config.psd1')
+  writeFileSync(configLive, readFileSync(config, 'utf8').replace("Name = 'postgres'", `Name = '${LIVE}'`))
+  dropTestDatabases()
 })
 afterAll(() => {
   if (skip) return
   try {
-    psql(`DROP DATABASE IF EXISTS ${TARGET} WITH (FORCE)`)
+    dropTestDatabases()
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+let configLive = ''
+const LIVE = 'drishti_restore_live'
+function dropTestDatabases() {
+  for (const name of psql("SELECT datname FROM pg_database WHERE datname LIKE 'drishti\\_restore%'").split(/\r?\n/).filter(Boolean)) {
+    if (!/^drishti_restore[a-z0-9_]*$/.test(name)) continue
+    psql(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`)
+  }
+}
+const psqlIn = (db: string, sql: string) => execFileSync('docker', ['exec', CONTAINER, 'psql', '-U', 'supabase_admin', '-d', db, '-Atc', sql], { encoding: 'utf8' }).trim()
 
 type Proof = {
   passed: boolean; allCountsEqual: boolean; live: boolean
@@ -105,6 +117,48 @@ describe.skipIf(skip)('backup and restore into a disposable database (P5.4)', ()
       writeFileSync(path.join(evidence, 'backup-restore-proof.json'), JSON.stringify({ ranAt: new Date().toISOString(), restoreOutput: r.stdout.split(/\r?\n/).filter(Boolean), proof }, null, 2))
     }
   }, 240_000)
+
+  // Review I-1: the live path, rehearsed on disposable databases. A database made from the backup plays the live one; it is changed
+  // (an extra row); then the live restore backs it up, restores into a new copy, proves the copy, and only then swaps it in, keeping
+  // the changed one under another name. An in-place `pg_restore --clean` was tried first and fails on a Supabase database
+  // (partitioned realtime tables), which is why the restore copies and swaps.
+  it('the live path on a disposable "live" database: backup first, restore into a copy, prove it, swap; the old one kept', () => {
+    const made = ps('restore.ps1', ['-ConfigPath', config, '-BackupPath', folder, '-TargetDatabase', LIVE, '-CreateDatabase'])
+    expect(made.status, made.stdout + made.stderr).toBe(0)
+    const before = Number(psqlIn(LIVE, 'SELECT count(*) FROM public.admin_audit_log'))
+    psqlIn(LIVE, "INSERT INTO public.admin_audit_log (org_id, action) SELECT id, 'p54_live_restore_marker' FROM public.organizations ORDER BY created_at LIMIT 1")
+    expect(Number(psqlIn(LIVE, 'SELECT count(*) FROM public.admin_audit_log'))).toBe(before + 1)
+    const res = path.join(dir, 'live-result.json')
+    const r = ps('restore.ps1', ['-ConfigPath', configLive, '-BackupPath', folder, '-TargetDatabase', LIVE, '-AllowLiveDatabase', '-PreRestoreBackup', '-ResultPath', res])
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    const proof = JSON.parse(readFileSync(res, 'utf8').replace(/^﻿/, '')) as Proof & { swapped: boolean; keptAs: string; preRestoreBackup: boolean }
+    expect(proof).toMatchObject({ passed: true, live: true, swapped: true, preRestoreBackup: true, allCountsEqual: true })
+    // The live name now holds the backup's state again; the changed database is kept, intact, under its new name.
+    expect(Number(psqlIn(LIVE, 'SELECT count(*) FROM public.admin_audit_log'))).toBe(before)
+    expect(proof.keptAs).toMatch(/^drishti_restore_live_before_restore_\d{14}$/)
+    expect(psqlIn(proof.keptAs, "SELECT count(*) FROM public.admin_audit_log WHERE action = 'p54_live_restore_marker'")).toBe('1')
+    expect(psqlIn(LIVE, "SELECT count(*) FILTER (WHERE decrypted_secret IS NOT NULL) = count(*) FROM vault.decrypted_secrets")).toBe('t')
+    // The backup before the restore exists (the live database as it was, made by backup.ps1).
+    expect(readdirSync(path.join(dir, 'backups')).some((f) => f.endsWith('-before-restore'))).toBe(true)
+    expect(r.stdout).toMatch(/the database as it was is kept as drishti_restore_live_before_restore_/)
+  }, 300_000)
+
+  it('the live path refuses to swap a copy that does not prove out: the "live" database stays as it was', () => {
+    // A manifest that claims one more camera than the dump holds: the copy's counts differ, so nothing is swapped.
+    const forged = path.join(dir, 'forged')
+    mkdirSync(forged)
+    copyFileSync(path.join(folder, 'db.dump'), path.join(forged, 'db.dump'))
+    const m = JSON.parse(readFileSync(path.join(folder, 'manifest.json'), 'utf8').replace(/^﻿/, ''))
+    m.counts['public.cameras'] += 1
+    writeFileSync(path.join(forged, 'manifest.json'), JSON.stringify(m))
+    const before = psqlIn(LIVE, 'SELECT count(*) FROM public.cameras')
+    const r = ps('restore.ps1', ['-ConfigPath', configLive, '-BackupPath', forged, '-TargetDatabase', LIVE, '-AllowLiveDatabase'])
+    expect(r.status).not.toBe(0)
+    expect(r.stdout).toMatch(/the live database drishti_restore_live was NOT changed/)
+    expect(psqlIn(LIVE, 'SELECT count(*) FROM public.cameras')).toBe(before)
+    // The unused copy was dropped; only the live one and the kept one of the previous test remain.
+    expect(psql("SELECT count(*) FROM pg_database WHERE datname LIKE 'drishti_restore_live_restored%'")).toBe('0')
+  }, 300_000)
 
   it('refuses the live database without -AllowLiveDatabase, a bad name, an existing database and a damaged dump, changing nothing', () => {
     const before = psql("SELECT count(*) FROM public.cameras WHERE org_id IN (SELECT id FROM public.organizations WHERE slug NOT LIKE 'test-%')")

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -87,11 +87,34 @@ describe('production env skeleton (P5.4)', () => {
     const web = parse(readFileSync(path.join(dir, 'web.env'), 'utf8'))
     for (const [k, v] of Object.entries(web)) if (v.length >= 16) expect(out, k).not.toContain(v)
     expect(out).toContain('web.env')
-    expect(out).toMatch(/icacls/)
+    expect(out).toMatch(/-Action Install/)
     // Never over an existing file.
     writeFileSync(path.join(dir, 'worker.env'), 'MINE=1\n')
     expect(() => run('--production', '--out-dir', dir, '--jwt-secret-env', 'GEN_TEST_JWT')).toThrow()
     expect(readFileSync(path.join(dir, 'worker.env'), 'utf8')).toBe('MINE=1\n')
+  })
+
+  // Review I-7: on Windows the files never carry the folder's inherited ACL (Authenticated Users / Users), and a rotation keeps the
+  // ACL the install gave a file (the service account's read right), instead of the temporary file's.
+  it.skipIf(process.platform !== 'win32')('Windows: new env files are locked (no inherited entry, no Users), and a rotation keeps the file ACL', () => {
+    const icacls = (p: string) => execFileSync('icacls', [p], { encoding: 'utf8' })
+    const out = path.join(dir, 'config')
+    run('--production', '--out-dir', out, '--jwt-secret-env', 'GEN_TEST_JWT')
+    for (const f of ['web.env', 'worker.env', 'gateway.env', 'go2rtc.env', '']) {
+      const acl = icacls(path.join(out, f))
+      expect(acl, f).not.toMatch(/\(I\)/)
+      expect(acl, f).not.toMatch(/Authenticated Users|\\Users:|Everyone/i)
+      expect(acl, f).toMatch(/SYSTEM/)
+      expect(acl, f).toMatch(/Administrators/)
+    }
+    const web = path.join(out, 'web.env')
+    execFileSync('icacls', [web, '/grant', '*S-1-5-19:R'], { stdio: 'ignore' }) // stands in for NT SERVICE\DrishtiWeb (LOCAL SERVICE)
+    const before = parse(readFileSync(web, 'utf8')).CRON_SECRET
+    run('--file', web, '--only=CRON_SECRET', '--rotate=CRON_SECRET')
+    expect(parse(readFileSync(web, 'utf8')).CRON_SECRET).not.toBe(before)
+    expect(icacls(web)).toMatch(/LOCAL SERVICE/)
+    expect(icacls(web)).not.toMatch(/\(I\)/)
+    expect(readdirSync(out).filter((f) => f.includes('.tmp-'))).toEqual([])
   })
 
   it('the script refuses a folder inside the repository, writing nothing', () => {

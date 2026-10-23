@@ -5,6 +5,8 @@
 //     role that ran them, the worker's own role monitor_worker;
 //   - ops_health_status(): the database clock, the migration level, the Vault round trip and the housekeeping runs, for the web app's
 //     role and the service role only.
+import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { readdirSync } from 'node:fs'
 import path from 'node:path'
 import { createClient } from '@supabase/supabase-js'
@@ -16,6 +18,18 @@ import { serviceClient } from '../setup/service-keys'
 type Rpc = (fn: string, args?: Record<string, unknown>) => PromiseLike<{ data: unknown; error: { code?: string; message: string } | null }>
 const rpcOf = (c: { rpc: unknown }): Rpc => (fn, args) => (c.rpc as (f: string, a?: unknown) => PromiseLike<{ data: unknown; error: { code?: string; message: string } | null }>)(fn, args ?? {})
 const admin = () => adminClient()
+/** SQL as the database owner in its own session (psql in the database container), as tests/integration/worker-lease.test.ts does. */
+function ownerSql(sql: string): Promise<{ code: number | null; out: string; err: string }> {
+  return new Promise((resolve) => {
+    const p = spawn('docker', ['exec', '-i', process.env.SUPABASE_DB_CONTAINER ?? 'supabase_db_cctv_hub', 'psql', '-U', 'postgres', '-v', 'ON_ERROR_STOP=1', '-q', '-At', '-f', '-'])
+    let out = ''
+    let err = ''
+    p.stdout.on('data', (d) => (out += String(d)))
+    p.stderr.on('data', (d) => (err += String(d)))
+    p.on('close', (c) => resolve({ code: c, out, err }))
+    p.stdin.end(sql)
+  })
+}
 const highestMigration = () =>
   readdirSync(path.resolve(__dirname, '../../supabase/migrations')).filter((f) => /^\d{14}_.+\.sql$/.test(f)).map((f) => f.slice(0, 14)).sort().at(-1)
 
@@ -127,6 +141,45 @@ describe('P5.4 audit append-only, housekeeping record, ops health (migration 004
       expect((await rpcOf(serviceClient(role))('ops_health_status')).error?.code, role).toBe('42501')
     }
     expect((await rpcOf(admin())('ops_health_status')).error).toBeNull()
+  })
+
+  // Review I-5 (migration 0045): the purge trusts only an organisation MADE as a test one (organizations.created_as_test, fixed at
+  // creation by migration 0044), and only on a database whose test fixture switch is on (the local test stack; off in production).
+  // A real organisation the database owner renames to test-… keeps created_as_test = false and is refused; so is every organisation
+  // while the switch is off. Both run as the owner in a transaction that is rolled back.
+  it.skipIf(process.env.DRISHTI_SKIP_DOCKER_TESTS === '1')('the audit purge refuses a real organisation renamed to test-…, and everything while the fixture switch is off', async () => {
+    const tag = randomUUID().slice(0, 8)
+    const renamed = await ownerSql(`BEGIN;
+      INSERT INTO public.organizations (name, slug) VALUES ('Real ${tag}', 'real-${tag}');
+      UPDATE public.organizations SET slug = 'test-${tag}' WHERE slug = 'real-${tag}';
+      INSERT INTO public.admin_audit_log (org_id, action) SELECT id, 'kept' FROM public.organizations WHERE slug = 'test-${tag}';
+      SELECT public.audit_purge_test_org(id) FROM public.organizations WHERE slug = 'test-${tag}';
+      ROLLBACK;`)
+    expect(renamed.code).not.toBe(0)
+    expect(renamed.err).toMatch(/made as a test organisation/)
+    const switchedOff = await ownerSql(`BEGIN;
+      UPDATE public.test_fixture_switch SET honoured = false;
+      INSERT INTO public.organizations (name, slug) VALUES ('Test ${tag}', 'test-sw-${tag}');
+      SELECT public.audit_purge_test_org(id) FROM public.organizations WHERE slug = 'test-sw-${tag}';
+      ROLLBACK;`)
+    expect(switchedOff.code).not.toBe(0)
+    expect(switchedOff.err).toMatch(/test fixture switch is off/)
+    // A real test organisation on the test stack is still purged (the clean-up of every test uses it).
+    expect((await admin().from('admin_audit_log').insert({ org_id: other, actor_id: person.id, action: 'p54_other_again' })).error).toBeNull()
+    expect((await rpcOf(admin())('audit_purge_test_org', { p_org: other })).error).toBeNull()
+  })
+
+  // Review M-9: a prune of ONE organisation (tests) is not the worker's clean-up and does not move the Health page's "last run".
+  it('media_sessions_prune for one organisation leaves the recorded last run alone; the whole clean-up records it', async () => {
+    const worker = rpcOf(serviceClient('monitor_worker'))
+    expect((await worker('media_sessions_prune')).error).toBeNull()
+    const last = async () => (await admin().from('housekeeping_runs').select('last_run_at, runs').eq('task', 'media_sessions_prune').single()).data!
+    const before = await last()
+    await new Promise((r) => setTimeout(r, 50))
+    expect((await rpcOf(admin())('media_sessions_prune', { p_org: org })).error).toBeNull()
+    expect(await last()).toEqual(before)
+    expect((await worker('media_sessions_prune')).error).toBeNull()
+    expect(Number((await last()).runs)).toBe(Number(before.runs) + 1)
   })
 
   it('privilege_violations() stays empty', async () => {

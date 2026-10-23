@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { WorkerStatus } from '@/lib/monitor/health'
-import { assessHealth, collectHealth, expectedMigration, publicStatus, type HealthInputs, type OpsDbStatus } from '@/lib/ops/health'
+import { assessHealth, collectHealth, diskDirs, expectedMigration, publicStatus, type HealthInputs, type OpsDbStatus } from '@/lib/ops/health'
 
 // P5.4 brief item 3: the detailed health of the installation for super administrators (the Health page, /api/health/detail): the
 // database, the Vault, the video gateway, the worker (lease, heartbeat, clock), the migration level, free disk space and the
@@ -120,6 +120,25 @@ describe('assessHealth (P5.4)', () => {
     expect(check(assessHealth(inputs()), 'disk').summary).toBe('120.0 GB free of 500.0 GB (24 %) on C:\\Drishti.')
   })
 
+  // Review M-4: the backups may be on another disk (D:) than the data and logs; both are reported and the worse one decides.
+  it('disk: the data disk and the backup disk are both reported, and the fuller one decides the state', () => {
+    const h = assessHealth(inputs({
+      disk: [
+        { path: 'C:\\Drishti\\data', freeBytes: 120 * GB, totalBytes: 500 * GB },
+        { path: 'D:\\DrishtiBackups', freeBytes: 1 * GB, totalBytes: 1000 * GB },
+      ],
+    }))
+    expect(check(h, 'disk').state).toBe('failed')
+    expect(h.status).toBe('degraded')
+    expect(check(h, 'disk').summary).toBe(
+      '120.0 GB free of 500.0 GB (24 %) on C:\\Drishti\\data. 1.0 GB free of 1000.0 GB (0 %) on D:\\DrishtiBackups. Backups and logs will fail soon: free some space.',
+    )
+    expect(check(h, 'disk').facts).toEqual([['Free on C:\\Drishti\\data', '120.0 GB (24 %)'], ['Free on D:\\DrishtiBackups', '1.0 GB (0 %)']])
+    const oneUnreadable = assessHealth(inputs({ disk: [{ path: 'C:\\Drishti\\data', freeBytes: 120 * GB, totalBytes: 500 * GB }, null] }))
+    expect(check(oneUnreadable, 'disk').state).toBe('ok')
+    expect(check(assessHealth(inputs({ disk: [null, null] })), 'disk').state).toBe('unknown')
+  })
+
   it('the media-session clean-up: older than 30 minutes warns; never recorded is a warning while the worker runs', () => {
     const old = dbStatus({ housekeeping: [{ task: 'media_sessions_prune', last_run_at: iso(45 * 60_000), removed: 0, db_role: 'monitor_worker' }] })
     expect(check(assessHealth(inputs({ db: { ok: true, status: old, latencyMs: 1 } })), 'cleanup').state).toBe('warning')
@@ -158,6 +177,28 @@ describe('collectHealth (P5.4)', () => {
     expect(h.checks.find((c) => c.key === 'worker')?.state).toBe('unknown')
     expect(h.checks.find((c) => c.key === 'disk')?.state).toBe('ok')
     expect(JSON.stringify(h)).not.toMatch(/ECONNREFUSED|hunter2|10\.1\.2\.3/)
+  })
+})
+
+describe('the disks and the build of the web server (P5.4 review M-4, M-15)', () => {
+  it('diskDirs: the data folder and the backup folder, each once; the server folder when neither is set', () => {
+    expect(diskDirs({ DRISHTI_DATA_DIR: 'C:\\Drishti\\data', DRISHTI_BACKUP_DIR: 'D:\\DrishtiBackups' }, 'C:\\app')).toEqual(['C:\\Drishti\\data', 'D:\\DrishtiBackups'])
+    expect(diskDirs({ DRISHTI_DATA_DIR: ' C:\\Drishti\\data ', DRISHTI_BACKUP_DIR: 'c:\\drishti\\data' }, 'C:\\app')).toEqual(['C:\\Drishti\\data'])
+    expect(diskDirs({ DRISHTI_BACKUP_DIR: 'D:\\DrishtiBackups' }, 'C:\\app')).toEqual(['D:\\DrishtiBackups'])
+    expect(diskDirs({}, 'C:\\app')).toEqual(['C:\\app'])
+  })
+
+  it('the production env file names the backup folder for the disk check', async () => {
+    const { PRODUCTION_FILES } = await import('../../scripts/lib/prod-env.mjs')
+    const keys = PRODUCTION_FILES['web.env'].lines.map((line) => line[0])
+    expect(keys).toContain('DRISHTI_DATA_DIR')
+    expect(keys).toContain('DRISHTI_BACKUP_DIR')
+  })
+
+  it('the build id is read with the literal process.env.NEXT_PUBLIC_BUILD_ID that next.config inlines (as /api/version does)', () => {
+    const src = readFileSync(path.resolve(__dirname, '../../lib/ops/health-server.ts'), 'utf8')
+    expect(src).toMatch(/build: process\.env\.NEXT_PUBLIC_BUILD_ID \|\| 'dev'/)
+    expect(src).not.toMatch(/env\.NEXT_PUBLIC_BUILD_ID(?<!process\.env\.NEXT_PUBLIC_BUILD_ID)/)
   })
 })
 

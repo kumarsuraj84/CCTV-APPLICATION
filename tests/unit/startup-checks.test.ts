@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -6,7 +7,7 @@ import { isProductionMode } from '@/lib/runtime-mode'
 import { keyExpiryWarnings, startupProblems, watchKeyExpiry } from '@/lib/startup-checks'
 import { serviceKeyFor } from '@/lib/supabase/service-clients'
 import { connectRefusal } from '@/lib/security/targets'
-import { sharedSecret } from '@/lib/secrets'
+import { secretWeakness, sharedSecret } from '@/lib/secrets'
 import { isDemoRecorder } from '@/lib/streams/source'
 
 // P2-6 review round 1, I-1 / I-2 / M-4 / M-16: production must not depend on NODE_ENV alone (the worker and the gateway run under tsx,
@@ -126,10 +127,19 @@ describe('startupProblems', () => {
   })
 
   it('P5.4: production refuses weak secrets (one character, a repeated pattern, a placeholder), naming each, never showing it', () => {
-    for (const weak of ['s'.repeat(43), 'abcd'.repeat(11), 'change-me-change-me-change-me-change-me-1', 'your-secret-goes-here-0123456789-abcdefgh', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab1']) {
+    // Review M-6: a human value with a repeated part of 6 or more characters (CityKart2026 twice) is weak too.
+    for (const weak of ['s'.repeat(43), 'abcd'.repeat(11), 'change-me-change-me-change-me-change-me-1', 'your-secret-goes-here-0123456789-abcdefgh', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab1', 'CityKart2026CityKart2026Drishti!', 'Xk9-Drishti#Ops-71Drishti#Ops-qz4W']) {
       const r = startupProblems('web', { ...webEnv(), MERGE_CONFIRM_SECRET: weak }, at)
       expect(r.problems.join(' '), weak).toMatch(/MERGE_CONFIRM_SECRET.*(weak|guess)/)
       expect(JSON.stringify(r), weak).not.toContain(weak)
+    }
+    // A placeholder of x's as a part of its own is still one.
+    expect(secretWeakness('token-xxxx-Qw7xK2pLm9Zr4Tb8Nc1Vh6Yd3Fs5Gj0')).toBe('looks like a placeholder')
+    // ...while the generator's values (32 random bytes as base64url) are never refused: "xxXX" inside one is chance, not a placeholder.
+    expect(secretWeakness('UA2qYvE77adXGQSfNqoKDaWjNrxxXXx5JBHRuDvVw9Q')).toBeNull()
+    for (let i = 0; i < 2000; i++) {
+      const v = randomBytes(32).toString('base64url')
+      expect(secretWeakness(v), v).toBeNull()
     }
   })
 

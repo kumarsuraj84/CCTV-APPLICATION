@@ -154,6 +154,8 @@ describe('durable audit coverage (P5.4)', () => {
     expect(w.has('auth_events:mfa_factor_reset')).toBe(true)
   })
 
+  // The row reaching the database under the web app role. That the actions themselves write it, after a successful opening only, is
+  // checked with fakes in tests/unit/streams-action.test.ts and tests/unit/playback-actions.test.ts (review M-10).
   it('video opened: the access audit writes cctv_live_opened and cctv_playback_opened with the web app role', async () => {
     await auditAccess(web(), { orgId: org, actorId: adminUser.id, action: 'cctv_live_opened', capability: 'cctv.live', cameraIds: [camDup], detail: { kind: 'sub' } })
     await auditAccess(web(), { orgId: org, actorId: adminUser.id, action: 'cctv_playback_opened', capability: 'cctv.playback', cameraIds: [camDup], detail: { minutes: 5 } })

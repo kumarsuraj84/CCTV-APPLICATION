@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto'
+import { appendFileSync } from 'node:fs'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
 import { ADMIN_BASELINE } from '../../scripts/lib/demo'
@@ -31,6 +32,9 @@ export async function createOrg(): Promise<string> {
   const tag = randomUUID()
   const { data, error } = await adminClient().from('organizations').insert({ name: `test-${tag}`, slug: `test-${tag}` }).select('id').single()
   if (error || !data) throw new Error(`createOrg failed: ${error?.message}`)
+  // P5.4 review round 1: the run's ledger (tests/setup/test-orgs-ledger.ts): any organisation still there at the end fails the run.
+  const ledger = process.env.DRISHTI_TEST_ORG_LEDGER
+  if (ledger) appendFileSync(ledger, `${data.id}\n`)
   return data.id
 }
 

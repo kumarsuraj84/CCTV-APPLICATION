@@ -132,6 +132,23 @@ describe('stream actions', () => {
     expect(JSON.stringify(audit)).not.toContain('secret-token')
   })
 
+  // P5.4 review M-10: the record comes from the action itself, after a successful opening only (tests/integration/audit-coverage.test.ts
+  // checks the row reaches the database; this checks who writes it and when).
+  it('records nothing when the opening fails, opens no camera, or throws', async () => {
+    requireProfile.mockResolvedValue(person('u1'))
+    const { openStreamsAction } = await import('@/lib/actions/streams')
+    openStreams.mockResolvedValue({ ok: false, error: 'Live video is not set up yet.' })
+    await openStreamsAction(['c1'], 'sub')
+    openStreams.mockResolvedValue({ ok: true, streams: [] })
+    await openStreamsAction(['c1'], 'sub')
+    openStreams.mockRejectedValue(new Error('boom'))
+    await openStreamsAction(['c1'], 'sub')
+    expect(audit).toEqual([])
+    openStreams.mockResolvedValue({ ok: true, streams: [{ cameraId: 'c9', name: 'N', storeCode: 'S', channel: 1, token: 't', kind: 'main' }] })
+    await openStreamsAction(['c9'], 'main')
+    expect(audit.map((r) => [r.action, r.entity_id])).toEqual([['cctv_live_opened', 'c9']])
+  })
+
   it('allows 30 requests a minute per person (both live actions share the live count), then asks them to wait', async () => {
     requireProfile.mockResolvedValue(person('u1'))
     const { openStreamsAction, refreshStreamTokensAction } = await import('@/lib/actions/streams')
