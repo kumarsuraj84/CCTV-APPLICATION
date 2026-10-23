@@ -691,14 +691,14 @@ isOneToOne: false
                   ]
                 },"media_sessions": {
                   Row: {
-                    "aal2": boolean,"asset_id": string | null,"camera_id": string | null,"capability": string,"closed_at": string | null,"connect_by": string,"created_at": string,"expires_at": string,"id": string,"kind": string,"last_validated_at": string | null,"location_id": string | null,"open_count": number,"opened_at": string | null,"org_id": string,"recorder_id": string | null,"revoke_reason": string | null,"revoked_at": string | null,"stream": string | null,"stream_cap": number | null,"user_id": string,"media_session_problem": string | null
+                    "aal2": boolean,"asset_id": string | null,"camera_id": string | null,"capability": string,"closed_at": string | null,"connect_by": string,"created_at": string,"expires_at": string,"fast_media_sec": number | null,"id": string,"kind": string,"last_validated_at": string | null,"location_id": string | null,"open_count": number,"opened_at": string | null,"org_id": string,"recorder_id": string | null,"revoke_reason": string | null,"revoked_at": string | null,"stream": string | null,"stream_cap": number | null,"user_id": string,"media_session_fast_charge": number | null,"media_session_problem": string | null
                   }
-                  ComputedFields: "media_session_problem"
+                  ComputedFields: "media_session_fast_charge" | "media_session_problem"
                   Insert: {
-                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability": string,"closed_at"?: string | null,"connect_by": string,"created_at"?: string,"expires_at": string,"id"?: string,"kind": string,"last_validated_at"?: string | null,"location_id"?: string | null,"open_count"?: number,"opened_at"?: string | null,"org_id": string,"recorder_id"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"stream_cap"?: number | null,"user_id": string
+                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability": string,"closed_at"?: string | null,"connect_by": string,"created_at"?: string,"expires_at": string,"fast_media_sec"?: number | null,"id"?: string,"kind": string,"last_validated_at"?: string | null,"location_id"?: string | null,"open_count"?: number,"opened_at"?: string | null,"org_id": string,"recorder_id"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"stream_cap"?: number | null,"user_id": string
                   }
                   Update: {
-                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability"?: string,"closed_at"?: string | null,"connect_by"?: string,"created_at"?: string,"expires_at"?: string,"id"?: string,"kind"?: string,"last_validated_at"?: string | null,"location_id"?: string | null,"open_count"?: number,"opened_at"?: string | null,"org_id"?: string,"recorder_id"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"stream_cap"?: number | null,"user_id"?: string
+                    "aal2"?: boolean,"asset_id"?: string | null,"camera_id"?: string | null,"capability"?: string,"closed_at"?: string | null,"connect_by"?: string,"created_at"?: string,"expires_at"?: string,"fast_media_sec"?: number | null,"id"?: string,"kind"?: string,"last_validated_at"?: string | null,"location_id"?: string | null,"open_count"?: number,"opened_at"?: string | null,"org_id"?: string,"recorder_id"?: string | null,"revoke_reason"?: string | null,"revoked_at"?: string | null,"stream"?: string | null,"stream_cap"?: number | null,"user_id"?: string
                   }
                   Relationships: [
                     {
@@ -1585,10 +1585,24 @@ isOneToOne: false
               "camera_id": string,"sid": string
             }[]
                            },
+"media_session_create_fast":
+{ Args: { "p_camera": string,"p_day_min": number,"p_hour_min": number,"p_max_sec"?: number,"p_org": string,"p_stream": string,"p_user": string }; Returns: {
+              "refused": string,"sid": string,"used_day_min": number,"used_hour_min": number
+            }[]
+                           },
 "media_session_create_live":
 { Args: { "p_cameras": (string)[],"p_max": number,"p_org": string,"p_release"?: (string)[],"p_streams": (string)[],"p_user": string }; Returns: {
               "camera_id": string,"paused": boolean,"sid": string
             }[]
+                           },
+"media_session_fast_charge":
+{ Args: { "m": Omit<Database["public"]['Tables']["media_sessions"]['Row'], Database["public"]['Tables']["media_sessions"]['ComputedFields']> }; Returns: number
+                           },
+"media_session_fast_span":
+{ Args: { "p_stream": string }; Returns: number
+                           },
+"media_session_finish":
+{ Args: { "p_media_sec": number,"p_sid": string }; Returns: boolean
                            },
 "media_session_open":
 { Args: { "p_camera": string,"p_kind": string,"p_sid": string,"p_stream": string,"p_user": string }; Returns: {
