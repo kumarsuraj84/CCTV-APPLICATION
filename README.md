@@ -37,7 +37,7 @@ The checks run in a separate process, the worker, next to the web app:
 
 - It answers "Check now" requests within a few seconds and shows its progress on the **Monitoring** page (administrators).
   Operators, administrators and platform owners may press **Check now**; managers and viewers may not.
-- `GET /api/health` says whether the database and the worker are alive (`ok` or `degraded`). It carries no names, counts or error details.
+- `GET /api/health` says `{ "status": "ok" }` or `"degraded"`, worked out from every check of the detailed health (database, Vault, gateway, worker, database version, disk, clean-up). It carries no names, counts or error details; super administrators see the details on the Health page (`/admin/health`) and at `/api/health/detail` (P5.4).
 - Time while the worker was not running is never counted as downtime.
 - Only one worker may run against a database at a time.
 - **Integration tests must not run while a worker uses the same database**: both write the single `worker_state` row. Stop the worker first.

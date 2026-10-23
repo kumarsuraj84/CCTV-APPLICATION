@@ -1,0 +1,129 @@
+{
+  "ranAt": "2026-10-23T00:07:41.730Z",
+  "restoreOutput": [
+    "[2026-10-23 05:37:37]  OK  backup 20261023-053734-restore-test: dump intact (8 MB, migration 20261021000043)",
+    "[2026-10-23 05:37:37] STEP created the database drishti_restore_test",
+    "[2026-10-23 05:37:40]  OK  restored into drishti_restore_test",
+    "[2026-10-23 05:37:41]  OK  row counts: all 18 tables equal",
+    "[2026-10-23 05:37:41]  OK  migration level: 20261021000043 (backup 20261021000043, this release needs 20261021000043)",
+    "[2026-10-23 05:37:41]  OK  Vault: 224 of 224 secrets decrypt; canary ok",
+    "[2026-10-23 05:37:41]  OK  Vault root key of this server: the one recorded in the backup",
+    "[2026-10-23 05:37:41] STEP dropped drishti_restore_test"
+  ],
+  "proof": {
+    "backup": "20261023-053734-restore-test",
+    "target": "drishti_restore_test",
+    "live": false,
+    "dumpSha256Ok": true,
+    "restoreWarnings": 0,
+    "counts": {
+      "public.organizations": {
+        "backup": 122,
+        "restored": 122,
+        "equal": true
+      },
+      "public.profiles": {
+        "backup": 37,
+        "restored": 37,
+        "equal": true
+      },
+      "public.regions": {
+        "backup": 2,
+        "restored": 2,
+        "equal": true
+      },
+      "public.clusters": {
+        "backup": 3,
+        "restored": 3,
+        "equal": true
+      },
+      "public.locations": {
+        "backup": 240,
+        "restored": 240,
+        "equal": true
+      },
+      "public.assets": {
+        "backup": 240,
+        "restored": 240,
+        "equal": true
+      },
+      "public.recorders": {
+        "backup": 235,
+        "restored": 235,
+        "equal": true
+      },
+      "public.cameras": {
+        "backup": 4656,
+        "restored": 4656,
+        "equal": true
+      },
+      "public.camera_channel_mappings": {
+        "backup": 4656,
+        "restored": 4656,
+        "equal": true
+      },
+      "public.access_grants": {
+        "backup": 5707,
+        "restored": 5707,
+        "equal": true
+      },
+      "public.camera_groups": {
+        "backup": 2,
+        "restored": 2,
+        "equal": true
+      },
+      "public.camera_group_items": {
+        "backup": 33,
+        "restored": 33,
+        "equal": true
+      },
+      "public.admin_audit_log": {
+        "backup": 3127,
+        "restored": 3127,
+        "equal": true
+      },
+      "public.auth_events": {
+        "backup": 347,
+        "restored": 347,
+        "equal": true
+      },
+      "public.vault_reads": {
+        "backup": 1151,
+        "restored": 1151,
+        "equal": true
+      },
+      "auth.users": {
+        "backup": 37,
+        "restored": 37,
+        "equal": true
+      },
+      "vault.secrets": {
+        "backup": 224,
+        "restored": 224,
+        "equal": true
+      },
+      "supabase_migrations.schema_migrations": {
+        "backup": 43,
+        "restored": 43,
+        "equal": true
+      }
+    },
+    "allCountsEqual": true,
+    "migration": {
+      "backup": "20261021000043",
+      "restored": "20261021000043",
+      "expected": "20261021000043",
+      "equalToBackup": true,
+      "pending": false
+    },
+    "vault": {
+      "secrets": 224,
+      "decryptable": 224,
+      "allDecrypt": true,
+      "canaryOk": true
+    },
+    "vaultKeyMatchesBackup": true,
+    "durationSec": 4.1,
+    "passed": true
+  }
+}

@@ -1,0 +1,109 @@
+# P5.4 dry runs (nothing installed or changed on the development computer; scratch configuration, paths shown as C:\Drishti-test)
+
+## drishti-services.ps1 -Action Install -WhatIf
+
+[2026-10-23 05:48:28] STEP install DrishtiGo2rtc, DrishtiWorker, DrishtiGateway, DrishtiWeb (dry run: nothing is changed)
+[2026-10-23 05:48:28] PLAN would run: C:\WINDOWS\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:exe /optimize+ /out:C:\Drishti-test\Drishti\bin\DrishtiServiceHost.exe /reference:System.ServiceProcess.dll D:\ANKUR AI PROJECTS\CCTV MONITORING TOOL\deploy\windows\service-host\DrishtiServiceHost.cs
+[2026-10-23 05:48:28] PLAN would write C:\Drishti-test\Drishti\services\DrishtiGo2rtc.conf (no secret: it names C:\Drishti-test\Drishti\config\go2rtc.env) and create C:\Drishti-test\Drishti\logs\DrishtiGo2rtc
+[2026-10-23 05:48:28] PLAN would copy go2rtc.windows.yaml to C:\Drishti-test\Drishti\config\go2rtc.yaml (if missing)
+[2026-10-23 05:48:28] PLAN would run: New-Service -Name DrishtiGo2rtc -BinaryPathName '"C:\Drishti-test\Drishti\bin\DrishtiServiceHost.exe" "C:\Drishti-test\Drishti\services\DrishtiGo2rtc.conf"' -DisplayName 'CityKart Drishti go2rtc (loopback video server)' -StartupType Automatic
+[2026-10-23 05:48:28] PLAN would run: sc.exe config DrishtiGo2rtc start= delayed-auto obj= NT SERVICE\DrishtiGo2rtc
+[2026-10-23 05:48:28] PLAN would run: sc.exe sidtype DrishtiGo2rtc unrestricted
+[2026-10-23 05:48:28] PLAN would run: sc.exe failure DrishtiGo2rtc reset= 86400 actions= restart/5000/restart/10000/restart/60000
+[2026-10-23 05:48:28] PLAN would run: sc.exe failureflag DrishtiGo2rtc 1
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\logs\DrishtiGo2rtc /inheritance:r /grant:r Administrators:(OI)(CI)F /grant:r SYSTEM:(OI)(CI)F /grant:r <operator>:(OI)(CI)F /grant:r NT SERVICE\DrishtiGo2rtc:(OI)(CI)M
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\config\go2rtc.env /inheritance:r /grant:r Administrators:F /grant:r SYSTEM:F /grant:r <operator>:F /grant:r NT SERVICE\DrishtiGo2rtc:R
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\services\DrishtiGo2rtc.conf /inheritance:r /grant:r Administrators:F /grant:r SYSTEM:F /grant:r <operator>:F /grant:r NT SERVICE\DrishtiGo2rtc:R
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\config\go2rtc.yaml /inheritance:r /grant:r Administrators:F /grant:r SYSTEM:F /grant:r <operator>:F /grant:r NT SERVICE\DrishtiGo2rtc:R
+[2026-10-23 05:48:28] PLAN would write C:\Drishti-test\Drishti\services\DrishtiWorker.conf (no secret: it names C:\Drishti-test\Drishti\config\worker.env) and create C:\Drishti-test\Drishti\logs\DrishtiWorker
+[2026-10-23 05:48:28] PLAN would run: New-Service -Name DrishtiWorker -BinaryPathName '"C:\Drishti-test\Drishti\bin\DrishtiServiceHost.exe" "C:\Drishti-test\Drishti\services\DrishtiWorker.conf"' -DisplayName 'CityKart Drishti monitoring worker' -StartupType Automatic
+[2026-10-23 05:48:28] PLAN would run: sc.exe config DrishtiWorker start= delayed-auto obj= NT SERVICE\DrishtiWorker
+[2026-10-23 05:48:28] PLAN would run: sc.exe sidtype DrishtiWorker unrestricted
+[2026-10-23 05:48:28] PLAN would run: sc.exe failure DrishtiWorker reset= 86400 actions= restart/5000/restart/10000/restart/60000
+[2026-10-23 05:48:28] PLAN would run: sc.exe failureflag DrishtiWorker 1
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\logs\DrishtiWorker /inheritance:r /grant:r Administrators:(OI)(CI)F /grant:r SYSTEM:(OI)(CI)F /grant:r <operator>:(OI)(CI)F /grant:r NT SERVICE\DrishtiWorker:(OI)(CI)M
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\config\worker.env /inheritance:r /grant:r Administrators:F /grant:r SYSTEM:F /grant:r <operator>:F /grant:r NT SERVICE\DrishtiWorker:R
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\services\DrishtiWorker.conf /inheritance:r /grant:r Administrators:F /grant:r SYSTEM:F /grant:r <operator>:F /grant:r NT SERVICE\DrishtiWorker:R
+[2026-10-23 05:48:28] PLAN would write C:\Drishti-test\Drishti\services\DrishtiGateway.conf (no secret: it names C:\Drishti-test\Drishti\config\gateway.env) and create C:\Drishti-test\Drishti\logs\DrishtiGateway
+[2026-10-23 05:48:28] PLAN would run: New-Service -Name DrishtiGateway -BinaryPathName '"C:\Drishti-test\Drishti\bin\DrishtiServiceHost.exe" "C:\Drishti-test\Drishti\services\DrishtiGateway.conf"' -DisplayName 'CityKart Drishti video gateway' -StartupType Automatic -DependsOn DrishtiGo2rtc
+[2026-10-23 05:48:28] PLAN would run: sc.exe config DrishtiGateway start= delayed-auto obj= NT SERVICE\DrishtiGateway
+[2026-10-23 05:48:28] PLAN would run: sc.exe sidtype DrishtiGateway unrestricted
+[2026-10-23 05:48:28] PLAN would run: sc.exe failure DrishtiGateway reset= 86400 actions= restart/5000/restart/10000/restart/60000
+[2026-10-23 05:48:28] PLAN would run: sc.exe failureflag DrishtiGateway 1
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\logs\DrishtiGateway /inheritance:r /grant:r Administrators:(OI)(CI)F /grant:r SYSTEM:(OI)(CI)F /grant:r <operator>:(OI)(CI)F /grant:r NT SERVICE\DrishtiGateway:(OI)(CI)M
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\config\gateway.env /inheritance:r /grant:r Administrators:F /grant:r SYSTEM:F /grant:r <operator>:F /grant:r NT SERVICE\DrishtiGateway:R
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\services\DrishtiGateway.conf /inheritance:r /grant:r Administrators:F /grant:r SYSTEM:F /grant:r <operator>:F /grant:r NT SERVICE\DrishtiGateway:R
+[2026-10-23 05:48:28] PLAN would write C:\Drishti-test\Drishti\services\DrishtiWeb.conf (no secret: it names C:\Drishti-test\Drishti\config\web.env) and create C:\Drishti-test\Drishti\logs\DrishtiWeb
+[2026-10-23 05:48:28] PLAN would run: New-Service -Name DrishtiWeb -BinaryPathName '"C:\Drishti-test\Drishti\bin\DrishtiServiceHost.exe" "C:\Drishti-test\Drishti\services\DrishtiWeb.conf"' -DisplayName 'CityKart Drishti web app' -StartupType Automatic
+[2026-10-23 05:48:28] PLAN would run: sc.exe config DrishtiWeb start= delayed-auto obj= NT SERVICE\DrishtiWeb
+[2026-10-23 05:48:28] PLAN would run: sc.exe sidtype DrishtiWeb unrestricted
+[2026-10-23 05:48:28] PLAN would run: sc.exe failure DrishtiWeb reset= 86400 actions= restart/5000/restart/10000/restart/60000
+[2026-10-23 05:48:28] PLAN would run: sc.exe failureflag DrishtiWeb 1
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\logs\DrishtiWeb /inheritance:r /grant:r Administrators:(OI)(CI)F /grant:r SYSTEM:(OI)(CI)F /grant:r <operator>:(OI)(CI)F /grant:r NT SERVICE\DrishtiWeb:(OI)(CI)M
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\config\web.env /inheritance:r /grant:r Administrators:F /grant:r SYSTEM:F /grant:r <operator>:F /grant:r NT SERVICE\DrishtiWeb:R
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\services\DrishtiWeb.conf /inheritance:r /grant:r Administrators:F /grant:r SYSTEM:F /grant:r <operator>:F /grant:r NT SERVICE\DrishtiWeb:R
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\bin /grant NT SERVICE\DrishtiWeb:(OI)(CI)RX
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\app /grant NT SERVICE\DrishtiWeb:(OI)(CI)RX
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\bin /grant NT SERVICE\DrishtiWorker:(OI)(CI)RX
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\app /grant NT SERVICE\DrishtiWorker:(OI)(CI)RX
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\bin /grant NT SERVICE\DrishtiGateway:(OI)(CI)RX
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\app /grant NT SERVICE\DrishtiGateway:(OI)(CI)RX
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\bin /grant NT SERVICE\DrishtiGo2rtc:(OI)(CI)RX
+[2026-10-23 05:48:28] PLAN would run: icacls.exe C:\Drishti-test\Drishti\go2rtc /grant NT SERVICE\DrishtiGo2rtc:(OI)(CI)RX
+[2026-10-23 05:48:28]  OK  installed; start them with -Action Start (go2rtc, worker, gateway, web app)
+
+## update.ps1 -DryRun
+
+[2026-10-23 05:48:28] STEP update to build 20261023-0600-dryrun (needs migration 20261021000043) from D:\ANKUR AI PROJECTS\CCTV MONITORING TOOL (dry run: nothing is changed)
+[2026-10-23 05:48:28] STEP current release: none (first installation)
+[2026-10-23 05:48:28] PLAN would run: robocopy D:\ANKUR AI PROJECTS\CCTV MONITORING TOOL -> C:\Drishti-test\Drishti\app\releases\20261023-0600-dryrun (without .git, node_modules, .next, .env files)
+[2026-10-23 05:48:28] PLAN would run: npm ci (in C:\Drishti-test\Drishti\app\releases\20261023-0600-dryrun)
+[2026-10-23 05:48:28] PLAN would build with CK_BUILD_ID=20261023-0600-dryrun and the 0 NEXT_PUBLIC_* settings of web.env (npm run build in C:\Drishti-test\Drishti\app\releases\20261023-0600-dryrun)
+[2026-10-23 05:48:28] PLAN would copy public\ and .next\static\ next to the standalone server and write release.json (build id, migration level)
+[2026-10-23 05:48:28] PLAN would run: backup.ps1 -Tag pre-update-20261023-0600-dryrun (database dump in one snapshot, manifest, Vault root key hash)
+[2026-10-23 05:48:28] PLAN would run: drishti-services.ps1 -Action Stop -Service DrishtiWeb,DrishtiGateway,DrishtiWorker
+[2026-10-23 05:48:28] PLAN would run: npx supabase migration up --workdir C:\Drishti-test\Drishti\app\releases\20261023-0600-dryrun --db-url postgresql://postgres:<password from DRISHTI_DB_PASSWORD>@127.0.0.1:5432/postgres
+[2026-10-23 05:48:28] PLAN would point C:\Drishti-test\Drishti\app\current to C:\Drishti-test\Drishti\app\releases\20261023-0600-dryrun
+[2026-10-23 05:48:28] PLAN would run: drishti-services.ps1 -Action Start -Service DrishtiWeb,DrishtiGateway,DrishtiWorker
+[2026-10-23 05:48:28] PLAN would wait up to 180 s for http://127.0.0.1:3212/api/version = 20261023-0600-dryrun and http://127.0.0.1:3212/api/health = ok
+[2026-10-23 05:48:28]  OK  updated to 20261023-0600-dryrun
+[2026-10-23 05:48:28] PLAN would keep the newest 3 releases under C:\Drishti-test\Drishti\app\releases and remove older ones
+
+## update.ps1 -DryRun -SimulateFailure Health
+
+[2026-10-23 05:48:28] STEP update to build 20261023-0600-dryrun (needs migration 20261021000043) from D:\ANKUR AI PROJECTS\CCTV MONITORING TOOL (dry run: nothing is changed)
+[2026-10-23 05:48:28] STEP current release: none (first installation)
+[2026-10-23 05:48:28] PLAN would run: robocopy D:\ANKUR AI PROJECTS\CCTV MONITORING TOOL -> C:\Drishti-test\Drishti\app\releases\20261023-0600-dryrun (without .git, node_modules, .next, .env files)
+[2026-10-23 05:48:28] PLAN would run: npm ci (in C:\Drishti-test\Drishti\app\releases\20261023-0600-dryrun)
+[2026-10-23 05:48:28] PLAN would build with CK_BUILD_ID=20261023-0600-dryrun and the 0 NEXT_PUBLIC_* settings of web.env (npm run build in C:\Drishti-test\Drishti\app\releases\20261023-0600-dryrun)
+[2026-10-23 05:48:28] PLAN would copy public\ and .next\static\ next to the standalone server and write release.json (build id, migration level)
+[2026-10-23 05:48:28] PLAN would run: backup.ps1 -Tag pre-update-20261023-0600-dryrun (database dump in one snapshot, manifest, Vault root key hash)
+[2026-10-23 05:48:28] PLAN would run: drishti-services.ps1 -Action Stop -Service DrishtiWeb,DrishtiGateway,DrishtiWorker
+[2026-10-23 05:48:28] PLAN would run: npx supabase migration up --workdir C:\Drishti-test\Drishti\app\releases\20261023-0600-dryrun --db-url postgresql://postgres:<password from DRISHTI_DB_PASSWORD>@127.0.0.1:5432/postgres
+[2026-10-23 05:48:28] PLAN would point C:\Drishti-test\Drishti\app\current to C:\Drishti-test\Drishti\app\releases\20261023-0600-dryrun
+[2026-10-23 05:48:28] PLAN would run: drishti-services.ps1 -Action Start -Service DrishtiWeb,DrishtiGateway,DrishtiWorker
+[2026-10-23 05:48:28] FAIL update failed: simulated failure: not healthy in time. Rolling back.
+[2026-10-23 05:48:28] PLAN would run: drishti-services.ps1 -Action Stop -Service DrishtiWeb,DrishtiGateway,DrishtiWorker
+[2026-10-23 05:48:28] PLAN would run: restore.ps1 -BackupPath <the backup just made> -TargetDatabase postgres -AllowLiveDatabase (the database as it was before the migrations)
+[2026-10-23 05:48:28] PLAN would point C:\Drishti-test\Drishti\app\current to <the previous release>
+[2026-10-23 05:48:28] PLAN would run: drishti-services.ps1 -Action Start -Service DrishtiWeb,DrishtiGateway,DrishtiWorker
+[2026-10-23 05:48:28] PLAN would wait up to 180 s for http://127.0.0.1:3212/api/version = <the previous build> and http://127.0.0.1:3212/api/health = ok
+[2026-10-23 05:48:28]  OK  rolled back to <the previous build>
+[2026-10-23 05:48:28] PLAN end of the simulated roll back
+
+## update.ps1 -DryRun -SimulateFailure Migrate
+
+[2026-10-23 05:48:28] STEP update to build 20261023-0600-dryrun (needs migration 20261021000043) from D:\ANKUR AI PROJECTS\CCTV MONITORING TOOL (dry run: nothing is changed)
+[2026-10-23 05:48:28] STEP current release: none (first installation)
+[2026-10-23 05:48:28] PLAN would run: robocopy D:\ANKUR AI PROJECTS\CCTV MONITORING TOOL -> C:\Drishti-test\Drishti\app\releases\20261023-0600-dryrun (without .git, node_modules, .next, .env files)
+[2026-10-23 05:48:28] PLAN would run: npm ci (in C:\Drishti-test\Drishti\app\releases\20261023-0600-dryrun)
+[2026-10-23 05:48:28] PLAN would build with CK_BUILD_ID=20261023-0600-dryrun and the 0 NEXT_PUBLIC_* settings of web.env (npm run build in C:\Drishti-test\Drishti\app\releases\20261023-0600-dryrun)
+[2026-10-23 05:48:28] PLAN would copy public\ and .next\static\ next to the standalone server and write release.json (build id, migration level)
+[2026-10-23 05:48:28] PLAN would run: backup.ps1 -Tag pre-update-20261023-0600-dryrun (database dump in one snapshot, manifest, Vault root key hash)
+[2026-10-23 05:48:28] PLAN would run: drishti-services.ps1 -Action Stop -Service DrishtiWeb,DrishtiGateway,DrishtiWorker
+[2026-10-23 05:48:28] FAIL update failed: simulated failure: the migrations. Rolling back.
+[2026-10-23 05:48:28] PLAN would run: drishti-services.ps1 -Action Stop -Service DrishtiWeb,DrishtiGateway,DrishtiWorker
+[2026-10-23 05:48:28] PLAN would run: drishti-services.ps1 -Action Start -Service DrishtiWeb,DrishtiGateway,DrishtiWorker
+[2026-10-23 05:48:28] PLAN would wait up to 180 s for http://127.0.0.1:3212/api/version = <the previous build> and http://127.0.0.1:3212/api/health = ok
+[2026-10-23 05:48:28]  OK  rolled back to <the previous build>
+[2026-10-23 05:48:28] PLAN end of the simulated roll back
