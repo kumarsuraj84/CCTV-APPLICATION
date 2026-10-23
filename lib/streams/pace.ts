@@ -10,10 +10,25 @@
 // Also: a byte cap per stream, and a viewer-idle end — the consumer (the person's connection) has not asked for more for `viewerIdleMs`
 // (a paused or hidden player, or a reader that stopped): the stream ends cleanly and the upstream (NVR transfer, remux) is cancelled.
 
+// Release 1 clean-ups (P4-L2 re-review):
+//   N-2  a stream that released any recording is charged at least PACE_MIN_CHARGE_SEC (one fragment's length is only known from the
+//        next one, so a one-fragment stream used to cost nothing); the released time is a running maximum of the fragments' times.
+//   N-3  a reader far slower than the signed speed gives its place back: over PACE_MIN_RATE.windowMs, if the reader took less than
+//        PACE_MIN_RATE.fraction of speed x wall time AND the stream spent most of that time waiting for the reader (not for the NVR),
+//        the stream ends ('slow'). A one-fragment-every-50-s reader no longer holds a viewer place for the whole clip.
+//   N-6  after the init segment only moof + mdat fragments carry time; other boxes (styp, sidx, free, …) are allowed only small
+//        (MAX_TIMELESS_BYTES) and at most MAX_TIMELESS_IN_A_ROW between two fragments, so nothing big ever goes out unpaced.
+
 const MAX_UNIT_BYTES = 64 * 1024 * 1024
 const MAX_INIT_BYTES = 4 * 1024 * 1024
+const MAX_TIMELESS_BYTES = 64 * 1024
+const MAX_TIMELESS_IN_A_ROW = 4
+/** The least a stream that released any recording is charged, in seconds of recording (N-2). */
+export const PACE_MIN_CHARGE_SEC = 60
+/** The slow-reader rule (N-3): under a quarter of the signed speed over 2 minutes, while the stream waits for the reader. */
+export const PACE_MIN_RATE = { windowMs: 120_000, fraction: 0.25 }
 
-export type PaceEndReason = 'complete' | 'idle' | 'bytes' | 'cancelled' | 'format' | 'failed'
+export type PaceEndReason = 'complete' | 'idle' | 'slow' | 'bytes' | 'cancelled' | 'format' | 'failed'
 /** How a paced stream ended: why, the recording seconds released (from the fragments' own times) and the bytes sent. */
 export type PaceEnd = { reason: PaceEndReason; mediaSec: number; bytes: number }
 
@@ -30,6 +45,10 @@ export type PaceOptions = {
   onEnd?: (end: PaceEnd) => void
   /** Transforms each released chunk at its stream offset (framing); default: as it is. */
   frame?: (bytes: Uint8Array, offset: number) => Uint8Array
+  /** The slow-reader rule (default PACE_MIN_RATE). */
+  minRate?: { windowMs: number; fraction: number }
+  /** The least charge of a stream that released recording (default PACE_MIN_CHARGE_SEC). */
+  minChargeSec?: number
 }
 
 const u32 = (b: Uint8Array, at: number) => ((b[at] << 24) | (b[at + 1] << 16) | (b[at + 2] << 8) | b[at + 3]) >>> 0
@@ -96,17 +115,23 @@ export function paceFragmentedMp4(source: ReadableStream<Uint8Array>, o: PaceOpt
   let initDone = false
   let timescale = 0
   let firstTfdt: number | null = null
-  let lastMediaSec = 0
+  let lastMediaSec = 0 // the latest recording time released (a running maximum, N-2)
   let fragmentSec = 0 // the last gap between two fragments: the released recording ends about one gap after the last start
+  let releasedAny = false
+  let timeless = 0 // boxes without time since the last fragment (N-6)
   let startedAt = 0
   let sent = 0
   let ended = false
   let upstreamDone = false
   let lastAsk = Date.now()
   let asking = false
+  let readerWaitMs = 0 // wall time the stream had nothing asked of it (it was waiting for the reader), ended gaps only (N-3)
   let sleepTimer: ReturnType<typeof setTimeout> | undefined
   let wakeSleep: (() => void) | null = null
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null
+  const minRate = o.minRate ?? PACE_MIN_RATE
+  const minCharge = o.minChargeSec ?? PACE_MIN_CHARGE_SEC
+  const samples: { t: number; media: number; wait: number }[] = []
 
   const finish = (reason: PaceEndReason, how: 'close' | 'error' | 'none') => {
     if (ended) return
@@ -121,12 +146,27 @@ export function paceFragmentedMp4(source: ReadableStream<Uint8Array>, o: PaceOpt
     } catch {
       // the consumer has gone
     }
-    o.onEnd?.({ reason, mediaSec: sent === 0 ? 0 : Math.max(0, Math.round(lastMediaSec + fragmentSec)), bytes: sent })
+    const released = releasedAny ? Math.max(minCharge, Math.round(lastMediaSec + fragmentSec)) : 0
+    o.onEnd?.({ reason, mediaSec: sent === 0 ? 0 : released, bytes: sent })
+  }
+  /** N-3: over the last window, did the reader take less than its share while the stream mostly waited for it? */
+  const tooSlow = (now: number): boolean => {
+    const wait = readerWaitMs + (asking ? 0 : now - lastAsk)
+    samples.push({ t: now, media: lastMediaSec, wait })
+    while (samples.length > 1 && samples[1].t <= now - minRate.windowMs) samples.shift()
+    const from = samples[0]
+    const span = now - from.t
+    if (startedAt === 0 || from.t < startedAt || span < minRate.windowMs) return false
+    const taken = lastMediaSec - from.media
+    return taken < minRate.fraction * o.speed * (span / 1000) && wait - from.wait > span / 2
   }
   // Review I-2: nobody asked for more for viewerIdleMs while there is more to give → the viewer has stopped; end cleanly.
   const idleTimer = setInterval(() => {
-    if (!ended && !asking && Date.now() - lastAsk >= o.viewerIdleMs) finish('idle', 'close')
-  }, Math.max(50, Math.min(5000, Math.floor(o.viewerIdleMs / 4))))
+    if (ended) return
+    const now = Date.now()
+    if (!asking && now - lastAsk >= o.viewerIdleMs) finish('idle', 'close')
+    else if (tooSlow(now)) finish('slow', 'close')
+  }, Math.max(50, Math.min(5000, Math.floor(o.viewerIdleMs / 4), Math.floor(minRate.windowMs / 8))))
   ;(idleTimer as { unref?: () => void }).unref?.()
 
   const append = (chunk: Uint8Array) => {
@@ -159,7 +199,11 @@ export function paceFragmentedMp4(source: ReadableStream<Uint8Array>, o: PaceOpt
     if (h === null) return 'more'
     if (h.end - h.start > MAX_UNIT_BYTES) return 'bad'
     if (h.end > held.length) return 'more'
-    if (h.type !== 'moof') return { bytes: held.subarray(0, h.end), mediaSec: null } // styp, sidx, free, …: no time of their own
+    if (h.type !== 'moof') {
+      // styp, sidx, free, …: no time of their own, so only small ones and only a few in a row (release 1, N-6).
+      if (h.type === 'mdat' || h.end - h.start > MAX_TIMELESS_BYTES || timeless >= MAX_TIMELESS_IN_A_ROW) return 'bad'
+      return { bytes: held.subarray(0, h.end), mediaSec: null }
+    }
     const t = tfdtOf(held, h)
     if (t === null) return 'bad'
     const m = header(held, h.end)
@@ -182,6 +226,7 @@ export function paceFragmentedMp4(source: ReadableStream<Uint8Array>, o: PaceOpt
       },
       async pull(c) {
         if (ended) return
+        readerWaitMs += Date.now() - lastAsk
         asking = true
         try {
           for (;;) {
@@ -211,9 +256,13 @@ export function paceFragmentedMp4(source: ReadableStream<Uint8Array>, o: PaceOpt
             held = held.slice(unit.bytes.length)
             sent += out.length
             if (unit.mediaSec !== null) {
-              if (unit.mediaSec > lastMediaSec) fragmentSec = unit.mediaSec - lastMediaSec
-              lastMediaSec = unit.mediaSec
-            }
+              if (unit.mediaSec > lastMediaSec) {
+                fragmentSec = unit.mediaSec - lastMediaSec
+                lastMediaSec = unit.mediaSec
+              }
+              releasedAny = true
+              timeless = 0
+            } else if (initDone && sent > out.length) timeless++
             c.enqueue(out)
             return
           }

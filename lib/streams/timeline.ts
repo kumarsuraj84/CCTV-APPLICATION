@@ -293,7 +293,8 @@ export type EdgeAction = 'pan-left' | 'pan-right' | 'previous-day' | 'next-day' 
 
 /**
  * LG-12, guarded: dwelling at an edge pans a zoomed-in window; when there is nothing left to pan to (or the whole day is shown) it changes
- * to the previous or next day, but only when that is allowed (never beyond today, never before the oldest recording or the year back).
+ * to the previous or next day, but only when that is allowed (never beyond today, never before the year back; P4-L2 review I-3: the
+ * oldest recording is not a bound, it only offers a "Go to it" link).
  */
 export function edgeAction(view: View, side: 'left' | 'right', o: { canPreviousDay: boolean; canNextDay: boolean }): EdgeAction {
   if (side === 'left') return view.start > 0 ? 'pan-left' : o.canPreviousDay ? 'previous-day' : null

@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ffmpegHelpHasReadrate } from '@/lib/streams/ffmpeg'
 import {
   buildDownloadBody,
   buildFfmpegArgs,
@@ -704,6 +705,35 @@ describe('the check that ffmpeg runs', () => {
     expect(await make({ spawn: spawnReturning(0, 'ffmpeg version 4.4.2-0ubuntu0.22.04.1 Copyright\n') })(E)).toBe(false)
     expect(await make({ spawn: spawnReturning(0, '') })(E)).toBe(false)
     expect(await make({ spawn: spawnReturning(0, 'ffmpeg version 5.1.4 Copyright\n') })(E)).toBe(true)
+  })
+
+  // Release 1 clean-ups (P4-L2 re-review N-4): a dated git build says "ffmpeg version 2024-05-13-git-…" — no release number. Instead of
+  // refusing it, the check asks the program itself whether it has -readrate (`-hide_banner -h full`).
+  it('N-4: a build without a release number passes when its help lists -readrate, and fails when it does not', async () => {
+    const answering = (versionText: string, helpText: string) => {
+      const calls: string[][] = []
+      const spawn: SpawnFn = (_command, args) => {
+        calls.push(args)
+        const c = new FakeChild()
+        queueMicrotask(() => {
+          c.stdout.end(args.includes('-version') ? versionText : helpText)
+          setTimeout(() => c.emit('close', 0, null), 5)
+        })
+        return c as never
+      }
+      return Object.assign(spawn, { calls })
+    }
+    const git = 'ffmpeg version 2024-05-13-git-37db0454e4-essentials_build-www.gyan.dev Copyright (c) 2000-2024\n'
+    const withReadrate = answering(git, 'Advanced per-input options:\n-re                 read input at native frame rate\n-readrate speed     read input at specified rate\n')
+    expect(await make({ spawn: withReadrate })(E)).toBe(true)
+    expect(withReadrate.calls).toEqual([['-version'], ['-hide_banner', '-h', 'full']])
+    expect(await make({ spawn: answering(git, 'Advanced per-input options:\n-re   read input at native frame rate\n') })(E)).toBe(false)
+    // A release number decides alone: an old release is refused without asking further, a new one is not asked either.
+    const old = answering('ffmpeg version 4.4.2 Copyright\n', '-readrate speed read input at specified rate\n')
+    expect(await make({ spawn: old })(E)).toBe(false)
+    expect(old.calls).toEqual([['-version']])
+    expect(ffmpegHelpHasReadrate('  -readrate speed   read input at specified rate')).toBe(true)
+    expect(ffmpegHelpHasReadrate('-readrate_initial_burst  something')).toBe(false)
   })
 
   it('runs the program from the setting with only -version, and says false at once for a setting that is refused', async () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { framingKey, xorFrame } from '@/lib/streams/framing'
-import { paceFragmentedMp4, type PaceEnd } from '@/lib/streams/pace'
-import { fmp4Init, makeFmp4, streamOf } from '../helpers/fmp4'
+import { PACE_MIN_CHARGE_SEC, PACE_MIN_RATE, paceFragmentedMp4, type PaceEnd } from '@/lib/streams/pace'
+import { box, fmp4Fragment, fmp4Init, makeFmp4, streamOf } from '../helpers/fmp4'
 
 // P4-L2 review I-1 (owner ruling: playback-only people must not be able to dump recordings): the stream layer releases the fragmented MP4
 // no faster than the signed speed times real time (plus a short burst for the player's start), caps the bytes of one stream, and ends a
@@ -75,6 +75,93 @@ describe('paceFragmentedMp4', () => {
     const stream = paceFragmentedMp4(streamOf(new TextEncoder().encode('<html>this is not a recording</html>')), { speed: 2, burstSec: 1, maxBytes: 1e9, viewerIdleMs: 1000, onEnd: (e) => (end = e) })
     await expect(new Response(stream).arrayBuffer()).rejects.toThrow()
     expect(end).toMatchObject({ reason: 'format', bytes: 0 })
+  })
+
+  // Release 1 clean-ups (P4-L2 re-review N-2): a stream that released one fragment was charged 0 seconds (the fragment's length is only
+  // known from the next one). Every stream that released any recording is charged at least 60 s, and the time is a running maximum.
+  it('N-2: a stream that released one fragment is charged at least 60 s; nothing released costs nothing', async () => {
+    let end: PaceEnd | null = null
+    await new Response(paceFragmentedMp4(streamOf(makeFmp4({ fragments: 1, payloadBytes: 1000 })), { speed: 16, burstSec: 1000, maxBytes: 1e9, viewerIdleMs: 5000, onEnd: (e) => (end = e) })).arrayBuffer()
+    expect(end).toMatchObject({ reason: 'complete', mediaSec: 60 })
+    let none: PaceEnd | null = null
+    await new Response(paceFragmentedMp4(streamOf(fmp4Init()), { speed: 16, burstSec: 1000, maxBytes: 1e9, viewerIdleMs: 5000, onEnd: (e) => (none = e) })).arrayBuffer()
+    expect(none).toMatchObject({ mediaSec: 0 })
+  })
+
+  it('N-2: the charged time is the latest recording time released, even when a fragment goes back in time', async () => {
+    let end: PaceEnd | null = null
+    const bytes = Buffer.concat([fmp4Init(), fmp4Fragment(0, 1000), fmp4Fragment(100, 1000), fmp4Fragment(50, 1000)])
+    await new Response(paceFragmentedMp4(streamOf(bytes), { speed: 16, burstSec: 1000, maxBytes: 1e9, viewerIdleMs: 5000, onEnd: (e) => (end = e) })).arrayBuffer()
+    expect(end).toMatchObject({ reason: 'complete', mediaSec: 200 }) // 100 + one gap of 100; before: 50 + 100 = 150
+  })
+
+  // N-6: boxes other than moof/mdat after the init segment had no time and were released unpaced; only the byte cap bounded them.
+  it('N-6: a large box between fragments (or a run of them) ends the stream as not a recording; a small styp per fragment is fine', async () => {
+    const free = (n: number) => box('free', Buffer.alloc(n))
+    for (const bytes of [
+      Buffer.concat([fmp4Init(), fmp4Fragment(0, 1000), free(200_000), fmp4Fragment(1, 1000)]),
+      Buffer.concat([fmp4Init(), fmp4Fragment(0, 1000), ...Array.from({ length: 6 }, () => free(100)), fmp4Fragment(1, 1000)]),
+    ]) {
+      let end: PaceEnd | null = null
+      await expect(new Response(paceFragmentedMp4(streamOf(bytes), { speed: 16, burstSec: 1000, maxBytes: 1e9, viewerIdleMs: 5000, onEnd: (e) => (end = e) })).arrayBuffer()).rejects.toThrow()
+      expect(end).toMatchObject({ reason: 'format' })
+    }
+    let ok: PaceEnd | null = null
+    const styp = box('styp', Buffer.from('msdh', 'latin1'), Buffer.alloc(4), Buffer.from('msdhmsix', 'latin1'))
+    const good = Buffer.concat([fmp4Init(), ...[0, 1, 2].flatMap((s) => [styp, fmp4Fragment(s, 1000)])])
+    await new Response(paceFragmentedMp4(streamOf(good), { speed: 16, burstSec: 1000, maxBytes: 1e9, viewerIdleMs: 5000, onEnd: (e) => (ok = e) })).arrayBuffer()
+    expect(ok).toMatchObject({ reason: 'complete' })
+  })
+
+  // N-3: a reader that takes one fragment every ~50 s held a viewer place for the whole clip while being charged almost nothing.
+  describe('N-3: a reader far slower than the signed speed gives its place back', () => {
+    const slowRule = { windowMs: 800, fraction: 0.25 }
+    it('ends a stream whose reader takes under a quarter of the signed speed while the stream waits for it', async () => {
+      let end: PaceEnd | null = null
+      const src = streamOf(makeFmp4({ fragments: 200, fragmentSec: 1, payloadBytes: 1000 }))
+      const reader = paceFragmentedMp4(src, { speed: 8, burstSec: 0, maxBytes: 1e9, viewerIdleMs: 5000, minRate: slowRule, onEnd: (e) => (end = e) }).getReader()
+      for (let i = 0; i < 6 && !end; i++) {
+        const r = await reader.read()
+        if (r.done) break
+        await wait(400) // 1 s of recording per 0.4 s: 2.5x against 8x signed (31 %)... then slower
+        if (i >= 1) await wait(400) // 1 s per 0.8 s: 1.25x, under a quarter of 8x
+      }
+      await wait(1200)
+      expect(end).toMatchObject({ reason: 'slow' })
+      expect(src.cancelled()).toBe(true)
+    })
+
+    it('keeps a reader that takes what the pace gives (the pace, not the reader, is the slow side)', async () => {
+      let end: PaceEnd | null = null
+      const got = await readFor(paceFragmentedMp4(streamOf(makeFmp4({ fragments: 200, fragmentSec: 1, payloadBytes: 1000 })), { speed: 2, burstSec: 0, maxBytes: 1e9, viewerIdleMs: 5000, minRate: slowRule, onEnd: (e) => (end = e) }), 2000)
+      expect(got).toBeGreaterThan(0)
+      expect(end).toMatchObject({ reason: 'cancelled' }) // readFor cancelled it; the slow rule never fired
+    })
+
+    it('keeps a stream whose NVR is the slow side (the stream waits for the recording, not for the reader)', async () => {
+      let end: PaceEnd | null = null
+      const bytes = makeFmp4({ fragments: 40, fragmentSec: 1, payloadBytes: 1000 })
+      const init = fmp4Init().length
+      const step = (bytes.length - init) / 40
+      let at = 0
+      const slowNvr = new ReadableStream<Uint8Array>({
+        async pull(c) {
+          if (at >= bytes.length) return c.close()
+          const n = at === 0 ? init + step : step
+          if (at > 0) await wait(300) // one second of recording per 0.3 s: 3.3x against 16x signed
+          c.enqueue(bytes.subarray(at, at + n))
+          at += n
+        },
+      })
+      const got = await readFor(paceFragmentedMp4(slowNvr, { speed: 16, burstSec: 0, maxBytes: 1e9, viewerIdleMs: 5000, minRate: slowRule, onEnd: (e) => (end = e) }), 2500)
+      expect(got).toBeGreaterThan(0)
+      expect(end).toMatchObject({ reason: 'cancelled' })
+    })
+
+    it('the default rule: a quarter of the signed speed over 2 minutes', () => {
+      expect(PACE_MIN_RATE).toEqual({ windowMs: 120_000, fraction: 0.25 })
+      expect(PACE_MIN_CHARGE_SEC).toBe(60)
+    })
   })
 
   it('the person going away (cancel) ends it at once', async () => {

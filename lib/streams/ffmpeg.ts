@@ -376,9 +376,21 @@ export const FFMPEG_MIN_MAJOR = 5
  * build ("N-112345-g…", newer than any release). Anything else — an older release, no version at all — is not enough.
  */
 export function ffmpegVersionOk(text: string): boolean {
+  return ffmpegVersionVerdict(text) === true
+}
+
+/** true / false when the version line decides (a release number, or an "N-" development build); 'unknown' otherwise (release 1, N-4). */
+function ffmpegVersionVerdict(text: string): boolean | 'unknown' {
   const m = /ffmpeg version\s+(?:n)?(\d+)\.(\d+)/i.exec(text ?? '')
   if (m) return Number(m[1]) >= FFMPEG_MIN_MAJOR
-  return /ffmpeg version\s+N-\d+/.test(text ?? '')
+  if (/ffmpeg version\s+N-\d+/.test(text ?? '')) return true
+  // A dated git build ("ffmpeg version 2024-05-13-git-…") names no release: ask the program itself (its help) whether it has -readrate.
+  return /ffmpeg version\s+\S/i.test(text ?? '') ? 'unknown' : false
+}
+
+/** Release 1 clean-ups (P4-L2 re-review N-4): the help text (`-hide_banner -h full`) lists the input option -readrate. */
+export function ffmpegHelpHasReadrate(text: string): boolean {
+  return /^\s*-readrate\s/m.test(text ?? '')
 }
 
 /**
@@ -393,6 +405,46 @@ export function createFfmpegCheck(o: { spawn?: SpawnFn; now?: () => number; ttlM
   const timeout = o.timeoutMs ?? 5_000
   const known = new Map<string, { at: number; ok: boolean }>()
   const running = new Map<string, Promise<boolean>>()
+  /** Runs `exe args` and resolves with its exit code and what it printed (at most `limit` characters, or until `enough` matches). */
+  const ask = (exe: string, args: string[], limit: number, enough?: (out: string) => boolean) =>
+    new Promise<{ code: number | null; out: string }>((resolve) => {
+      let child: Child
+      try {
+        child = run(exe, args)
+      } catch {
+        resolve({ code: null, out: '' })
+        return
+      }
+      let out = ''
+      let done = false
+      const finish = (code: number | null, kill: boolean) => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        if (kill) {
+          try {
+            child.kill('SIGKILL')
+          } catch {
+            // already gone
+          }
+        }
+        resolve({ code, out })
+      }
+      const timer = setTimeout(() => finish(null, true), timeout)
+      timer.unref?.()
+      child.stdout.on('data', (c: Buffer) => {
+        if (out.length < limit) out += c.toString('utf8')
+        if (enough?.(out)) finish(0, true) // found: the rest of a long help text is not needed
+      })
+      for (const s of [child.stdout, child.stderr]) {
+        s.on('error', () => {})
+        s.resume()
+      }
+      child.stdin.on('error', () => {})
+      child.stdin.end()
+      child.once('error', () => finish(null, true))
+      child.once('close', (code: number | null) => setImmediate(() => finish(code, false)))
+    })
   const probe = (exe: string) =>
     new Promise<boolean>((resolve) => {
       let child: Child
@@ -428,8 +480,11 @@ export function createFfmpegCheck(o: { spawn?: SpawnFn; now?: () => number; ttlM
       child.once('error', () => finish(false))
       // Read what is still buffered before judging the version (the close can come before the last data event).
       child.once('close', (code: number | null) =>
-        setImmediate(() => {
-          const ok = code === 0 && ffmpegVersionOk(out)
+        setImmediate(async () => {
+          const verdict = code === 0 ? ffmpegVersionVerdict(out) : false
+          clearTimeout(timer)
+          // Release 1 (N-4): a build that names no release is asked for -readrate itself (its help text).
+          const ok = verdict === 'unknown' ? ffmpegHelpHasReadrate((await ask(exe, ['-hide_banner', '-h', 'full'], 4_000_000, ffmpegHelpHasReadrate)).out) : verdict
           if (code === 0 && !ok && !warnedVersion) {
             warnedVersion = true
             logger.warn({ event: 'ffmpeg_too_old', note: `fast playback needs ffmpeg ${FFMPEG_MIN_MAJOR}.0 or newer (-readrate); it is off` })
