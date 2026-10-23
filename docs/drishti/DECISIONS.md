@@ -90,3 +90,16 @@ picture with the camera's main stream on a double-click; Playback is one click o
 playback is a separate right (`cctv.playback`), so a double-click → playback gesture would do nothing for the many live-only viewers;
 the playback screen is being reworked in P4-L2. This is a deliberate departure from the legacy gesture, recorded on tracker row LG-4.
 If the owner wants the legacy behaviour back it is a one-line change in `components/live/LiveTile.tsx` (`onDoubleClick`).
+
+## Behaviour change P4-L1 (fix round 2, 2026-10-23; re-review N-4): an unattended video wall ends at the idle limit — OWNER TO CONFIRM
+Since P4-L1 review round 1 only REAL input (a key, a pointer press or move, a touch, a wheel) keeps a sign-in alive; the wall's token
+renewals and the pages' 60 s refresh no longer count as activity (`proxy.ts`, `lib/auth/input-activity.ts`), and the Live screens ask
+"Are you still there?" after the same idle limit and stop their video until "Continue watching". This applies the P3-1 rule
+(`lib/auth/session-policy.ts`: idle limit 60 minutes for administrators, 8 hours for everyone else) to video walls as well. **Change for
+display screens:** before, a wall left running on a monitor kept an operator's sign-in alive until the 12-hour absolute limit; now an
+operator's wall that nobody touches stops and is signed out after 8 hours without input (an administrator's after 60 minutes). The
+reviewer had suggested applying the presence limit to administrators only; the builder applied it to everyone because P3-1 states one
+idle rule for every signed-in person and a forgotten wall otherwise keeps a person's video rights open for 12 hours. The input time is
+written in the server's clock (fix round 2, N-2), so a wrong PC clock does not change the limit. If the owner wants control-room screens
+to run longer, the options are a per-person "display screen" exception with its own longer limit, or a longer idle limit for operators
+(`SESSION_IDLE_MINUTES`, default 480, in `lib/auth/session-policy.ts`; administrators: `SESSION_IDLE_MINUTES_ADMIN`); both would be recorded here first.
