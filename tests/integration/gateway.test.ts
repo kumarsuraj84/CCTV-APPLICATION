@@ -687,6 +687,45 @@ describe('gateway: limits', () => {
     expect(await open(wsUrl(port, 'bad'), APP, { 'X-Forwarded-For': '10.0.0.5' }).closed).toMatchObject({ code: 1013 })
   })
 
+  // P5.5 load test finding: behind the one TLS address (Caddy on this computer, GATEWAY_HOST=127.0.0.1, runbook-tls.md) every browser's
+  // socket arrives from 127.0.0.1, so the per-address limits (100 open videos, 240 attempts a minute) became limits for the WHOLE estate:
+  // the 101st video anywhere was refused "Too many open videos from this address.". With TRUSTED_PROXY_HOPS the gateway counts the
+  // client address the proxy adds (the last X-Forwarded-For entry for one hop), and only for sockets that come from this computer.
+  it('behind the TLS proxy (trustedProxyHops 1) the per-address limit counts each client address the proxy adds, not the proxy', async () => {
+    const fake = await startFakeGo2rtc()
+    const { port, clock } = await startGateway(fake.url, { maxSocketsPerIp: 2, maxSockets: 50, trustedProxyHops: 1 })
+    const from = (ip: string) => open(wsUrl(port, tokenFor(clock)), APP, { 'X-Forwarded-For': ip })
+    const four = [from('10.0.0.1'), from('10.0.0.1'), from('10.0.0.2'), from('10.0.0.2')]
+    expect(await Promise.all(four.map((c) => c.opened))).toEqual([true, true, true, true])
+    await waitFor(() => fake.connections.length === 4)
+    expect(await from('10.0.0.1').closed).toEqual({ code: 1013, reason: 'Too many open videos from this address.' })
+    // Only the last hop is believed: an address a client wrote in front of the proxy's own entry changes nothing.
+    expect(await open(wsUrl(port, tokenFor(clock)), APP, { 'X-Forwarded-For': '10.9.9.9, 10.0.0.2' }).closed).toEqual({ code: 1013, reason: 'Too many open videos from this address.' })
+    const other = from('10.0.0.3')
+    expect(await other.opened).toBe(true)
+  })
+
+  it('behind the TLS proxy the attempts per minute are counted per client address too; without the setting X-Forwarded-For is still ignored', async () => {
+    const fake = await startFakeGo2rtc()
+    const proxied = await startGateway(fake.url, { maxUpgradesPerMinute: 2, trustedProxyHops: 1 })
+    for (const ip of ['10.0.1.1', '10.0.1.1', '10.0.1.2', '10.0.1.2']) {
+      expect(await open(wsUrl(proxied.port, 'bad'), APP, { 'X-Forwarded-For': ip }).closed, ip).toMatchObject({ code: 1008 })
+    }
+    expect(await open(wsUrl(proxied.port, 'bad'), APP, { 'X-Forwarded-For': '10.0.1.1' }).closed).toMatchObject({ code: 1013 })
+    // A socket without the header (or with something that is not an address) counts as the proxy itself.
+    expect(await open(wsUrl(proxied.port, 'bad'), APP, { 'X-Forwarded-For': 'not-an-address' }).closed).toMatchObject({ code: 1008 })
+    const plain = await startGateway(fake.url, { maxUpgradesPerMinute: 2 })
+    expect(await open(wsUrl(plain.port, 'bad'), APP, { 'X-Forwarded-For': '10.0.2.1' }).closed).toMatchObject({ code: 1008 })
+    expect(await open(wsUrl(plain.port, 'bad'), APP, { 'X-Forwarded-For': '10.0.2.2' }).closed).toMatchObject({ code: 1008 })
+    expect(await open(wsUrl(plain.port, 'bad'), APP, { 'X-Forwarded-For': '10.0.2.3' }).closed).toMatchObject({ code: 1013 })
+  })
+
+  it('refuses a trustedProxyHops that is not a whole number from 0 to 5', () => {
+    for (const bad of [-1, 1.5, 6, Number.NaN]) {
+      expect(() => createGateway({ go2rtcUrl: 'http://127.0.0.1:1', secret: SECRET, allowedOrigins: [APP], registry: allowAll, trustedProxyHops: bad, autoValidate: false })).toThrow(/trusted proxies/)
+    }
+  })
+
   it('pauses the sender while the receiver is behind and carries on without a cut when it catches up', async () => {
     const fake = await startFakeGo2rtc()
     const { port, clock, events } = await startGateway(fake.url, { backpressureBytes: 100_000, backpressureStallMs: 20_000 })
