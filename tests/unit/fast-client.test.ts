@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { startFastStream, type FastStreamEnv, type MediaSourceLike, type SourceBufferLike, type VideoLike } from '@/lib/streams/fast-client'
+import { framingKey, xorFrame } from '@/lib/streams/framing'
 import { FAST_STREAM_PATH, FAST_TOKEN_HEADER, MSG_BROWSER_CANNOT_PLAY, MSG_DOWNSHIFTED, MSG_H265 } from '@/lib/streams/speed'
 
 // P4-L2 (decision D-L1): the browser side of fast playback. The picture is fetched with the token in a header (never in an address a
@@ -92,7 +93,7 @@ class FakeVideo extends EventTarget implements VideoLike {
   load() {}
 }
 
-function rig(o: { chunks: Buffer[]; status?: number; json?: unknown; supported?: (t: string) => boolean; secondsPerAppend?: number; holdOpen?: boolean } = { chunks: [] }) {
+function rig(o: { chunks: Buffer[]; status?: number; json?: unknown; supported?: (t: string) => boolean; secondsPerAppend?: number; holdOpen?: boolean; headers?: Record<string, string> } = { chunks: [] }) {
   const video = new FakeVideo()
   const sources: FakeMediaSource[] = []
   const calls: { url: string; init: RequestInit }[] = []
@@ -112,7 +113,7 @@ function rig(o: { chunks: Buffer[]; status?: number; json?: unknown; supported?:
         cancelled = true
       },
     })
-    return new Response(body, { status: 200 })
+    return new Response(body, { status: 200, headers: o.headers })
   })
   const MS = class extends FakeMediaSource {
     constructor() {
@@ -178,6 +179,24 @@ describe('startFastStream', () => {
     s.stop()
   })
 
+  it('review I-1: a framed body (X-Stream-Framing: x32) is unframed with the key from the token before the player gets it', async () => {
+    const token = 'eyJ4IjoxfQ.' + Buffer.alloc(32, 9).toString('base64url')
+    const key = framingKey(token)
+    const plain = [init(), fragment(10), fragment(20)]
+    let offset = 0
+    const framed = plain.map((c) => {
+      const f = Buffer.from(xorFrame(c, key, offset))
+      offset += c.length
+      return f
+    })
+    const r = rig({ chunks: framed, headers: { 'X-Stream-Framing': 'x32' } })
+    const s = startFastStream({ token, speed: 4, video: r.video, env: r.env, callbacks: r.callbacks })
+    await settle(80)
+    expect(r.events.errors).toEqual([])
+    expect(Buffer.concat(r.sources[0].buffers[0].appended.map((b) => Buffer.from(b)))).toEqual(Buffer.concat(plain))
+    s.stop()
+  })
+
   it('a refusal from the server (JSON before any video) is shown in its own plain words and nothing is played', async () => {
     const r = rig({ chunks: [], json: { error: 'There is no recording at that time.' }, status: 404 })
     startFastStream({ token: 't', speed: 2, video: r.video, env: r.env, callbacks: r.callbacks })
@@ -223,9 +242,23 @@ describe('startFastStream', () => {
     const s = startFastStream({ token: 't', speed: 8, video: r.video, env: r.env, callbacks: r.callbacks })
     await settle()
     r.video.dispatchEvent(new Event('playing'))
+    // Fix round 1 (seen in the browser check): a stall counts only when the recording ran out (little buffered ahead): here the viewer
+    // has played up to the end of what arrived.
+    r.video.currentTime = r.video.bufferedEnd - 1
     for (let i = 0; i < 3; i++) r.video.dispatchEvent(new Event('waiting'))
     expect(r.video.playbackRate).toBe(4)
     expect(r.events.speeds).toEqual([[4, MSG_DOWNSHIFTED(8, 4)]])
+    s.stop()
+  })
+
+  it('a "waiting" while plenty is buffered (the browser decoding, not the recording arriving late) never steps the speed down', async () => {
+    const r = rig({ chunks: [init(), fragment(1)], secondsPerAppend: 40 })
+    const s = startFastStream({ token: 't', speed: 16, video: r.video, env: r.env, callbacks: r.callbacks })
+    await settle()
+    r.video.dispatchEvent(new Event('playing'))
+    for (let i = 0; i < 5; i++) r.video.dispatchEvent(new Event('waiting'))
+    expect(r.video.playbackRate).toBe(16)
+    expect(r.events.speeds).toEqual([])
     s.stop()
   })
 

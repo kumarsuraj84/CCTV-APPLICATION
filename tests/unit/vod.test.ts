@@ -670,14 +670,18 @@ describe('the check that ffmpeg runs', () => {
     stderr = new PassThrough()
     kill = vi.fn<(signal?: string) => boolean>(() => true)
   }
-  const spawnReturning = (code: number | 'error' | 'hang') => {
+  // P4-L2 review I-1: the check also needs ffmpeg 5.0 or newer (-readrate), read from `-version`'s first line.
+  const spawnReturning = (code: number | 'error' | 'hang', version = 'ffmpeg version 6.1.1 Copyright (c) 2000-2023 the FFmpeg developers\n') => {
     const calls: { command: string; args: string[] }[] = []
     const spawn: SpawnFn = (command, args) => {
       calls.push({ command, args })
       const c = new FakeChild()
       queueMicrotask(() => {
         if (code === 'error') c.emit('error', Object.assign(new Error('x'), { code: 'ENOENT' }))
-        else if (code !== 'hang') c.emit('close', code, null)
+        else if (code !== 'hang') {
+          c.stdout.end(version)
+          setTimeout(() => c.emit('close', code, null), 5)
+        }
       })
       return c as never
     }
@@ -694,6 +698,12 @@ describe('the check that ffmpeg runs', () => {
     expect(await make({ spawn: spawnReturning('error') })(E)).toBe(false)
     expect(await make({ spawn: spawnReturning('hang'), timeoutMs: 50 })(E)).toBe(false)
     expect(await make({ spawn: () => { throw new Error('boom') } })(E)).toBe(false)
+  })
+
+  it('review I-1: an ffmpeg older than 5.0, or one that does not say its version, is not enough', async () => {
+    expect(await make({ spawn: spawnReturning(0, 'ffmpeg version 4.4.2-0ubuntu0.22.04.1 Copyright\n') })(E)).toBe(false)
+    expect(await make({ spawn: spawnReturning(0, '') })(E)).toBe(false)
+    expect(await make({ spawn: spawnReturning(0, 'ffmpeg version 5.1.4 Copyright\n') })(E)).toBe(true)
   })
 
   it('runs the program from the setting with only -version, and says false at once for a setting that is refused', async () => {

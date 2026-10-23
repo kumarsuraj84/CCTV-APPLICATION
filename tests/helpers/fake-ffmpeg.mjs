@@ -7,6 +7,10 @@
 //   hang      reads nothing, writes nothing, never ends
 //   linger    copies, but does not end when its input ends
 const mode = process.argv[2] ?? 'copy'
+// `-version` (the availability check): a version that has -readrate (P4-L2 review I-1 needs 5.0 or newer).
+if (process.argv.includes('-version')) {
+  process.stdout.write('ffmpeg version 6.1-fake Copyright (c) the stand-in\n', () => process.exit(0))
+}
 
 if (mode === 'copy') {
   process.stdin.pipe(process.stdout)

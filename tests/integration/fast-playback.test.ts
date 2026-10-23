@@ -7,7 +7,9 @@ import type { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { listDaySegments, listOldestRecording, listRecordedDays, openPlayback } from '@/lib/streams/playback'
 import { createConversionLimiter, parseVodQuery, serveVod, type ConversionLimiter } from '@/lib/streams/vod'
 import { adminClient, atCamera, atLocation, cleanupOrg, createLocation, createOrg, createRecorder, createUser, grant, type TestUser } from '../setup/fixtures'
-import { FAKE_DOWNLOAD_BYTES, startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
+import { framingKey, xorFrame } from '@/lib/streams/framing'
+import { startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
+import { fmp4Fragment, makeFmp4 } from '../helpers/fmp4'
 import { fakeRemux } from '../helpers/fake-remux'
 import { fakeSpawn } from '../helpers/fake-spawn'
 
@@ -45,6 +47,7 @@ const waitFor = async (check: () => boolean | Promise<boolean>, ms = 8000) => {
   while (!(await check()) && Date.now() < end) await new Promise((r) => setTimeout(r, 25))
   expect(await check()).toBe(true)
 }
+const CLIP = makeFmp4({ fragments: 5, fragmentSec: 1, payloadBytes: 2000 })
 const nvrStamp = (ms: number) => new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
 
 describe('fast playback through the stream path (D-L1)', () => {
@@ -64,10 +67,11 @@ describe('fast playback through the stream path (D-L1)', () => {
 
   beforeAll(async () => {
     process.env.STREAM_TOKEN_SECRET = SECRET
-    nvrA = await startFakeNvr({ username: NVR_USER, password: NVR_PASSWORD, recordings: RECORDINGS })
-    nvrB = await startFakeNvr({ username: NVR_USER, password: NVR_PASSWORD, recordings: RECORDINGS })
-    nvrC = await startFakeNvr({ username: NVR_USER, password: NVR_PASSWORD, recordings: RECORDINGS })
-    nvrEnd = await startFakeNvr({ username: NVR_USER, password: NVR_PASSWORD, recordings: RECORDINGS, download: 'endless' })
+    // Review I-1: the stream layer paces a fragmented MP4 by its own timestamps, so the fake NVRs send one (5 s of recording).
+    nvrA = await startFakeNvr({ username: NVR_USER, password: NVR_PASSWORD, recordings: RECORDINGS, downloadBytes: CLIP })
+    nvrB = await startFakeNvr({ username: NVR_USER, password: NVR_PASSWORD, recordings: RECORDINGS, downloadBytes: CLIP })
+    nvrC = await startFakeNvr({ username: NVR_USER, password: NVR_PASSWORD, recordings: RECORDINGS, downloadBytes: CLIP })
+    nvrEnd = await startFakeNvr({ username: NVR_USER, password: NVR_PASSWORD, recordings: RECORDINGS, download: 'endless', downloadBytes: makeFmp4({ fragments: 1 }), endlessChunk: (n) => fmp4Fragment(n + 1, 1000) })
     orgId = await createOrg()
     loc = await createLocation(orgId, { code: `FP${Date.now() % 100000}` })
     recA = await createRecorder(orgId, loc, { host: '127.0.0.1', httpPort: nvrA.port, rtspPort: 554, username: NVR_USER, secret: NVR_PASSWORD, name: 'NVR A' })
@@ -135,7 +139,11 @@ describe('fast playback through the stream path (D-L1)', () => {
       expect(res.headers.get('cache-control')).toContain('no-store')
       expect(res.headers.get('x-content-type-options')).toBe('nosniff')
       expect(res.headers.get('x-video-codec')).toBe('h264')
-      expect(Buffer.from(await res.arrayBuffer())).toEqual(FAKE_DOWNLOAD_BYTES)
+      // review I-1: framed (obfuscation): the saved body is not the MP4; the page undoes it with the key from the token
+      expect(res.headers.get('x-stream-framing')).toBe('x32')
+      const body = Buffer.from(await res.arrayBuffer())
+      expect(body.subarray(4, 8).toString('latin1')).not.toBe('ftyp')
+      expect(Buffer.from(xorFrame(body, framingKey(token), 0))).toEqual(CLIP)
     })
 
     it('the same viewer can never download a file: /api/vod (export) is "Camera not found." and the NVR is not asked', async () => {
@@ -223,8 +231,10 @@ describe('fast playback through the stream path (D-L1)', () => {
       expect(res.status).toBe(200)
       await res.arrayBuffer()
       await waitFor(async () => (await admin().from('media_sessions').select('closed_at').eq('id', claims.sid).single()).data?.closed_at != null)
-      const row = (await admin().from('media_sessions').select('kind, capability, camera_id, stream, location_id, recorder_id, opened_at, revoked_at').eq('id', claims.sid).single()).data!
-      expect(row).toMatchObject({ kind: 'playback', capability: 'cctv.playback', camera_id: b1, stream: `fpb_${b1}_${claims.s}_${claims.e}`, location_id: loc, recorder_id: recB, revoked_at: null })
+      await waitFor(async () => (await admin().from('media_sessions').select('fast_media_sec').eq('id', claims.sid).single()).data?.fast_media_sec != null)
+      const row = (await admin().from('media_sessions').select('kind, capability, camera_id, stream, location_id, recorder_id, opened_at, revoke_reason, fast_media_sec').eq('id', claims.sid).single()).data!
+      // Review I-1: at its end the session is finished for good (its token plays once) with the recording seconds it released (5 s here).
+      expect(row).toMatchObject({ kind: 'playback', capability: 'cctv.playback', camera_id: b1, stream: `fpb_${b1}_${claims.s}_${claims.e}`, location_id: loc, recorder_id: recB, revoke_reason: 'finished', fast_media_sec: 5 })
       expect(row.opened_at).not.toBeNull()
     })
 
@@ -238,7 +248,7 @@ describe('fast playback through the stream path (D-L1)', () => {
         },
       }) as ReturnType<typeof admin>
       const token = await tokenFor(viewer, a1, undefined, undefined, { admin: counting })
-      expect(calls).toContain('media_session_create')
+      expect(calls).toContain('media_session_create_fast') // review I-1: budget, one at a time and the session in one call
       expect(calls.filter((f) => /credential/.test(f))).toEqual([])
       expect(nvrA.requests).toHaveLength(0)
       calls.length = 0
@@ -334,15 +344,18 @@ describe('fast playback through the stream path (D-L1)', () => {
       expect((await segs(c1))[1]).toEqual({ start: '2026-10-22T08:58:23.000Z', end: '2026-10-22T09:58:23.000Z' })
     })
 
-    it('the calendar marks shown days, with the recorder\'s offset: B\'s NVR days 21 and 22 reach into the shown 23rd; C\'s reach back into the 20th', async () => {
-      const days = async (cam: string) => {
-        const r = await listRecordedDays({ rls: viewer.client, admin: admin(), nvr: nvrClient }, who(viewer), cam, 2026, 10, 0)
+    // Review m-4 replaces "B's NVR days 21 and 22 reach into the shown 23rd; C's reach back into the 20th": a skew under 10 minutes (C)
+    // marks no extra day, and no day after today is marked (on the 22nd, B's spill into the 23rd is the future).
+    it('the calendar marks shown days with the recorder\'s offset, never a day after today, and ignores a skew under 10 minutes', async () => {
+      const days = async (cam: string, now = NOW) => {
+        const r = await listRecordedDays({ rls: viewer.client, admin: admin(), nvr: nvrClient, now: () => now }, who(viewer), cam, 2026, 10, 0)
         if (!r.ok) throw new Error(r.error)
         return r.days
       }
       expect(await days(a1)).toEqual([21, 22])
-      expect(await days(b1)).toEqual([21, 22, 23])
-      expect(await days(c1)).toEqual([20, 21, 22])
+      expect(await days(b1)).toEqual([21, 22])
+      expect(await days(c1)).toEqual([21, 22])
+      expect(await days(b1, NOW + 86_400_000)).toEqual([21, 22, 23]) // once the 23rd has come, B's spill into it is shown
     })
 
     it('the oldest recording is found and given in shown time per recorder (LG-9)', async () => {
@@ -354,9 +367,24 @@ describe('fast playback through the stream path (D-L1)', () => {
       expect(await oldest(a1)).toBe('2026-09-03T08:14:00.000Z')
       expect(await oldest(b1)).toBe('2026-09-03T09:14:00.000Z')
       expect(await oldest(c1)).toBe('2026-09-03T08:12:23.000Z')
-      // the search went back a long way in ONE request
-      const search = nvrA.posts.filter((p) => p.path === '/ISAPI/ContentMgmt/search').at(-1)!.body
-      expect(search).toContain('<maxResults>1</maxResults>')
+    })
+
+    // Review I-3: never assume the NVR's order; the earliest is found by the calendar and the day's own sorted list.
+    it('review I-3: an NVR that lists its matches newest first still gives the true oldest recording', async () => {
+      const desc = await startFakeNvr({ username: NVR_USER, password: NVR_PASSWORD, searchOrder: 'desc', searchPageSize: 1, recordings: [
+        { start: '2026-10-21T10:00:00', end: '2026-10-21T11:00:00', channel: 1 },
+        { start: '2026-08-14T06:30:00', end: '2026-08-14T07:00:00', channel: 1 },
+        { start: '2026-08-14T05:10:00', end: '2026-08-14T05:20:00', channel: 1 },
+        { start: '2026-09-30T23:00:00', end: '2026-10-01T01:00:00', channel: 1 },
+      ] })
+      try {
+        const rec = await createRecorder(orgId, loc, { host: '127.0.0.1', httpPort: desc.port, rtspPort: 559, username: NVR_USER, secret: NVR_PASSWORD, name: 'NVR newest first' })
+        const cam = await camera(rec, 1, 'Newest first')
+        const r = await listOldestRecording({ rls: viewer.client, admin: admin(), nvr: nvrClient, now: () => NOW }, who(viewer), cam, 0)
+        expect(r).toEqual({ ok: true, oldest: '2026-08-14T05:10:00.000Z' })
+      } finally {
+        await desc.close()
+      }
     })
 
     it('1x playback applies the skewed offset too (C: -97 s)', async () => {
@@ -380,7 +408,7 @@ describe('fast playback through the stream path (D-L1)', () => {
       const token = await tokenFor(viewer, cam, '2026-10-22T09:20:00Z', 10, { remux: undefined, env: { PATH: process.env.PATH } })
       const res = await serveFastStream(deps(viewer, { remux: undefined, env: { PATH: process.env.PATH } }), who(viewer), token)
       expect(res.status).toBe(200)
-      const bytes = Buffer.from(await res.arrayBuffer())
+      const bytes = Buffer.from(xorFrame(new Uint8Array(await res.arrayBuffer()), framingKey(token), 0))
       expect(bytes.subarray(4, 8).toString('latin1')).toBe('ftyp')
       expect(bytes.includes(Buffer.from('moof', 'latin1'))).toBe(true)
     } finally {

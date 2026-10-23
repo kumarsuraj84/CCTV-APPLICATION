@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   admins: 0,
   audit: [] as Record<string, unknown>[],
   serve: vi.fn(),
+  allow: true,
+  counted: 0,
 }))
 const SOME = { organization: false, locations: ['l1'], cameras: [], assets: [] }
 const caps = (...list: string[]) => ({ failed: false, grants: Object.fromEntries(list.map((c) => [c, SOME])) })
@@ -28,6 +30,11 @@ vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: () => (mocks.admins++, { tag: 'admin', from: () => ({ insert: async (row: Record<string, unknown>) => (mocks.audit.push(row), { error: null }) }) }),
 }))
 vi.mock('@/lib/supabase/service-clients', () => ({ createMediaClient: () => ({ tag: 'media' }) }))
+// Review m-1: the stream requests have their own count, taken before anything is read or audited.
+vi.mock('@/lib/streams/request-limit', async (original) => ({
+  ...(await original<typeof import('@/lib/streams/request-limit')>()),
+  fastStreamRequestLimiter: { allow: async () => (mocks.counted++, mocks.allow) },
+}))
 vi.mock('@/lib/streams/fast', async (original) => ({ ...(await original<typeof import('@/lib/streams/fast')>()), serveFastStream: mocks.serve }))
 
 import { GET, HEAD } from '@/app/api/playback/stream/route'
@@ -41,6 +48,8 @@ beforeEach(() => {
   mocks.admins = 0
   mocks.audit = []
   mocks.serve.mockReset()
+  mocks.allow = true
+  mocks.counted = 0
   mocks.serve.mockResolvedValue(new Response('fragments', { status: 200, headers: { 'Content-Type': 'application/vnd.ckdrishti.stream' } }))
 })
 
@@ -125,6 +134,16 @@ describe('GET /api/playback/stream', () => {
     expect(res.status).toBe(500)
     expect(await res.text()).not.toMatch(/ECONNREFUSED|10\.0\.0\.5|hunter2/)
     spy.mockRestore()
+  })
+
+  it('review m-1: stream requests are counted first; over the count it is 429 and nothing is read or audited (no audit flood)', async () => {
+    mocks.allow = false
+    const res = await GET(request({ 'x-playback-token': 'junk', 'sec-fetch-mode': 'cors' }))
+    expect(res.status).toBe(429)
+    expect(mocks.counted).toBe(1)
+    expect(mocks.serve).not.toHaveBeenCalled()
+    expect(mocks.clients).toBe(0)
+    expect(mocks.audit).toEqual([])
   })
 
   it('has only GET and a HEAD that is refused without starting anything', async () => {

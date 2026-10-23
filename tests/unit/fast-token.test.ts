@@ -15,7 +15,8 @@ const SID = '5e0c1d2b-7a3f-4b9e-8c6d-1f2e3a4b5c6d'
 const NOW = Date.UTC(2026, 9, 22, 10, 0, 0)
 const nowSec = Math.floor(NOW / 1000)
 const S = Math.floor(Date.UTC(2026, 9, 22, 14, 30, 0) / 1000)
-const claims = (over: Partial<FastClaims> = {}): FastClaims => ({ sid: SID, u: USER, c: CAM, s: S, e: S + 600, exp: nowSec + FAST_TOKEN_LIFETIME_SEC, ...over })
+// Review I-1: the speed is signed (`sp`), so the server paces the stream to it.
+const claims = (over: Partial<FastClaims> = {}): FastClaims => ({ sid: SID, u: USER, c: CAM, s: S, e: S + 600, sp: 16, exp: nowSec + FAST_TOKEN_LIFETIME_SEC, ...over })
 const forge = (payload: unknown, purpose = 'fastpb.v1.', secret = SECRET) => {
   const p = Buffer.from(JSON.stringify(payload)).toString('base64url')
   return `${p}.${createHmac('sha256', secret).update(purpose + p).digest('base64url')}`
@@ -69,6 +70,14 @@ describe('fast playback tokens', () => {
     expect(verifyFastToken(forge(claims({ e: S + 1801 })), NOW, SECRET)).toBeNull()
     expect(verifyFastToken(forge(claims({ e: S + 1800 })), NOW, SECRET)).not.toBeNull()
     expect(verifyFastToken(forge(claims({ s: 1.5 })), NOW, SECRET)).toBeNull()
+  })
+
+  it('review I-1: the speed is part of the signed claims and must be 2, 4, 8 or 16', () => {
+    for (const sp of [2, 4, 8, 16]) expect(verifyFastToken(signFastToken(claims({ sp: sp as FastClaims['sp'] }), SECRET), NOW, SECRET)?.sp).toBe(sp)
+    for (const sp of [1, 3, 32, 0, '4', null]) expect(verifyFastToken(forge(claims({ sp: sp as never })), NOW, SECRET), String(sp)).toBeNull()
+    const noSpeed: Record<string, unknown> = { ...claims() }
+    delete noSpeed.sp
+    expect(verifyFastToken(forge(noSpeed), NOW, SECRET)).toBeNull()
   })
 
   it('never throws on rubbish, and refuses an over-long token', () => {

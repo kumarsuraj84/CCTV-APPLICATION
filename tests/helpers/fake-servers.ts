@@ -83,6 +83,10 @@ export type FakeNvrOptions = {
   recordings?: { start: string; end: string; channel?: number }[]
   /** Items per page of the recording search (tests use a small page so paging is exercised). Default 2. */
   searchPageSize?: number
+  /** P4-L2 review I-1: what an endless download sends every 20 ms after `downloadBytes` (default 1 KB of 0x01), e.g. MP4 fragments. */
+  endlessChunk?: (n: number) => Buffer
+  /** P4-L2 review I-3: the order of the search results (default oldest first); a real firmware's order is not known. */
+  searchOrder?: 'asc' | 'desc'
   /** Takes over the whole search answer (for hostile and odd answers). `position` and `maxResults` are what the request asked for. */
   searchAnswer?: (o: { position: number; maxResults: number; body: string }) => string
   /** Takes over the whole calendar answer. */
@@ -123,7 +127,7 @@ const stamp = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z
 const tagNumber = (body: string, tag: string) => Number(new RegExp(`<${tag}>\\s*(\\d+)\\s*</${tag}>`).exec(body)?.[1] ?? Number.NaN)
 const forChannel = (list: Recording[], channel: number) => list.filter((r) => r.channel === undefined || r.channel === channel)
 
-function searchXml(list: Recording[], body: string, pageSize: number): string {
+function searchXml(list: Recording[], body: string, pageSize: number, order: 'asc' | 'desc' = 'asc'): string {
   const channel = Math.floor(tagNumber(body, 'trackID') / 100)
   const from = isoMs(/<startTime>([^<]*)</.exec(body)?.[1] ?? '')
   const to = isoMs(/<endTime>([^<]*)</.exec(body)?.[1] ?? '')
@@ -133,7 +137,7 @@ function searchXml(list: Recording[], body: string, pageSize: number): string {
   const matches = forChannel(list, channel)
     .map((r) => ({ s: isoMs(r.start), e: isoMs(r.end) }))
     .filter((r) => r.e > from && r.s < to)
-    .sort((a, b) => a.s - b.s)
+    .sort((a, b) => (order === 'desc' ? b.s - a.s : a.s - b.s))
   const page = matches.slice(position, position + size)
   const more = position + page.length < matches.length
   const items = page
@@ -283,7 +287,8 @@ export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNv
         if (options.download === 'endless') {
           res.writeHead(200, { 'Content-Type': 'video/mp4' })
           res.write(bytes)
-          const timer = setInterval(() => res.write(Buffer.alloc(1024, 1)), 20)
+          let n = 0
+          const timer = setInterval(() => res.write(options.endlessChunk ? options.endlessChunk(n++) : Buffer.alloc(1024, 1)), 20)
           res.on('close', () => {
             clearInterval(timer)
             downloadsEnded.count++
@@ -296,7 +301,7 @@ export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNv
       if (path === SEARCH_PATH) {
         const asked = tagNumber(body, 'maxResults')
         const position = tagNumber(body, 'searchResultPostion') || 0
-        return send(options.searchAnswer ? options.searchAnswer({ position, maxResults: asked, body }) : searchXml(options.recordings ?? [], body, options.searchPageSize ?? 2))
+        return send(options.searchAnswer ? options.searchAnswer({ position, maxResults: asked, body }) : searchXml(options.recordings ?? [], body, options.searchPageSize ?? 2, options.searchOrder))
       }
       const year = tagNumber(body, 'year')
       const month = tagNumber(body, 'monthOfYear')

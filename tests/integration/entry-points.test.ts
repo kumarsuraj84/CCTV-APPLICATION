@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { Database } from '@/types/database'
 import { adminClient, atLocation, cleanupOrg, createOrg, createSite, createUser, grant, type TestUser } from '../setup/fixtures'
 import { startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
+import { makeFmp4 } from '../helpers/fmp4'
 import { resetProcessSingletons } from '../helpers/reset-singletons'
 
 // P2-2 fix round 1 (review: "one integration test per entry point with a real JWT"). The real Server Actions and the real route handler
@@ -61,7 +62,8 @@ describe('entry points with a real JWT (P2-2 fix round 1)', () => {
     process.env.STREAM_TOKEN_SECRET = SECRET
     process.env.FFMPEG = 'C:\\definitely\\not\\ffmpeg.exe'
     savedWorker = (await admin().from('worker_state').select('*').eq('id', 1).single()).data
-    nvr = await startFakeNvr({ username: NVR_USER, password: NVR_PASSWORD, recordings: [{ start: '2026-10-20T09:00:00', end: '2026-10-20T10:00:00' }] })
+    // P4-L2 review I-1: a fragmented MP4 (the fast playback stream is paced by its own timestamps).
+    nvr = await startFakeNvr({ username: NVR_USER, password: NVR_PASSWORD, recordings: [{ start: '2026-10-20T09:00:00', end: '2026-10-20T10:00:00' }], downloadBytes: makeFmp4({ fragments: 3 }) })
     go2rtc = await startFakeGo2rtc()
     process.env.GO2RTC_URL = go2rtc.url
     orgId = await createOrg()

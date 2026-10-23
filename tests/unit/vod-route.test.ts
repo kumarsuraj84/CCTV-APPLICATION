@@ -166,7 +166,8 @@ describe('GET /api/vod', () => {
     expect(res.status).toBe(500)
     const text = await res.text()
     expect(text).not.toMatch(/ECONNREFUSED|10\.0\.0\.5|hunter2/)
-    expect(JSON.parse(text).error).toBeTypeOf('string')
+    // Review m-2: the export path no longer says "fast playback".
+    expect(JSON.parse(text).error).toBe('The recording could not be prepared. Please try again.')
     const logged = spy.mock.calls.map((c) => String(c[0])).join('\n')
     expect(logged).toContain('vod_route_failed')
     expect(logged).not.toMatch(/ECONNREFUSED|10\.0\.0\.5|hunter2/)

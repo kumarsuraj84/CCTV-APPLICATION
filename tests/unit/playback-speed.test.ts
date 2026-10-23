@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   bufferTargetSec,
+  clipEnd,
   createStallWatch,
+  fastBudget,
+  MSG_RECORDING_PART_ENDED,
+  secondsToPlay,
   downshift,
   EXPORT_CAPABILITY,
   FAST_PLAYBACK_CAPABILITY,
@@ -72,6 +76,28 @@ describe('stall auto-downshift (LG-15: 3 stalls in 40 seconds)', () => {
     expect(MSG_DOWNSHIFTED(8, 4)).toBe('The recording is arriving too slowly for 8x, so it now plays at 4x.')
     expect(MSG_H265).toMatch(/H\.265/)
     expect(MSG_H265).toMatch(/later release/)
+  })
+})
+
+describe('the end of a fast clip (review m-3)', () => {
+  it('the end of the chosen time is just that; an earlier end says so and offers to carry on from there', () => {
+    expect(clipEnd(600, 10)).toEqual({ message: 'End of the chosen time.', canContinue: false })
+    expect(clipEnd(596, 10)).toEqual({ message: 'End of the chosen time.', canContinue: false })
+    expect(clipEnd(240, 10)).toEqual({ message: MSG_RECORDING_PART_ENDED, canContinue: true })
+    expect(MSG_RECORDING_PART_ENDED).toMatch(/Continue from here/)
+  })
+})
+
+describe('review I-1 (owner ruling): what fast playback may cost a person', () => {
+  it('the budget defaults to 120 minutes of recording per hour and 8 hours per day, settable, never below 1 or above a day', () => {
+    expect(fastBudget({})).toEqual({ perHourMin: 120, perDayMin: 480 })
+    expect(fastBudget({ FAST_PLAYBACK_MINUTES_PER_HOUR: '30', FAST_PLAYBACK_MINUTES_PER_DAY: '60' })).toEqual({ perHourMin: 30, perDayMin: 60 })
+    expect(fastBudget({ FAST_PLAYBACK_MINUTES_PER_HOUR: 'lots', FAST_PLAYBACK_MINUTES_PER_DAY: '0' })).toEqual({ perHourMin: 120, perDayMin: 480 })
+    expect(fastBudget({ FAST_PLAYBACK_MINUTES_PER_DAY: '99999' })).toEqual({ perHourMin: 120, perDayMin: 1440 })
+  })
+  it('the pace: 16x is 16 seconds of recording per second, so an hour takes 3.75 minutes', () => {
+    expect(secondsToPlay(3600, 16)).toBe(225)
+    expect(secondsToPlay(3600, 2)).toBe(1800)
   })
 })
 

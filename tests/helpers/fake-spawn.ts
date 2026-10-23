@@ -12,7 +12,8 @@ export function fakeSpawn(mode: FakeFfmpegMode = 'copy'): SpawnFn & { children: 
   const calls: { command: string; args: string[] }[] = []
   const spawn = Object.assign((command: string, args: string[]) => {
     calls.push({ command, args })
-    const child = nodeSpawn(process.execPath, [SCRIPT, mode], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    // P4-L2 review I-1: the arguments go along, so `-version` can be answered (the check needs ffmpeg 5.0 or newer).
+    const child = nodeSpawn(process.execPath, [SCRIPT, mode, ...args], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     children.push(child)
     return child
   }, { children, calls })
