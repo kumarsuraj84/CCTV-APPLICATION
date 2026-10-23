@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -115,6 +115,39 @@ describe('production env skeleton (P5.4)', () => {
     expect(icacls(web)).toMatch(/LOCAL SERVICE/)
     expect(icacls(web)).not.toMatch(/\(I\)/)
     expect(readdirSync(out).filter((f) => f.includes('.tmp-'))).toEqual([])
+  })
+
+  // Re-review M-new-5: into an EXISTING folder that is not locked (Users may read it), every temporary copy is made in a work folder
+  // locked before anything is created in it, so even the empty file never carries the open rules; the work folder goes afterwards.
+  it.skipIf(process.platform !== 'win32')('Windows: into an existing open folder the copies are made in a locked work folder; a file made there is closed from its creation', async () => {
+    const icacls = (p: string) => execFileSync('icacls', [p], { encoding: 'utf8' })
+    const open = path.join(dir, 'open')
+    mkdirSync(open)
+    execFileSync('icacls', [open, '/grant', '*S-1-5-32-545:(OI)(CI)R'], { stdio: 'ignore' }) // Users may read: an unlocked folder
+    const { lockedWorkDir } = await import('@/scripts/lib/win-acl.mjs')
+    const work = lockedWorkDir(open)
+    const probe = path.join(work.dir, 'probe.tmp')
+    writeFileSync(probe, '', { flag: 'wx' })
+    expect(icacls(probe)).not.toMatch(/\\Users:|BUILTIN\\Users/i) // inherited from the locked work folder, not from the open one
+    expect(icacls(work.dir)).not.toMatch(/\(I\)|\\Users:/i)
+    work.done()
+    expect(existsSync(work.dir)).toBe(false)
+    run('--production', '--out-dir', open, '--jwt-secret-env', 'GEN_TEST_JWT')
+    for (const f of ['web.env', 'worker.env', 'gateway.env', 'go2rtc.env']) {
+      expect(icacls(path.join(open, f)), f).not.toMatch(/\(I\)|\\Users:/i)
+    }
+    expect(readdirSync(open).filter((f) => f.startsWith('.gen-secrets-') || f.includes('.tmp-'))).toEqual([])
+    run('--file', path.join(open, 'web.env'), '--only=CRON_SECRET', '--rotate=CRON_SECRET')
+    expect(readdirSync(open).filter((f) => f.startsWith('.gen-secrets-') || f.includes('.tmp-'))).toEqual([])
+  })
+
+  // Re-review M-new-7: elevation from the token's integrity level (whoami /groups), not from `net session`.
+  it('isElevated reads the high mandatory level from whoami /groups', async () => {
+    const { isElevated } = await import('@/scripts/lib/win-acl.mjs')
+    expect(isElevated('"Mandatory Label\\High Mandatory Level","Label","S-1-16-12288",""')).toBe(true)
+    expect(isElevated('"Mandatory Label\\System Mandatory Level","Label","S-1-16-16384",""')).toBe(true)
+    expect(isElevated('"Mandatory Label\\Medium Mandatory Level","Label","S-1-16-8192",""\r\n"BUILTIN\\Administrators","Alias","S-1-5-32-544","Group used for deny only"')).toBe(false)
+    expect(isElevated('')).toBe(false)
   })
 
   it('the script refuses a folder inside the repository, writing nothing', () => {

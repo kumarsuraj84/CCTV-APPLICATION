@@ -22,6 +22,7 @@ const dbStatus = (o: Partial<OpsDbStatus> = {}): OpsDbStatus => ({
     { task: 'rate_limit_prune', last_run_at: iso(4 * 60_000), removed: 0, db_role: 'monitor_worker' },
     { task: 'vault_reads_prune', last_run_at: iso(4 * 60_000), removed: 0, db_role: 'monitor_worker' },
   ],
+  test_fixtures: { on: false, production: true },
   ...o,
 })
 
@@ -40,6 +41,7 @@ const inputs = (o: Partial<HealthInputs> = {}): HealthInputs => ({
   gateway: { ok: true, health: { status: 'ok', registry: 'ok', openSessions: 4, lastValidationAgeSec: 3, validateEverySec: 15, failClosedAfterSec: 60 } },
   expectedMigration: '20261021000041',
   disk: { path: 'C:\\Drishti', freeBytes: 120 * GB, totalBytes: 500 * GB },
+  production: true,
   ...o,
 })
 
@@ -50,7 +52,7 @@ describe('assessHealth (P5.4)', () => {
     const h = assessHealth(inputs())
     expect(h.status).toBe('ok')
     expect(h.checks.map((c) => [c.key, c.state])).toEqual([
-      ['database', 'ok'], ['vault', 'ok'], ['gateway', 'ok'], ['worker', 'ok'], ['clock', 'ok'], ['migrations', 'ok'], ['disk', 'ok'], ['cleanup', 'ok'],
+      ['database', 'ok'], ['vault', 'ok'], ['gateway', 'ok'], ['worker', 'ok'], ['clock', 'ok'], ['migrations', 'ok'], ['disk', 'ok'], ['cleanup', 'ok'], ['fixtures', 'ok'],
     ])
     expect(check(h, 'worker').summary).toBe('Running; it holds the monitoring lease (renewed 2 seconds ago).')
     expect(check(h, 'cleanup').summary).toBe('Unused video sessions were last cleaned up 4 minutes ago (12 removed).')
@@ -146,6 +148,20 @@ describe('assessHealth (P5.4)', () => {
     const h = assessHealth(inputs({ db: { ok: true, status: never, latencyMs: 1 } }))
     expect(check(h, 'cleanup').state).toBe('warning')
     expect(check(h, 'cleanup').summary).toMatch(/not recorded yet/)
+  })
+
+  // P5.4 fix round 2 (re-review N-2): the switch that lets the test helpers run must be off on a production database.
+  it('the test fixture switch: on in production fails (with what to do); on a development stack it is expected; unknown when not reported', () => {
+    const seeded = assessHealth(inputs({ db: { ok: true, status: dbStatus({ test_fixtures: { on: true, production: false } }), latencyMs: 1 } }))
+    expect(check(seeded, 'fixtures').state).toBe('failed')
+    expect(seeded.status).toBe('degraded')
+    expect(check(seeded, 'fixtures').summary).toMatch(/seeded for tests.*seed.sql.*honoured = false/)
+    const dev = assessHealth(inputs({ production: false, db: { ok: true, status: dbStatus({ test_fixtures: { on: true, production: false } }), latencyMs: 1 } }))
+    expect(check(dev, 'fixtures').state).toBe('ok')
+    expect(check(dev, 'fixtures').summary).toMatch(/development or test stack/)
+    expect(check(assessHealth(inputs()), 'fixtures').summary).toBe('Off: the test helpers cannot run on this database (marked as a production one).')
+    expect(check(assessHealth(inputs({ db: { ok: true, status: dbStatus({ test_fixtures: undefined }), latencyMs: 1 } })), 'fixtures').state).toBe('unknown')
+    expect(check(assessHealth(inputs({ db: { ok: false }, worker: null })), 'fixtures').state).toBe('unknown')
   })
 
   it('carries no secret: no lease holder id, no token value, no key', () => {

@@ -15,6 +15,17 @@ describe('the Supabase / auth server address in production', () => {
       expect(authUrlProblem({ ...prod, NEXT_PUBLIC_SUPABASE_URL: url }), url).toBeNull()
     }
     expect(authUrlProblem({ ...prod, NEXT_PUBLIC_SUPABASE_URL: 'https://drishti.citykart.com/supabase', NEXT_PUBLIC_APP_URL: 'https://drishti.citykart.com' })).toBeNull()
+    expect(authUrlProblem({ ...prod, NEXT_PUBLIC_SUPABASE_URL: 'https://drishti.citykart.com:443/supabase', NEXT_PUBLIC_APP_URL: 'https://drishti.citykart.com' })).toBeNull()
+  })
+
+  // Release 1 clean-up review Minor 6 (fixed with P5.4 fix round 2): the app's own host name counts only on the app's own origin (the
+  // same scheme and port: behind the one reverse proxy). The same host on another port is the Supabase port itself, open to the LAN.
+  it('the app’s own host name on another port or scheme is judged like any other address', () => {
+    const lanApp = { ...prod, NEXT_PUBLIC_APP_URL: 'https://10.0.0.5' }
+    expect(authUrlProblem({ ...lanApp, NEXT_PUBLIC_SUPABASE_URL: 'http://10.0.0.5:54321' })).toMatch(/private network/)
+    expect(authUrlProblem({ ...lanApp, NEXT_PUBLIC_SUPABASE_URL: 'http://10.0.0.5' })).toMatch(/private network/)
+    expect(authUrlProblem({ ...lanApp, NEXT_PUBLIC_SUPABASE_URL: 'https://10.0.0.5/supabase' })).toBeNull()
+    expect(authUrlProblem({ ...prod, NEXT_PUBLIC_APP_URL: 'https://drishti.citykart.com', NEXT_PUBLIC_SUPABASE_URL: 'http://drishti.citykart.com:8000' })).toMatch(/public/)
   })
 
   // Release 1 clean-ups (P3-1 re-review I-5 / R-1): this replaces the earlier "the private network is fine" case. The attacker of the

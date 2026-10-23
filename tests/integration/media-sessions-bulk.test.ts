@@ -73,15 +73,27 @@ describe('the re-check at commit of a bulk access change is bounded (review I-1)
     const opened = await admin().rpc('media_session_open', { p_sid: doomedSid, p_user: admins[0].id, p_camera: doomedCamera, p_kind: 'live', p_stream: `cam_${doomedCamera}_sub` })
     expect((opened.data as { ok: boolean }[])[0].ok).toBe(true)
 
+    // Release 1 clean-up review Minor 9 (fixed with P5.4 fix round 2): the bound is relative to this machine. The reference is the same
+    // function with an empty plan (the call, its transaction and its checks, no work): the median of three.
+    const reference: number[] = []
+    for (let i = 0; i < 3; i++) {
+      const r0 = performance.now()
+      const empty = await admin().rpc('inventory_import_apply', { p_org: orgId, p_actor: owner.id, p_plan: { archive: [] } })
+      reference.push(performance.now() - r0)
+      expect(empty.error).toBeNull()
+    }
+    const referenceMs = reference.sort((x, y) => x - y)[1]
     const plan = { archive: doomed.map((id) => ({ kind: 'location', id })) }
     const t0 = performance.now()
     const res = await admin().rpc('inventory_import_apply', { p_org: orgId, p_actor: owner.id, p_plan: plan })
     const ms = performance.now() - t0
     expect(res.error).toBeNull()
     expect((res.data as { archived_locations: number }).archived_locations).toBe(LOCATIONS)
-    console.log(JSON.stringify({ bulk_commit_ms: { archived_locations: LOCATIONS, admins: ADMINS, open_sessions_each: WALL, never_opened_each: 108, transaction_ms: Math.round(ms) } }))
-    // Release 1 clean-up (P2-4 re-review N3): measured about 0.9 s; the bound is 5 s so that a five-fold regression fails.
-    expect(ms).toBeLessThan(5_000)
+    console.log(JSON.stringify({ bulk_commit_ms: { archived_locations: LOCATIONS, admins: ADMINS, open_sessions_each: WALL, never_opened_each: 108, transaction_ms: Math.round(ms), reference_ms: Math.round(referenceMs) } }))
+    // Release 1 clean-up (P2-4 re-review N3): measured about 1 s, against an empty call of about 3 ms, on the development computer
+    // (about 350 empty calls). The bound is 5 s or 1,750 empty calls (five times that ratio), whichever is larger: a five-fold
+    // regression still fails here, and a slower machine is judged by its own speed.
+    expect(ms).toBeLessThan(Math.max(5_000, 1_750 * referenceMs))
 
     // The re-check still did its job: the archived camera's session ended; every wall session stays.
     const { data: doomedRow } = await admin().from('media_sessions').select('revoke_reason').eq('id', doomedSid).single()

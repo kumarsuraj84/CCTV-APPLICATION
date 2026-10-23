@@ -160,6 +160,34 @@ describe.skipIf(skip)('backup and restore into a disposable database (P5.4)', ()
     expect(psql("SELECT count(*) FROM pg_database WHERE datname LIKE 'drishti_restore_live_restored%'")).toBe('0')
   }, 300_000)
 
+  // Fix round 2 (re-review M-new-3): a swap that fails half way says exactly where the databases are, puts the live one back when it
+  // can, and never drops the restored copy once the live database has been renamed.
+  it('a swap that fails after closing the live database opens it again; one that fails after the first rename puts it back and keeps the copy', () => {
+    const before = psqlIn(LIVE, 'SELECT count(*) FROM public.cameras')
+    const closedRes = path.join(dir, 'swap-closed.json')
+    const closed = ps('restore.ps1', ['-ConfigPath', configLive, '-BackupPath', folder, '-TargetDatabase', LIVE, '-AllowLiveDatabase', '-SimulateSwapFailure', 'AfterClose', '-ResultPath', closedRes])
+    expect(closed.status).not.toBe(0)
+    expect(closed.stdout).toMatch(/STOPPED before anything was renamed: drishti_restore_live was closed to new connections for the swap and is open again/)
+    expect(closed.stdout).not.toMatch(/was NOT changed/)
+    expect(JSON.parse(readFileSync(closedRes, 'utf8').replace(/^﻿/, ''))).toMatchObject({ swapState: 'reopened', swapped: false })
+    expect(psql(`SELECT datallowconn FROM pg_database WHERE datname = '${LIVE}'`)).toBe('t')
+    expect(psql("SELECT count(*) FROM pg_database WHERE datname LIKE 'drishti_restore_live_restored%'")).toBe('0') // nothing renamed: dropped
+
+    const renamedRes = path.join(dir, 'swap-renamed.json')
+    const renamed = ps('restore.ps1', ['-ConfigPath', configLive, '-BackupPath', folder, '-TargetDatabase', LIVE, '-AllowLiveDatabase', '-SimulateSwapFailure', 'AfterFirstRename', '-ResultPath', renamedRes])
+    expect(renamed.status).not.toBe(0)
+    expect(renamed.stdout).toMatch(/STOPPED half way through the swap: the old database was put back as drishti_restore_live and accepts connections again/)
+    expect(renamed.stdout).not.toMatch(/was NOT changed/)
+    const state = JSON.parse(readFileSync(renamedRes, 'utf8').replace(/^﻿/, '')) as { swapState: string; restoredCopy: string }
+    expect(state.swapState).toBe('put back')
+    expect(psqlIn(LIVE, 'SELECT count(*) FROM public.cameras')).toBe(before)
+    expect(psql(`SELECT datallowconn FROM pg_database WHERE datname = '${LIVE}'`)).toBe('t')
+    // The proven copy is kept (not dropped) for a person to look at.
+    expect(psql(`SELECT count(*) FROM pg_database WHERE datname = '${state.restoredCopy}'`)).toBe('1')
+    // A test-only switch, refused for any other database.
+    expect(ps('restore.ps1', ['-ConfigPath', config, '-BackupPath', folder, '-TargetDatabase', 'postgres', '-AllowLiveDatabase', '-SimulateSwapFailure', 'AfterClose', '-DryRun']).stdout + '').not.toMatch(/would restore/)
+  }, 600_000)
+
   it('refuses the live database without -AllowLiveDatabase, a bad name, an existing database and a damaged dump, changing nothing', () => {
     const before = psql("SELECT count(*) FROM public.cameras WHERE org_id IN (SELECT id FROM public.organizations WHERE slug NOT LIKE 'test-%')")
     const live = ps('restore.ps1', ['-ConfigPath', config, '-BackupPath', folder, '-TargetDatabase', 'postgres'])

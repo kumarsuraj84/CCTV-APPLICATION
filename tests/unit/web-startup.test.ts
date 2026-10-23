@@ -17,7 +17,11 @@ const prod = () => ({
   STREAM_TOKEN_SECRET: strong('st'), ACCESS_PREVIEW_SECRET: strong('ap'), MERGE_CONFIRM_SECRET: strong('mc'), VERIFIED_USER_SECRET: strong('vu'),
   GO2RTC_API_USERNAME: 'drishti', GO2RTC_API_PASSWORD: strong('go'),
 })
-const deps = (unlocked: number | Error, probe: { ok: true } | { ok: false; error: string } = { ok: true }) => ({
+const deps = (unlocked: number | Error, probe: { ok: true } | { ok: false; error: string } = { ok: true }, fixtures: boolean | Error = false) => ({
+  testFixturesOn: vi.fn(async () => {
+    if (fixtures instanceof Error) throw fixtures
+    return fixtures
+  }),
   unlockedOrganizations: vi.fn(async () => {
     if (unlocked instanceof Error) throw unlocked
     return unlocked
@@ -50,5 +54,17 @@ describe('web app start-up check', () => {
 
   it('I-2: production refuses when go2rtc answers without its login', async () => {
     expect((await webStartupProblems(prod(), deps(0, { ok: false, error: 'go2rtc answers without its login' }))).join(' ')).toContain('without its login')
+  })
+
+  // P5.4 fix round 2 (re-review N-2): a database whose test fixture switch is on was seeded for tests (supabase/seed.sql); the
+  // production web app does not start on it, and says what to do. An unreadable switch refuses too.
+  it('N-2: production refuses while the test fixture switch is on, or when it cannot be read', async () => {
+    const on = (await webStartupProblems(prod(), deps(0, { ok: true }, true))).join(' ')
+    expect(on).toMatch(/test fixture switch is on/)
+    expect(on).toMatch(/seed.sql/)
+    expect((await webStartupProblems(prod(), deps(0, { ok: true }, new Error('down')))).join(' ')).toMatch(/test fixture switch could not be checked/)
+    const d = deps(0, { ok: true }, true)
+    expect(await webStartupProblems({}, d)).toEqual([])
+    expect(d.testFixturesOn).not.toHaveBeenCalled()
   })
 })
