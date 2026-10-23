@@ -18,9 +18,20 @@ themselves once `ffmpeg -version` works. A real Hikvision NVR download has never
   network address can be opened by it.
 - Used by: fast playback (`/api/playback/stream`, cctv.playback) and the saveable file (`/api/vod`, cctv.export, administrators only).
   1x playback and live video do not need it (go2rtc).
-- Limits: 1 running conversion per person (a new one ends the previous one), 8 in all per web process; killed when the page closes, after
-  29.5 minutes, after 60 s without NVR data, or when the person's access goes (re-checked every 15 s).
-- Without a working ffmpeg the Playback screen offers 1x only and says "Fast playback is not set up on this server."
+- **ffmpeg 5.0 or newer is required** (review round 1, I-1): fast playback reads its input at the signed speed with `-readrate <speed>`
+  (an input option added in 5.0). The availability check (`ffmpeg -version`, remembered one minute) refuses an older or unnamed version,
+  and the web process logs `fast_playback_unavailable` at start-up with the reason. The export path is not paced.
+- Pacing (independent of ffmpeg, `lib/streams/pace.ts`): the stream layer releases the fragmented MP4 by its own timestamps at no more than
+  speed × real time plus a 60 s start burst. **16x = 16 s of recording per wall second: an hour of recording takes 3.75 minutes; 2x takes
+  30 minutes.** Measured in the browser check: 16 s of recording per second with a steady 61 s ahead (`docs/drishti/evidence/p4-l2/capture-report-fix-round-1.json`).
+- Budget per person (database, every tab and app instance): `FAST_PLAYBACK_MINUTES_PER_HOUR` (default 120) and
+  `FAST_PLAYBACK_MINUTES_PER_DAY` (default 480) minutes of recording. A byte cap per stream (16 Mbit/s of recording). One fast playback per
+  person at a time. A token plays once.
+- Limits: 1 running conversion per person (a new one ends the previous one); **two pools** so viewers can never block exports:
+  `FAST_PLAYBACK_MAX_CONVERSIONS` (viewers, default 8) and `EXPORT_MAX_CONVERSIONS` (exports, default 8) per web process; a refusal logs
+  `conversion_busy`. Killed when the page closes, after 29.5 minutes, after 60 s without NVR data, after 60 s in which the viewer read
+  nothing (a paused or hidden player), or when the person's access goes (re-checked every 15 s).
+- Without a working ffmpeg 5.0+ the Playback screen offers 1x only and says "Fast playback is not set up on this server."
 
 ## Install (Windows server or the development PC) — done by whoever runs the server, not by a builder
 
@@ -34,7 +45,7 @@ themselves once `ffmpeg -version` works. A real Hikvision NVR download has never
      refused with "FFMPEG must be the full path of the ffmpeg program." and fast playback stays off; OR
    - put `C:\Program Files\ffmpeg\bin` on the machine's PATH (only full-path PATH entries are searched; `.` and relative entries never).
 4. Restart the web process (the "is ffmpeg there" answer is remembered for one minute).
-5. Check: `"C:\Program Files\ffmpeg\bin\ffmpeg.exe" -version` prints a version. On the Playback screen the Speed list now offers
+5. Check: `"C:\Program Files\ffmpeg\bin\ffmpeg.exe" -version` prints a version of **5.0 or newer** (for example "ffmpeg version 6.1.1…"). On the Playback screen the Speed list now offers
    2x, 4x, 8x and 16x.
 6. Validate, once, and record the result in `docs/drishti/DELIVERY-STATUS.md` (Evidence log; rows LG-14, LG-15, LG-18, CC-3):
    - `npx vitest run tests/integration/fast-playback.test.ts tests/integration/vod.test.ts` — the two real-ffmpeg tests now run (they

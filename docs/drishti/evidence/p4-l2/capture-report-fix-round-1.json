@@ -1,0 +1,68 @@
+{
+  "base": "http://localhost:3481",
+  "checks": {
+    "started": true,
+    "samples": [
+      {
+        "wallSec": 2,
+        "t": 35,
+        "ahead": 61,
+        "rate": 16,
+        "paused": false,
+        "src": "blob:"
+      },
+      {
+        "wallSec": 4,
+        "t": 67,
+        "ahead": 61,
+        "rate": 16,
+        "paused": false,
+        "src": "blob:"
+      },
+      {
+        "wallSec": 6,
+        "t": 99,
+        "ahead": 60,
+        "rate": 16,
+        "paused": false,
+        "src": "blob:"
+      },
+      {
+        "wallSec": 8,
+        "t": 131,
+        "ahead": 61,
+        "rate": 16,
+        "paused": false,
+        "src": "blob:"
+      },
+      {
+        "wallSec": 10,
+        "t": 163,
+        "ahead": 61,
+        "rate": 16,
+        "paused": false,
+        "src": "blob:"
+      },
+      {
+        "wallSec": 12,
+        "t": 195,
+        "ahead": 61,
+        "rate": 16,
+        "paused": false,
+        "src": "blob:"
+      }
+    ],
+    "alerts": [
+      "Oldest recording in the last year: Thursday 3 September 2026, 08:14. Go to it"
+    ],
+    "responses": [
+      {
+        "status": 200,
+        "contentType": "application/vnd.ckdrishti.stream",
+        "framing": "x32",
+        "contentDisposition": null
+      }
+    ]
+  },
+  "shots": []
+}
