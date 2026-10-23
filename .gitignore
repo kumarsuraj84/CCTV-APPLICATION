@@ -14,3 +14,6 @@ backups/
 .DS_Store
 
 .superpowers/
+
+# throwaway test helpers (ACL / junction tests): one folder to exclude from antivirus
+.scratch/
