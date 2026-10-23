@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Actor, AdminClient } from '@/lib/admin/types'
-import { createStore, updateStore } from '@/lib/inventory/stores'
+import { createStore, updateStore } from '../setup/legacy-import'
 import { adminClient, cleanupOrg, createOrg, createUser } from '../setup/fixtures'
 
 // The real admin client, except that creating cameras fails. Everything else is the real local database.

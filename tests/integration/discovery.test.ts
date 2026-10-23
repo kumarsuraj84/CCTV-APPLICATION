@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Actor } from '@/lib/admin/types'
-import { discoverRecorderCameras, discoverStoreCameras } from '@/lib/monitor/discovery'
+import { discoverRecorderCameras, discoverLocationCameras } from '@/lib/monitor/discovery'
 import { adminClient, atCamera, cleanupOrg, createCamera, createLocation, createOrg, createRecorder, createSite, createUser, grant, READ_EVERYTHING, withRecorders, type TestUser } from '../setup/fixtures'
 import { fenced } from '../setup/lease'
 import { startFakeGo2rtc } from '../helpers/fake-go2rtc'
@@ -42,7 +42,7 @@ describe('finding cameras on the NVR', () => {
 
   it('replaces placeholder names, adds new channels on THIS NVR and keeps camera ids', async () => {
     const before = (await admin().from('cameras').select('id, channel').eq('location_id', storeId).order('channel')).data!
-    const res = await discoverStoreCameras(d(), actor, storeId)
+    const res = await discoverLocationCameras(d(), actor, storeId)
     // Exact (review M-10: was toMatchObject): the whole answer, nothing more.
     expect(res).toEqual({
       ok: true, cameras: 3, created: 1, updated: 2, mapped: 0, moved: 0,
@@ -89,19 +89,19 @@ describe('finding cameras on the NVR', () => {
   it('says plainly what went wrong, and tries a refused login only once', async () => {
     const wrongPassword = (await site('BADPW', nvr.port, 'not-the-password')).locationId
     const logins = nvr.authorizations.length
-    expect(await discoverStoreCameras(d(), actor, wrongPassword)).toEqual({ ok: false, error: 'The NVR refused the user name or password.' })
+    expect(await discoverLocationCameras(d(), actor, wrongPassword)).toEqual({ ok: false, error: 'The NVR refused the user name or password.' })
     expect(nvr.authorizations.length - logins).toBe(1)
     const gone = (await site('GONE', await closedPort(), 'secret-pass')).locationId
-    expect(await discoverStoreCameras(d(), actor, gone)).toEqual({ ok: false, error: 'The NVR did not answer.' })
+    expect(await discoverLocationCameras(d(), actor, gone)).toEqual({ ok: false, error: 'The NVR did not answer.' })
     // A location without any NVR.
     const ho = await createLocation(orgId, { code: 'HO', kind: 'head_office' })
-    expect(await discoverStoreCameras(d(), actor, ho)).toEqual({ ok: false, error: 'This location has no NVR.' })
+    expect(await discoverLocationCameras(d(), actor, ho)).toEqual({ ok: false, error: 'This location has no NVR.' })
   })
 
   it('does not ask the NVR at all when it has no saved password', async () => {
     const id = (await site('NOPW', nvr.port)).locationId
     const asked = nvr.requests.length
-    const res = await discoverStoreCameras(d(), actor, id)
+    const res = await discoverLocationCameras(d(), actor, id)
     expect(res).toEqual({ ok: false, error: 'This NVR has no password saved. Add it under Locations and NVRs first.' })
     expect(nvr.requests.length).toBe(asked)
     // M-8: a store's further NVR cannot be edited on that page: no advice that leads nowhere.
@@ -133,7 +133,7 @@ describe('finding cameras on the NVR', () => {
       const loc = await createLocation(orgId, { code: 'TWIN' })
       const r1 = await createRecorder(orgId, loc, { name: 'Front', host: '127.0.0.1', httpPort: nvr.port, secret: 'secret-pass' })
       const r2 = await createRecorder(orgId, loc, { name: 'Back', host: '127.0.0.1', httpPort: second.port, rtspPort: 8554, secret: 'secret-pass' })
-      const res = await discoverStoreCameras(d(), actor, loc)
+      const res = await discoverLocationCameras(d(), actor, loc)
       expect(res).toMatchObject({ ok: true, cameras: 5, created: 5 })
       const rows = (await admin().from('cameras').select('name, recorder_id, channel').eq('location_id', loc).order('name')).data!
       expect(rows).toEqual([
@@ -141,7 +141,7 @@ describe('finding cameras on the NVR', () => {
         { name: 'Entrance', recorder_id: r1, channel: 1 }, { name: 'Loading bay', recorder_id: r2, channel: 1 }, { name: 'Stockroom', recorder_id: r1, channel: 3 },
       ])
       // Again: nothing new, every camera matched by (recorder, channel).
-      expect(await discoverStoreCameras(d(), actor, loc)).toMatchObject({ ok: true, created: 0, updated: 5 })
+      expect(await discoverLocationCameras(d(), actor, loc)).toMatchObject({ ok: true, created: 0, updated: 5 })
     } finally {
       await second.close()
     }
@@ -150,24 +150,24 @@ describe('finding cameras on the NVR', () => {
   it('is for administrators only and only for stores and NVRs of the own organisation', async () => {
     const asked = nvr.requests.length
     for (const role of ['operator', 'manager', 'user'] as const) { // 'operator' was 'agent' before P2-1 (AC-15)
-      expect((await discoverStoreCameras(d(), { ...actor, role }, storeId)).ok).toBe(false)
+      expect((await discoverLocationCameras(d(), { ...actor, role }, storeId)).ok).toBe(false)
       expect((await discoverRecorderCameras(d(), { ...actor, role }, recorderId)).ok).toBe(false)
     }
     // P2-2: the administrator role without admin.inventory (even with every read grant) is refused too, and so is admin.inventory
     // without the role. The NVR is never asked.
     const plainAdmin = await createUser(orgId, 'admin')
     await grant(orgId, plainAdmin.id, READ_EVERYTHING)
-    expect(await discoverStoreCameras(d(plainAdmin), { id: plainAdmin.id, orgId, role: 'admin' }, storeId)).toEqual({ ok: false, error: 'Only administrators can look for cameras.' })
+    expect(await discoverLocationCameras(d(plainAdmin), { id: plainAdmin.id, orgId, role: 'admin' }, storeId)).toEqual({ ok: false, error: 'Only administrators can look for cameras.' })
     expect(await discoverRecorderCameras(d(plainAdmin), { id: plainAdmin.id, orgId, role: 'admin' }, recorderId)).toEqual({ ok: false, error: 'Only administrators can look for cameras.' })
     const capOnly = await createUser(orgId, 'operator')
     await grant(orgId, capOnly.id, 'admin.inventory')
-    expect((await discoverStoreCameras(d(capOnly), { id: capOnly.id, orgId, role: 'operator' }, storeId)).ok).toBe(false)
+    expect((await discoverLocationCameras(d(capOnly), { id: capOnly.id, orgId, role: 'operator' }, storeId)).ok).toBe(false)
     expect(nvr.requests.length).toBe(asked)
     const other = await createOrg()
     const foreign = await createSite(other, { code: 'OTH', host: '127.0.0.1', httpPort: nvr.port, secret: 'secret-pass' })
-    expect(await discoverStoreCameras(d(), actor, foreign.locationId)).toEqual({ ok: false, error: 'Location not found.' })
+    expect(await discoverLocationCameras(d(), actor, foreign.locationId)).toEqual({ ok: false, error: 'Location not found.' })
     expect(await discoverRecorderCameras(d(), actor, foreign.recorderId)).toEqual({ ok: false, error: 'NVR not found.' })
-    expect(await discoverStoreCameras(d(), actor, 'not-an-id')).toEqual({ ok: false, error: 'Location not found.' })
+    expect(await discoverLocationCameras(d(), actor, 'not-an-id')).toEqual({ ok: false, error: 'Location not found.' })
     expect(await discoverRecorderCameras(d(), actor, 'not-an-id')).toEqual({ ok: false, error: 'NVR not found.' })
     expect((await admin().from('cameras').select('id').eq('location_id', foreign.locationId)).data).toEqual([])
     expect(nvr.requests.length).toBe(asked)
@@ -177,18 +177,18 @@ describe('finding cameras on the NVR', () => {
   it('also works for a platform owner holding admin.inventory', async () => {
     const owner = await createUser(orgId, 'platform_owner')
     await grant(orgId, owner.id, 'admin.inventory')
-    expect((await discoverStoreCameras(d(owner), { id: owner.id, orgId, role: 'platform_owner' }, storeId)).ok).toBe(true)
+    expect((await discoverLocationCameras(d(owner), { id: owner.id, orgId, role: 'platform_owner' }, storeId)).ok).toBe(true)
   })
 
   it('reports an NVR with no cameras', async () => {
     const empty = await startFakeNvr({ channels: [], statuses: {} })
     const id = (await site('EMPTY', empty.port, 'secret-pass')).locationId
-    expect(await discoverStoreCameras(d(), actor, id)).toEqual({ ok: false, error: 'The NVR did not list any cameras.' })
+    expect(await discoverLocationCameras(d(), actor, id)).toEqual({ ok: false, error: 'The NVR did not list any cameras.' })
     await empty.close()
   })
 
   it('never puts the password in a result or an audit row', async () => {
-    const res = await discoverStoreCameras(d(), actor, storeId)
+    const res = await discoverLocationCameras(d(), actor, storeId)
     const audit = (await admin().from('admin_audit_log').select('detail, action').eq('org_id', orgId)).data!
     expect(JSON.stringify([res, audit])).not.toContain('secret-pass')
   })

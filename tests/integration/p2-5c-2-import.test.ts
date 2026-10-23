@@ -2,9 +2,8 @@
 // (ruling R-1): TEST-NET addresses, made-up passwords, `test-…` organisations. Nothing here contacts any NVR (an import never does).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Actor } from '@/lib/admin/types'
-import { importStores } from '@/lib/import/apply'
+import { importStores, parseStoresCsv } from '../setup/legacy-import'
 import { applyLocationImport, checkLocationImport, MSG_PLAN_CHANGED } from '@/lib/import/locations-import'
-import { parseStoresCsv } from '@/lib/import/stores-csv'
 import { ensurePlaceholderCameras } from '@/lib/inventory/cameras'
 import {
   adminClient, atCluster, cleanupOrg, createCamera, createCluster, createLocation, createOrg, createRecorder, createRegion, createUser, grant, mapCamera,

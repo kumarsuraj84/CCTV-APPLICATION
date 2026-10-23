@@ -192,6 +192,7 @@ export function PreviewPanel({ preview, archive, onArchive, showUnchanged, onSho
         {c.camerasRelinked > 0 && <Tile label="Cameras linked again" value={c.camerasRelinked} />}
         <Tile label="New regions / clusters" value={`${c.regionsNew} / ${c.clustersNew}`} />
         {c.locationsSkipped > 0 && <Tile label="Skipped locations" value={c.locationsSkipped} />}
+        {c.linesNotRead > 0 && <Tile label="Lines that could not be read" value={c.linesNotRead} />}
       </div>
       {preview.errors.length > 0 && (
         <>

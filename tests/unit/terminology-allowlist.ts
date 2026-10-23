@@ -13,7 +13,6 @@ const KIND = 'the kind of a location is "store" (a shop); one of store, head off
 export const ALLOWED: Allowed[] = [
   // --- not wording: technical values -------------------------------------------------------------------------------------------------
   { file: 'lib/streams/gateway.ts', text: 'Cache-Control: no-store', partial: true, reason: 'HTTP cache directive in a raw HTTP answer written by hand, not wording' },
-  { file: 'lib/audit/catalogue.ts', text: 'lib/inventory/stores.ts', reason: 'P5.4: the repository path of the legacy writer of three audit actions (a file name, never shown to people)' },
   // P3-1: the old addresses of ruling T-1, now redirected by proxy.ts (they were in next.config.ts, which this guard does not scan).
   { file: 'lib/web/legacy-redirects.ts', text: '/stores', reason: 'the old address that redirects to /locations (ruling T-1)' },
   { file: 'lib/web/legacy-redirects.ts', text: '/admin/stores', reason: 'the old address that redirects to /admin/locations (ruling T-1)' },

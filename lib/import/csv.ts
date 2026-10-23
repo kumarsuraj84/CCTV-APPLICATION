@@ -1,4 +1,20 @@
 export type CsvRow = { line: number; cells: string[] }
+/** A problem with one line of an imported file (release 1: moved here from the retired lib/import/stores-csv.ts). */
+export type RowError = { line: number; message: string }
+
+/**
+ * Release 1 clean-ups (T-1 review L4): the ONE header rule of every CSV reader. `headers` are the row's column keys after the aliases
+ * (location_code / store_code → code, …); where several columns have the same key, the FIRST one whose cell has a value is used, for
+ * every column. `keep` limits the keys that are read.
+ */
+export function firstFilled(headers: string[], cells: string[], keep?: (key: string) => boolean): Record<string, string> {
+  const v: Record<string, string> = {}
+  headers.forEach((h, i) => {
+    if (keep && !keep(h)) return
+    if ((v[h] ?? '').trim() === '') v[h] = cells[i] ?? ''
+  })
+  return v
+}
 
 /** A row of the strict reader: `problem` says why it cannot be read (it must then not be used at all). `multiline`: a quoted value had a line break. */
 export type StrictCsvRow = CsvRow & { problem?: 'stray_quote'; multiline?: number[]; lastLine?: number }

@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Actor } from '@/lib/admin/types'
 import { MSG_MONITORING_OFF, MSG_NOT_MAPPED } from '@/lib/inventory/recorders'
 import { loadMonitorConfig } from '@/lib/monitor/config'
-import { discoverAllRecorders, discoverRecorderCameras, discoverStoreCameras } from '@/lib/monitor/discovery'
+import { discoverAllRecorders, discoverRecorderCameras, discoverLocationCameras } from '@/lib/monitor/discovery'
 import { realProbes } from '@/lib/monitor/probes'
 import { MonitorRunner } from '@/lib/monitor/runner'
 import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
@@ -223,7 +223,7 @@ describe('a location with several NVRs, end to end', () => {
     for (const id of [b1, b2]) expect(after.find((c) => c.id === id)).toMatchObject({ recorder_id: recB })
     expect(await discoverRecorderCameras(clients, adminActor, recC)).toEqual({ ok: false, error: MSG_MONITORING_OFF })
     // The whole location: A answers, B cannot be reached, C is skipped with its plain message.
-    const all = await discoverStoreCameras(clients, adminActor, loc)
+    const all = await discoverLocationCameras(clients, adminActor, loc)
     expect(all.ok).toBe(true)
     if (!all.ok) return
     expect(all.recorders.map((r) => [r.name, r.ok])).toEqual([['A', true], ['B', false], ['C', false]])

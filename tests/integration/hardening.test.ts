@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Actor } from '@/lib/admin/types'
 import { createDevice } from '@/lib/inventory/devices'
-import { createStore, deleteStore } from '@/lib/inventory/stores'
+import { createStore, deleteStore } from '../setup/legacy-import'
 import { adminClient, cleanupOrg, createOrg, createSite, createUser } from '../setup/fixtures'
 
 const admin = () => adminClient()

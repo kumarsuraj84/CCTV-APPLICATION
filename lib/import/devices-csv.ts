@@ -1,5 +1,4 @@
-import { parseCsv } from '@/lib/import/csv'
-import type { RowError } from '@/lib/import/stores-csv'
+import { firstFilled, parseCsv, type RowError } from '@/lib/import/csv'
 import { isValidIp, parsePort } from '@/lib/import/validators'
 import { DEVICE_TYPES, type DeviceType } from '@/lib/inventory/device-types'
 
@@ -26,8 +25,7 @@ export function parseDevicesCsv(text: string): { rows: DeviceRow[]; errors: RowE
   const rows: DeviceRow[] = []
   const errors: RowError[] = []
   for (const { line, cells } of raw.slice(1)) {
-    const v: Record<string, string> = {}
-    headers.forEach((h, i) => { if (!v[h]) v[h] = cells[i] ?? '' })
+    const v = firstFilled(headers, cells) // the first repeated or aliased column with a value wins (release 1, L4)
     const fail = (message: string) => errors.push({ line, message })
     const name = v.name.trim()
     if (!name) { fail('The device name is empty.'); continue }

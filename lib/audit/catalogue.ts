@@ -63,7 +63,9 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   A('recorder_password_set', 'credentials', 'NVR password saved', 'lib/inventory/recorder-admin.ts'),
   // Imports.
   A('locations_imported', 'import', 'Locations imported', 'supabase/migrations/20261021000033_p26_service_roles.sql'),
-  A('import_stores', 'import', 'Legacy location list imported', 'lib/import/apply.ts'),
+  // Release 1 (T-1 review L2): the legacy writers left the application; rows written before stay labelled. Written now only by the test
+  // fixture that rebuilds the shape of the owner's data.
+  A('import_stores', 'import', 'Legacy location list imported', 'tests/setup/legacy-import.ts'),
   A('import_devices', 'import', 'Device list imported', 'lib/import/apply.ts'),
   // Locations, NVRs, cameras and assets.
   A('location_created', 'inventory', 'Location created', 'lib/inventory/locations.ts'),
@@ -95,9 +97,9 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   A('device_created', 'inventory', 'Device created', 'lib/inventory/devices.ts'),
   A('device_updated', 'inventory', 'Device changed', 'lib/inventory/devices.ts'),
   A('device_deleted', 'inventory', 'Device archived', 'lib/inventory/devices.ts'),
-  A('store_created', 'inventory', 'Location created (legacy form)', 'lib/inventory/stores.ts'),
-  A('store_updated', 'inventory', 'Location changed (legacy form)', 'lib/inventory/stores.ts'),
-  A('store_deleted', 'inventory', 'Location archived (legacy form)', 'lib/inventory/stores.ts'),
+  A('store_created', 'inventory', 'Location created (legacy form)', 'tests/setup/legacy-import.ts'),
+  A('store_updated', 'inventory', 'Location changed (legacy form)', 'tests/setup/legacy-import.ts'),
+  A('store_deleted', 'inventory', 'Location archived (legacy form)', 'tests/setup/legacy-import.ts'),
   // Monitoring.
   A('check_requested', 'monitoring', 'Check now asked for', 'lib/monitor/check-now.ts'),
   A('cameras_discovered', 'monitoring', 'Cameras found on an NVR', 'supabase/migrations/20261021000026_p25c_admin.sql'),

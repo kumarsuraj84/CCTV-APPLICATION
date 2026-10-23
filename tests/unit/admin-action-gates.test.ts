@@ -30,8 +30,8 @@ vi.mock('@/lib/admin/users', () => ({
 }))
 vi.mock('@/lib/inventory/stores', () => ({ createStore: async () => ({ ok: false, error: 'x' }), updateStore: async () => ({ ok: false, error: 'x' }), deleteStore: async () => ({ ok: false, error: 'x' }) }))
 vi.mock('@/lib/inventory/devices', () => ({ createDevice: async () => ({ ok: false, error: 'x' }), updateDevice: async () => ({ ok: false, error: 'x' }), deleteDevice: async () => ({ ok: false, error: 'x' }) }))
-vi.mock('@/lib/import/apply', () => ({ importStores: async () => ({}), importDevices: async () => ({}) }))
-vi.mock('@/lib/monitor/discovery', () => ({ discoverStoreCameras: async () => ({ ok: false, error: 'x' }), discoverRecorderCameras: async () => ({ ok: false, error: 'x' }) }))
+vi.mock('@/lib/import/apply', () => ({ importDevices: async () => ({}) }))
+vi.mock('@/lib/monitor/discovery', () => ({ discoverLocationCameras: async () => ({ ok: false, error: 'x' }), discoverRecorderCameras: async () => ({ ok: false, error: 'x' }) }))
 // P2-5c-1 services (the actions are tested here for their gate; the services in tests/integration/p2-5c-admin.test.ts).
 const no = async () => ({ ok: false, error: 'x' })
 vi.mock('@/lib/inventory/hierarchy', () => ({ saveRegion: no, saveCluster: no, previewMove: no, moveNode: no, hierarchyProposals: no, applyProposals: no, previewProposals: no }))

@@ -20,6 +20,14 @@ describe('parseDevicesCsv', () => {
     const both = parseDevicesCsv('name,type,location_code,store_code,ip\nA,server,,gaya,192.0.2.1\nB,server,patna,gaya,192.0.2.2\n')
     expect(both.rows.map((r) => r.store_code)).toEqual(['GAYA', 'PATNA'])
   })
+  it('release 1 (T-1 review L4): the same header rule as the locations reader — the first repeated column with a value wins', async () => {
+    const r = parseDevicesCsv('name,name,type,ip\n,ERP,server,192.0.2.20\nCCTV PC,Other,server,192.0.2.21\n')
+    expect(r.rows.map((x) => x.name)).toEqual(['ERP', 'CCTV PC'])
+    const { firstFilled } = await import('@/lib/import/csv')
+    expect(firstFilled(['a', 'b', 'a'], ['', 'x', 'y'])).toEqual({ a: 'y', b: 'x' })
+    expect(firstFilled(['a', 'a'], ['1', '2'])).toEqual({ a: '1' })
+    expect(firstFilled(['a', 'b'], ['1', '2'], (h) => h === 'a')).toEqual({ a: '1' })
+  })
   it('the sample file uses the new column name and reads without a problem', async () => {
     const { readFileSync } = await import('node:fs')
     const text = readFileSync('public/samples/devices-sample.csv', 'utf8')

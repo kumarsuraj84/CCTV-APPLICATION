@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { parseStoresCsv } from '@/lib/import/stores-csv'
+// Release 1 clean-ups (T-1 review L2): the legacy reader is a test fixture now (tests/setup/legacy-import.ts); these tests keep it honest.
+import { parseStoresCsv } from '../setup/legacy-import'
 
 const HEADER = 'name,city,zone,ip,port,http_port,user,password,channels'
 

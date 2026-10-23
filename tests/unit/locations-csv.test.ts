@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_IMPORT_ROWS, parseLocationsCsv } from '@/lib/import/locations-csv'
+import { planImport } from '@/lib/import/locations-plan'
 
 // P2-5c-2 brief item 1: the location CSV of the validated import (validate → preview → apply). Synthetic data only (ruling R-1): the
 // addresses are TEST-NET (192.0.2.x, 198.51.100.x) and the passwords are made up for the test.
@@ -170,6 +171,18 @@ describe('parseLocationsCsv: the location code column (T-1: location_code, and t
     const r = parseLocationsCsv('code,store_code,ip,user,password\nAAA,BBB,192.0.2.1,viewer,pw\n')
     expect(r.groups.map((g) => g.code)).toEqual(['AAA'])
   })
+
+  // Release 1 clean-ups (T-1 review L4): one rule for both CSV readers — among columns that mean the same (an alias or a repeated
+  // header) the first one with a value is used, for every column. Before, a blank code cell hid a filled store_code cell.
+  it('a blank code cell and a filled store_code cell: the filled one is the code (the devices reader does the same)', () => {
+    const r = parseLocationsCsv('code,store_code,name,ip,user,password\n,BBB,Bihar,192.0.2.1,viewer,pw\n')
+    expect(r.errors).toEqual([])
+    expect(r.groups.map((g) => g.code)).toEqual(['BBB'])
+  })
+  it('a repeated column: the first one with a value is used, whatever the column', () => {
+    const r = parseLocationsCsv('code,city,city,ip,user,password\nAAA,,Patna,192.0.2.1,viewer,pw\nCCC,Gaya,Patna,192.0.2.2,viewer,pw\n')
+    expect(r.groups.map((g) => [g.code, g.city])).toEqual([['AAA', 'Patna'], ['CCC', 'Gaya']])
+  })
 })
 
 describe('parseLocationsCsv: quotes and cell counts (review B-I1, B-I2, B-M7, B-M8)', () => {
@@ -237,6 +250,11 @@ A4,Gaya,BR,192.0.2.4,554,80,viewer,p4,4
     expect(r.errors.map((e) => e.line).filter((l) => l > 4)).toEqual([])
     expect(r.groups.map((g) => g.code)).toEqual(['A4'])
     expect(JSON.stringify(r.errors)).not.toContain('p2')
+    // Release 1 clean-ups (T-1 review I1): the lines that could not be read are counted, and the preview shows the count next to the
+    // skipped locations (their codes cannot be told, so they are not "locations").
+    expect(r.linesNotRead).toBe(2)
+    const plan = planImport(r, { locations: [], recorders: [], activeCameras: [], channelsEverMapped: {}, regions: [], clusters: [], archivedCodes: [], looseCameras: [] }, { skipBadRows: true })
+    expect(plan.preview.counts.linesNotRead).toBe(2)
   })
 
   it('quoted values, doubled quotes, Windows line endings and a byte-order mark are read correctly', () => {

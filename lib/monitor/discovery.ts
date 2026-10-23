@@ -331,7 +331,7 @@ export type LocationDiscovery = {
  * Discovery of every NVR of one location, one after the other (the "Find cameras" of a location). A switched-off NVR is
  * listed with its plain message and never contacted. Succeeds when at least one NVR answered.
  */
-export async function discoverStoreCameras(clients: Clients, actor: Actor, storeId: string, deps: Deps = defaults): Promise<Result<LocationDiscovery>> {
+export async function discoverLocationCameras(clients: Clients, actor: Actor, storeId: string, deps: Deps = defaults): Promise<Result<LocationDiscovery>> {
   if (!isAdminRole(actor.role)) return { ok: false, error: DENIED }
   if (typeof storeId !== 'string' || !UUID.test(storeId)) return { ok: false, error: 'Location not found.' }
   const may = await mayDiscoverAt(clients, actor, storeId, 'Location not found.')
@@ -340,7 +340,7 @@ export async function discoverStoreCameras(clients: Clients, actor: Actor, store
   try {
     recorders = await recordersOfLocation(clients.admin, actor.orgId, storeId)
   } catch (e) {
-    return { ok: false, error: sanitizeError(e, { route: 'discoverStoreCameras', fallback: 'Could not read the location.' }) }
+    return { ok: false, error: sanitizeError(e, { route: 'discoverLocationCameras', fallback: 'Could not read the location.' }) }
   }
   if (recorders.length === 0) return { ok: false, error: MSG_NO_NVR }
   const out: LocationDiscovery = { cameras: 0, created: 0, updated: 0, mapped: 0, moved: 0, recorders: [] }

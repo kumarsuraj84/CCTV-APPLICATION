@@ -1,10 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Actor } from '@/lib/admin/types'
-import { importStores } from '@/lib/import/apply'
-import { parseStoresCsv } from '@/lib/import/stores-csv'
+import { createStore, importStores, parseStoresCsv, updateStore } from '../setup/legacy-import'
 import { resolveCameraRoutes } from '@/lib/inventory/recorders'
-import { createStore, updateStore } from '@/lib/inventory/stores'
 import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
 import type { Database } from '@/types/database'
 import {

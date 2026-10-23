@@ -1,4 +1,4 @@
-import { parseCsvStrict } from '@/lib/import/csv'
+import { firstFilled, parseCsvStrict } from '@/lib/import/csv'
 import { normalizeZone } from '@/lib/import/regions'
 import { isValidIp, parsePort } from '@/lib/import/validators'
 import { isLocationKind, normaliseCode, type LocationKind } from '@/lib/inventory/forms'
@@ -51,6 +51,8 @@ export type ParsedLocations = {
   bad: { code: string; line: number }[]
   /** Data rows read (header not counted). */
   rows: number
+  /** Release 1 (T-1 review I1): lines swallowed by a quoted value that ran over several lines (each also listed as a problem). */
+  linesNotRead: number
   /** Whether the file has an NVR address column at all (a file without one does not speak about NVRs). */
   listsRecorders: boolean
   /** The file cannot be read as a whole (an unclosed quote, not UTF-8): nothing may be imported, whatever is chosen. */
@@ -85,7 +87,7 @@ export const MSG_UNCLOSED_QUOTE = 'A quote (") opened on this line is never clos
 export const MSG_NOT_UTF8 = 'The file is not saved as UTF-8 text (some characters cannot be read). Save it as “CSV UTF-8” and choose it again.'
 export const MSG_SWALLOWED = (n: number, opened: number, closed: number) =>
   `Line ${n} is part of a value that was opened on line ${opened} and closed on line ${closed}, so it is not read as a row of its own.`
-const MSG_FORMULA ='Starts with =, +, - or @ (a spreadsheet would read it as a formula): remove that sign.'
+const MSG_FORMULA = 'Starts with =, +, - or @ (a spreadsheet would read it as a formula): remove that sign.'
 const MSG_LINE_BREAK = 'A line break inside the value: put it on one line.'
 
 const headerKey = (h: string) => {
@@ -141,7 +143,7 @@ const LOCATION_FIELDS = [
 ] as const
 
 export function parseLocationsCsv(text: string): ParsedLocations {
-  const out: ParsedLocations = { groups: [], errors: [], warnings: [], badCodes: [], bad: [], rows: 0, listsRecorders: false }
+  const out: ParsedLocations = { groups: [], errors: [], warnings: [], badCodes: [], bad: [], rows: 0, linesNotRead: 0, listsRecorders: false }
   const fatal = (line: number, message: string) => {
     out.errors.push({ line, message })
     out.fatal = true
@@ -168,8 +170,9 @@ export function parseLocationsCsv(text: string): ParsedLocations {
     if (h.trim() !== '' && !KNOWN.has(headers[i])) out.warnings.push({ line: 1, column: h.trim(), message: 'This column is not used.' })
   })
   out.listsRecorders = headers.includes('ip')
-  const codeAt = headers.indexOf('code')
-  const nameAt = headers.indexOf('name')
+  const columnsOf = (key: string) => headers.flatMap((h, i) => (h === key ? [i] : []))
+  const codeAt = columnsOf('code')
+  const nameAt = columnsOf('name')
   const byCode = new Map<string, LocationGroup>()
   const bad = new Set<string>()
   const markBad = (code: string | null, line: number) => {
@@ -189,14 +192,17 @@ export function parseLocationsCsv(text: string): ParsedLocations {
     // B-I1: a row that cannot be read exactly is not read at all. Its location (by the code cell, when that can be told) is skipped
     // whole in "skip bad rows".
     const roughCode = (() => {
-      const c = codeAt >= 0 ? cell(cells[codeAt]) : ''
+      const c = codeAt.map((i) => cell(cells[i])).find((x) => x !== '') ?? ''
       if (c !== '') return normaliseCode(c)
-      const n = nameAt >= 0 ? cell(cells[nameAt]).replace(/\s+/g, ' ').toUpperCase() : ''
+      const n = nameAt.map((i) => cell(cells[i]).replace(/\s+/g, ' ').toUpperCase()).find((x) => x !== '') ?? ''
       return n !== '' && n.length <= 50 ? n : null
     })()
     // T-1 (re-review N1): a quoted value that runs over several lines swallowed the lines after the first. Each is named, so that
     // "skip the rows with problems" never drops a location without saying so. (They cannot be read as rows: nothing is guessed.)
-    if (row.lastLine !== undefined) for (let n = line + 1; n <= row.lastLine; n++) out.errors.push({ line: n, message: MSG_SWALLOWED(n, line, row.lastLine) })
+    if (row.lastLine !== undefined) {
+      for (let n = line + 1; n <= row.lastLine; n++) out.errors.push({ line: n, message: MSG_SWALLOWED(n, line, row.lastLine) })
+      out.linesNotRead += row.lastLine - line
+    }
     if (row.problem === 'stray_quote') {
       out.errors.push({ line, message: MSG_STRAY_QUOTE })
       markBad(roughCode, line)
@@ -212,10 +218,8 @@ export function parseLocationsCsv(text: string): ParsedLocations {
       markBad(roughCode, line)
       continue
     }
-    const v: Record<string, string> = {}
-    headers.forEach((h, i) => {
-      if (KNOWN.has(h) && v[h] === undefined) v[h] = cells[i] ?? ''
-    })
+    // Release 1 (T-1 review L4): the first repeated or aliased column with a value wins (code / location_code / store_code too).
+    const v = firstFilled(headers, cells, (h) => KNOWN.has(h))
     let failed = false
     const fail: Fail = (column, message) => {
       failed = true

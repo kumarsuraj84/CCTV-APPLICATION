@@ -1,11 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Actor } from '@/lib/admin/types'
-import { importDevices, importStores } from '@/lib/import/apply'
+import { importDevices } from '@/lib/import/apply'
+import { createStore, deleteStore, importStores, parseStoresCsv, updateStore } from '../setup/legacy-import'
 import { parseDevicesCsv } from '@/lib/import/devices-csv'
-import { parseStoresCsv } from '@/lib/import/stores-csv'
 import { createDevice, deleteDevice, updateDevice } from '@/lib/inventory/devices'
 import { MSG_PASSWORD_AGAIN } from '@/lib/inventory/recorder-admin'
-import { createStore, deleteStore, updateStore } from '@/lib/inventory/stores'
 import { adminClient, cleanupOrg, createOrg, createRecorder, createUser, primaryRecorderOf } from '../setup/fixtures'
 
 const admin = () => adminClient()

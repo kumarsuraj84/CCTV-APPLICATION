@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { requestCheckNow } from '@/lib/monitor/check-now'
-import { discoverStoreCameras } from '@/lib/monitor/discovery'
+import { discoverLocationCameras } from '@/lib/monitor/discovery'
 import { NvrClient } from '@/lib/nvr/client'
 import { getVisibleGroup, listVisibleGroups } from '@/lib/queries/groups'
 import { getVisibleStore, listVisibleDevices } from '@/lib/queries/inventory'
@@ -166,7 +166,7 @@ describe('capability enforcement per operation (P2-2)', () => {
         return r.ok
       }
       case 'discovery': {
-        const r = await discoverStoreCameras(d, { ...actor, role }, s1, { nvr: (ep) => nvrClient({ ...ep }) })
+        const r = await discoverLocationCameras(d, { ...actor, role }, s1, { nvr: (ep) => nvrClient({ ...ep }) })
         if (!r.ok) expect(['Only administrators can look for cameras.', 'Location not found.']).toContain(r.error)
         return r.ok
       }
@@ -214,7 +214,7 @@ describe('capability enforcement per operation (P2-2)', () => {
     const stranger = await createUser(otherOrg, 'admin')
     await grant(otherOrg, stranger.id, 'admin.inventory')
     nvr.requests.length = 0
-    expect(await discoverStoreCameras({ admin: admin(), rls: stranger.client }, { id: stranger.id, orgId: otherOrg, role: 'admin' }, s1)).toEqual({ ok: false, error: 'Location not found.' })
+    expect(await discoverLocationCameras({ admin: admin(), rls: stranger.client }, { id: stranger.id, orgId: otherOrg, role: 'admin' }, s1)).toEqual({ ok: false, error: 'Location not found.' })
     expect(nvr.requests).toEqual([])
   })
 })

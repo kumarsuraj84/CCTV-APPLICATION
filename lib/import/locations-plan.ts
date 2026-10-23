@@ -67,6 +67,8 @@ export type PlanLocationView = {
 export type ArchiveItem = { kind: 'location' | 'recorder' | 'camera'; id: string; label: string; cameras: number }
 export type ImportCounts = {
   locationsNew: number; locationsChanged: number; locationsUnchanged: number; locationsSkipped: number
+  /** Release 1 (T-1 review I1): lines of the file that could not be read as rows at all (their location cannot be told). */
+  linesNotRead: number
   recordersNew: number; recordersChanged: number; recordersUnchanged: number
   /** NVR rows that give a password (written only where it differs). */
   passwordsSet: number
@@ -368,6 +370,7 @@ export function planImport(parsed: ParsedLocations, snap: ImportSnapshot, opts: 
     locationsChanged: good.filter((b) => b.view.status === 'update').length,
     locationsUnchanged: good.filter((b) => b.view.status === 'unchanged').length,
     locationsSkipped: skippedViews.length,
+    linesNotRead: parsed.linesNotRead ?? 0,
     recordersNew: recs.filter((r) => r.action === 'create').length,
     recordersChanged: recs.filter((r) => r.action === 'update').length,
     recordersUnchanged: recs.filter((r) => r.action === 'unchanged').length,
