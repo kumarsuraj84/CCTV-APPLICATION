@@ -619,6 +619,20 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"housekeeping_runs": {
+                  Row: {
+                    "db_role": string,"last_removed": number,"last_run_at": string,"runs": number,"task": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "db_role": string,"last_removed": number,"last_run_at": string,"runs"?: number,"task": string
+                  }
+                  Update: {
+                    "db_role"?: string,"last_removed"?: number,"last_run_at"?: string,"runs"?: number,"task"?: string
+                  }
+                  Relationships: [
+                    
+                  ]
                 },"inventory_migration_report": {
                   Row: {
                     "detail": NonNullable<Json>,"id": string,"kind": string,"location_id": string | null,"org_id": string,"recorder_id": string | null,"run_at": string
@@ -1433,6 +1447,12 @@ isOneToOne: false
 "asset_sync_endpoints":
 { Args: { "p_asset": string }; Returns: undefined
                            },
+"audit_guard_status":
+{ Args: Record<PropertyKey, never>; Returns: Json
+                           },
+"audit_purge_test_org":
+{ Args: { "p_org": string }; Returns: number
+                           },
 "auth_event_record":
 { Args: { "p_actor": string,"p_detail": Json,"p_email": string,"p_email_hash": string,"p_event": string,"p_ip": string,"p_user": string,"p_user_agent": string }; Returns: string
                            },
@@ -1712,6 +1732,9 @@ isOneToOne: false
                            },
 "network_validate_address":
 { Args: { "p_asset": string,"p_host": string,"p_org": string }; Returns: string
+                           },
+"ops_health_status":
+{ Args: Record<PropertyKey, never>; Returns: Json
                            },
 "preview_access_change":
 { Args: { "p_at"?: string,"p_changes": Json,"p_org": string,"p_sample"?: number,"p_user": string }; Returns: Json

@@ -251,10 +251,11 @@ export async function primaryRecorderOf(locationId: string): Promise<string> {
 // person (profiles cascade) and report rows with their organisation (organizations cascade).
 // P2-5a: locations, recorders, cameras, assets and their history can no longer be deleted (archive instead, SQLSTATE DR003); a test
 // or demo organisation is emptied by the one purge function allowed to (inventory_purge_test_org, which also removes vault secrets).
+// P5.4 (migration 20261021000041): admin_audit_log is append-only; a test or demo organisation's audit rows are removed by
+// audit_purge_test_org (cleanupOrg below), not by a delete of the table.
 export const ORG_TABLES_IN_DELETE_ORDER: string[] = [
   'camera_group_items',
   'camera_groups',
-  'admin_audit_log',
   // Retired grant tables of the old model (P2-1): read by nothing, kept one release for the migration report and its test.
   'user_camera_access',
   'user_zone_access',
@@ -280,6 +281,11 @@ export async function cleanupOrg(orgId: string | undefined): Promise<void> {
     // @ts-expect-error -- table names here are plain strings on purpose
     note(table, (await admin.from(table).delete().eq('org_id', orgId)).error)
   }
+  // P5.4: the audit rows through the one clean-up function allowed to delete them (a database without migration 0041 — rolled back —
+  // has no such function and still allows the plain delete).
+  const purged = await admin.rpc('audit_purge_test_org' as never, { p_org: orgId } as never)
+  if (purged.error?.code === 'PGRST202') note('admin_audit_log', (await admin.from('admin_audit_log').delete().eq('org_id', orgId)).error)
+  else note('admin_audit_log (purge)', purged.error)
   // Monitoring history, mappings, cameras, recorders (with their vault secrets), assets, locations, clusters, regions.
   note('inventory (purge)', (await admin.rpc('inventory_purge_test_org', { p_org: orgId })).error)
   const { data: people, error: pErr } = await admin.from('profiles').select('id').eq('org_id', orgId)
