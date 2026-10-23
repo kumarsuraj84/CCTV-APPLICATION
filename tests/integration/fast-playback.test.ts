@@ -234,7 +234,8 @@ describe('fast playback through the stream path (D-L1)', () => {
       await waitFor(async () => (await admin().from('media_sessions').select('fast_media_sec').eq('id', claims.sid).single()).data?.fast_media_sec != null)
       const row = (await admin().from('media_sessions').select('kind, capability, camera_id, stream, location_id, recorder_id, opened_at, revoke_reason, fast_media_sec').eq('id', claims.sid).single()).data!
       // Review I-1: at its end the session is finished for good (its token plays once) with the recording seconds it released (5 s here).
-      expect(row).toMatchObject({ kind: 'playback', capability: 'cctv.playback', camera_id: b1, stream: `fpb_${b1}_${claims.s}_${claims.e}`, location_id: loc, recorder_id: recB, revoke_reason: 'finished', fast_media_sec: 5 })
+      // Release 1 clean-ups (P4-L2 re-review N-2): a stream that released recording is charged at least 60 s, so the 5 s count as 60.
+      expect(row).toMatchObject({ kind: 'playback', capability: 'cctv.playback', camera_id: b1, stream: `fpb_${b1}_${claims.s}_${claims.e}`, location_id: loc, recorder_id: recB, revoke_reason: 'finished', fast_media_sec: 60 })
       expect(row.opened_at).not.toBeNull()
     })
 
