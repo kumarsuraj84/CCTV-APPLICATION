@@ -24,7 +24,10 @@ describe('access entry points with a real JWT (P2-3 fix round 1)', () => {
     org = await createOrg()
     store = (await createSite(org, { code: 'EP1', name: 'EP1', host: '192.0.2.1', username: 'v' })).locationId
     managerWithAccess = await createUser(org, 'manager')
-    await grant(org, managerWithAccess.id, ['admin.access', 'admin.users', 'cctv.live'])
+    // Final fix Y (review A M-3, rule 7): a manager can no longer be given admin.* on any path (the database refuses it, tested in
+    // final-fix-y-db.test.ts); the manager here has what a manager can hold, and the actions still send them away.
+    await expect(grant(org, managerWithAccess.id, ['admin.access', 'admin.users'])).rejects.toThrow(/only for administrators/)
+    await grant(org, managerWithAccess.id, ['cctv.live'])
     plainAdmin = await createUser(org, 'admin')
     await grant(org, plainAdmin.id, ['admin.access', 'admin.users', 'cctv.live'])
     target = await createUser(org, 'user')

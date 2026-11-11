@@ -68,7 +68,9 @@ describe('P2-3 fix round 1', () => {
           expect(res.filter((r) => r.ok), JSON.stringify(patch)).toHaveLength(1)
           // The loser is refused either by the last-super-administrator rule, or — when the winner's change landed first — because the
           // loser is no longer an active super administrator who may act at all. Both leave exactly one active super administrator.
-          expect([MSG_LAST_SUPER_ADMIN, 'You are not allowed to change this user.']).toContain((res.find((r) => !r.ok) as { error: string }).error)
+          // Final fix Y (review A M-4): people changes of an organisation are now serialised, so the loser usually reads its own (already
+          // changed) role after the winner committed and is refused as somebody who may not give that role.
+          expect([MSG_LAST_SUPER_ADMIN, 'You are not allowed to change this user.', 'You are not allowed to give that role.']).toContain((res.find((r) => !r.ok) as { error: string }).error)
           const { data } = await admin().from('profiles').select('id').eq('org_id', solo).eq('role', 'platform_owner').eq('is_active', true)
           expect(data).toHaveLength(1)
         } finally {

@@ -80,9 +80,10 @@ describe('entry points with a real JWT (P2-2 fix round 1)', () => {
     const all = [sGood, sWrong, sNoLogin].map(atLocation)
     live = await createUser(orgId, 'user')
     playback = await createUser(orgId, 'user')
-    exportPlayback = await createUser(orgId, 'user')
-    exportOnly = await createUser(orgId, 'user')
-    itPerson = await createUser(orgId, 'user')
+    // Final fix Y (review A M-3, ruling E-1): export holders are administrators on every path (were 'user').
+    exportPlayback = await createUser(orgId, 'admin')
+    exportOnly = await createUser(orgId, 'admin')
+    itPerson = await createUser(orgId, 'admin')
     operate = await createUser(orgId, 'operator')
     await grant(orgId, live.id, 'cctv.live', all)
     await grant(orgId, playback.id, 'cctv.playback', all)

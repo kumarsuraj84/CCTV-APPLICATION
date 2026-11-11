@@ -154,9 +154,13 @@ describe('per-service database roles (P2-6, D-14)', () => {
       expect(cams.error).toBeNull()
       expect((cams.data ?? []).map((c) => c.id)).toContain(cameraId)
       const changed = `Svc-${randomUUID()}`
-      expect((await call(web, 'recorder_store_credential', { p_recorder: recorderId, p_secret: changed })).error).toBeNull()
+      // Final fix Y (review A M-6): the web app writes an NVR password only through the form that names the organisation and the actor
+      // (checked in SQL, audited inside); the form without them is for the service key only.
+      expect((await call(web, 'recorder_store_credential', { p_recorder: recorderId, p_secret: changed })).error?.code).toBe('42501')
+      const writer = await createUser(orgId, 'platform_owner')
+      expect((await call(web, 'recorder_store_credential', { p_org: orgId, p_recorder: recorderId, p_secret: changed, p_actor: writer.id })).error).toBeNull()
       expect((await call(serviceClient('media_service'), 'recorder_credential_read', { p_recorder: recorderId, p_purpose: 'live' })).data).toBe(changed)
-      expect((await call(web, 'recorder_store_credential', { p_recorder: recorderId, p_secret: secret })).error).toBeNull()
+      expect((await call(web, 'recorder_store_credential', { p_org: orgId, p_recorder: recorderId, p_secret: secret, p_actor: writer.id })).error).toBeNull()
       const hit = await call(web, 'rate_limit_hit', { p_key: `test:${randomUUID()}`, p_limit: 1, p_window_sec: 60 })
       expect(hit.error).toBeNull()
     })

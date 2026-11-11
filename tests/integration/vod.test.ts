@@ -101,12 +101,14 @@ describe('fast playback (/api/vod)', () => {
     h1 = await addCamera(orgId, sHostile, 1, 'Hostile NVR')
     offStoreCamera = await addCamera(orgId, sOff, 1, 'In a switched-off store')
     foreign = await addCamera(otherOrg, await addStore(otherOrg, 'VX2'), 1, 'Other org')
-    viewer = await createUser(orgId, 'user')
+    // Final fix Y (review A M-3, ruling E-1): every holder of cctv.export is an administrator on every path (the database refuses it for
+    // other roles), so the people with export here are administrators; the role itself still opens nothing (nobody, AC-8).
+    viewer = await createUser(orgId, 'admin')
     nobody = await createUser(orgId, 'user')
-    manager = await createUser(orgId, 'manager')
-    u1 = await createUser(orgId, 'user')
-    u2 = await createUser(orgId, 'user')
-    u3 = await createUser(orgId, 'user')
+    manager = await createUser(orgId, 'admin')
+    u1 = await createUser(orgId, 'admin')
+    u2 = await createUser(orgId, 'admin')
+    u3 = await createUser(orgId, 'admin')
     // P2-1: fast playback is a savable file, so it needs cctv.export (decision D-6a), given here with live and playback for the stores.
     for (const u of [viewer, u1, u2, u3]) await grant(orgId, u.id, WITH_EXPORT, [sA, sNoPass, sDown, sWrong, sXml, sEnd, sHostile].map(atLocation))
     await grant(orgId, manager.id, [...READ_EVERYTHING, 'cctv.export']) // AC-8: the grants, not the manager role
@@ -159,7 +161,7 @@ describe('fast playback (/api/vod)', () => {
       const sMon = await addStore(orgId, 'VMOFF')
       await savePassword(sMon, NVR_PASSWORD)
       const cam = await addCamera(orgId, sMon, 1, 'Real NVR camera')
-      const watcher = await createUser(orgId, 'user')
+      const watcher = await createUser(orgId, 'admin') // final fix Y (A M-3, E-1)
       await grant(orgId, watcher.id, WITH_EXPORT, atLocation(sMon))
       const rec = await primaryRecorderOf(sMon)
       expect((await admin().rpc('recorder_set_monitoring', { p_org: orgId, p_recorder: rec, p_enabled: false, p_reason: 'Real NVR: not to be contacted' })).error).toBeNull()
@@ -256,7 +258,7 @@ describe('fast playback (/api/vod)', () => {
     })
 
     it('somebody with a grant for one camera only can fast-play that camera and no other of its store', async () => {
-      const cameraOnly = await createUser(orgId, 'user')
+      const cameraOnly = await createUser(orgId, 'admin') // final fix Y (A M-3, E-1)
       await grant(orgId, cameraOnly.id, WITH_EXPORT, atCamera(a1))
       expect((await get(cameraOnly, a2)).status).toBe(404)
       const ok = await get(cameraOnly, a1)
@@ -280,9 +282,9 @@ describe('fast playback (/api/vod)', () => {
     // the same refusal as no right at all, probe included, and the NVR is never asked.
     it('export without playback for that camera is "Camera not found." (404), the same as no right; probe too', async () => {
       const spawn = fakeSpawn('copy')
-      const exportOnly = await createUser(orgId, 'user')
+      const exportOnly = await createUser(orgId, 'admin') // final fix Y (A M-3, E-1)
       await grant(orgId, exportOnly.id, 'cctv.export', atLocation(sA))
-      const split = await createUser(orgId, 'user')
+      const split = await createUser(orgId, 'admin') // final fix Y (A M-3, E-1)
       await grant(orgId, split.id, 'cctv.export', atLocation(sA))
       await grant(orgId, split.id, 'cctv.playback', atCamera(a2)) // playback for another camera only
       for (const [who, more] of [[exportOnly, ''], [exportOnly, '&probe=1'], [split, ''], [split, '&probe=1']] as const) {
@@ -296,7 +298,7 @@ describe('fast playback (/api/vod)', () => {
 
     // P2-2 brief item 7: vod start / end / denied are audited (actor, capability, camera), never the address, the token or a password.
     it('records the start, the end and a refusal in the audit log', async () => {
-      const person = await createUser(orgId, 'user')
+      const person = await createUser(orgId, 'admin') // final fix Y (A M-3, E-1)
       await grant(orgId, person.id, WITH_EXPORT, atCamera(a1))
       const rows = async () => (await admin().from('admin_audit_log').select('action, entity_id, detail').eq('actor_id', person.id).order('created_at')).data ?? []
       expect((await get(person, a2)).status).toBe(404)

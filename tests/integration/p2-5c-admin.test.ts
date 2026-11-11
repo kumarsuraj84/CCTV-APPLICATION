@@ -48,7 +48,8 @@ describe('P2-5c-1 services', () => {
     plainAdmin = await createUser(orgId, 'admin')
     await grant(orgId, plainAdmin.id, READ_EVERYTHING)
     operator = await createUser(orgId, 'operator')
-    await grant(orgId, operator.id, 'admin.inventory')
+    // Final fix Y (review A M-3, rule 7): an operator can no longer hold admin.inventory on any path; the refusals below stand.
+    await expect(grant(orgId, operator.id, 'admin.inventory')).rejects.toThrow(/only for administrators/)
   })
   afterAll(async () => {
     await cleanupOrg(orgId)

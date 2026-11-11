@@ -34,7 +34,8 @@ describe('status reasons and column privileges (P2-2 fix round 1)', () => {
       const { error } = await admin().from('check_state').insert({ org_id: orgId, status: 'down', last_checked_at: at, down_since: at, ...r })
       if (error) throw new Error(error.message)
     }
-    cctvOnly = await createUser(orgId, 'user')
+    // Final fix Y (review A M-3, ruling E-1): this CCTV-only person holds export, so they are an administrator (export only for them).
+    cctvOnly = await createUser(orgId, 'admin')
     itView = await createUser(orgId, 'user')
     assetOnly = await createUser(orgId, 'user')
     nobody = await createUser(orgId, 'admin')
@@ -97,10 +98,14 @@ describe('status reasons and column privileges (P2-2 fix round 1)', () => {
   })
 
   // M-2: no role literal in the profile policy any more.
-  it('an administrator without admin.users reads only their own profile; admin.users (any role) reads the organisation', async () => {
+  // Final fix Y (review A M-3, rule 7): admin.users is held only by administrators (refused for a viewer on every path), and the row
+  // security that hangs on it also needs an administrative role. Was: "admin.users (any role) reads the organisation".
+  it('an administrator without admin.users reads only their own profile; an administrator with admin.users reads the organisation', async () => {
     const own = await nobody.client.from('profiles').select('id')
     expect((own.data ?? []).map((r) => r.id)).toEqual([nobody.id])
-    const viewerWithUsers = await createUser(orgId, 'user')
+    const viewer = await createUser(orgId, 'user')
+    await expect(grant(orgId, viewer.id, 'admin.users', ORG_SCOPE)).rejects.toThrow(/only for administrators/)
+    const viewerWithUsers = await createUser(orgId, 'admin')
     await grant(orgId, viewerWithUsers.id, 'admin.users', ORG_SCOPE)
     const all = await viewerWithUsers.client.from('profiles').select('id')
     expect((all.data ?? []).length).toBeGreaterThanOrEqual(5)

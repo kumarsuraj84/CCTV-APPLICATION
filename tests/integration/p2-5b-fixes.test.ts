@@ -58,6 +58,7 @@ describe('P2-5b review round 1', () => {
   beforeAll(async () => {
     orgId = await createOrg()
     me = await createUser(orgId, 'admin')
+    await grant(orgId, me.id, 'admin.inventory') // final fix Y (review A M-2): checked in SQL too
     actor = { id: me.id, orgId, role: 'admin' }
   })
   afterAll(() => cleanupOrg(orgId))

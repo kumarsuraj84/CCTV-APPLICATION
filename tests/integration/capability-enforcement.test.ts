@@ -62,6 +62,9 @@ describe('capability enforcement per operation (P2-2)', () => {
     await admin().from('camera_group_items').insert({ org_id: orgId, group_id: group, camera_id: c11 })
 
     const add = async (key: string, role: 'user' | 'operator' | 'admin', allowed: Op[], grants: [string | string[], ReturnType<typeof atLocation> | typeof ORG_SCOPE][] = [], o: { validFrom?: string; validUntil?: string; mustReset?: boolean } = {}) => {
+      // Final fix Y (review A M-3, ruling E-1): cctv.export is held only by administrators on every path, so a person given export here
+      // is an administrator (the role alone gives nothing: adminRoleOnly below).
+      if (grants.some(([caps]) => ([] as string[]).concat(caps).includes('cctv.export'))) role = 'admin'
       const user = await createUser(orgId, role, { mustReset: o.mustReset })
       for (const [caps, scope] of grants) await grant(orgId, user.id, caps, scope, o)
       people[key] = { user, role, allowed }

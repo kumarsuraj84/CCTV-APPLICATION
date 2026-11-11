@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Actor, AdminClient } from '@/lib/admin/types'
 import { createStore, updateStore } from '../setup/legacy-import'
-import { adminClient, cleanupOrg, createOrg, createUser } from '../setup/fixtures'
+import { adminClient, cleanupOrg, createOrg, createUser, grant } from '../setup/fixtures'
 
 // The real admin client, except that creating cameras fails. Everything else is the real local database.
 function failingCameras(): AdminClient {
@@ -32,6 +32,7 @@ describe('a store is saved but its cameras cannot be created', () => {
   beforeAll(async () => {
     orgId = await createOrg()
     const u = await createUser(orgId, 'admin')
+    await grant(orgId, u.id, 'admin.inventory') // final fix Y (review A M-2): checked in SQL too
     actor = { id: u.id, orgId, role: 'admin' }
   })
   afterEach(() => logged.mockClear())

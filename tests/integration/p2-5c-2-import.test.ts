@@ -60,7 +60,8 @@ describe('P2-5c-2 location import', () => {
     const plain = await createUser(orgId, 'admin')
     await grant(orgId, plain.id, READ_EVERYTHING)
     const operator = await createUser(orgId, 'operator')
-    await grant(orgId, operator.id, 'admin.inventory')
+    // Final fix Y (review A M-3, rule 7): an operator can no longer hold admin.inventory on any path; still refused below.
+    await expect(grant(orgId, operator.id, 'admin.inventory')).rejects.toThrow(/only for administrators/)
     const csv = `${HEADER}\nGATE1,,,,Patna,,,,192.0.2.1,,,viewer,Pw-gate,2,,\n`
     expect(await checkLocationImport(c(plain), { id: plain.id, orgId, role: 'admin' }, csv, { skipBadRows: false })).toEqual({ ok: false, error: DENIED })
     expect(await applyLocationImport(c(operator), { id: operator.id, orgId, role: 'operator' }, csv, { skipBadRows: false, archive: false, fingerprint: 'x' })).toEqual({ ok: false, error: DENIED })

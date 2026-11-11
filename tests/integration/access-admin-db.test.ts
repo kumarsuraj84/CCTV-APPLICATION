@@ -237,7 +237,7 @@ describe('access administration in the database (P2-3)', () => {
   })
 
   it('access_grant_summary counts what is in effect now, per person and capability', async () => {
-    const v = await createUser(org, 'user')
+    const v = await createUser(org, 'admin') // final fix Y (A M-3, E-1): a future export grant is for an administrator only
     await grant(org, v.id, 'cctv.live', [atLocation(L1), atLocation(L2), atCamera(c11)])
     await grant(org, v.id, 'cctv.playback', ORG_SCOPE, { validUntil: iso(Date.now() + 2 * day) })
     await grant(org, v.id, 'cctv.export', atCamera(c11), { validFrom: iso(Date.now() + day) }) // not started: not counted

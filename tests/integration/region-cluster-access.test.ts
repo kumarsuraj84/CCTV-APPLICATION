@@ -182,6 +182,8 @@ describe('regions, clusters and recorder scopes (P2-5a, ruling C-1)', () => {
     const v2 = await version(holderNew.id)
     const before = (await camsOf(clusterViewer)).length
 
+    // Final fix Y (review A M-2): the move checks the actor's admin.inventory in SQL too (before: any active person of the organisation).
+    await grant(orgId, regionAdmin.id, 'admin.inventory')
     expect((await admin().rpc('inventory_move_location', { p_org: orgId, p_location: moved, p_cluster: cl.W1, p_actor: regionAdmin.id })).error).toBeNull()
 
     expect((await camsOf(clusterViewer)).length).toBe(before - 4)

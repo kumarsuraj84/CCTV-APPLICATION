@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Actor } from '@/lib/admin/types'
 import { createDevice } from '@/lib/inventory/devices'
 import { createStore, deleteStore } from '../setup/legacy-import'
-import { adminClient, cleanupOrg, createOrg, createSite, createUser } from '../setup/fixtures'
+import { adminClient, cleanupOrg, createOrg, createSite, createUser, grant } from '../setup/fixtures'
 
 const admin = () => adminClient()
 
@@ -15,6 +15,7 @@ describe('database hardening', () => {
   beforeAll(async () => {
     orgId = await createOrg()
     const u = await createUser(orgId, 'admin')
+    await grant(orgId, u.id, 'admin.inventory') // final fix Y (review A M-2): checked in SQL too
     actor = { id: u.id, orgId, role: 'admin' }
     // P2-5b: the NVR is a recorder; its login is saved and read through the recorder-keyed functions only.
     recorderId = (await createSite(orgId, { code: 'HARD', name: 'Hardening', host: '127.0.0.1', username: 'u' })).recorderId

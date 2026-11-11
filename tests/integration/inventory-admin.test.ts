@@ -5,7 +5,7 @@ import { createStore, deleteStore, importStores, parseStoresCsv, updateStore } f
 import { parseDevicesCsv } from '@/lib/import/devices-csv'
 import { createDevice, deleteDevice, updateDevice } from '@/lib/inventory/devices'
 import { MSG_PASSWORD_AGAIN } from '@/lib/inventory/recorder-admin'
-import { adminClient, cleanupOrg, createOrg, createRecorder, createUser, primaryRecorderOf } from '../setup/fixtures'
+import { adminClient, cleanupOrg, createOrg, createRecorder, createUser, grant, primaryRecorderOf } from '../setup/fixtures'
 
 const admin = () => adminClient()
 // P2-5b: a store's NVR login belongs to its primary recorder (read through the recorder-keyed server function only).
@@ -23,6 +23,8 @@ describe('inventory administration', () => {
   beforeAll(async () => {
     orgId = await createOrg()
     const u = await createUser(orgId, 'admin')
+    // Final fix Y (review A M-2): the database checks the actor's admin.inventory too (before: the role was enough in SQL).
+    await grant(orgId, u.id, 'admin.inventory')
     actor = { id: u.id, orgId, role: 'admin' }
   })
   afterAll(() => cleanupOrg(orgId))

@@ -25,7 +25,8 @@ const SELECT_WEB = [
 ]
 const INSERT_WEB = [
   'admin_audit_log', 'asset_dependencies', 'asset_endpoints', 'assets', 'camera_group_items', 'camera_group_rules', 'camera_groups', 'cameras',
-  'clusters', 'locations', 'network_definitions', 'profiles', 'regions',
+  // Final fix Y (review A M-7, 20261021000049): no INSERT on profiles any more: a person is created through create_person.
+  'clusters', 'locations', 'network_definitions', 'regions',
 ]
 const UPDATE_WEB = [
   'asset_endpoints', 'assets', 'camera_group_items', 'camera_groups', 'cameras', 'clusters', 'discovery_findings', 'locations',

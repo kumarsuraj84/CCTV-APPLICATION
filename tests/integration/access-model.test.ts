@@ -232,9 +232,10 @@ describe('capability access model (P2-1)', () => {
     expect((await m.client.from('location_status').select('location_id')).data).toEqual([])
     expect(await rows(m, 'profiles')).toEqual([m.id])
 
-    await grant(orgA, m.id, 'admin.users')
-    expect((await rows(m, 'profiles')).length).toBeGreaterThan(2)
-    // admin.users is administrative: it still shows no store, camera or device.
+    // Final fix Y (review A M-3, ruling E-1 / rule 7): admin.* is refused for a non-administrator on every path now (before: a manager
+    // could be given admin.users by the service key and then read every profile). The manager keeps reading only their own profile.
+    await expect(grant(orgA, m.id, 'admin.users')).rejects.toThrow(/only for administrators/)
+    expect(await rows(m, 'profiles')).toEqual([m.id])
     for (const t of ['locations', 'cameras', 'assets'] as const) expect(await rows(m, t)).toEqual([])
 
     // P2-2 fix M-2: no role literal any more: an administrator reads only their own profile until granted admin.users, and no data.
@@ -378,7 +379,8 @@ describe('capability access model (P2-1)', () => {
   })
 
   it('minor 2: requires_mfa capabilities count only in an aal2 session once MFA is enforced (crafted claims)', async () => {
-    const p = await createUser(orgA, 'user')
+    // Final fix Y (review A M-3, ruling E-1): export is held only by administrators, on every path (was a 'user' here).
+    const p = await createUser(orgA, 'admin')
     await grant(orgA, p.id, ['cctv.live', 'cctv.export'], atLocation(L1))
     const caps = async (claims: object, mfa: boolean) => {
       const { data, error } = await admin().rpc('access_session_capabilities', { p_user: p.id, p_claims: claims as never, p_mfa_enforced: mfa })
@@ -729,7 +731,7 @@ describe('capability access model (P2-1)', () => {
       // P2-5a (20261021000019..21): locations, recorders, mappings, archive, hierarchy moves, monitoring switch, credentials, migration.
       access_target_ancestry: web,
       // P2-6: the web app WRITES an NVR password (never reads one); reads go through recorder_credential_read (below).
-      recorder_store_credential: web,
+      // (recorder_store_credential: two forms since final fix Y, checked by their arguments after this list.)
       recorder_read_credential: server,
       recorder_delete_credential: server,
       recorder_credential_status: server,
@@ -825,7 +827,6 @@ describe('capability access model (P2-1)', () => {
       media_sessions_prune: worker,
       monitor_request_check: web,
       targets_uptime: web,
-      revoke_user_sessions: web,
       set_person_active: web,
       change_person_role: web,
       access_review_self_confirm: web,
@@ -878,6 +879,26 @@ describe('capability access model (P2-1)', () => {
       security_settings_audit_delete: [],
       security_settings_no_truncate: [],
       organizations_test_namespace: [],
+      // Final fix Y (20261021000049): the owner-only two-step switch and its overview, the code-failure count, the password-reset rule,
+      // person creation and the device import for the web app; the helpers and triggers have no grant at all. (recorder_store_credential
+      // and revoke_user_sessions have a second, organisation-naming form for the web app; the old forms are the service key's only:
+      // final-fix-y-db.test.ts.)
+      security_set_mfa: web,
+      security_mfa_overview: web,
+      mfa_code_attempt_begin: web,
+      mfa_code_attempt_end: web,
+      mfa_code_locks: web,
+      mfa_code_lock_clear: web,
+      access_check_password_reset: web,
+      create_person: web,
+      inventory_devices_import: web,
+      inventory_check_admin: [],
+      access_admin_lock: [],
+      mfa_default_enforced: [],
+      mfa_code_lock_minutes: [],
+      mfa_code_lock_record: [],
+      profiles_role_rights: [],
+      security_settings_mfa_normalise: [],
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)
@@ -885,6 +906,12 @@ describe('capability access model (P2-1)', () => {
       expect(sorted(f!.grantees), name).toEqual(sorted(grantees))
       if (f!.security_definer) expect(f!.search_path, name).toBe('')
     }
+    // Final fix Y (review A M-6, 20261021000049): the web app's forms name the organisation; the forms without it are the service key's.
+    const byArgs = (name: string) => new Map((data ?? []).filter((f) => f.name === name).map((f) => [String((f as { args?: string }).args ?? ''), sorted(f.grantees)]))
+    expect(Object.fromEntries(byArgs('recorder_store_credential'))).toEqual({
+      'p_org uuid, p_recorder uuid, p_secret text, p_actor uuid': sorted(web), 'p_recorder uuid, p_secret text': server,
+    })
+    expect(Object.fromEntries(byArgs('revoke_user_sessions'))).toEqual({ 'p_org uuid, p_user uuid': sorted(web), 'p_user uuid': server })
     // The old model is gone, and so are the names replaced in fix round 1.
     for (const old of ['is_staff_all', 'granted_store_ids', 'visible_store_ids', 'visible_camera_ids', 'visible_device_ids', 'replace_user_access',
       'access_effective_camera_ids', 'access_effective_device_ids',
@@ -995,7 +1022,7 @@ describe('capability access model (P2-1)', () => {
     expect(byKey.get('admin.users')!.scope_kinds).toEqual(['organization'])
     expect((await admin().rpc('mfa_enforced')).data).toBe(false)
     // A capability that needs MFA still works while MFA is not enforced (the switch arrives in P3).
-    const p = await createUser(orgA, 'user')
+    const p = await createUser(orgA, 'admin') // final fix Y (A M-3, E-1): export only for administrators, on every path
     await grant(orgA, p.id, 'cctv.export', atCamera(c11))
     expect(await canFor(p, 'cctv.export', 'camera', c11)).toBe(true)
     expect(await can(p, 'cctv.export')).toBe(true)

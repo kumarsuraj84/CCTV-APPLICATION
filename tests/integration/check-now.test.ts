@@ -37,7 +37,8 @@ describe('check now', () => {
     for (const role of ['user', 'operator', 'manager', 'admin', 'platform_owner'] as const) people.push([await createUser(orgId, role), role])
     // A different capability, or the right one only for one asset or camera, is not enough.
     const readers = await createUser(orgId, 'operator')
-    await grant(orgId, readers.id, [...READ_EVERYTHING, 'admin.inventory', 'admin.users'])
+    // Final fix Y (review A M-3, rule 7): admin.* only for administrators on every path (this operator had admin.inventory and admin.users).
+    await grant(orgId, readers.id, READ_EVERYTHING)
     const assetOnly = await createUser(orgId, 'operator')
     await grant(orgId, assetOnly.id, 'it.monitoring.operate', atAsset(device))
     const camOnly = await createUser(orgId, 'operator')

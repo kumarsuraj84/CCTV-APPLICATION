@@ -160,7 +160,8 @@ describe('finding cameras on the NVR', () => {
     expect(await discoverLocationCameras(d(plainAdmin), { id: plainAdmin.id, orgId, role: 'admin' }, storeId)).toEqual({ ok: false, error: 'Only administrators can look for cameras.' })
     expect(await discoverRecorderCameras(d(plainAdmin), { id: plainAdmin.id, orgId, role: 'admin' }, recorderId)).toEqual({ ok: false, error: 'Only administrators can look for cameras.' })
     const capOnly = await createUser(orgId, 'operator')
-    await grant(orgId, capOnly.id, 'admin.inventory')
+    // Final fix Y (review A M-3, rule 7): the database now refuses admin.inventory for an operator on every path; still refused here.
+    await expect(grant(orgId, capOnly.id, 'admin.inventory')).rejects.toThrow(/only for administrators/)
     expect((await discoverLocationCameras(d(capOnly), { id: capOnly.id, orgId, role: 'operator' }, storeId)).ok).toBe(false)
     expect(nvr.requests.length).toBe(asked)
     const other = await createOrg()
