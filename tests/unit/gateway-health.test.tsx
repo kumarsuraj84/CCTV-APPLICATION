@@ -60,4 +60,19 @@ describe('the Monitoring page panel', () => {
     expect(down).toContain('The video gateway is not answering.')
     expect(down).toContain('npm run gateway')
   })
+
+  // Final review C-I10: in production the gateway is a Windows service; the hint names it (deploy/windows/drishti-services.ps1).
+  it('production: the hint is to start the DrishtiGateway Windows service, not npm run gateway', () => {
+    const down = text(renderToStaticMarkup(<GatewayHealthPanel gateway={{ ok: false }} orgOpen={0} production />))
+    expect(down).toContain('DrishtiGateway')
+    expect(down).toMatch(/drishti-services.ps1 -Action Start -Service DrishtiGateway/)
+    expect(down).not.toContain('npm run gateway')
+  })
+
+  it('startHint gives the Windows service in production and the npm script in development, for the worker too', async () => {
+    const { startHint } = await import('@/lib/ops/service-hints')
+    expect(startHint('worker', true)).toEqual({ production: true, service: 'DrishtiWorker', command: 'drishti-services.ps1 -Action Start -Service DrishtiWorker' })
+    expect(startHint('worker', false).command).toBe('npm run worker')
+    expect(startHint('gateway', true).service).toBe('DrishtiGateway')
+  })
 })

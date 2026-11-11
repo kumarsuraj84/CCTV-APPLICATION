@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -16,14 +16,16 @@ const SCRIPT = path.resolve(__dirname, '../../scripts/gen-secrets.mjs')
 const REPO = path.resolve(__dirname, '../..')
 const JWT = 'test-only-jwt-secret-that-is-long-enough-for-hs256'
 let dir: string
+let record: string
 beforeEach(() => {
   dir = mkdtempSync(path.join(os.tmpdir(), 'drishti-prod-env-'))
+  record = path.join(dir, 'acl-record.jsonl')
 })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const parse = (text: string) => Object.fromEntries(text.split(/\r?\n/).filter((l) => /^[A-Z0-9_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]))
 const run = (...args: string[]) =>
-  execFileSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: { ...process.env, GEN_TEST_JWT: JWT }, stdio: ['ignore', 'pipe', 'pipe'] })
+  execFileSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: { ...process.env, GEN_TEST_JWT: JWT, DRISHTI_ACL_RECORD: record }, stdio: ['ignore', 'pipe', 'pipe'] })
 
 describe('production env skeleton (P5.4)', () => {
   it('one file per service, each with only its own lines; shared values equal, the others distinct', () => {
@@ -52,6 +54,11 @@ describe('production env skeleton (P5.4)', () => {
     expect(web.HOSTNAME).toBe('127.0.0.1')
     expect(web.PORT).toBe('3212')
     expect(gateway.GATEWAY_HOST).toBe('127.0.0.1')
+    // P5.4 fix round 3 (P5.5): the gateway believes one proxy hop (Caddy) for its per-address limits, as the web app does.
+    expect(gateway.TRUSTED_PROXY_HOPS).toBe('1')
+    expect(web.TRUSTED_PROXY_HOPS).toBe('1')
+    const example = readFileSync(path.resolve(__dirname, '../../deploy/production.env.example'), 'utf8')
+    expect(example.slice(example.indexOf('# ── Gateway'))).toMatch(/^TRUSTED_PROXY_HOPS=1$/m)
     const secrets = Object.entries(web).filter(([k]) => /SECRET$|PASSWORD$/.test(k)).map(([, v]) => v)
     expect(new Set(secrets).size).toBe(secrets.length)
   })
@@ -94,51 +101,29 @@ describe('production env skeleton (P5.4)', () => {
     expect(readFileSync(path.join(dir, 'worker.env'), 'utf8')).toBe('MINE=1\n')
   })
 
-  // Review I-7: on Windows the files never carry the folder's inherited ACL (Authenticated Users / Users), and a rotation keeps the
-  // ACL the install gave a file (the service account's read right), instead of the temporary file's.
-  it.skipIf(process.platform !== 'win32')('Windows: new env files are locked (no inherited entry, no Users), and a rotation keeps the file ACL', () => {
-    const icacls = (p: string) => execFileSync('icacls', [p], { encoding: 'utf8' })
-    const out = path.join(dir, 'config')
+  // P5.4 fix round 3 (the owner's antivirus): here the locks are recorded, not made (DRISHTI_ACL_RECORD, honoured under the temp
+  // folder only); the real access lists (no inherited entry, no Users, a rotation keeping the file's rules, the locked work folder) are
+  // checked by tests/windows-lab/prod-env.lab.test.ts on the server.
+  it.skipIf(process.platform !== 'win32')('Windows: every folder made for the env files is locked at once, top down, and every file before its secret', () => {
+    const top = path.join(dir, 'Drishti')
+    const out = path.join(top, 'nested', 'config')
     run('--production', '--out-dir', out, '--jwt-secret-env', 'GEN_TEST_JWT')
-    for (const f of ['web.env', 'worker.env', 'gateway.env', 'go2rtc.env', '']) {
-      const acl = icacls(path.join(out, f))
-      expect(acl, f).not.toMatch(/\(I\)/)
-      expect(acl, f).not.toMatch(/Authenticated Users|\\Users:|Everyone/i)
-      expect(acl, f).toMatch(/SYSTEM/)
-      expect(acl, f).toMatch(/Administrators/)
-    }
-    const web = path.join(out, 'web.env')
-    execFileSync('icacls', [web, '/grant', '*S-1-5-19:R'], { stdio: 'ignore' }) // stands in for NT SERVICE\DrishtiWeb (LOCAL SERVICE)
-    const before = parse(readFileSync(web, 'utf8')).CRON_SECRET
-    run('--file', web, '--only=CRON_SECRET', '--rotate=CRON_SECRET')
-    expect(parse(readFileSync(web, 'utf8')).CRON_SECRET).not.toBe(before)
-    expect(icacls(web)).toMatch(/LOCAL SERVICE/)
-    expect(icacls(web)).not.toMatch(/\(I\)/)
-    expect(readdirSync(out).filter((f) => f.includes('.tmp-'))).toEqual([])
+    const locks = readFileSync(record, 'utf8').trim().split(/\r?\n/).map((l) => JSON.parse(l) as { lock: string; folder: boolean })
+    expect(locks.slice(0, 3)).toEqual([top, path.join(top, 'nested'), out].map((p) => ({ lock: p, folder: true })))
+    for (const f of ['web.env', 'worker.env', 'gateway.env', 'go2rtc.env']) expect(locks.some((l) => !l.folder && path.basename(l.lock).startsWith(f)), f).toBe(true)
   })
 
-  // Re-review M-new-5: into an EXISTING folder that is not locked (Users may read it), every temporary copy is made in a work folder
-  // locked before anything is created in it, so even the empty file never carries the open rules; the work folder goes afterwards.
-  it.skipIf(process.platform !== 'win32')('Windows: into an existing open folder the copies are made in a locked work folder; a file made there is closed from its creation', async () => {
-    const icacls = (p: string) => execFileSync('icacls', [p], { encoding: 'utf8' })
-    const open = path.join(dir, 'open')
-    mkdirSync(open)
-    execFileSync('icacls', [open, '/grant', '*S-1-5-32-545:(OI)(CI)R'], { stdio: 'ignore' }) // Users may read: an unlocked folder
-    const { lockedWorkDir } = await import('@/scripts/lib/win-acl.mjs')
-    const work = lockedWorkDir(open)
-    const probe = path.join(work.dir, 'probe.tmp')
-    writeFileSync(probe, '', { flag: 'wx' })
-    expect(icacls(probe)).not.toMatch(/\\Users:|BUILTIN\\Users/i) // inherited from the locked work folder, not from the open one
-    expect(icacls(work.dir)).not.toMatch(/\(I\)|\\Users:/i)
-    work.done()
-    expect(existsSync(work.dir)).toBe(false)
-    run('--production', '--out-dir', open, '--jwt-secret-env', 'GEN_TEST_JWT')
-    for (const f of ['web.env', 'worker.env', 'gateway.env', 'go2rtc.env']) {
-      expect(icacls(path.join(open, f)), f).not.toMatch(/\(I\)|\\Users:/i)
+  it('the recording is refused outside the temporary folder, so it can never leave a real env file open', async () => {
+    const { lockPath } = await import('@/scripts/lib/win-acl.mjs')
+    const before = process.env.DRISHTI_ACL_RECORD
+    process.env.DRISHTI_ACL_RECORD = record
+    try {
+      if (process.platform === 'win32') expect(() => lockPath(path.join(REPO, 'deploy', 'x.env'))).toThrow(/temporary folder only/)
+      else expect(lockPath(path.join(REPO, 'deploy', 'x.env'))).toBeUndefined()
+    } finally {
+      if (before === undefined) delete process.env.DRISHTI_ACL_RECORD
+      else process.env.DRISHTI_ACL_RECORD = before
     }
-    expect(readdirSync(open).filter((f) => f.startsWith('.gen-secrets-') || f.includes('.tmp-'))).toEqual([])
-    run('--file', path.join(open, 'web.env'), '--only=CRON_SECRET', '--rotate=CRON_SECRET')
-    expect(readdirSync(open).filter((f) => f.startsWith('.gen-secrets-') || f.includes('.tmp-'))).toEqual([])
   })
 
   // Re-review M-new-7: elevation from the token's integrity level (whoami /groups), not from `net session`.

@@ -10,7 +10,7 @@ const NOW = new Date('2026-10-23T06:00:00.000Z')
 const base = () =>
   assessHealth({
     build: 'b-20261023-0600-abc1234', now: NOW,
-    db: { ok: true, latencyMs: 8, status: { db_time: NOW.toISOString(), migration: { level: '20261021000041', applied: 41 }, vault: { ok: true }, housekeeping: [{ task: 'media_sessions_prune', last_run_at: new Date(NOW.getTime() - 120_000).toISOString(), removed: 3, db_role: 'monitor_worker' }] } },
+    db: { ok: true, latencyMs: 8, status: { db_time: NOW.toISOString(), migration: { level: '20261021000041', applied: 41 }, vault: { ok: true }, housekeeping: [{ task: 'media_sessions_prune', last_run_at: new Date(NOW.getTime() - 120_000).toISOString(), removed: 3, db_role: 'monitor_worker' }, { task: 'backup', last_run_at: new Date(NOW.getTime() - 3_600_000).toISOString(), removed: 0, db_role: 'backup.ps1' }] } },
     worker: {
       ok: true, heartbeatAgeSec: 2, requestedAt: null, runStartedAt: null, runFinishedAt: null, lastDevicesRoundAt: null, lastCamerasRoundAt: null, running: false,
       progressDone: 0, progressTotal: 0, clockSkewSec: 75, clockSkewWarning: true,

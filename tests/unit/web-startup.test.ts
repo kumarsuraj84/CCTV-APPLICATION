@@ -67,4 +67,14 @@ describe('web app start-up check', () => {
     expect(await webStartupProblems({}, d)).toEqual([])
     expect(d.testFixturesOn).not.toHaveBeenCalled()
   })
+
+  // Final review C-I13: after an unattended reboot the database may not be running yet; one plain line says so (the service host
+  // starts the web app again, with a growing pause, until it answers).
+  it('the database not answering at start-up: one plain problem about the database, with the reboot advice', () => {
+    const p = webStartupProblems(prod(), deps(new Error('down'), { ok: true }, new Error('down')))
+    return p.then((problems) => {
+      expect(problems).toHaveLength(1)
+      expect(problems[0]).toMatch(/The database does not answer.*restart.*Docker Desktop/)
+    })
+  })
 })

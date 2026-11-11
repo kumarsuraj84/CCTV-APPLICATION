@@ -112,7 +112,8 @@ describe('P5.4 audit append-only, housekeeping record, ops health (migration 004
     expect(h.error).toBeNull()
     const health = h.data as Health
     const tasks = new Map(health.housekeeping.map((t) => [t.task, t]))
-    for (const task of ['media_sessions_prune', 'rate_limit_prune', 'vault_reads_prune']) {
+    // A test's run is recorded as '<task>:test' (migration 0047): never as the worker's real one.
+    for (const task of ['media_sessions_prune', 'rate_limit_prune', 'vault_reads_prune'].map((x) => `${x}:test`)) {
       const t = tasks.get(task)
       expect(t, task).toBeDefined()
       expect(t!.db_role, task).toBe('monitor_worker')
@@ -173,13 +174,29 @@ describe('P5.4 audit append-only, housekeeping record, ops health (migration 004
   it('media_sessions_prune for one organisation leaves the recorded last run alone; the whole clean-up records it', async () => {
     const worker = rpcOf(serviceClient('monitor_worker'))
     expect((await worker('media_sessions_prune')).error).toBeNull()
-    const last = async () => (await admin().from('housekeeping_runs').select('last_run_at, runs').eq('task', 'media_sessions_prune').single()).data!
+    const last = async () => (await admin().from('housekeeping_runs').select('last_run_at, runs').eq('task', 'media_sessions_prune:test').single()).data!
     const before = await last()
     await new Promise((r) => setTimeout(r, 50))
     expect((await rpcOf(admin())('media_sessions_prune', { p_org: org })).error).toBeNull()
     expect(await last()).toEqual(before)
     expect((await worker('media_sessions_prune')).error).toBeNull()
     expect(Number((await last()).runs)).toBe(Number(before.runs) + 1)
+  })
+
+  // P5.4 fix round 3 (P5.5 report defect 3): a test's housekeeping run never moves the real "last run" the Health page shows; a run
+  // without the test header (as the worker makes it) is the real one.
+  it('a run made by a test is recorded apart (<task>:test); the real row moves only for a run without the test header', async () => {
+    const realRow = async () => (await admin().from('housekeeping_runs').select('last_run_at, runs').eq('task', 'rate_limit_prune').maybeSingle()).data
+    const before = await realRow()
+    await new Promise((r) => setTimeout(r, 30))
+    expect((await rpcOf(serviceClient('monitor_worker'))('rate_limit_prune')).error).toBeNull()
+    expect(await realRow()).toEqual(before)
+    const testRow = (await admin().from('housekeeping_runs').select('db_role').eq('task', 'rate_limit_prune:test').single()).data
+    expect(testRow).toEqual({ db_role: 'monitor_worker' })
+    // As the worker does it (no header): the real row moves.
+    expect((await rpcOf(serviceClient('monitor_worker', { realRun: true }))('rate_limit_prune')).error).toBeNull()
+    const after = await realRow()
+    expect(Number(after?.runs)).toBe(Number(before?.runs ?? 0) + 1)
   })
 
   it('privilege_violations() stays empty', async () => {

@@ -16,12 +16,21 @@ const ROOT = path.resolve(__dirname, '../..')
 const CONTAINER = 'supabase_db_cctv_hub'
 const TARGET = 'drishti_restore_test'
 const skip = process.platform !== 'win32' || process.env.DRISHTI_SKIP_DOCKER_TESTS === '1'
+// Review 2 nit: the scripts never take docker from PATH; the test gives them this computer's docker.exe by its full path.
+const dockerExe = () =>
+  execFileSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'where.exe'), ['docker'], { encoding: 'utf8' })
+    .split(/\r?\n/).map((l) => l.trim()).find((l) => /docker\.exe$/i.test(l)) ?? 'docker'
 const highestMigration = () => readdirSync(path.join(ROOT, 'supabase', 'migrations')).filter((f) => /^\d{14}_/.test(f)).map((f) => f.slice(0, 14)).sort().at(-1)
 
 let dir = ''
 let config = ''
-const ps = (script: string, args: string[]) =>
-  spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'deploy', 'windows', script), ...args], { encoding: 'utf8', timeout: 240_000 })
+// P5.4 fix round 3 (the owner's antivirus): the command goes to PowerShell on standard input; no policy switch, no script file written.
+const quote = (s: string) => `'${s.replace(/'/g, "''")}'`
+const ps = (script: string, args: string[]) => {
+  const call = `& ${quote(path.join(ROOT, 'deploy', 'windows', script))} ${args.map((a) => (a.startsWith('-') ? a : quote(a))).join(' ')}`
+  const input = `try { ${call}; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine(($_ | Out-String)); exit 1 }`
+  return spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '-'], { input, encoding: 'utf8', timeout: 240_000 })
+}
 const psql = (sql: string) => execFileSync('docker', ['exec', CONTAINER, 'psql', '-U', 'supabase_admin', '-d', 'postgres', '-Atc', sql], { encoding: 'utf8' }).trim()
 
 beforeAll(() => {
@@ -35,6 +44,8 @@ beforeAll(() => {
     `  InstallRoot = '${dir}'; ConfigDir = '${path.join(dir, 'config')}'; DataDir = '${dir}'; LogDir = '${dir}'; BackupDir = '${path.join(dir, 'backups')}'`,
     `  NodeExe = '${process.execPath}'; Go2rtcExe = '${path.join(dir, 'go2rtc.exe')}'; Services = @('DrishtiWeb')`,
     `  Database = @{ Mode = 'Container'; Container = '${CONTAINER}'; User = 'supabase_admin'; Name = 'postgres' }`,
+    // Review 2 nit: docker by its full path (never from PATH).
+    `  DockerExe = '${dockerExe()}'`,
     `  VaultKey = @{ Mode = 'ContainerFile'; Path = '/etc/postgresql-custom/pgsodium_root.key'; KeyBackupDir = '${path.join(dir, 'keys')}' }`,
     '  Retention = @{ Days = 30; KeepAtLeast = 7 }',
     '}',
@@ -75,7 +86,8 @@ describe.skipIf(skip)('backup and restore into a disposable database (P5.4)', ()
 
   it('backup.ps1 writes the dump and a manifest (counts in the dump\'s own snapshot, no secret)', () => {
     const res = path.join(dir, 'backup-result.json')
-    const r = ps('backup.ps1', ['-ConfigPath', config, '-Tag', 'restore-test', '-IncludeConfig', '-ResultPath', res])
+    // Final review C-I11: a test run's backup is recorded as 'backup:test', never as the real "last backup".
+    const r = ps('backup.ps1', ['-ConfigPath', config, '-Tag', 'restore-test', '-IncludeConfig', '-ResultPath', res, '-RecordAs', 'backup:test'])
     expect(r.status, r.stdout + r.stderr).toBe(0)
     folder = (JSON.parse(readFileSync(res, 'utf8').replace(/^﻿/, '')) as { folder: string }).folder
     const manifest = JSON.parse(readFileSync(path.join(folder, 'manifest.json'), 'utf8').replace(/^﻿/, ''))
@@ -90,9 +102,13 @@ describe.skipIf(skip)('backup and restore into a disposable database (P5.4)', ()
     expect(manifest.config.copied).toBe(true)
     expect(readFileSync(path.join(manifest.config.copiedTo, 'web.env'), 'utf8')).toContain('STREAM_TOKEN_SECRET=')
     expect(readdirSync(folder).sort()).toEqual(['db.dump', 'manifest.json'])
+    expect(Number(psql("SELECT extract(epoch FROM now() - last_run_at) FROM public.housekeeping_runs WHERE task = 'backup:test'"))).toBeLessThan(120)
     const text = JSON.stringify(manifest) + r.stdout
     expect(text).not.toMatch(/drishti-vault-canary-v1|password|PGPASSWORD|p54-test-only-value/i)
   }, 240_000)
+
+  // Review 2 m3 (a key folder others may read is refused before anything is copied into it): tests/windows-lab, as it changes an
+  // access list.
 
   it('restore.ps1 restores into a NEW database and proves it: counts, migration level, every Vault secret, the canary, the root key', () => {
     const res = path.join(dir, 'restore-result.json')

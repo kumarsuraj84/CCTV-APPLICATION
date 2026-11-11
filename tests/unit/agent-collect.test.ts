@@ -22,7 +22,9 @@ async function ps(args: string[], env?: Record<string, string>): Promise<Run> {
   try {
     const { stdout, stderr } = await execFileAsync(
       'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', ...args],
+      // No -ExecutionPolicy Bypass (P5.4 fix round 3: the owner's antivirus flags it): the collector is a local file, which the default
+      // policy of a managed PC (RemoteSigned) runs.
+      ['-NoProfile', '-NonInteractive', ...args],
       { windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 150_000, env: { ...process.env, ...env } },
     )
     return { code: 0, stdout, stderr }
@@ -448,7 +450,7 @@ describe.skipIf(!isWin)('endpoint collector (Windows only)', () => {
     }, 60_000)
 
     it('-OutFile refuses anything that is not a .json file in an existing folder', async () => {
-      const bad = path.join(tmp, 'would-overwrite.ps1')
+      const bad = path.join(tmp, 'would-overwrite.txt') // never a script file (the owner's antivirus)
       fs.writeFileSync(bad, 'original')
       const r1 = await collector(['-Sections', 'host', '-OutFile', bad])
       expect(r1.code).toBe(2)

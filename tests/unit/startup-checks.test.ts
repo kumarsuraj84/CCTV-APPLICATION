@@ -202,6 +202,17 @@ describe('release 1: the forgotten DRISHTI_ENV, the client address, keys that en
     expect(startupProblems('web', { SUPABASE_SERVICE_ROLE_KEY: 'svc' }, at).warnings.join(' ')).not.toMatch(/TRUSTED_PROXY_HOPS/)
   })
 
+  // P5.4 fix round 3 (P5.5 report defect 1, handed over): behind the TLS proxy (GATEWAY_HOST on this computer) every video socket comes
+  // from 127.0.0.1; without TRUSTED_PROXY_HOPS the gateway's per-address limits apply to everybody together.
+  it('the production gateway behind the proxy warns when TRUSTED_PROXY_HOPS is not set', () => {
+    for (const host of ['127.0.0.1', '::1', 'localhost']) {
+      expect(startupProblems('gateway', { ...gatewayEnv(), GATEWAY_HOST: host }, at).warnings.join(' '), host).toMatch(/gateway.*TRUSTED_PROXY_HOPS=1/)
+    }
+    expect(startupProblems('gateway', { ...gatewayEnv(), GATEWAY_HOST: '127.0.0.1', TRUSTED_PROXY_HOPS: '1' }, at).warnings.join(' ')).not.toMatch(/TRUSTED_PROXY_HOPS/)
+    expect(startupProblems('gateway', { ...gatewayEnv(), GATEWAY_HOST: '10.0.0.5' }, at).warnings.join(' ')).not.toMatch(/TRUSTED_PROXY_HOPS/)
+    expect(startupProblems('gateway', { SUPABASE_SERVICE_ROLE_KEY: 'svc', GATEWAY_HOST: '127.0.0.1' }, at).warnings.join(' ')).not.toMatch(/TRUSTED_PROXY_HOPS/)
+  })
+
   it('N-4: keyExpiryWarnings names a key that ends within 30 days, and nothing else', () => {
     const soon = { ...workerEnv(), SUPABASE_MONITOR_WORKER_KEY: key('monitor_worker', 10 * 24 * 3600) }
     expect(keyExpiryWarnings('worker', soon, at).join(' ')).toMatch(/SUPABASE_MONITOR_WORKER_KEY ends in 10 days/)

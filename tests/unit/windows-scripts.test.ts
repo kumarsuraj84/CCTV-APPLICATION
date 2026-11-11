@@ -2,6 +2,12 @@
 // accounts, firewall, scheduled tasks or registry: the PowerShell parser on every script, the review rules PSScriptAnalyzer would
 // apply (it is not installed here and nothing is installed for this), and the dry runs (-WhatIf / -DryRun) of the install, the update
 // with its roll back, and the retention of backups. Every run uses a scratch configuration under the system temp folder.
+// P5.4 fix round 3 (the owner's antivirus): this default file never writes a script or a program, never compiles anything, never
+// changes an access list, never makes a junction or a hard link, never runs icacls, takeown, cmd or sc, and never uses
+// -ExecutionPolicy Bypass. PowerShell reads its commands from standard input (-Command -) and only parses, plans (-WhatIf / -DryRun)
+// or reads. The decisions themselves (links, owners, rebuild rules, retention, the update verdict, the service SIDs) are tested on
+// made-up data in one PowerShell process. Everything that touches the system is the lab suite: tests/windows-lab (opt-in,
+// DRISHTI_WINDOWS_LAB=1, run on the production server before the install).
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
@@ -17,9 +23,19 @@ const TOP = ['drishti-services.ps1', 'update.ps1', 'backup.ps1', 'restore.ps1']
 
 let dir = ''
 let config = ''
+const quote = (s: string) => `'${s.replace(/'/g, "''")}'`
+/** Runs one repo script with its arguments, the command given on standard input (no script file written, no policy switch). */
 const ps = (script: string, args: string[]) => {
-  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(WIN, script), ...args], { encoding: 'utf8', timeout: 120_000 })
+  const call = `& ${quote(path.join(WIN, script))} ${args.map((a) => (a.startsWith('-') ? a : quote(a))).join(' ')}`
+  const input = `try { ${call}; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine(($_ | Out-String)); exit 1 }`
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '-'], { input, encoding: 'utf8', timeout: 120_000 })
   return { status: r.status, out: `${r.stdout}\n${r.stderr}` }
+}
+/** Commands for one PowerShell process that dot-sources the shared library (read from standard input; nothing written). */
+const psCommon = (lines: string[]) => {
+  const input = [`. ${quote(path.join(WIN, 'lib', 'Drishti.Common.ps1'))}`, ...lines].join('\r\n')
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '-'], { input, encoding: 'utf8', timeout: 120_000 })
+  return `${r.stdout}\n${r.stderr}`
 }
 const order = (text: string, parts: string[]) => {
   let at = -1
@@ -56,7 +72,8 @@ describe.skipIf(!windows)('Windows deployment scripts (P5.4; nothing installed, 
     expect(files.map((f) => path.basename(f)).sort()).toEqual(['Drishti.Common.ps1', ...TOP].sort())
     const list = files.map((f) => `'${f.replace(/'/g, "''")}'`).join(',')
     const cmd = `$n=0; foreach ($f in @(${list})) { $t=$null; $e=$null; [System.Management.Automation.Language.Parser]::ParseFile($f,[ref]$t,[ref]$e) | Out-Null; foreach ($x in $e) { $n++; Write-Output "$f $($x.Extent.StartLineNumber): $($x.Message)" } }; Write-Output "errors=$n"`
-    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', cmd], { encoding: 'utf8' })
+    // Parsing only (nothing runs), one process for every script, the command on standard input.
+    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '-'], { input: cmd, encoding: 'utf8' })
     expect(r.stdout.trim().split(/\r?\n/).at(-1), r.stdout).toBe('errors=0')
   })
 
@@ -87,6 +104,99 @@ describe.skipIf(!windows)('Windows deployment scripts (P5.4; nothing installed, 
       const code = readFileSync(f, 'utf8').split(/\r?\n/).filter((l) => !/^\s*#/.test(l)).join('\n')
       expect(code, path.basename(f)).not.toMatch(/-FilePath '(icacls|robocopy|sc|cmd|takeown|npm|npx)\.(exe|cmd)'|& (icacls|robocopy|sc|cmd|takeown|powershell)\.exe |& (docker|git) |FileName = 'docker'/)
     }
+  })
+
+  // P5.4 fix round 3: the rules behind the locks, the retention and the update, on made-up data (one PowerShell process; it changes
+  // nothing and reads no folder). The same rules on the real file system: tests/windows-lab.
+  describe('the decisions, on made-up data', () => {
+    let out = ''
+    const line = (key: string) => (new RegExp(`^${key}=(.*)$`, 'm').exec(out)?.[1] ?? '<missing>').trim()
+    beforeAll(() => {
+      out = psCommon([
+        // Write and read rights, owners, secrets (review C-2, N-1).
+        "$s = @(Find-DrishtiAclProblems -Rules @([pscustomobject]@{Sid='S-1-5-32-545';Rights='Modify';Type='Allow'}, [pscustomobject]@{Sid='S-1-5-11';Rights=-536805376;Type='Allow'}, [pscustomobject]@{Sid='S-1-5-11';Rights='ReadAndExecute';Type='Allow'}, [pscustomobject]@{Sid='S-1-5-18';Rights='FullControl';Type='Allow'}, [pscustomobject]@{Sid='S-1-5-32-545';Rights='Modify';Type='Deny'}, [pscustomobject]@{Sid='S-1-5-80-1';Rights='Modify';Type='Allow'}) -AllowedSids @('S-1-5-80-1'))",
+        '"synthetic=$($s.Count)"',
+        "$o = @(Find-DrishtiAclProblems -Owner 'S-1-5-21-1-2-3-1001' -Rules @([pscustomobject]@{Sid='S-1-5-32-545';Rights='Read';Type='Allow'}, [pscustomobject]@{Sid='S-1-5-80-7';Rights='Read';Type='Allow'}) -Secret -ReaderSids @('S-1-5-80-7'))",
+        '"secret=$($o -join \' | \')"',
+        '"admins-owner=$(@(Find-DrishtiAclProblems -Owner \'S-1-5-32-544\' -Rules @()).Count)"',
+        // The tree below a folder (review 2 N-3): only the checked app\\current may be a link; a hard link refuses; an unreadable item too.
+        "$tree = @([pscustomobject]@{Path='C:\\D\\app\\current';IsDirectory=$true;IsReparse=$true;IsHardLink=$false;Error=$null}, [pscustomobject]@{Path='C:\\D\\app\\releases\\b1\\evil';IsDirectory=$true;IsReparse=$true;IsHardLink=$false;Error=$null}, [pscustomobject]@{Path='C:\\D\\logs\\x.log';IsDirectory=$false;IsReparse=$false;IsHardLink=$true;Error=$null}, [pscustomobject]@{Path='C:\\D\\bin\\host.exe';IsDirectory=$false;IsReparse=$false;IsHardLink=$false;Error=$null}, [pscustomobject]@{Path='C:\\D\\locked';IsDirectory=$true;IsReparse=$false;IsHardLink=$false;Error='cannot be read'})",
+        "$tp = @(Get-DrishtiTreeProblems -Entries $tree -AllowedLinks @('C:\\D\\app\\current'))",
+        '"tree=$($tp -join \' | \')"',
+        '"tree-none=$(@(Get-DrishtiTreeProblems -Entries @($tree[3])).Count)"',
+        // Rebuild rules: an own entry, a protected list or another owner needs a reset; a plain inherited item does not.
+        '"reset=$((Test-DrishtiNeedsReset -ExplicitRules 1 -Protected $false -Owner \'S-1-5-32-544\' -WantedOwner \'S-1-5-32-544\')),$((Test-DrishtiNeedsReset -ExplicitRules 0 -Protected $true -Owner \'x\' -WantedOwner \'\')),$((Test-DrishtiNeedsReset -ExplicitRules 0 -Protected $false -Owner \'S-1-5-21-9\' -WantedOwner \'S-1-5-32-544\')),$((Test-DrishtiNeedsReset -ExplicitRules 0 -Protected $false -Owner \'S-1-5-21-9\' -WantedOwner \'\'))"',
+        // Owners of a folder that existed already: SYSTEM, Administrators, TrustedInstaller (and the operator in tests) only.
+        '"owners=$((Test-DrishtiTrustedOwner -Owner \'S-1-5-18\')),$((Test-DrishtiTrustedOwner -Owner \'S-1-5-32-544\')),$((Test-DrishtiTrustedOwner -Owner \'S-1-5-21-1-2-3-1001\')),$((Test-DrishtiTrustedOwner -Owner \'S-1-5-21-1-2-3-1001\' -Operator @(\'S-1-5-21-1-2-3-1001\')))"',
+        // The one link update.ps1 makes: a junction to a folder directly under app\\releases.
+        "$rel = 'C:\\D\\app\\releases'",
+        '"link=$((Test-DrishtiReleaseLink -IsJunction $true -Target \'C:\\D\\app\\releases\\b1\' -ReleasesDir $rel -TargetIsPlainFolder $true)),$((Test-DrishtiReleaseLink -IsJunction $true -Target \'\\??\\C:\\D\\app\\releases\\b1\' -ReleasesDir $rel -TargetIsPlainFolder $true)),$((Test-DrishtiReleaseLink -IsJunction $true -Target \'C:\\\' -ReleasesDir $rel -TargetIsPlainFolder $true)),$((Test-DrishtiReleaseLink -IsJunction $true -Target \'C:\\D\\app\\releases\\b1\\sub\' -ReleasesDir $rel -TargetIsPlainFolder $true)),$((Test-DrishtiReleaseLink -IsJunction $false -Target \'C:\\D\\app\\releases\\b1\' -ReleasesDir $rel -TargetIsPlainFolder $true)),$((Test-DrishtiReleaseLink -IsJunction $true -Target \'C:\\D\\app\\releases\\b1\' -ReleasesDir $rel -TargetIsPlainFolder $false))"',
+        // Retention (review I-6): only folders the backup made; a link is never a candidate; a candidate holding a link is kept.
+        "$now = [datetime]'2026-10-23T06:00:00'",
+        "$f = @([pscustomobject]@{Name='20261022-020000-nightly';IsReparse=$false;ManifestKind='drishti-backup';HasReparseBelow=$false}, [pscustomobject]@{Name='20260901-020000-nightly';IsReparse=$false;ManifestKind='drishti-backup';HasReparseBelow=$false}, [pscustomobject]@{Name='20260902-020000-nightly';IsReparse=$false;ManifestKind='drishti-backup';HasReparseBelow=$true}, [pscustomobject]@{Name='20260801-020000-trap';IsReparse=$true;ManifestKind=$null;HasReparseBelow=$false}, [pscustomobject]@{Name='20260701-020000-other';IsReparse=$false;ManifestKind='something-else';HasReparseBelow=$false}, [pscustomobject]@{Name='my-folder';IsReparse=$false;ManifestKind='drishti-backup';HasReparseBelow=$false})",
+        '"retention=$((Get-DrishtiRetentionPlan -Folders $f -Days 30 -Keep 1 -Now $now | Sort-Object Name | ForEach-Object { $_.Name + \':\' + $_.Action }) -join \' \')"',
+        // The update verdict (final review C-I5): only a broken release rolls back.
+        "$v = { param($h) $r = Get-DrishtiReleaseVerdictFrom @h; $r.Verdict + ':' + ($r.Reasons -join ' / ') }",
+        '"verdict-ok=$(& $v @{ VersionAnswered = $true; GatewayChecked = $true; GatewayAnswered = $true; DbLevel = \'20261021000047\'; Expected = \'20261021000047\'; PublicStatus = \'ok\' })"',
+        '"verdict-env=$(& $v @{ VersionAnswered = $true; GatewayChecked = $true; GatewayAnswered = $true; DbLevel = \'20261021000047\'; Expected = \'20261021000047\'; PublicStatus = \'degraded\' })"',
+        '"verdict-version=$(& $v @{ VersionAnswered = $false; BuildId = \'b9\'; GatewayChecked = $false; DbLevel = \'20261021000047\'; Expected = \'20261021000047\'; PublicStatus = \'ok\' })"',
+        '"verdict-service=$(& $v @{ VersionAnswered = $true; NotRunning = @(\'DrishtiWeb\'); GatewayChecked = $true; GatewayAnswered = $false; DbLevel = \'20261021000046\'; Expected = \'20261021000047\'; PublicStatus = \'degraded\' })"',
+        // The virtual account SIDs, computed from the service name before the service exists (as sc.exe showsid prints them; the
+        // values were compared with sc.exe once and are kept here; the lab suite compares again on the server).
+        '"sid-ti=$(Get-DrishtiServiceSid -ServiceName TrustedInstaller)"',
+        '"sid-spooler=$(ConvertTo-DrishtiSid \'NT SERVICE\\Spooler\')"',
+        '"sid-web=$(ConvertTo-DrishtiSid \'NT SERVICE\\DrishtiWeb\')"',
+        '"sid-case=$(Get-DrishtiServiceSid -ServiceName drishtiweb)"',
+      ])
+    })
+
+    it('write rights, owners and secret readers', () => {
+      expect(line('synthetic'), out).toBe('2')
+      expect(line('secret')).toBe('the owner is S-1-5-21-1-2-3-1001, not SYSTEM, the Administrators or TrustedInstaller (an owner may always change the rules) | S-1-5-32-545 may read a secret (rights 0x00020089)')
+      expect(line('admins-owner')).toBe('0')
+    })
+
+    it('a link other than the checked app\\current, a hard link and an unreadable item refuse a lock; a plain file does not', () => {
+      expect(line('tree')).toBe('C:\\D\\app\\releases\\b1\\evil: a junction or link the installation did not make (not followed) | C:\\D\\logs\\x.log: has more than one name, a hard link (not changed) | C:\\D\\locked: cannot be read')
+      expect(line('tree-none')).toBe('0')
+    })
+
+    it('rebuild rules and trusted owners', () => {
+      expect(line('reset')).toBe('True,True,True,False')
+      expect(line('owners')).toBe('True,True,False,True')
+    })
+
+    it('app\\current is trusted only as a junction to a folder directly under app\\releases', () => {
+      expect(line('link')).toBe('True,True,False,False,False,False')
+    })
+
+    it('retention: only folders the backup made; old ones beyond the newest go; a link or a folder holding one is never removed', () => {
+      expect(line('retention')).toBe('20260701-020000-other:ignore 20260801-020000-trap:skip-link 20260901-020000-nightly:remove 20260902-020000-nightly:keep-link 20261022-020000-nightly:keep my-folder:ignore')
+    })
+
+    it('the update verdict: a server problem keeps the release; a release that does not answer, a stopped service or a missing migration rolls back', () => {
+      expect(line('verdict-ok')).toBe('ok:')
+      expect(line('verdict-env')).toBe('environment:the public health says degraded')
+      expect(line('verdict-version')).toBe('release:/api/version did not answer with build b9')
+      expect(line('verdict-service')).toMatch(/^release:DrishtiWeb is not running .* \/ the gateway does not answer its \/g\/health \/ the database is at 20261021000046, the release needs 20261021000047$/)
+    })
+
+    it('the virtual account SIDs from the service name (SHA-1 of the upper-case name), also for a service that does not exist yet', () => {
+      expect(line('sid-ti')).toBe('S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464') // TrustedInstaller, well known
+      expect(line('sid-spooler')).toBe('S-1-5-80-3951239711-1671533544-1416304335-3763227691-3930497994') // sc.exe showsid Spooler
+      expect(line('sid-web')).toBe('S-1-5-80-22909492-60703657-1105579311-46060339-2887122739') // sc.exe showsid DrishtiWeb (not installed)
+      expect(line('sid-case')).toBe(line('sid-web'))
+    })
+  })
+
+  // No service to stop is no service, not all (re-review 2 nit): a go2rtc-only configuration updates nothing else.
+  it('an empty service list means no service, never all', () => {
+    const only = path.join(dir, 'go2rtc-only.config.psd1')
+    writeFileSync(only, readFileSync(config, 'utf8').replace("Services = @('DrishtiGo2rtc', 'DrishtiWorker', 'DrishtiGateway', 'DrishtiWeb')", "Services = @('DrishtiGo2rtc')"))
+    const r = ps('update.ps1', ['-SourcePath', ROOT, '-ConfigPath', only, '-BuildId', 'nit1', '-DryRun'])
+    expect(r.status, r.out).toBe(0)
+    expect(r.out).toMatch(/no service to stop/)
+    expect(r.out).not.toMatch(/would stop DrishtiGo2rtc/)
   })
 
   it('install -WhatIf: the host compiled with the built-in C# compiler, four services in start order, own virtual accounts, auto-start, restart on failure, own log folders', () => {
@@ -149,104 +259,44 @@ describe.skipIf(!windows)('Windows deployment scripts (P5.4; nothing installed, 
     expect(r.out).toMatch(/robocopy .+ -> \S+\\scripts \(the admin-only copy/)
   })
 
-  it('the ACL check: a locked folder has no problem; Authenticated Users with modify (as C:\\ gives) is reported; synthetic rules', () => {
-    const p = path.join(dir, 'acltest')
-    const common = path.join(WIN, 'lib', 'Drishti.Common.ps1')
-    const cmd = [
-      `. '${common}'`, `$p = '${p}'`, 'Set-DrishtiAcl -Path $p', '$a = @(Test-DrishtiPathAcl -Path $p -TrustOperator)',
-      "icacls $p /grant '*S-1-5-11:(OI)(CI)M' | Out-Null", '$b = @(Test-DrishtiPathAcl -Path $p -TrustOperator)',
-      "$s = @(Find-DrishtiAclProblems -Rules @([pscustomobject]@{Sid='S-1-5-32-545';Rights='Modify';Type='Allow'}, [pscustomobject]@{Sid='S-1-5-11';Rights=-536805376;Type='Allow'}, [pscustomobject]@{Sid='S-1-5-11';Rights='ReadAndExecute';Type='Allow'}, [pscustomobject]@{Sid='S-1-5-18';Rights='FullControl';Type='Allow'}, [pscustomobject]@{Sid='S-1-5-32-545';Rights='Modify';Type='Deny'}, [pscustomobject]@{Sid='S-1-5-80-1';Rights='Modify';Type='Allow'}) -AllowedSids @('S-1-5-80-1'))",
-      'Write-Output "before=$($a.Count) after=$($b.Count) synthetic=$($s.Count)"',
-    ].join('; ')
-    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', cmd], { encoding: 'utf8' })
-    expect(r.stdout, r.stderr).toMatch(/before=0 after=1 synthetic=2/)
-  })
-
-  // Fix round 2 (re-review N-1), on real scratch folders and files: a lock rebuilds the list from nothing (an explicit foreign entry,
-  // read or write, on the folder, a file or a sub-folder does not survive a second lock, which is what RepairAcl runs); a secret file
-  // readable by Users is reported; a foreign owner is reported; a planted junction is refused.
-  const psFile = (lines: string[], env: Record<string, string> = {}) => {
-    const file = path.join(dir, `probe-${Math.random().toString(36).slice(2)}.ps1`)
-    writeFileSync(file, [`. '${path.join(WIN, 'lib', 'Drishti.Common.ps1')}'`, ...lines].join('\r\n'))
-    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file], { encoding: 'utf8', env: { ...process.env, ...env }, timeout: 120_000 })
-    rmSync(file, { force: true })
-    return `${r.stdout}\n${r.stderr}`
-  }
-
-  it('N-1: a second lock (RepairAcl) removes explicit foreign entries everywhere; Users:(R) on web.env is reported; a foreign owner is reported', () => {
-    const p = path.join(dir, 'n1')
-    const out = psFile([
-      `$p = '${p}'`, 'Set-DrishtiAcl -Path $p | Out-Null',
-      "$f = Join-Path $p 'web.env'", "Set-Content -LiteralPath $f -Value 'X=1'",
-      "Set-DrishtiAcl -Path $f -ReadAccounts @('*S-1-5-19') -IsFile | Out-Null",
-      "& icacls.exe $f /grant '*S-1-5-32-545:R' | Out-Null", // drift: Users may read the secret
-      "& icacls.exe $p /grant '*S-1-5-11:(OI)(CI)M' | Out-Null", // an explicit write entry on the folder
-      "$sub = Join-Path $p 'sub'", 'New-Item -ItemType Directory -Path $sub | Out-Null', "& icacls.exe $sub /grant '*S-1-1-0:(OI)(CI)F' | Out-Null",
-      "$a1 = @(Test-DrishtiPathAcl -Path $f -ReadAccounts @('*S-1-5-19') -Secret -TrustOperator)", '$a2 = @(Test-DrishtiPathAcl -Path $p -Secret -TrustOperator)',
-      '"fileBefore=$($a1.Count) folderBefore=$($a2.Count)"', '$a1', '$a2',
-      'Set-DrishtiAcl -Path $p | Out-Null', "Set-DrishtiAcl -Path $f -ReadAccounts @('*S-1-5-19') -IsFile | Out-Null",
-      "$b1 = @(Test-DrishtiPathAcl -Path $f -ReadAccounts @('*S-1-5-19') -Secret -TrustOperator)", '$b2 = @(Test-DrishtiPathAcl -Path $p -Secret -TrustOperator)', '$b3 = @(Test-DrishtiPathAcl -Path $sub -Secret -TrustOperator)',
-      '$explicit = @((Get-Acl -LiteralPath $sub).Access | Where-Object { -not $_.IsInherited }).Count',
-      "$svc = @((Get-Acl -LiteralPath $f).Access | Where-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq 'S-1-5-19' }).Count",
-      '"fileAfter=$($b1.Count) folderAfter=$($b2.Count) subAfter=$($b3.Count) subExplicit=$explicit serviceRead=$svc"', '$b1', '$b2', '$b3',
-      "$full = @((Get-Acl -LiteralPath $p).Access | Where-Object { $_.FileSystemRights -eq 'FullControl' -and -not $_.IsInherited } | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value }) -join ','",
-      '"full=$full protected=$((Get-Acl -LiteralPath $p).AreAccessRulesProtected)"',
-      // Without trusting the person who ran it (the Audit never does), their ownership of the folder is a problem.
-      '$o = @(Test-DrishtiPathAcl -Path $p)', '"owner: $($o -join " | ")"',
-      "$syn = @(Find-DrishtiAclProblems -Owner 'S-1-5-21-1-2-3-1001' -Rules @([pscustomobject]@{Sid='S-1-5-32-545';Rights='Read';Type='Allow'}) -Secret)", '"synthetic: $($syn -join " | ")"',
-    ])
-    expect(out).toMatch(/fileBefore=1 folderBefore=1/)
-    expect(out).toMatch(/web\.env: S-1-5-32-545 may read a secret/)
-    expect(out).toMatch(/n1: S-1-5-11 may write/)
-    expect(out).toMatch(/fileAfter=0 folderAfter=0 subAfter=0 subExplicit=0 serviceRead=1/)
-    expect(out).toMatch(/full=S-1-5-18,S-1-5-32-544,S-1-5-21-[0-9-]+ protected=True/)
-    expect(out).toMatch(/owner: .*n1: the owner is S-1-5-21-/)
-    expect(out).toMatch(/synthetic: the owner is S-1-5-21-1-2-3-1001.* \| S-1-5-32-545 may read a secret/)
-  })
-
-  it('N-1: a folder made before the install that holds a junction is refused (never followed); one with another owner is named in a warning', () => {
-    const q = path.join(dir, 'precreated')
-    const decoy = path.join(dir, 'precreated-target')
-    mkdirSync(q, { recursive: true })
-    mkdirSync(decoy, { recursive: true })
-    writeFileSync(path.join(decoy, 'keep.txt'), 'outside')
-    expect(spawnSync('cmd.exe', ['/d', '/c', 'mklink', '/J', path.join(q, 'evil'), decoy], { encoding: 'utf8' }).status).toBe(0)
-    const refused = psFile([`try { Set-DrishtiAcl -Path '${q}'; 'notRefused' } catch { "refused: $($_.Exception.Message)" }`])
-    expect(refused).toMatch(/refused: Refused: \S+precreated contains a junction or link the installation did not make \(\S+evil\)/)
-    // The decoy outside keeps its own (inherited) rules: nothing was followed.
-    expect(spawnSync('icacls.exe', [decoy], { encoding: 'utf8' }).stdout).toMatch(/\(I\)/)
-    spawnSync('cmd.exe', ['/d', '/c', 'rmdir', path.join(q, 'evil')])
-    // Without the operator's own entry (as in production), a folder the person made is "made by someone else".
-    const warned = psFile([`Set-DrishtiAcl -Path '${q}'`, `& icacls.exe '${q}' /grant "*$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value):(OI)(CI)F" | Out-Null`], { DRISHTI_ACL_TEST_NO_OPERATOR: '1' })
-    expect(warned).toMatch(/precreated existed already and belongs to S-1-5-21-[0-9-]+, not to the Administrators/)
-  })
-
-  // Review M-4 / M-new-1, a real call under the plan's entry: a locked folder with no entry for an account gives that account EPERM from
-  // statfs; the plan's List entry (RA,S on the folder only) gives it the free space, and still not the folder's contents.
-  it('M-4: the free space of a locked data or backup folder is readable with the List entry only, and nothing in it is', () => {
-    const d = path.join(dir, 'diskprobe')
-    mkdirSync(d, { recursive: true })
-    writeFileSync(path.join(d, 'secret.txt'), 'not for the web app')
-    const node = process.execPath.replace(/'/g, "''")
-    const probe = `& '${node}' -e "const fs=require('fs');fs.promises.statfs(process.argv[1]).then(s=>console.log('statfs ok', s.bavail>0),e=>console.log('statfs', e.code));try{fs.readdirSync(process.argv[1]);console.log('list ok')}catch(e){console.log('list', e.code)}" '${d}'`
-    const me = "$me = '*' + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value"
-    const out = psFile([
-      me, `Set-DrishtiAcl -Path '${d}' | Out-Null`, '"--- no entry"', probe,
-      `Set-DrishtiAcl -Path '${d}' -ListAccounts @($me) | Out-Null`, '"--- list entry"', probe,
-      `& icacls.exe '${d}' /grant "$($me):(OI)(CI)F" | Out-Null`, // the owner keeps the right to change the rules: give access back
-    ], { DRISHTI_ACL_TEST_NO_OPERATOR: '1' })
-    const [, none, list] = out.split(/--- (?:no entry|list entry)/)
-    expect(none).toMatch(/statfs EPERM/)
-    expect(list).toMatch(/statfs ok true/)
-    expect(list).toMatch(/list EPERM/)
-    rmSync(d, { recursive: true, force: true })
-  })
 
   it('Audit and Status say when the access rules are not in place (nothing installed here)', () => {
     const r = ps('drishti-services.ps1', ['-Action', 'Audit', '-ConfigPath', config])
     expect(r.status).toBe(1)
     expect(r.out).toMatch(/is missing/)
     expect(r.out).toMatch(/run -Action RepairAcl/)
+    // Review 2 m4: Status without elevation does not count false problems; it says the rules were not checked.
+    const s = ps('drishti-services.ps1', ['-Action', 'Status', '-ConfigPath', config])
+    expect(s.status, s.out).toBe(0)
+    expect(s.out).toMatch(/access rules: not checked \(run elevated/)
+    expect(s.out).not.toMatch(/access rules: \d+ problem/)
+  })
+
+  const containerConfig = (name: string, extra = '') => {
+    const file = path.join(dir, `${name}.config.psd1`)
+    writeFileSync(file, readFileSync(config, 'utf8')
+      .replace(/  Database = @\{[^\n]*\n/, "  Database = @{ Mode = 'Container'; Container = 'supabase_db_x'; User = 'postgres'; Name = 'postgres' }\n")
+      .replace("  MigrationMode = 'DbUrl'", extra || "  MigrationMode = 'DbUrl'"))
+    return file
+  }
+
+  // Review 2 m1: the Supabase CLI's local (seeded) stack is never updated by update.ps1, even on a test server.
+  it('m1: update.ps1 refuses MigrationMode Local, even with TestServer, and says what to do instead (never switch the switch off)', () => {
+    const file = containerConfig('local-test', "  MigrationMode = 'Local'; TestServer = $true")
+    const r = ps('update.ps1', ['-SourcePath', ROOT, '-ConfigPath', file, '-BuildId', 'm1', '-DryRun'])
+    expect(r.status).not.toBe(0)
+    expect(r.out).toMatch(/update\.ps1 is for production databases/)
+    expect(r.out).toMatch(/npx supabase migration up --local/)
+    expect(r.out).toMatch(/Do NOT switch the test fixture switch off/)
+    expect(r.out).not.toMatch(/would lock|robocopy|would stop/)
+  })
+
+  // Review 2 nit: docker (and git) are never taken from PATH: a Container configuration without DockerExe is refused before anything runs.
+  it('Container mode without DockerExe is refused (never docker from PATH)', () => {
+    const r = ps('backup.ps1', ['-ConfigPath', containerConfig('nodocker'), '-Tag', 'x'])
+    expect(r.status).not.toBe(0)
+    expect(r.out).toMatch(/DockerExe is not set in the configuration/)
+    rmSync(path.join(dir, 'backups'), { recursive: true, force: true })
   })
 
   it('stopping go2rtc alone stops the gateway (which depends on it) first, and a restart starts both (review M-3)', () => {
@@ -265,7 +315,7 @@ describe.skipIf(!windows)('Windows deployment scripts (P5.4; nothing installed, 
       'robocopy', 'npm ci', 'CK_BUILD_ID=20261023-0600-test', 'release.json', 'backup.ps1 -Tag pre-update-20261023-0600-test',
       'would stop DrishtiWeb', 'would stop DrishtiGateway', 'would stop DrishtiWorker', 'npx supabase migration up',
       'would mark the database as a production one', 'current to',
-      'would start DrishtiWorker', 'would start DrishtiGateway', 'would start DrishtiWeb', 'would wait up to', '\\scripts', 'would keep the newest',
+      'would start DrishtiWorker', 'would start DrishtiGateway', 'would start DrishtiWeb', 'would check the new release for up to', 'is reported, the new release kept','\\scripts', 'would keep the newest',
     ])
     expect(r.out).not.toMatch(/would stop DrishtiGo2rtc/)
     // Review I-2: the connection string has no password; it reaches the child as PGPASSWORD only.
@@ -329,20 +379,44 @@ describe.skipIf(!windows)('Windows deployment scripts (P5.4; nothing installed, 
     expect(url.out).toContain('--db-url postgresql://postgres@127.0.0.1:54322/postgres')
   })
 
-  it('the virtual account SIDs are computed as Windows does (the services do not exist yet when the folders are locked); no service to stop is no service, not all', () => {
-    const out = psFile(["Get-DrishtiServiceSid -ServiceName TrustedInstaller", "ConvertTo-DrishtiSid 'NT SERVICE\\Spooler'"])
-    expect(out).toContain('S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464') // TrustedInstaller's well-known SID
-    const sc = spawnSync('sc.exe', ['showsid', 'Spooler'], { encoding: 'utf8' }).stdout
-    const scSid = /S-1-5-80-[0-9-]+/.exec(sc)?.[0]
-    expect(scSid).toBeTruthy()
-    expect(out).toContain(scSid!)
-    // A configuration with go2rtc only: the update stops and starts nothing else (an empty list never means "every service").
-    const only = path.join(dir, 'go2rtc-only.config.psd1')
-    writeFileSync(only, readFileSync(config, 'utf8').replace("Services = @('DrishtiGo2rtc', 'DrishtiWorker', 'DrishtiGateway', 'DrishtiWeb')", "Services = @('DrishtiGo2rtc')"))
-    const r = ps('update.ps1', ['-SourcePath', ROOT, '-ConfigPath', only, '-BuildId', 'nit1', '-DryRun'])
+
+  // Final review C-I12: Caddy as the DrishtiProxy service, laid out to fit the locks: its program read and run, the Caddyfile and the
+  // certificates read, its own storage and log folder written, by its own account only.
+  it('C-I12: install -WhatIf with CaddyExe: DrishtiProxy started last, its files under the locked folders with only its own rights', () => {
+    const file = path.join(dir, 'proxy.config.psd1')
+    writeFileSync(file, readFileSync(config, 'utf8')
+      .replace("Services = @('DrishtiGo2rtc', 'DrishtiWorker', 'DrishtiGateway', 'DrishtiWeb')", "Services = @('DrishtiGo2rtc', 'DrishtiWorker', 'DrishtiGateway', 'DrishtiWeb', 'DrishtiProxy')")
+      .replace("  MigrationMode = 'DbUrl'", `  MigrationMode = 'DbUrl'\r\n  CaddyExe = '${dir}\\Drishti\\caddy\\caddy.exe'`))
+    const r = ps('drishti-services.ps1', ['-Action', 'Install', '-ConfigPath', file, '-WhatIf'])
     expect(r.status, r.out).toBe(0)
-    expect(r.out).toMatch(/no service to stop/)
-    expect(r.out).not.toMatch(/would stop DrishtiGo2rtc/)
+    order(r.out, ['New-Service -Name DrishtiWeb', 'New-Service -Name DrishtiProxy'])
+    expect(r.out).toMatch(/would lock \S+\\Drishti\\caddy: .* NT SERVICE\\DrishtiProxy:\(OI\)\(CI\)RX/)
+    expect(r.out).toMatch(/would lock \S+\\config\\certs: .* NT SERVICE\\DrishtiProxy:\(OI\)\(CI\)RX/)
+    expect(r.out).toMatch(/would lock \S+\\data\\caddy: .* NT SERVICE\\DrishtiProxy:\(OI\)\(CI\)M/)
+    expect(r.out).toMatch(/would lock \S+\\logs\\DrishtiProxy: .* NT SERVICE\\DrishtiProxy:\(OI\)\(CI\)M/)
+    expect(r.out).toMatch(/would lock \S+\\config\\Caddyfile: .* NT SERVICE\\DrishtiProxy:R/)
+    expect(r.out).toMatch(/would write \S+\\config\\proxy\.env \(no secret: Caddy's storage under \S+\\data\\caddy\)/)
+    for (const l of r.out.split(/\r?\n/).filter((x) => /would lock \S+\\(data\\caddy|config\\certs|config\\Caddyfile):/.test(x))) {
+      expect(l).not.toMatch(/Drishti(Web|Worker|Gateway|Go2rtc):/)
+    }
+    expect(ps('drishti-services.ps1', ['-Action', 'Restart', '-Service', 'DrishtiProxy', '-ConfigPath', file, '-WhatIf']).out).toMatch(/would stop DrishtiProxy/)
+  })
+
+  // Final review C-I5: a degraded Health page for a reason of the server keeps the new release (no roll back, no restore); a worker
+  // stopped on purpose (WorkerExpected = $false) is neither started nor counted.
+  it('C-I5: a server problem after the update is reported and nothing is rolled back; a worker kept stopped on purpose is left alone', () => {
+    const env = ps('update.ps1', ['-SourcePath', ROOT, '-ConfigPath', config, '-BuildId', 'ci5', '-DryRun', '-SimulateFailure', 'Environment'])
+    expect(env.status, env.out).toBe(0)
+    expect(env.out).toMatch(/updated to ci5, which works; but the Health page reports a problem of the server, not of the release \(simulated: the disk is nearly full\)\. Nothing was rolled back/)
+    expect(env.out).not.toMatch(/Rolling back|restore\.ps1 -BackupPath/)
+    // A release that does not answer still rolls back.
+    expect(ps('update.ps1', ['-SourcePath', ROOT, '-ConfigPath', config, '-BuildId', 'ci5b', '-DryRun', '-SimulateFailure', 'Health']).out).toMatch(/the new release does not answer\. Rolling back/)
+    const noWorker = path.join(dir, 'noworker.config.psd1')
+    writeFileSync(noWorker, readFileSync(config, 'utf8').replace("  MigrationMode = 'DbUrl'", "  MigrationMode = 'DbUrl'\r\n  WorkerExpected = $false"))
+    const r = ps('update.ps1', ['-SourcePath', ROOT, '-ConfigPath', noWorker, '-BuildId', 'ci5c', '-DryRun'])
+    expect(r.status, r.out).toBe(0)
+    expect(r.out).not.toMatch(/would (stop|start) DrishtiWorker/)
+    expect(r.out).toMatch(/would start DrishtiWeb/)
   })
 
   const day = (n: number) => {
@@ -372,59 +446,6 @@ describe.skipIf(!windows)('Windows deployment scripts (P5.4; nothing installed, 
     rmSync(backups, { recursive: true, force: true })
   })
 
-  // Review I-6: a SYSTEM task deleting old backups must never follow a junction out of the backup folder.
-  it('retention for real (-RetentionOnly): an old backup goes; a junction inside one or in place of one is never followed; the decoys stay', () => {
-    const backups = path.join(dir, 'backups')
-    mkdirSync(backups, { recursive: true })
-    const decoy = path.join(dir, 'decoy')
-    const decoy2 = path.join(dir, 'decoy2')
-    mkdirSync(decoy)
-    mkdirSync(decoy2)
-    writeFileSync(path.join(decoy, 'keep.txt'), 'precious')
-    writeFileSync(path.join(decoy2, 'manifest.json'), '{"kind":"drishti-backup"}')
-    writeFileSync(path.join(decoy2, 'keep.txt'), 'precious too')
-    const recent = [1, 2, 3].map((n) => `${day(n)}-nightly`)
-    for (const m of recent) {
-      mkdirSync(path.join(backups, m))
-      writeFileSync(path.join(backups, m, 'manifest.json'), '{"kind":"drishti-backup"}')
-    }
-    const old = `${day(40)}-nightly`
-    const trap = `${day(41)}-trap`
-    const jtop = `${day(42)}-jtop`
-    for (const m of [old, trap]) {
-      mkdirSync(path.join(backups, m))
-      writeFileSync(path.join(backups, m, 'manifest.json'), '{"kind":"drishti-backup"}')
-    }
-    const mk = (link: string, target: string) => spawnSync('cmd.exe', ['/d', '/c', 'mklink', '/J', link, target], { encoding: 'utf8' })
-    expect(mk(path.join(backups, trap, 'inside'), decoy).status).toBe(0)
-    expect(mk(path.join(backups, jtop), decoy2).status).toBe(0)
-    const r = ps('backup.ps1', ['-ConfigPath', config, '-RetentionOnly'])
-    expect(r.status, r.out).toBe(0)
-    const left = readdirSync(backups).sort()
-    expect(left).not.toContain(old)
-    expect(left).toEqual([...recent, trap, jtop].sort())
-    expect(readFileSync(path.join(decoy, 'keep.txt'), 'utf8')).toBe('precious')
-    expect(readFileSync(path.join(decoy2, 'keep.txt'), 'utf8')).toBe('precious too')
-    expect(r.out).toMatch(/kept \S+-trap: it contains a junction or link/)
-    expect(r.out).toMatch(/skipped \S+-jtop: a junction or link/)
-    // Remove the links themselves (never their targets) before the folder goes.
-    spawnSync('cmd.exe', ['/d', '/c', 'rmdir', path.join(backups, trap, 'inside')])
-    spawnSync('cmd.exe', ['/d', '/c', 'rmdir', path.join(backups, jtop)])
-    rmSync(backups, { recursive: true, force: true })
-  })
-
-  // Re-review M-new-8: the backup itself (not only the retention) refuses a backup folder others may write, before it reads anything.
-  it('a backup refuses a backup folder that others may write, before touching the database', () => {
-    const backups = path.join(dir, 'backups')
-    mkdirSync(backups, { recursive: true })
-    spawnSync('icacls.exe', [backups, '/grant', '*S-1-5-11:(OI)(CI)M'], { encoding: 'utf8' })
-    const r = ps('backup.ps1', ['-ConfigPath', config, '-Tag', 'x'])
-    expect(r.status).not.toBe(0)
-    expect(r.out).toMatch(/Backup refused: others may change or read the backup folder\s+\(\S+backups: S-1-5-11 may write/)
-    expect(r.out).not.toMatch(/backup of database/)
-    expect(readdirSync(backups)).toEqual([])
-    rmSync(backups, { recursive: true, force: true })
-  })
 
   it('the key copies may not live in or around the backup folder (review M-8)', () => {
     const bad = path.join(dir, 'bad.config.psd1')

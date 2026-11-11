@@ -168,6 +168,27 @@ describe.skipIf(skip)('test helpers: the switch AND a marker fixed at creation (
     expect(JSON.parse(got.ops)).toEqual({ on: false, production: true })
   })
 
+  // Fix round 3 (re-review 2 m6, migration 0047): the one helper left outside the rule now needs the switch too.
+  it('worker_lease_set_until_test runs only with the switch on', async () => {
+    const r = await ownerSql(`BEGIN;
+      INSERT INTO public.worker_leases (name, holder, fencing_token, acquired_at, renewed_at, lease_until) VALUES ('test:guard-probe', gen_random_uuid(), 1, now(), now(), now() + interval '20 seconds');
+      CREATE TEMP TABLE out (k text, v text);
+      DO $d$
+      BEGIN
+        UPDATE public.test_fixture_switch SET honoured = false;
+        BEGIN PERFORM public.worker_lease_set_until_test('test:guard-probe', 1000); INSERT INTO out VALUES ('off', 'ALLOWED');
+        EXCEPTION WHEN OTHERS THEN INSERT INTO out VALUES ('off', SQLSTATE); END;
+        UPDATE public.test_fixture_switch SET honoured = true;
+        BEGIN PERFORM public.worker_lease_set_until_test('test:guard-probe', 1000); INSERT INTO out VALUES ('on', 'ALLOWED');
+        EXCEPTION WHEN OTHERS THEN INSERT INTO out VALUES ('on', SQLSTATE); END;
+      END
+      $d$;
+      SELECT k, v FROM out ORDER BY k;
+      ROLLBACK;`)
+    expect(r.code, r.err).toBe(0)
+    expect(Object.fromEntries(rows(r.out))).toEqual({ off: '42501', on: 'ALLOWED' })
+  })
+
   it('test_fixtures_enabled() answers the web app (its production start-up refuses while it is on); the worker and the gateway may not ask (fenced functions only)', async () => {
     for (const role of ['app_web'] as const) {
       const { data, error } = await (serviceClient(role).rpc as unknown as (f: string) => PromiseLike<{ data: unknown; error: { code?: string } | null }>)('test_fixtures_enabled')

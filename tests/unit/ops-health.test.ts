@@ -21,6 +21,7 @@ const dbStatus = (o: Partial<OpsDbStatus> = {}): OpsDbStatus => ({
     { task: 'media_sessions_prune', last_run_at: iso(4 * 60_000), removed: 12, db_role: 'monitor_worker' },
     { task: 'rate_limit_prune', last_run_at: iso(4 * 60_000), removed: 0, db_role: 'monitor_worker' },
     { task: 'vault_reads_prune', last_run_at: iso(4 * 60_000), removed: 0, db_role: 'monitor_worker' },
+    { task: 'backup', last_run_at: iso(10 * 3_600_000), removed: 0, db_role: 'backup.ps1' },
   ],
   test_fixtures: { on: false, production: true },
   ...o,
@@ -52,7 +53,7 @@ describe('assessHealth (P5.4)', () => {
     const h = assessHealth(inputs())
     expect(h.status).toBe('ok')
     expect(h.checks.map((c) => [c.key, c.state])).toEqual([
-      ['database', 'ok'], ['vault', 'ok'], ['gateway', 'ok'], ['worker', 'ok'], ['clock', 'ok'], ['migrations', 'ok'], ['disk', 'ok'], ['cleanup', 'ok'], ['fixtures', 'ok'],
+      ['database', 'ok'], ['vault', 'ok'], ['gateway', 'ok'], ['worker', 'ok'], ['clock', 'ok'], ['migrations', 'ok'], ['disk', 'ok'], ['cleanup', 'ok'], ['fixtures', 'ok'], ['backup', 'ok'],
     ])
     expect(check(h, 'worker').summary).toBe('Running; it holds the monitoring lease (renewed 2 seconds ago).')
     expect(check(h, 'cleanup').summary).toBe('Unused video sessions were last cleaned up 4 minutes ago (12 removed).')
@@ -97,6 +98,50 @@ describe('assessHealth (P5.4)', () => {
     const skewed = assessHealth(inputs({ worker: worker({ clockSkewSec: -95, clockSkewWarning: true }) }))
     expect(check(skewed, 'clock').state).toBe('warning')
     expect(check(skewed, 'clock').summary).toBe("The worker's clock is 95 seconds behind the database's. Keep the server on time sync.")
+  })
+
+  // P5.4 fix round 3 (P5.5 report defect 3): the worker's skew comes from its last heartbeat; a worker that has not run for a long time
+  // is "not running", not "65157 seconds behind".
+  it('a worker that has not run for more than 5 minutes: no clock comparison for it, it says so; the web server clock still counts', () => {
+    const stale = assessHealth(inputs({ worker: worker({ ok: false, heartbeatAgeSec: 65_000, clockSkewSec: -65_157, clockSkewWarning: true, lease: null }) }))
+    expect(check(stale, 'clock').state).toBe('ok')
+    expect(check(stale, 'clock').summary).not.toMatch(/65157|behind the database/)
+    expect(check(stale, 'clock').facts).toContainEqual(["Worker's clock against the database", 'not compared: the worker is not running'])
+    const never = assessHealth(inputs({ worker: worker({ ok: false, heartbeatAgeSec: null, clockSkewSec: null, lease: null }) }))
+    expect(check(never, 'clock').facts).toContainEqual(["Worker's clock against the database", 'not compared: the worker is not running'])
+    // Just under the limit it is still compared.
+    const recent = assessHealth(inputs({ worker: worker({ heartbeatAgeSec: 290, clockSkewSec: -95, clockSkewWarning: true }) }))
+    expect(check(recent, 'clock').state).toBe('warning')
+  })
+
+  // Final review C-I5: a worker kept stopped on purpose (a pilot without monitoring) is not a failure of the installation.
+  it('a worker stopped on purpose (DRISHTI_WORKER_EXPECTED=false) is a warning, not a failure', () => {
+    const off = assessHealth(inputs({ workerExpected: false, worker: worker({ ok: false, heartbeatAgeSec: 9_000, lease: null }) }))
+    expect(check(off, 'worker').state).toBe('warning')
+    expect(check(off, 'worker').summary).toMatch(/stopped on purpose/)
+    expect(check(assessHealth(inputs({ worker: worker({ ok: false, heartbeatAgeSec: 9_000, lease: null }) })), 'worker').state).toBe('failed')
+  })
+
+  // Final review C-I11: nothing noticed when the nightly backups stopped.
+  it('the last successful backup: recorded within 26 hours is ok; older fails in production (warns in development); none recorded warns', () => {
+    const noBackup = dbStatus().housekeeping.filter((h) => h.task !== 'backup')
+    const at = (h: number) => dbStatus({ housekeeping: [...noBackup, { task: 'backup', last_run_at: iso(h * 3_600_000), removed: 0, db_role: 'backup.ps1' }] })
+    expect(check(assessHealth(inputs({ db: { ok: true, status: at(5), latencyMs: 1 } })), 'backup').state).toBe('ok')
+    const old = assessHealth(inputs({ db: { ok: true, status: at(30), latencyMs: 1 } }))
+    expect(check(old, 'backup').state).toBe('failed')
+    expect(check(old, 'backup').summary).toMatch(/30 hours ago.*nightly backup/)
+    expect(check(assessHealth(inputs({ production: false, db: { ok: true, status: at(30), latencyMs: 1 } })), 'backup').state).toBe('warning')
+    const none = assessHealth(inputs({ db: { ok: true, status: dbStatus({ housekeeping: noBackup }), latencyMs: 1 } }))
+    expect(check(none, 'backup').state).toBe('warning')
+    expect(check(none, 'backup').summary).toMatch(/No backup is recorded/)
+    // A test run's backup ('backup:test') never counts.
+    const testOnly = dbStatus({ housekeeping: [...noBackup, { task: 'backup:test', last_run_at: iso(60_000), removed: 0, db_role: 'backup.ps1' }] })
+    expect(check(assessHealth(inputs({ db: { ok: true, status: testOnly, latencyMs: 1 } })), 'backup').summary).toMatch(/No backup is recorded/)
+  })
+
+  // Final review C-I13: after an unattended reboot the database may simply not be running yet.
+  it('the database not answering says what to look at after a reboot', () => {
+    expect(check(assessHealth(inputs({ db: { ok: false }, worker: null })), 'database').summary).toMatch(/after a restart.*Docker Desktop/i)
   })
 
   it('the web server clock against the database clock is checked too (more than 30 s off is a warning)', () => {

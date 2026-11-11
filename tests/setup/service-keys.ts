@@ -30,10 +30,19 @@ export function serviceKey(role: ServiceRole): string {
   return signServiceJwt(localJwtSecret(), role, { lifetimeSec: 600 })
 }
 
+// P5.4 fix round 3 (P5.5 report defect 3): every test request says it is a test (x-drishti-test-fixture: on, as tests/setup/fixtures.ts
+// does for the service key), so the housekeeping runs a test makes are recorded as '<task>:test' (migration 0047) and never shown as the
+// worker's real "last run". The header changes nothing else for these roles (worker_rows_guard reads it for the service key only).
+export const TEST_FIXTURE_HEADERS = { 'x-drishti-test-fixture': 'on' }
+
 /** A supabase-js client acting as one service role (PostgREST switches to the role of the key). */
-export function serviceClient(role: ServiceRole): SupabaseClient<Database> {
+export function serviceClient(role: ServiceRole, o: { realRun?: boolean } = {}): SupabaseClient<Database> {
   assertLocalStack()
-  return createClient<Database>(process.env.NEXT_PUBLIC_SUPABASE_URL!, serviceKey(role), { auth: { persistSession: false, autoRefreshToken: false } })
+  return createClient<Database>(process.env.NEXT_PUBLIC_SUPABASE_URL!, serviceKey(role), {
+    auth: { persistSession: false, autoRefreshToken: false },
+    // realRun: a test that must act exactly as the worker does (no test header).
+    global: { headers: o.realRun ? {} : TEST_FIXTURE_HEADERS },
+  })
 }
 
 /** A plain PostgREST call with a key (status and parsed body; never throws for an HTTP error). */
@@ -41,7 +50,7 @@ export async function rest(key: string, pathAndQuery: string, init: { method?: s
   assertLocalStack()
   const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1${pathAndQuery}`, {
     method: init.method ?? 'GET',
-    headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json', ...TEST_FIXTURE_HEADERS },
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
   })
   const text = await res.text()

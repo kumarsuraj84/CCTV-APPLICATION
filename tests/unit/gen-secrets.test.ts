@@ -17,8 +17,13 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
+// P5.4 fix round 3 (the owner's antivirus): on Windows the locks are recorded, not made (DRISHTI_ACL_RECORD, under the temp folder
+// only); the real access lists are checked by tests/windows-lab/prod-env.lab.test.ts.
 const run = (file: string, ...extra: string[]) =>
-  execFileSync(process.execPath, [SCRIPT, '--file', file, '--jwt-secret-env', 'GEN_TEST_JWT', ...extra], { encoding: 'utf8', env: { ...process.env, GEN_TEST_JWT: JWT } })
+  execFileSync(process.execPath, [SCRIPT, '--file', file, '--jwt-secret-env', 'GEN_TEST_JWT', ...extra], {
+    encoding: 'utf8',
+    env: { ...process.env, GEN_TEST_JWT: JWT, DRISHTI_ACL_RECORD: path.join(dir, 'acl-record.jsonl') },
+  })
 const values = (file: string) => Object.fromEntries(readFileSync(file, 'utf8').split('\n').filter((l) => /^[A-Z0-9_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]))
 
 describe('scripts/gen-secrets.mjs', () => {

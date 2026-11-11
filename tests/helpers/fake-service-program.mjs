@@ -1,4 +1,4 @@
-// A stand-in for a Drishti program under the Windows service host (tests/integration/windows-service-host.test.ts). It never
+// A stand-in for a Drishti program under the Windows service host (tests/windows-lab/windows-service-host.lab.test.ts). It never
 // touches the network. Behaviour from its arguments:
 //   --crash-after-ms N   exit with code 3 after N ms (the host must start it again)
 //   --spam N             write N lines of ~200 characters at once (the host's log must roll)
