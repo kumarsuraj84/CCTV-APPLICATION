@@ -4,8 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { requireFreshAdministration } from '@/lib/auth/fresh'
 import type { CurrentProfile } from '@/lib/auth/profile'
 import { importDevices, type ImportResult } from '@/lib/import/apply'
-import { parseDevicesCsv } from '@/lib/import/devices-csv'
-import type { RowError } from '@/lib/import/csv'
+import { parseDevicesCsv, type DeviceIssue } from '@/lib/import/devices-csv'
 import { createDevice, deleteDevice, updateDevice } from '@/lib/inventory/devices'
 import { submittedValues } from '@/lib/forms/submitted-values'
 import { archiveInventory, restoreInventory, type ArchiveKind } from '@/lib/inventory/archive'
@@ -19,7 +18,7 @@ import { createClient } from '@/lib/supabase/server'
  * look (review M-2: an NVR address another location's NVR also has).
  */
 export type FormResult = { error?: string; ok?: boolean; warning?: string; values?: Record<string, string> }
-export type ImportState = { result?: ImportResult; parseErrors?: RowError[]; error?: string }
+export type ImportState = { result?: ImportResult; parseErrors?: DeviceIssue[]; warnings?: DeviceIssue[]; error?: string; checked?: boolean }
 
 // P2-2: devices, archiving and imports need an administrative role AND admin.inventory (the services still check the role as authority).
 // P3-1 review I-3: every one of them is a change, so each goes through the one fresh-sign-in guard (requireFreshAdministration).
@@ -93,6 +92,10 @@ async function readFile(formData: FormData): Promise<string | null> {
   return f.text()
 }
 
+/**
+ * Final fix Y (final review C I-8, M-18): "Check the file" (intent=check) shows what would happen and saves nothing; "Import" saves
+ * every row in one transaction, or nothing when any row has a problem (the file's own problems included).
+ */
 export async function importDevicesAction(_prev: ImportState, formData: FormData): Promise<ImportState> {
   const g = await requireFreshAdministration('admin.inventory')
   if (!g.ok) return { error: g.error }
@@ -100,8 +103,11 @@ export async function importDevicesAction(_prev: ImportState, formData: FormData
   if (slow) return { error: slow }
   const body = await readFile(formData)
   if (body === null) return { error: 'Choose a CSV file smaller than 5 MB.' }
+  const check = formData.get('intent') === 'check'
   const parsed = parseDevicesCsv(body)
-  const result = await importDevices(admin, actor, parsed.rows)
-  revalidatePath('/admin/devices')
-  return { result, parseErrors: parsed.errors }
+  const blocked = parsed.fatal || parsed.errors.length > 0
+  const res = await importDevices(admin, actor, parsed.rows, !check && !blocked)
+  if ('error' in res) return { error: res.error, parseErrors: parsed.errors, warnings: parsed.warnings }
+  if (res.applied) revalidatePath('/admin/devices')
+  return { result: res, parseErrors: parsed.errors, warnings: parsed.warnings, checked: check }
 }

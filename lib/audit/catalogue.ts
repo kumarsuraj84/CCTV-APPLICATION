@@ -67,7 +67,7 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   // Release 1 (T-1 review L2): the legacy writers left the application; rows written before stay labelled. Written now only by the test
   // fixture that rebuilds the shape of the owner's data.
   A('import_stores', 'import', 'Legacy location list imported', 'tests/setup/legacy-import.ts'),
-  A('import_devices', 'import', 'Device list imported', 'lib/import/apply.ts'),
+  A('import_devices', 'import', 'Device list imported', 'supabase/migrations/20261021000049_final_fix_y.sql'), // final fix Y (C I-8): in the import's transaction
   // Locations, NVRs, cameras and assets.
   A('location_created', 'inventory', 'Location created', 'lib/inventory/locations.ts'),
   A('location_updated', 'inventory', 'Location changed', 'lib/inventory/locations.ts'),

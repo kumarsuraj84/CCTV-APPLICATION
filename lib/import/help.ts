@@ -7,4 +7,6 @@ export const LOCATION_COLUMNS_HELP =
   + 'Several NVRs of one location: one row each, with the same location code.'
 
 export const DEVICES_IMPORT_HELP =
-  'Columns: name, type (nvr, server, attendance, footfall, other), location_code (optional; the older name store_code also works), ip, port (optional), notes (optional).'
+  'Columns: name, type (nvr, server, attendance, footfall, other), location_code (optional; the older name store_code also works), ip, port (optional), notes (optional). '
+  + 'A device is found again by its address and port. An empty location or notes cell keeps what is saved; write (clear) to empty it. '
+  + 'Check the file first; Import saves every row, or nothing if a row has a problem.'

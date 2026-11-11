@@ -3,7 +3,7 @@ import type { Actor } from '@/lib/admin/types'
 import { importDevices } from '@/lib/import/apply'
 import { createStore, deleteStore, importStores, parseStoresCsv, updateStore } from '../setup/legacy-import'
 import { parseDevicesCsv } from '@/lib/import/devices-csv'
-import { createDevice, deleteDevice, updateDevice } from '@/lib/inventory/devices'
+import { createDevice, deleteDevice, MSG_NOT_A_DEVICE, updateDevice } from '@/lib/inventory/devices'
 import { MSG_PASSWORD_AGAIN } from '@/lib/inventory/recorder-admin'
 import { adminClient, cleanupOrg, createOrg, createRecorder, createUser, grant, primaryRecorderOf } from '../setup/fixtures'
 
@@ -98,13 +98,15 @@ describe('inventory administration', () => {
     expect(data).toEqual([])
   })
 
-  it('imports devices, links them to stores by code and reports unknown stores', async () => {
+  // Final fix Y (final review C I-8): the import is one transaction: an unknown location code saves nothing of the file (was: the other
+  // rows were saved), and the message no longer repeats the cell value.
+  it('imports devices, links them to stores by code; an unknown store code saves nothing of the file', async () => {
     const parsed = parseDevicesCsv('name,type,store_code,ip,port\nERP,server,alpha,192.0.2.20,443\nHead office switch,other,,192.0.2.21,\nLost,server,nowhere,192.0.2.22,\n')
-    const res = await importDevices(admin(), actor, parsed.rows)
-    expect(res.created).toBe(2)
-    expect(res.errors).toEqual([{ line: 4, message: 'There is no location with the code NOWHERE.' }])
-    const again = await importDevices(admin(), actor, parsed.rows.slice(0, 2))
-    expect(again).toEqual({ created: 0, updated: 2, errors: [] })
+    const res = await importDevices(admin(), actor, parsed.rows, true)
+    expect(res).toEqual({ created: 0, updated: 0, applied: false, errors: [{ line: 4, column: 'location_code', message: 'No location has this code (or it is archived).' }] })
+    expect(await importDevices(admin(), actor, parsed.rows.slice(0, 2), true)).toEqual({ created: 2, updated: 0, errors: [], applied: true })
+    const again = await importDevices(admin(), actor, parsed.rows.slice(0, 2), true)
+    expect(again).toEqual({ created: 0, updated: 2, errors: [], applied: true })
     // (The stores' NVRs are assets too since P2-5a — recorders — and are not devices of the import.)
     const { data } = await admin().from('assets').select('id').eq('org_id', orgId).eq('is_recorder', false)
     expect(data).toHaveLength(2)
@@ -144,6 +146,16 @@ describe('inventory administration', () => {
     // The code is free again for a new location.
     const again = await createStore(admin(), actor, { name: 'Delta', ip: '192.0.2.34', nvr_user:'viewer', nvr_password: 'Secret-D3', channels: 0 })
     expect(again.ok).toBe(true)
+  })
+
+  // Final fix Y (final review C I-7): Manage devices offers only the five device types, so saving an access point, switch or router there
+  // would have turned it into the first type in the list (an "NVR"). The service refuses to change such equipment; Assets handles it.
+  it('never changes an access point, switch or other kind of equipment into a device type', async () => {
+    const { data: ap } = await admin().from('assets').insert({ org_id: orgId, type: 'access_point', name: 'AP 1', ip: '192.0.2.90' }).select('id').single()
+    const r = await updateDevice(admin(), actor, ap!.id, { name: 'AP 1', type: 'nvr', ip: '192.0.2.91' })
+    expect(r).toEqual({ ok: false, error: MSG_NOT_A_DEVICE })
+    expect((await admin().from('assets').select('type, ip').eq('id', ap!.id).single()).data).toEqual({ type: 'access_point', ip: '192.0.2.90' })
+    expect(await deleteDevice(admin(), actor, ap!.id)).toEqual({ ok: false, error: MSG_NOT_A_DEVICE })
   })
 
   it('changes and deletes a device, and refuses a store of another organisation', async () => {

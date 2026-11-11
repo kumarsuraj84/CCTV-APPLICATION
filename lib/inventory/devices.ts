@@ -2,21 +2,26 @@ import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { addAudit } from '@/lib/admin/audit'
 import { isAdminRole } from '@/lib/admin/roles'
 import { deviceSchema } from '@/lib/inventory/schemas'
+import { DEVICE_TYPES } from '@/lib/inventory/device-types'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { assertRefsInOrg } from '@/lib/security/org-scope'
 
 const DENIED = 'Only administrators can change devices.'
 export const MSG_IS_NVR = 'This is the NVR of a location. Change it under Locations and NVRs.'
+export const MSG_NOT_A_DEVICE = 'This is an access point, switch, router or other equipment, not a device of this page. Change it under Assets.'
 
 /**
  * Review M4: a location's NVR is a recorder asset, not a device. The device screens never change or delete it (its address, login
  * and monitoring switch belong to the recorder; P2-5c brings the NVR screens).
  */
 async function nvrRefusal(admin: AdminClient, actor: Actor, deviceId: string): Promise<string | null> {
-  const { data, error } = await admin.from('assets').select('id, is_recorder').eq('id', deviceId).eq('org_id', actor.orgId).is('archived_at', null).maybeSingle()
+  const { data, error } = await admin.from('assets').select('id, is_recorder, type').eq('id', deviceId).eq('org_id', actor.orgId).is('archived_at', null).maybeSingle()
   if (error) return sanitizeError(error, { route: 'devices', fallback: 'Could not read the device.' })
   if (!data) return 'Device not found.'
-  return data.is_recorder ? MSG_IS_NVR : null
+  if (data.is_recorder) return MSG_IS_NVR
+  // Final fix Y (final review C I-7): an access point, switch, router or other kind is not changed here (the form offers only the device
+  // types, so a save would have retyped it); it is changed under Assets.
+  return (DEVICE_TYPES as readonly string[]).includes(data.type) ? null : MSG_NOT_A_DEVICE
 }
 
 async function checked(admin: AdminClient, actor: Actor, input: unknown) {
