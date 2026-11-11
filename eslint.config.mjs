@@ -17,7 +17,9 @@ const eslintConfig = defineConfig([
       }],
     },
   },
-  globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts", "reference/**", "docs/**", ".superpowers/**", "supabase/**", "types/database.ts"]),
+  globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts", "reference/**", "docs/**", ".superpowers/**", "supabase/**", "types/database.ts",
+    // Final fix Y (review B minor 5): third-party files kept byte for byte (pinned by tests/unit/player-script.test.ts).
+    "public/vendor/**"]),
 ]);
 
 export default eslintConfig;
