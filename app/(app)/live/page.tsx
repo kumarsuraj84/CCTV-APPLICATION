@@ -99,7 +99,7 @@ export default async function LivePage({ searchParams }: {
           name="q"
           defaultValue={q}
           placeholder="Location code or name, or camera name"
-          className="h-9 w-full rounded-lg border border-[var(--field-border)] bg-[var(--field)] px-3 text-sm"
+          className="h-9 w-full rounded-lg border border-[var(--field-border)] bg-[var(--field)] px-3 text-base md:text-sm"
         />
         <button type="submit" className={cn(buttonVariants({ size: 'sm' }), 'h-9')}><Search aria-hidden="true" /> Search</button>
         {q && <Link href="/live" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'h-9')}>Clear</Link>}

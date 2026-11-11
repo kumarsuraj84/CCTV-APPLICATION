@@ -40,12 +40,13 @@ describe('roll-up arithmetic and words', () => {
   it('says the counts in plain words, never colour alone, without IT words for cameras', () => {
     expect(countsText({ ...zero, total: 4, live: 1, offline: 1, recorderUnreachable: 2 })).toBe('4 cameras: 1 live, 1 offline, 2 recorder not reachable')
     expect(countsText({ ...zero, total: 1, live: 1 })).toBe('1 camera: 1 live')
-    expect(countsText({ ...zero, total: 5, live: 2, stale: 1, notChecked: 1, off: 1 })).toBe('5 cameras: 2 live, 2 not checked, 1 switched off')
+    // Final fix Y (final review C M-15): "not checked yet" (never) and "not checked lately" (stale) are two states on every screen.
+    expect(countsText({ ...zero, total: 5, live: 2, stale: 1, notChecked: 1, off: 1 })).toBe('5 cameras: 2 live, 1 not checked lately, 1 not checked yet, 1 switched off')
     expect(countsText(zero)).toBe('No cameras')
     expect(recorderText(null)).toBeNull()
     expect(recorderText({ total: 2, up: 1, down: 1, notChecked: 0, stale: 0, off: 0 })).toBe('2 NVRs: 1 down')
     expect(recorderText({ total: 1, up: 1, down: 0, notChecked: 0, stale: 0, off: 0 })).toBe('1 NVR: all up')
-    expect(recorderText({ total: 3, up: 1, down: 0, notChecked: 1, stale: 0, off: 1 })).toBe('3 NVRs: 1 not checked, 1 switched off')
+    expect(recorderText({ total: 3, up: 1, down: 0, notChecked: 1, stale: 0, off: 1 })).toBe('3 NVRs: 1 not checked yet, 1 switched off')
   })
 
   it('one camera\'s honest state: recorder not reachable is not "offline"', () => {

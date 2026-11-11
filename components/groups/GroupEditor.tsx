@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import type { GroupCamera, StoreCameraChoice } from '@/lib/queries/groups'
+import { locationTitle } from '@/lib/inventory/forms' // final fix Y (C M-16)
 
 export type GroupEditorProps = {
   groupId: string
@@ -101,7 +102,7 @@ export function GroupEditor({ groupId, cameras, canManage, stores, selectedStore
                 <Select id="location-pick" name="location" defaultValue={selectedStoreId ?? ''}>
                   <option value="">Choose a location</option>
                   {stores.map((s) => (
-                    <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
+                    <option key={s.id} value={s.id}>{locationTitle(s.code, s.name)}</option>
                   ))}
                 </Select>
               </div>

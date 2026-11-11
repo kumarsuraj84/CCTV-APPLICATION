@@ -90,7 +90,9 @@ export function countsText(c: CameraCounts): string {
   const parts = [`${c.live} live`]
   if (c.offline) parts.push(`${c.offline} offline`)
   if (c.recorderUnreachable) parts.push(`${c.recorderUnreachable} recorder not reachable`)
-  if (c.notChecked + c.stale) parts.push(`${c.notChecked + c.stale} not checked`)
+  // Final fix Y (final review C M-15): two states, in the words of every other screen (Home tiles, Locations, the status badge).
+  if (c.stale) parts.push(`${c.stale} not checked lately`)
+  if (c.notChecked) parts.push(`${c.notChecked} not checked yet`)
   if (c.off) parts.push(`${c.off} switched off`)
   return `${plural(c.total, 'camera', 'cameras')}: ${parts.join(', ')}`
 }
@@ -100,7 +102,8 @@ export function recorderText(r: RecorderCounts | null): string | null {
   if (!r) return null
   const parts: string[] = []
   if (r.down) parts.push(`${r.down} down`)
-  if (r.notChecked + r.stale) parts.push(`${r.notChecked + r.stale} not checked`)
+  if (r.stale) parts.push(`${r.stale} not checked lately`)
+  if (r.notChecked) parts.push(`${r.notChecked} not checked yet`)
   if (r.off) parts.push(`${r.off} switched off`)
   return `${plural(r.total, 'NVR', 'NVRs')}: ${parts.length ? parts.join(', ') : 'all up'}`
 }

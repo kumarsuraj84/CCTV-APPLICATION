@@ -15,6 +15,7 @@ import { cameraReason, formatUptime, getStates, isStale, nvrLoginProblem, type S
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { formatDateTime } from '@/lib/time'
+import { locationTitle } from '@/lib/inventory/forms' // final fix Y (C M-16)
 import { cn } from '@/lib/utils'
 
 export const metadata = { title: 'Location' }
@@ -77,7 +78,7 @@ export default async function LocationPage({ params }: { params: Promise<{ id: s
     <div className="space-y-6">
       {/* Only while monitoring runs: with the checker stopped nothing new will appear. */}
       {monitoring.running && <AutoRefresh busy={false} />}
-      <PageHeader title={`${store.code} · ${store.name}`} description={[store.city, store.zone].filter(Boolean).join(' · ')}
+      <PageHeader title={locationTitle(store.code, store.name)} description={[store.city, store.zone].filter(Boolean).join(' · ')}
         actions={anyLive ? <Link href={`/live?location=${store.id}`} className={cn(buttonVariants())}>Watch live</Link> : undefined}
       />
       <MonitoringBanner monitoring={monitoring} />

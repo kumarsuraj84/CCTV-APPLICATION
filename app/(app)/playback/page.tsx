@@ -8,6 +8,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { requireCapability } from '@/lib/auth/profile'
 import { storesForCapability } from '@/lib/queries/access'
+import { locationTitle } from '@/lib/inventory/forms'
 import { getLiveScope } from '@/lib/queries/live'
 import { pickLocationParam } from '@/lib/queries/location-param'
 import { remuxFromEnv } from '@/lib/streams/remux'
@@ -21,7 +22,7 @@ const one = (v: string | string[] | undefined): string | undefined => (typeof v 
 
 // Choose a location, then a camera of it (only what this person may see), then look at its recordings.
 // ?camera=<id>[&day=yyyy-mm-dd] opens a camera directly; ?location=<id> lists the cameras of a location (the older ?store=<id> still works).
-export default async function PlaybackPage({ searchParams }: { searchParams: Promise<{ location?: string | string[]; store?: string | string[]; camera?: string | string[]; day?: string | string[] }> }) {
+export default async function PlaybackPage({ searchParams }: { searchParams: Promise<{ location?: string | string[]; store?: string | string[]; camera?: string | string[]; day?: string | string[]; q?: string | string[] }> }) {
   const sp = await searchParams
   const storeId = pickLocationParam(sp) || undefined
   const cameraId = one(sp.camera)
@@ -84,10 +85,23 @@ export default async function PlaybackPage({ searchParams }: { searchParams: Pro
     )
   }
 
-  const stores = await storesForCapability(supabase, profile.capabilities, 'cctv.playback')
+  const allStores = await storesForCapability(supabase, profile.capabilities, 'cctv.playback')
+  // Final fix Y (final review C M-11): with 200+ locations, a search by code, name or city (as on Live).
+  const needle = (typeof sp.q === 'string' ? sp.q : '').trim().toLowerCase().slice(0, 80)
+  const stores = needle ? allStores.filter((s) => [s.code, s.name, s.city ?? ''].some((v) => v.toLowerCase().includes(needle))) : allStores
   return (
     <div className="space-y-4">
       <PageHeader title="Playback" description="Choose a location, then a camera, to look at its recordings." />
+      {allStores.length > 0 && (
+        <form role="search" action="/playback" className="flex max-w-xl gap-2">
+          <label htmlFor="playback-search" className="sr-only">Search locations</label>
+          <input id="playback-search" name="q" defaultValue={needle} placeholder="Location code, name or city"
+            className="h-9 w-full rounded-lg border border-[var(--field-border)] bg-[var(--field)] px-3 text-base md:text-sm" />
+          <button type="submit" className="h-9 rounded-lg border px-3 text-sm">Search</button>
+          {needle && <Link href="/playback" className="flex h-9 items-center rounded-lg border px-3 text-sm">Clear</Link>}
+        </form>
+      )}
+      {needle && <p role="status" className="text-sm text-muted-foreground">{stores.length} of {allStores.length} locations match.</p>}
       {stores.length === 0 ? (
         <div className="rounded-xl border bg-card">
           <EmptyState icon={History} title="No locations with cameras" description="You will see a location here once it has a working camera whose recordings you can play back." />
@@ -97,7 +111,7 @@ export default async function PlaybackPage({ searchParams }: { searchParams: Pro
           {stores.map((s) => (
             <li key={s.id}>
               <Link href={`/playback?location=${encodeURIComponent(s.id)}`} className="flex flex-col rounded-lg border bg-card p-3 text-sm hover:bg-muted/50">
-                <span className="break-words font-medium"><span className="font-mono">{s.code}</span> · {s.name}</span>
+                <span className="break-words font-medium">{locationTitle(s.code, s.name)}</span>
                 <span className="text-muted-foreground">{[s.city, `${s.camera_count} ${s.camera_count === 1 ? 'camera' : 'cameras'}`].filter(Boolean).join(' · ')}</span>
               </Link>
             </li>

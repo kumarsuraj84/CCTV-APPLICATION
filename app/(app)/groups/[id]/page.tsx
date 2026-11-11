@@ -14,6 +14,7 @@ import { storesForCapability } from '@/lib/queries/access'
 import { getVisibleGroup, listStoreCamerasForGroups } from '@/lib/queries/groups'
 import { pickLocationParam } from '@/lib/queries/location-param'
 import { camerasFor } from '@/lib/auth/resource'
+import { locationTitle } from '@/lib/inventory/forms'
 import { createClient } from '@/lib/supabase/server'
 import { cn } from '@/lib/utils'
 
@@ -87,7 +88,7 @@ async function rulePlaces(supabase: Awaited<ReturnType<typeof createClient>>, st
   return {
     region: (regions.data ?? []).map((r) => ({ id: r.id, label: `${r.code} · ${r.name}` })),
     cluster: (clusters.data ?? []).map((c) => ({ id: c.id, label: `${c.code} · ${c.name}` })),
-    location: stores.map((s) => ({ id: s.id, label: `${s.code} · ${s.name}` })),
+    location: stores.map((s) => ({ id: s.id, label: locationTitle(s.code, s.name) })), // final fix Y (C M-16)
     recorder: (recorders.data ?? []).filter((r) => name.has(r.id)).map((r) => ({ id: r.id, label: `${code.get(r.location_id) ?? ''} · ${name.get(r.id)}` })),
   }
 }

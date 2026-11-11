@@ -72,6 +72,11 @@ export function mobileNavFor(v: NavViewer): NavItem[] {
   return navFor(v).filter((i) => i.mobile)
 }
 
+/** Final fix Y (final review C M-14): every other page the person may open, under "More" on the phone bar. */
+export function moreNavFor(v: NavViewer): NavItem[] {
+  return navFor(v).filter((i) => !i.mobile)
+}
+
 /**
  * What the home page shows (P2-2): a CCTV section (any CCTV capability: camera availability only), an IT section (the IT view:
  * devices, NVRs), "Check now" with it.monitoring.operate, and the "Nothing is assigned" state when there is nothing to monitor.

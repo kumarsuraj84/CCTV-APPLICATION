@@ -10,6 +10,7 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import { holds, MSG_ACCESS_UNREADABLE, MSG_NOTHING_ASSIGNED } from '@/lib/auth/capabilities'
 import { requireProfile } from '@/lib/auth/profile'
 import { DEVICE_TYPE_LABELS, DEVICE_TYPES, type DeviceType } from '@/lib/inventory/device-types'
+import { locationTitle } from '@/lib/inventory/forms' // final fix Y (C M-16): "JL1 - Patna", not "JL1 · JL1 - Patna"
 import { getWorkerStatus } from '@/lib/monitor/health'
 import { lastCheckedAt } from '@/lib/monitor/last-checked'
 import { getMonitoringState } from '@/lib/monitor/uptime'
@@ -132,10 +133,11 @@ export default async function HomePage() {
               // counted as offline; switched-off NVRs' cameras are "Switched off".
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                 {tile('cam-live', 'Live', rollups.cameras.live, liveLinks ? '/live' : '/locations', 'good')}
-                {tile('cam-down', 'Offline', rollups.cameras.offline, '/locations', 'bad')}
-                {rollups.cameras.recorderUnreachable > 0 && tile('cam-unreachable', 'Recorder not reachable', rollups.cameras.recorderUnreachable, '/locations')}
-                {rollups.cameras.stale > 0 && tile('cam-stale', 'Not checked lately', rollups.cameras.stale, '/locations')}
-                {tile('cam-unknown', 'Not checked yet', rollups.cameras.notChecked, '/locations')}
+                {/* Final fix Y (final review C M-12): each tile opens the locations it counts. */}
+                {tile('cam-down', 'Offline', rollups.cameras.offline, '/locations?state=offline', 'bad')}
+                {rollups.cameras.recorderUnreachable > 0 && tile('cam-unreachable', 'Recorder not reachable', rollups.cameras.recorderUnreachable, '/locations?state=unreachable')}
+                {rollups.cameras.stale > 0 && tile('cam-stale', 'Not checked lately', rollups.cameras.stale, '/locations?state=stale')}
+                {tile('cam-unknown', 'Not checked yet', rollups.cameras.notChecked, '/locations?state=not_checked')}
                 {rollups.cameras.off > 0 && tile('cam-off', 'Switched off', rollups.cameras.off, '/locations')}
                 {tile('locations', 'Locations', d.stores.total, '/locations')}
               </div>
@@ -175,7 +177,7 @@ export default async function HomePage() {
               <ul className="divide-y rounded-xl border bg-card text-sm">
                 {d.stores.nvrDown.map((s) => (
                   <li key={s.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-2">
-                    <Link href={`/locations/${s.locationId}`} className="underline">{s.code} · {s.name} · {s.recorder}</Link>
+                    <Link href={`/locations/${s.locationId}`} className="underline">{locationTitle(s.code, s.name)} · {s.recorder}</Link>
                     <span className="text-muted-foreground">Offline since {formatDateTime(s.since)}</span>
                   </li>
                 ))}
@@ -208,7 +210,7 @@ export default async function HomePage() {
               items={itProblems}
               empty={
                 d.recentOutagesLimited
-                  ? 'Showing the most recent problems: there is nothing else to list. Most recent problems are cameras that are offline because their NVR is offline (see the NVRs above).'
+                  ? 'Showing the most recent problems: there is nothing else to list. Most recent problems are cameras whose recorder is not reachable (see the NVRs above).'
                   : 'No device or recorder problems have been recorded yet.'
               }
             />

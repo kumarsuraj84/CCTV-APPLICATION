@@ -22,12 +22,17 @@ export function TileGroupDialog({ camera, groups, onClose }: { camera: { id: str
   const box = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    // Final fix Y (final review C M-20): focus goes back where it was (the tile's button) when the dialog closes.
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     box.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
     }
     document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      if (opener && opener.isConnected) opener.focus()
+    }
   }, [onClose])
 
   const done = (res: { ok?: boolean; error?: string; message?: string }, okText: string) => {

@@ -15,6 +15,7 @@ import {
 } from '@/lib/admin/access-rules'
 import type { Role } from '@/lib/admin/roles'
 import { AREA_LABELS } from './access-labels'
+import { ASSET_TYPE_LABELS } from '@/lib/inventory/forms'
 import { BADGE, CHECK, FIELD, FOCUS, HELP, LABEL, TEXTAREA } from './fields'
 
 export type LocationRef = { id: string; code: string; name: string }
@@ -298,7 +299,8 @@ export function AccessBuilder(props: {
           {shownAssets.map((a) => (
             <label key={a.id} className="flex items-center gap-2 py-0.5 text-sm">
               <input type="checkbox" className={CHECK} checked={assets.has(a.id)} onChange={() => setAssets(toggle(assets, a.id))} />
-              {a.name} ({a.type}){a.store_id ? ` · ${locById.get(a.store_id)?.code ?? ''}` : ''}
+              {/* Final fix Y (C M-20): the type in words, not its stored code. */}
+              {a.name} ({ASSET_TYPE_LABELS[a.type as keyof typeof ASSET_TYPE_LABELS] ?? a.type}){a.store_id ? ` · ${locById.get(a.store_id)?.code ?? ''}` : ''}
             </label>
           ))}
         </fieldset>

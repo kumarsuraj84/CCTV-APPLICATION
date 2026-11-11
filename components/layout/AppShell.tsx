@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { LogOut, ShieldCheck } from 'lucide-react'
-import { mobileNavFor, navFor, type Role } from '@/lib/nav'
+import { mobileNavFor, moreNavFor, navFor, type Role } from '@/lib/nav'
 import type { Capabilities } from '@/lib/auth/capabilities'
 import { signOut } from '@/lib/actions/auth'
 import { ROLE_LABELS } from '@/lib/admin/roles'
@@ -51,7 +51,7 @@ export function AppShell({ profile, children }: { profile: { full_name: string; 
         </header>
         <main id="main" tabIndex={-1} className="mx-auto w-full max-w-[100rem] flex-1 p-4 pb-20 outline-none md:p-6 md:pb-6">{children}</main>
       </div>
-      <MobileNav items={mobileNavFor(viewer)} />
+      <MobileNav items={mobileNavFor(viewer)} more={moreNavFor(viewer)} />
     </div>
   )
 }
