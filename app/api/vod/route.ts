@@ -28,6 +28,10 @@ const error = (status: number, message: string, extra: Record<string, string> = 
 
 export async function GET(request: Request) {
   try {
+    // Final fix Y (final review B minor 4): only from the app's own pages (or a typed address); a link on another site would otherwise
+    // start an export (and its audit row) in the signed-in person's name, since SameSite=Lax cookies go with a top-level navigation.
+    const site = request.headers.get('sec-fetch-site')
+    if (site !== null && site !== 'same-origin' && site !== 'none') return error(403, 'Open the download from Drishti itself.')
     const profile = await getCurrentProfile()
     if (!profile) return error(401, 'Please sign in.')
     if (profile.must_reset_password) return error(403, 'Choose your own password first.')

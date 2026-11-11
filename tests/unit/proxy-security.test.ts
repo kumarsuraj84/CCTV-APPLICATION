@@ -246,3 +246,30 @@ describe('session hygiene (idle timeout and absolute lifetime)', () => {
     expect(tls.cookies.get('sb-localhost-auth-token')?.secure).toBe(true)
   })
 })
+
+// Final fix Y (final review B minor 2): body limits per page, before any session is looked up; the global limits are 6 MB.
+describe('request body limits (final fix Y, B minor 2)', () => {
+  const post = (path: string, length: number | null) => {
+    const url = new URL(path, 'http://10.0.0.47:3212')
+    const headers: Record<string, string> = { host: url.host, 'next-action': 'x', ...(length === null ? {} : { 'content-length': String(length) }) }
+    return proxy(new NextRequest(url, { method: 'POST', headers }))
+  }
+
+  it('a large body on the sign-in page is refused (413) before the auth server is asked; the import page takes the 5 MB file', async () => {
+    m.user = null
+    const before = m.events.length
+    const big = await post('/login', 2 * 1024 * 1024)
+    expect(big.status).toBe(413)
+    expect(big.headers.get('content-security-policy')).toBeTruthy()
+    expect(m.events.length).toBe(before)
+    expect((await post('/admin/users', 2 * 1024 * 1024)).status).toBe(413)
+    expect((await post('/admin/users', null)).status).toBe(411)
+    expect((await post('/admin/import', 5 * 1024 * 1024 + 200_000)).status).not.toBe(413)
+  })
+
+  it('next.config: 6 MB for Server Actions and the proxy buffer (was 30 MB)', () => {
+    const exp = nextConfig.experimental as { serverActions?: { bodySizeLimit?: string }; proxyClientMaxBodySize?: string }
+    expect(exp.serverActions?.bodySizeLimit).toBe('6mb')
+    expect(exp.proxyClientMaxBodySize).toBe('6mb')
+  })
+})

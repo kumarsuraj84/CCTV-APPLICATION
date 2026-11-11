@@ -1,21 +1,24 @@
 'use client'
 
-import { gatewayScriptUrl } from '@/lib/streams/wall'
+import { PLAYER_SCRIPT_INTEGRITY, playerScriptUrl } from '@/lib/web/player-script'
 
-// go2rtc's <video-stream> element is defined by a script the gateway serves. It is loaded once, as a module, the first time a tile needs it.
+// go2rtc's <video-stream> element is defined by its player script. It is loaded once, as a module, the first time a tile needs it.
+// Final fix Y (final review B minor 5, D-12): from the app's own pinned copy with its integrity hash (lib/web/player-script.ts), no
+// longer through the gateway from whatever answers on go2rtc's port.
 // The element is created from code (not written in JSX): React would set `src` as an attribute on an element that is not defined yet,
 // and the player only reacts to the `src` property.
 
 let loading: Promise<void> | null = null
 let attempts = 0
 
-export function loadPlayer(gateway: string): Promise<void> {
+export function loadPlayer(): Promise<void> {
   if (typeof customElements === 'undefined') return Promise.reject(new Error('no browser'))
   if (customElements.get('video-stream')) return Promise.resolve()
   if (!loading) {
     const script = document.createElement('script')
     script.type = 'module'
-    script.src = gatewayScriptUrl(gateway, attempts++)
+    script.integrity = PLAYER_SCRIPT_INTEGRITY
+    script.src = playerScriptUrl(attempts++)
     loading = new Promise<void>((resolve, reject) => {
       script.onload = () => resolve()
       script.onerror = () => {

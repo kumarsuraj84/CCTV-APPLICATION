@@ -118,8 +118,11 @@ export const MAX_HTTP_CONNECTIONS = 1000
 /** The only messages a browser may send to go2rtc: the player's request to start a stream, as JSON text. */
 export const BROWSER_MESSAGE_TYPES: readonly string[] = ['mse', 'mp4', 'mjpeg']
 const MAX_BROWSER_TEXT = 4096
-/** Largest message accepted from a browser. */
-export const MAX_BROWSER_PAYLOAD = 4 * 1024 * 1024
+/**
+ * Largest message accepted from a browser: its small JSON text (MAX_BROWSER_TEXT). Final fix Y (final review B minor 6): was 4 MB per
+ * frame, which let 300 sockets make the server hold about 1.2 GB before the registry answered; a bigger frame now closes the socket (1009).
+ */
+export const MAX_BROWSER_PAYLOAD = MAX_BROWSER_TEXT
 /** Largest message accepted from go2rtc (a video fragment can be bigger than anything a browser sends). */
 export const MAX_UPSTREAM_PAYLOAD = 16 * 1024 * 1024
 export const SHUTDOWN_MS = 5000
@@ -428,6 +431,12 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     // Anything but GET is 405, including a CORS preflight: the player scripts are simple GETs and need none.
     if (req.method !== 'GET') return sendText(res, 405, 'Method not allowed', { Allow: 'GET' })
     if (path === '/g/health') {
+      // Final fix Y (final review B minor 8): only a request made on this computer directly (the web app's Health page reads it there,
+      // GATEWAY_HEALTH_URL). Through the TLS proxy (which adds X-Forwarded-For / Forwarded) or from another computer it is "Not found":
+      // the open connections and whether access checks fail are nobody else's business.
+      const peer = clientAddress(req.socket)
+      const proxied = req.headers['x-forwarded-for'] !== undefined || req.headers.forwarded !== undefined
+      if (proxied || !(peer === '127.0.0.1' || peer === '::1')) return sendText(res, 404, 'Not found')
       // P2-4: counts and ages only (no session id, person, camera or address).
       const body = JSON.stringify(health())
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body), ...baseHeaders })

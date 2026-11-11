@@ -571,7 +571,7 @@ describe('gateway: a valid session', () => {
       'mse',
       'not json at all',
       '',
-      msg('x'.repeat(5000)),
+      // (A text over 4 KB: refused by the socket itself since final fix Y, B minor 6, with 1009: tests/integration/gateway-exposure.test.ts.)
       Buffer.from(msg('binary form of an allowed message')),
       Buffer.from([1, 2, 3]),
     ]

@@ -11,6 +11,7 @@ import { recordAuthEvent } from '@/lib/auth/auth-events'
 import { safeNext } from '@/lib/auth/safe-next'
 import { passwordSchema } from '@/lib/validation/password'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
+import { revokeMediaSessions } from '@/lib/streams/registry'
 
 export type FormState = { error?: string; message?: string }
 
@@ -107,5 +108,8 @@ export async function changePassword(_prev: FormState, formData: FormData): Prom
   const others = await supabase.auth.signOut({ scope: 'others' })
   if (others.error) await recordAuthEvent({ event: 'sign_out_everywhere', userId: user.id, actorId: user.id, detail: { after: 'password_change', ended: false } })
   else await recordAuthEvent({ event: 'sign_out_everywhere', userId: user.id, actorId: user.id, detail: { after: 'password_change', scope: 'others' } })
+  // Final fix Y (final review B minor 7): and the open video of every sign-in (a stolen session's sockets would otherwise play on until
+  // their 30-minute limit: the 15 s re-check validates access, not the sign-in). This page's own wall reconnects with new tokens.
+  await revokeMediaSessions(admin, g.profile.org_id, user.id, 'password_changed')
   redirect('/home')
 }

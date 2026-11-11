@@ -7,6 +7,7 @@ import { claimsOf, idleMinutesFor, sessionExpiry, sessionPolicy } from '@/lib/au
 import { VERIFIED_USER_HEADER, VERIFIED_USER_SIG_HEADER, signVerifiedUser } from '@/lib/auth/verified-user'
 import { buildCsp, cspHeaderName, cspReportOnly, makeNonce, REDIRECT_CSP } from '@/lib/web/csp'
 import { legacyRedirect } from '@/lib/web/legacy-redirects'
+import { bodyLimitRefusal } from '@/lib/web/body-limit'
 import { authCookieOptions } from '@/lib/supabase/cookie-options'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { revokeMediaSessions } from '@/lib/streams/registry'
@@ -87,6 +88,11 @@ export async function proxy(request: NextRequest) {
     res.headers.set(csp.name, value)
     return res
   }
+
+  // Final fix Y (final review B minor 2): a body larger than the page takes is refused from its length, before any session is looked up
+  // (lib/web/body-limit.ts; the global Next.js limits are 6 MB).
+  const tooBig = bodyLimitRefusal(request.method, pathname, request.headers)
+  if (tooBig) return withPolicy(NextResponse.json({ error: tooBig.message }, { status: tooBig.status }), REDIRECT_CSP)
 
   // T-1's old addresses (/stores, /admin/stores): permanent redirects, before sign-in, now here so they carry the policy (P3-1).
   const moved = legacyRedirect(pathname, request.nextUrl.search)

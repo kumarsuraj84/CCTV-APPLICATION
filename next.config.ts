@@ -19,8 +19,11 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: (process.env.DEV_ALLOWED_ORIGINS ?? '10.0.0.47').split(',').map((s) => s.trim()).filter(Boolean),
   turbopack: { root: __dirname },
   experimental: {
-    serverActions: { bodySizeLimit: '30mb' },
-    proxyClientMaxBodySize: '30mb',
+    // Final fix Y (final review B minor 2): Next.js 16 has one global limit for Server Action bodies and one for the proxy's buffer (no
+    // per-action setting). Both are the largest legitimate upload: the import page's 5 MB CSV plus form overhead. Smaller limits per
+    // page are applied by the proxy from the Content-Length (lib/web/body-limit.ts: 64 KB public pages, 1 MB elsewhere).
+    serverActions: { bodySizeLimit: '6mb' },
+    proxyClientMaxBodySize: '6mb',
     staleTimes: { dynamic: 30, static: 180 },
   },
   // T-1 (ruling T-1): "Store" became "Location"; the old addresses keep working with permanent redirects. P3-1: they are answered by

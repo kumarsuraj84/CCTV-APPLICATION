@@ -82,12 +82,11 @@ export function LiveTile({
   // One connection per picture and gateway; removing the picture (another page, another wall, leaving the page) closes everything.
   useEffect(() => {
     if (!GATEWAY) return
-    const gateway = GATEWAY
     const c = createTileConnection({
       connect: (socketUrl, ev) => {
         let stop: (() => void) | undefined
         let cancelled = false
-        loadPlayer(gateway)
+        loadPlayer()
           .then(() => {
             if (cancelled || !host.current) return
             stop = startPlayer(host.current, socketUrl, { onPlaying: ev.onPlaying, onEnded: ev.onEnded })

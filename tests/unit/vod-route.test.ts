@@ -55,6 +55,19 @@ beforeEach(() => {
 })
 
 describe('GET /api/vod', () => {
+  // Final fix Y (final review B minor 4): a link on another site cannot start an export in the signed-in person's name (SameSite=Lax
+  // sends the cookies on a cross-site navigation): only the app's own pages (Sec-Fetch-Site same-origin) or a typed address (none).
+  it('refuses a request from another site before anything is read or audited', async () => {
+    for (const site of ['cross-site', 'same-site']) {
+      const res = await GET(request(VALID, { headers: { 'sec-fetch-site': site } }))
+      expect(res.status, site).toBe(403)
+      expect(await res.json()).toEqual({ error: 'Open the download from Drishti itself.' })
+    }
+    expect(mocks.profileCalls + mocks.clients + mocks.admins).toBe(0)
+    expect(mocks.serve).not.toHaveBeenCalled()
+    for (const site of ['same-origin', 'none']) expect((await GET(request(VALID, { headers: { 'sec-fetch-site': site } }))).status, site).toBe(200)
+  })
+
   it('needs a signed-in person: 401 JSON, and no database client is even made', async () => {
     mocks.profile = null
     const res = await GET(request(VALID))

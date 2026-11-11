@@ -86,7 +86,7 @@ export function PlaybackPlayer({
       else if (reason === 'timer' || Date.now() - playedAt.current >= minutes * 60_000 - NEAR_END_MS) setState('finished')
       else setState('stopped-early')
     }
-    loadPlayer(gateway)
+    loadPlayer()
       .then(() => {
         if (cancelled || !host.current) return
         stop = startPlayer(host.current, gatewaySocketUrl(gateway, token), {
