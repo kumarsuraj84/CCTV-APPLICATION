@@ -3,7 +3,8 @@
 import { useId, useState, useTransition } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { setMonitoringRolloutAction } from '@/lib/actions/admin/monitoring'
+import { Select } from '@/components/ui/select'
+import { setMonitoringRolloutAction } from '@/lib/actions/admin/monitoring-rollout'
 import type { RolloutOverview, RolloutScope } from '@/lib/inventory/monitoring-rollout'
 
 // Final fix X (release 1 review C I-4; ruling NB-4): the monitoring rollout. One form: what (the organisation, a region, a cluster or a
@@ -47,24 +48,24 @@ export function MonitoringRollout({ overview }: { overview: RolloutOverview }) {
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="space-y-1 text-sm">
           <span className="font-medium">What</span>
-          <select className={field} value={scope} onChange={(e) => { setScope(e.target.value as RolloutScope); setTarget('') }}>
+          <Select value={scope} onChange={(e) => { setScope(e.target.value as RolloutScope); setTarget('') }}>
             <option value="location">One location</option>
             <option value="cluster">A cluster</option>
             <option value="region">A region</option>
             <option value="organization">Every NVR of the organisation</option>
-          </select>
+          </Select>
         </label>
         {scope !== 'organization' && (
           <label className="space-y-1 text-sm">
             <span className="font-medium">{scope === 'location' ? 'Location' : scope === 'cluster' ? 'Cluster' : 'Region'}</span>
-            <select className={field} value={target} onChange={(e) => setTarget(e.target.value)} required>
+            <Select value={target} onChange={(e) => setTarget(e.target.value)} required>
               <option value="">Choose…</option>
               {options.map((o) => (
                 <option key={o.id} value={o.id}>
                   {o.code} · {o.name} ({o.on} on, {o.off} off)
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
         )}
       </div>

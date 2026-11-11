@@ -102,6 +102,25 @@ describe('the gateway and refused NVR logins', () => {
     expect(g.events.some((e) => e.outcome === 'upstream_silent')).toBe(true)
   })
 
+  it('sockets of one stream share one answer for a few seconds (a burst of 300 sockets must not double the registry calls)', async () => {
+    const up = await fakeGo2rtc('once')
+    const { r } = registry('refused')
+    let asked = 0
+    const check = r.loginCheck!
+    r.loginCheck = async (sid) => { asked++; return check(sid) }
+    const g = await gateway(up.url, r)
+    const cam = randomUUID()
+    const token = (sid: string) => signStreamToken({ sid, u: randomUUID(), c: cam, k: 'sub', exp: Math.floor(Date.now() / 1000) + 90 }, SECRET)
+    const codes = await Promise.all(Array.from({ length: 8 }, () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${g.port}/g/ws?token=${encodeURIComponent(token(randomUUID()))}`, { origin: APP })
+      ws.on('error', () => {})
+      cleanups.push(async () => ws.terminate())
+      return new Promise<number>((res) => ws.on('close', (c) => res(c)))
+    }))
+    expect(codes.every((c) => c === CLOSE_LOGIN_REFUSED)).toBe(true)
+    expect(asked).toBe(1)
+  })
+
   it('a registry that cannot answer the login question: nothing is dialled (fail closed)', async () => {
     const up = await fakeGo2rtc('once')
     const { r } = registry('go')

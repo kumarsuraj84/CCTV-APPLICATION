@@ -137,7 +137,8 @@ describe('entry points with a real JWT (P2-2 fix round 1)', () => {
     expect(await listDaySegmentsAction(cWrong, '2026-10-20')).toEqual(neutral)
     expect(await listRecordedDaysAction(cNoLogin, 2026, 10)).toEqual(neutral)
     as(itPerson)
-    expect(await listDaySegmentsAction(cWrong, '2026-10-20')).toEqual({ ok: false, error: 'The NVR refused the user name or password.' })
+    // Final fix X (review C I-2, NB-1): the refusal above put the NVR in the shared back-off; the IT view reads the plain state.
+    expect(await listDaySegmentsAction(cWrong, '2026-10-20')).toEqual({ ok: false, error: 'Login refused: ask an administrator to check the NVR password.' })
     expect(await listRecordedDaysAction(cNoLogin, 2026, 10)).toEqual({ ok: false, error: 'This NVR has no saved login.' })
   })
 

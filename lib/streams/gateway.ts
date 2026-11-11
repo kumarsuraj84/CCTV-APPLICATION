@@ -154,6 +154,8 @@ export const CLOSE_LOGIN_REFUSED = 4401
 export const LOGIN_REFUSED_VALUE = 'nvr_login_refused'
 const MSG_LOGIN_REFUSED = 'NVR login refused'
 export const DEFAULT_UPSTREAM_SILENCE_MS = 30_000
+/** How long one answer of the NVR login question is reused for the same stream. */
+const LOGIN_ANSWER_MS = 5_000
 
 /** go2rtc's error message for a refused RTSP login (lib/nvr/login-guard.ts isGo2rtcLoginRefusal), read before it is replaced. */
 function upstreamLoginRefusal(data: Buffer): boolean {
@@ -349,6 +351,22 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     checking = check().finally(() => (checking = null))
     return checking
   }
+  // Final fix X: the NVR login question is asked once per stream for a few seconds (a wall's sockets for one camera, or a burst of
+  // reconnects, share one answer; a question in flight is shared too). A failure is not kept: the next socket asks again.
+  const loginAnswers = new Map<string, { at: number; answer: Promise<'go' | 'refused'> }>()
+  const loginCheckFor = (stream: string, sid: string): Promise<'go' | 'refused'> => {
+    const t = Date.now()
+    const hit = loginAnswers.get(stream)
+    if (hit && t - hit.at < LOGIN_ANSWER_MS) return hit.answer
+    if (loginAnswers.size > 5000) loginAnswers.clear()
+    const answer = withDeadline(registry.loginCheck!(sid))
+    loginAnswers.set(stream, { at: t, answer })
+    answer.catch(() => {
+      if (loginAnswers.get(stream)?.answer === answer) loginAnswers.delete(stream)
+    })
+    return answer
+  }
+  const forgetLoginAnswer = (stream: string) => loginAnswers.delete(stream)
   const checkTimer = opts.autoValidate === false ? null : setInterval(() => void validateNow().catch(() => {}), validateEveryMs)
   checkTimer?.unref()
 
@@ -616,7 +634,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
         // Final fix X (review C I-2, NB-2): go2rtc dials the NVR when this socket connects upstream, so an NVR whose login stands
         // refused is not dialled at all; the tile is told so and does not keep reconnecting.
         if (!registry.loginCheck) return connectUpstream()
-        withDeadline(registry.loginCheck(sid)).then(
+        loginCheckFor(name, sid).then(
           (decision) => {
             if (ended) return
             if (decision === 'refused') return refuseLogin()
@@ -708,6 +726,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
         } else if (upstreamLoginRefusal(data)) {
           // go2rtc's "wrong user/pass": a refused NVR login for this session's camera (the shared back-off starts for every path).
           void registry.loginRefused?.(sid)
+          forgetLoginAnswer(name)
           return refuseLogin()
         }
         toClient(data, isBinary)

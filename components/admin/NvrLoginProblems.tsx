@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useTransition } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { tryNvrLoginAgainAction } from '@/lib/actions/admin/monitoring'
+import { tryNvrLoginAgainAction } from '@/lib/actions/admin/monitoring-rollout'
 import type { NvrLoginProblem } from '@/lib/inventory/monitoring-rollout'
 import { formatDateTime } from '@/lib/time'
 

@@ -342,8 +342,10 @@ describe('fast playback (/api/vod)', () => {
         expect(res.status, camera).toBe(502)
         expect(await res.json()).toEqual({ error: 'The recordings of this camera cannot be reached right now.' })
       }
+      // Final fix X (review C I-2, NB-1): the viewer's request above met w1's refusal, so w1 is in the shared back-off: not asked again,
+      // and the IT view reads the plain state.
       const cases: [string, string][] = [
-        [w1, 'The NVR refused the user name or password.'],
+        [w1, 'Login refused: ask an administrator to check the NVR password.'],
         [d1, 'The NVR did not answer.'],
         [x1, 'The NVR gave an answer this app does not understand.'],
       ]
@@ -695,7 +697,8 @@ describe('fast playback (/api/vod)', () => {
         [viewer, w1, 502, 'The recordings of this camera cannot be reached right now.'],
         [viewer, a2, 404, 'There is no recording at that time.'],
         [manager, n1, 409, 'This NVR has no saved login.'],
-        [manager, w1, 502, 'The NVR refused the user name or password.'],
+        // Final fix X (NB-1): w1 refused its login earlier in this file: it stands in the shared back-off.
+        [manager, w1, 502, 'Login refused: ask an administrator to check the NVR password.'],
       ]
       for (const [who, camera, status, words] of expected) {
         const res = await get(who, camera, { more: '&probe=1' })

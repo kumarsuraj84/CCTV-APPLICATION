@@ -22,6 +22,9 @@ const SELECT_WEB = [
   'network_definitions', 'organizations', 'outages', 'profiles', 'recorder_status', 'recorders', 'regions', 'worker_state',
   // P2-7 (20261021000036): the web app reads the worker lease (holder, token, age) for the worker status; nobody writes it directly.
   'worker_leases',
+  // Final fix X (20261021000048, ruling NB-3): the web app reads the shared NVR login state for the Monitoring page; only the login
+  // functions write it.
+  'nvr_login_state',
 ]
 const INSERT_WEB = [
   'admin_audit_log', 'asset_dependencies', 'asset_endpoints', 'assets', 'camera_group_items', 'camera_group_rules', 'camera_groups', 'cameras',

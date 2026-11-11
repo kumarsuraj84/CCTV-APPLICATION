@@ -200,7 +200,7 @@ const MUST_BE_GUARDED = [
   'lib/actions/admin/discover-all.ts#startDiscoverAllAction', 'lib/actions/auth.ts#changePassword',
   'lib/actions/mfa.ts#startEnrolmentAction', 'lib/actions/mfa.ts#removeOwnFactorAction', 'app/api/vod/route.ts#GET',
   // Final fix X (rulings NB-3, NB-4): the monitoring rollout and "Try again" change what is sent to real NVRs.
-  'lib/actions/admin/monitoring.ts#setMonitoringRolloutAction', 'lib/actions/admin/monitoring.ts#tryNvrLoginAgainAction',
+  'lib/actions/admin/monitoring-rollout.ts#setMonitoringRolloutAction', 'lib/actions/admin/monitoring-rollout.ts#tryNvrLoginAgainAction',
   // Final fix Y: unlocking a person's code step; the owner-only two-step switch.
   'lib/actions/admin/sessions.ts#clearCodeLockAction', 'lib/actions/admin/security.ts#setMfaRequirementAction',
 ]
