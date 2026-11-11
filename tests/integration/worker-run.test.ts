@@ -88,7 +88,10 @@ describe('the worker against a fake network', () => {
 
   it('when the NVR goes down its cameras go down at once with the NVR as the cause', async () => {
     await rtsp.close() // the NVR video port is gone
+    // Final fix X (review C M-6): an NVR is called down after three failed reachability checks in a row (RECORDER_FAIL_THRESHOLD).
     await runner.runDevices()
+    await runner.runDevices()
+    expect((await state('recorder', recorderId))?.status).not.toBe('down')
     await runner.runDevices()
     expect((await state('recorder', recorderId))?.status).toBe('down')
     await runner.runCameras()

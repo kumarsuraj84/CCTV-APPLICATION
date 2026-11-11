@@ -137,7 +137,7 @@ describe('openStreams', () => {
 
   // AC-2 (P2-1): live video needs cctv.live; playback or export rights for the camera do not open live video.
   it('a person with playback and export but not live gets no live stream', async () => {
-    const noLive = await createUser(orgId, 'user')
+    const noLive = await createUser(orgId, 'admin') // final fix Y (A M-3, E-1): export holders are administrators on every path
     await grant(orgId, noLive.id, ['cctv.playback', 'cctv.export'], atLocation(sA))
     expect(await open(noLive, [a1, a2])).toEqual({ ok: true, streams: [] })
     expect(fake.seen).toHaveLength(0)
@@ -341,10 +341,22 @@ describe('openStreams', () => {
     streamsOf(await open(manager, [a1, a2, b1], 'sub', { adminClient: spy }))
     // P2-4 / P4-L1 review I-1: first the one call that registers the media sessions under the person's stream cap (no password is
     // read for a refused or paused camera). P2-6: then the logged credential read, for live video, naming the person it is for.
-    expect(calls.map((c) => c.name)).toEqual(['media_session_create_live', 'recorder_credential_read', 'recorder_credential_read'])
+    // Final fix X (NB-2): per NVR, the shared login state is asked before its password is read (and, for a login that needs a proof,
+    // the one RTSP proof is reported: nvr_login_report).
+    const names = calls.map((c) => c.name)
+    expect(names[0]).toBe('media_session_create_live')
+    expect(names.filter((n) => n === 'nvr_login_gate')).toHaveLength(2)
+    expect(names.filter((n) => !['media_session_create_live', 'nvr_login_gate', 'nvr_login_report', 'recorder_credential_read'].includes(n))).toEqual([])
+    for (const rec of [rA, rB]) {
+      const i = calls.findIndex((c) => c.name === 'nvr_login_gate' && (c.args as { p_recorders: string[] }).p_recorders[0] === rec)
+      const j = calls.findIndex((c) => c.name === 'recorder_credential_read' && (c.args as { p_recorder: string }).p_recorder === rec)
+      expect(i).toBeGreaterThan(-1)
+      expect(j).toBeGreaterThan(i)
+    }
     expect(calls[0].args).toMatchObject({ p_org: orgId, p_user: manager.id, p_max: 25 })
-    expect(calls.slice(1).map((c) => (c.args as { p_recorder: string }).p_recorder).sort()).toEqual([rA, rB].sort())
-    for (const c of calls.slice(1)) expect(c.args).toMatchObject({ p_purpose: 'live', p_actor: manager.id })
+    const reads = calls.filter((c) => c.name === 'recorder_credential_read')
+    expect(reads.map((c) => (c.args as { p_recorder: string }).p_recorder).sort()).toEqual([rA, rB].sort())
+    for (const c of reads) expect(c.args).toMatchObject({ p_purpose: 'live', p_actor: manager.id })
   })
 
   it('with DEMO_VIDEO=1 and a loopback store the source is the generated test picture and no password is read', async () => {

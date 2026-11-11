@@ -123,6 +123,10 @@ describe('a location with several NVRs, end to end', () => {
 
   it('a monitor round: only the down NVR\'s cameras are marked with the recorder as the cause; the other NVR\'s cameras are checked normally', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
+    // Final fix X (review C M-6): an NVR is called down after three failed reachability checks in a row (was two). As in production
+    // (NVRs every minute, cameras every five), the NVR checks run more often than the camera rounds.
+    await runner.runDevices()
+    await runner.runDevices()
     await runner.runFull()
     await runner.runFull()
     vi.restoreAllMocks()

@@ -228,8 +228,9 @@ describe('playback streams', () => {
         },
       })
       await listDaySegments({ rls: viewer.client, admin: spy, nvr: nvrClient }, actorOf(viewer), a1, '2026-10-20', 0)
-      // P2-5b: keyed by the camera's recorder, never by its location; P2-6: the logged credential read.
-      expect(calls).toEqual(['recorder_credential_read'])
+      // P2-5b: keyed by the camera's recorder, never by its location; P2-6: the logged credential read; final fix X (NB-1): the shared
+      // login state first, and the outcome of the NVR request after it.
+      expect(calls).toEqual(['nvr_login_gate', 'recorder_credential_read', 'nvr_login_report'])
       calls.length = 0
       await listDaySegments({ rls: viewer.client, admin: spy, nvr: nvrClient }, actorOf(viewer), b1, '2026-10-20', 0)
       expect(calls).toEqual([])
@@ -376,7 +377,9 @@ describe('playback streams', () => {
     it('a refused login (wrong NVR password): camera terms for a CCTV viewer, the NVR message with the IT view', async () => {
       expect(await segments(viewer, w1, '2026-10-20')).toEqual(NEUTRAL)
       expect(await days(viewer, w1)).toEqual(NEUTRAL)
-      expect(await segments(manager, w1, '2026-10-20')).toEqual({ ok: false, error: 'The NVR refused the user name or password.' })
+      // Final fix X (review C I-2, NB-1): after that first refusal the NVR is in the shared back-off: not asked again, and the IT view
+      // reads the plain state instead of the NVR's answer.
+      expect(await segments(manager, w1, '2026-10-20')).toEqual({ ok: false, error: 'Login refused: ask an administrator to check the NVR password.' })
     })
 
     it('an NVR that answers with nonsense gives the plain NVR message', async () => {
@@ -686,7 +689,9 @@ describe('playback streams', () => {
       })
       const res = okOf(await play(viewer, a1, START, 10, 0, { adminClient: spy }))
       // P2-4: and the one call that registers this playback's media session (person, camera, kind, stream; nothing secret).
-      expect(calls).toEqual([
+      // Final fix X (NB-1, NB-2): the shared login state first (a login never proven is proven with one RTSP request, reported).
+      expect(calls[0]).toMatchObject({ name: 'nvr_login_gate', args: { p_recorders: [recorderOf.get(sA)], p_path: 'playback', p_fresh_sec: 600 } })
+      expect(calls.filter((c) => c.name !== 'nvr_login_gate' && c.name !== 'nvr_login_report')).toEqual([
         // P2-6: the logged credential read, for playback, naming the person it is for.
         { name: 'recorder_credential_read', args: { p_recorder: recorderOf.get(sA), p_purpose: 'playback', p_actor: viewer.id } },
         { name: 'media_session_create', args: { p_org: orgId, p_user: viewer.id, p_kind: 'playback', p_cameras: [a1], p_streams: [res.name] } },

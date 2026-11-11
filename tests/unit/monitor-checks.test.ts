@@ -182,14 +182,16 @@ describe('checkCameras', () => {
   })
 
   it('falls back to RTSP for every camera when the NVR cannot be asked, and says why', async () => {
+    // Final fix X (review C I-1): the NVR "cannot be asked" here because it does not answer; after a REFUSED web login (the P2 version
+    // of this test) no video login is tried any more (monitor-backoff.test.ts).
     const db = new MemoryDb()
     db.recorders =[recorder()]
     await checkCameras(deps(db, {
-      nvr: () => ({ channelStatus: async () => { throw new NvrError('auth', 'x') }, channels: async () => { throw new NvrError('auth', 'x') } }),
+      nvr: () => ({ channelStatus: async () => { throw new NvrError('unreachable', 'x') }, channels: async () => { throw new NvrError('unreachable', 'x') } }),
       rtsp: async (t) => rsp(t.channel === 1),
     }))
     expect(db.results().map((r) => [r.id, r.ok, r.method])).toEqual([['c1', true, 'rtsp'], ['c2', false, 'rtsp'], ['c3', false, 'rtsp']])
-    expect(db.results()[1].error).toBe('The NVR refused the user name or password.')
+    expect(db.results()[1].error).toBe('The NVR did not answer.')
   })
 
   it('aims the RTSP check at the NVR itself, on the camera channel, with the store login', async () => {

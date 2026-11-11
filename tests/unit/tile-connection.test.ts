@@ -9,7 +9,7 @@ import { QUICK_RETRY_MS, RETRY_EVERY_MS } from '@/lib/streams/wall'
 type Sock = { url: string; open: boolean; playing: () => void; end: () => void }
 function fakeGateway() {
   const sockets: Sock[] = []
-  const connect = (url: string, ev: { onPlaying: () => void; onEnded: () => void }) => {
+  const connect = (url: string, ev: { onPlaying: () => void; onEnded: (reason?: string) => void }) => {
     const s: Sock = { url, open: true, playing: () => ev.onPlaying(), end: () => ev.onEnded() }
     sockets.push(s)
     return () => { s.open = false }
@@ -112,6 +112,34 @@ describe('one tile\'s connection', () => {
     c.update({ url: 'ws://gw/t', paused: false })
     expect(gw.sockets).toHaveLength(1)
     expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('an NVR whose login stands refused (final fix X, review C I-2)', () => {
+  it('the gateway says so: the tile shows it, never reconnects by itself, and tries again only with a new token', () => {
+    const sockets: { end: (reason?: string) => void }[] = []
+    const views: TileView[] = []
+    const refused: number[] = []
+    const c = createTileConnection({
+      connect: (_url, ev) => {
+        sockets.push({ end: (reason) => ev.onEnded(reason) })
+        return () => {}
+      },
+      onView: (v) => views.push(v),
+      onRefused: () => refused.push(1),
+    })
+    c.update({ url: 'ws://gw/t1', paused: false })
+    sockets[0].end('nvr_login_refused')
+    expect(views.at(-1)).toBe('refused')
+    expect(refused).toHaveLength(1)
+    expect(vi.getTimerCount()).toBe(0)
+    vi.advanceTimersByTime(10 * 60_000)
+    expect(sockets).toHaveLength(1) // a wall of 16 such tiles makes no request at all
+    c.update({ url: 'ws://gw/t1', paused: false })
+    expect(sockets).toHaveLength(1)
+    c.update({ url: 'ws://gw/t2', paused: false })
+    expect(sockets).toHaveLength(2)
+    c.dispose()
   })
 })
 

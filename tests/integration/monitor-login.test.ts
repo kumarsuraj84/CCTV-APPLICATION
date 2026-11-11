@@ -47,10 +47,25 @@ describe('a wrong NVR password in the database', () => {
     for (let i = 0; i < 3; i++) await checkCameras(deps, undefined, [wrongRecorder])
     vi.restoreAllMocks()
     expect(nvr.requests.length).toBeGreaterThan(0)
+    expect(nvr.authorizations).toHaveLength(1) // final fix X: one refused login in three rounds
+    expect(rtsp.requests).toHaveLength(0)
     const states = await admin().from('check_state').select('target_id').in('target_id', wrongCams)
     const outages = await admin().from('outages').select('id').in('target_id', wrongCams)
     expect(states.data).toEqual([])
     expect(outages.data).toEqual([])
+  })
+
+  it('final fix X (review C I-1): one refused login only, no RTSP, and a restarted worker (a new data layer, a new lease) does not ask again', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const before = nvr.authorizations.length
+    const rtspBefore = rtsp.requests.length
+    const restarted: Deps = { ...deps, db: new SupabaseMonitorDb(admin(), { orgId, fence: await testFence() }) }
+    for (let i = 0; i < 3; i++) await checkCameras(restarted, undefined, [wrongRecorder])
+    vi.restoreAllMocks()
+    expect(nvr.authorizations.length).toBe(before)
+    expect(rtsp.requests.length).toBe(rtspBefore)
+    const st = await admin().from('nvr_login_state' as never).select('outcome, level, last_refused_path').eq('recorder_id', wrongRecorder).single()
+    expect(st.data).toEqual({ outcome: 'refused', level: 1, last_refused_path: 'monitoring' })
   })
 
   it('still marks the cameras of a recorder down at once when that NVR is known to be down, without needing the password', async () => {

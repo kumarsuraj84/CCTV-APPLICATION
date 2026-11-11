@@ -117,28 +117,40 @@ describe('A-N2: the merge sentence', () => {
 
 describe('A-N3: a new password does not get around the back-off for ever', () => {
   it('after 3 refused logins to one NVR within 30 minutes it is not asked again, whatever login is saved, until the window is over', async () => {
-    const { loginBlock, noteLoginResult, MSG_LOGIN_BACKOFF, MSG_LOGIN_PAUSED, LOGIN_REFUSALS_ALLOWED, LOGIN_REFUSAL_WINDOW_SEC } = await import('@/lib/monitor/login-backoff')
+    // Final fix X (ruling NB-1): the same rule, now in the ONE shared back-off (lib/nvr/login-policy.ts, the database's nvr_login_gate).
+    const { loginBlockMessage, MSG_LOGIN_BACKOFF, MSG_LOGIN_PAUSED, LOGIN_REFUSALS_ALLOWED, LOGIN_REFUSAL_WINDOW_SEC } = await import('@/lib/monitor/login-backoff')
+    const { decideLogin, reportLogin } = await import('@/lib/nvr/login-policy')
+    const { outcomeOfNvrError } = await import('@/lib/nvr/login-guard')
     const { NvrError } = await import('@/lib/nvr/client')
+    type S = Parameters<typeof decideLogin>[0]
     expect([LOGIN_REFUSALS_ALLOWED, LOGIN_REFUSAL_WINDOW_SEC]).toEqual([3, 1800])
-    const rec = 'rec-an3'
     const t0 = Date.parse('2026-10-22T10:00:00Z')
+    let s: S
+    const block = (pw: string, at: number) => {
+      const r = decideLogin(s, pw, at, { claim: true })
+      s = r.state
+      return loginBlockMessage(r.gate)
+    }
+    const note = (pw: string, e: unknown, at: number) => (s = reportLogin(s, pw, pw, outcomeOfNvrError(e), at, { baseSec: 60, maxSec: 60 }).state)
     const refused = new NvrError('auth', 'refused')
     // Each wrong password waits out its own short back-off (60 s), then a new one is tried.
-    noteLoginResult(rec, 'pw1', refused, t0, 60)
-    expect(loginBlock(rec, 'pw1', t0 + 1000)).toBe(MSG_LOGIN_BACKOFF)
-    expect(loginBlock(rec, 'pw2', t0 + 1000)).toBeNull()
-    noteLoginResult(rec, 'pw2', refused, t0 + 2000, 60)
-    expect(loginBlock(rec, 'pw3', t0 + 3000)).toBeNull()
-    noteLoginResult(rec, 'pw3', refused, t0 + 4000, 60)
-    expect(loginBlock(rec, 'pw4', t0 + 5000)).toBe(MSG_LOGIN_PAUSED)
-    expect(loginBlock(rec, 'pw4', t0 + 10 * 60_000)).toBe(MSG_LOGIN_PAUSED)
-    expect(loginBlock(rec, 'pw4', t0 + 1800_000 + 1000)).toBeNull()
-    // Other NVRs are not affected; a non-login failure does not count.
-    expect(loginBlock('rec-other', 'pw4', t0 + 5000)).toBeNull()
-    noteLoginResult('rec-x', 'a', new NvrError('unreachable', 'down'), t0, 60)
-    noteLoginResult('rec-x', 'b', new NvrError('timeout', 'slow'), t0, 60)
-    noteLoginResult('rec-x', 'c', new NvrError('unreachable', 'down'), t0, 60)
-    expect(loginBlock('rec-x', 'd', t0 + 1000)).toBeNull()
+    expect(block('pw1', t0)).toBeNull()
+    note('pw1', refused, t0)
+    expect(block('pw1', t0 + 1000)).toBe(MSG_LOGIN_BACKOFF)
+    expect(block('pw2', t0 + 1000)).toBeNull()
+    note('pw2', refused, t0 + 2000)
+    expect(block('pw3', t0 + 3000)).toBeNull()
+    note('pw3', refused, t0 + 4000)
+    expect(block('pw4', t0 + 5000)).toBe(MSG_LOGIN_PAUSED)
+    expect(block('pw4', t0 + 10 * 60_000)).toBe(MSG_LOGIN_PAUSED)
+    expect(block('pw4', t0 + 1800_000 + 1000)).toBeNull()
+    // A non-login failure does not count (another NVR is another state).
+    s = undefined
+    for (const [pw, e] of [['a', new NvrError('unreachable', 'down')], ['b', new NvrError('timeout', 'slow')], ['c', new NvrError('unreachable', 'down')]] as const) {
+      block(pw, t0)
+      note(pw, e, t0)
+    }
+    expect(block('d', t0 + 1000)).toBeNull()
     expect(MSG_LOGIN_PAUSED).toBe('This NVR refused 3 logins in the last 30 minutes. To keep its account from being locked it is not asked again for a while, even with a new password. Check the user name and password on the NVR itself, then try again later.')
   })
 

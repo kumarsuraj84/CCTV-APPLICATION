@@ -238,7 +238,9 @@ describe('live streams per person are bounded, and every opening is recorded (P4
       calls.length = 0
       fake.seen.length = 0
       const renewMs = await time(() => renewStreams({ admin: spy, rls: u.client, env: env('25') }, { id: u.id, orgId }, page, 'sub', { client: W }))
-      expect(fullCalls).toEqual(['media_session_create_live', 'recorder_credential_read']) // one NVR: one login read
+      // One NVR: one login state question (final fix X, NB-2), one login read, and the outcome of the one RTSP proof when one was due.
+      expect(fullCalls.filter((c) => c !== 'nvr_login_report')).toEqual(['media_session_create_live', 'nvr_login_gate', 'recorder_credential_read'])
+      expect(fullCalls.filter((c) => c === 'nvr_login_report').length).toBeLessThanOrEqual(1)
       expect(go2rtcFull).toBeGreaterThanOrEqual(16)
       expect(calls).toEqual(['media_session_create_live'])
       expect(fake.seen).toEqual([])

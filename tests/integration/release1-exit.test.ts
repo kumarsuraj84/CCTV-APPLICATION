@@ -436,6 +436,9 @@ describe('Release 1 exit criteria (RELEASE-1.md)', () => {
       for (const n of ['a1', 'a2', 'b', 'd', 'e']) expect((await admin().rpc('recorder_set_monitoring', { p_org: orgA, p_recorder: NVR[n], p_enabled: false, p_reason: 'exit test: not in this round' })).error).toBeNull()
       expect((await admin().rpc('recorder_set_monitoring', { p_org: orgA, p_recorder: NVR.c3, p_enabled: false, p_reason: 'exit test: switched off' })).error).toBeNull()
       try {
+        // Final fix X (review C M-6): an NVR is called down after three failed reachability checks; as in production the NVR checks
+        // (every minute) run more often than the camera rounds (every five).
+        await runner.runDevices()
         for (let i = 0; i < 2; i++) {
           await runner.runDevices()
           await runner.runCameras()

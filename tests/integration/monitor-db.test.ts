@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
+import { clearPasswordCache, SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
 import type { Database } from '@/types/database'
 import { adminClient, cleanupOrg, createCamera, createLocation, createOrg, createRecorder, createSite } from '../setup/fixtures'
 import { testFence } from '../setup/lease'
@@ -76,15 +76,18 @@ describe('SupabaseMonitorDb (per recorder)', () => {
     expect((await db.loadNvrs()).find((n) => n.id === recorderId)).toEqual({ id: recorderId, org_id: orgId, location_id: storeId, ip: '127.0.0.1', rtsp_port: 8554 })
   })
 
-  it('loads a recorder job with its decrypted password, its cameras and its own state', async () => {
+  it('loads a recorder job with its cameras and its own state; the password comes only through the login gate (final fix X)', async () => {
     const [job] = await db.loadRecorderJobs([recorderId])
-    expect(job).toMatchObject({ id: recorderId, location_id: storeId, org_id: orgId, code: 'DB1', name: 'NVR', http_port: 8081, rtsp_port: 8554, username: 'viewer', password: 'secret-pass', nvr_status: 'unknown' })
+    expect(job).toMatchObject({ id: recorderId, location_id: storeId, org_id: orgId, code: 'DB1', name: 'NVR', http_port: 8081, rtsp_port: 8554, username: 'viewer', password: '', nvr_status: 'unknown' })
+    const gate = (await db.loginGate([recorderId], { claim: false, now: Date.now() })).get(recorderId)!
+    expect(gate).toMatchObject({ decision: 'probe', claimed: false })
+    expect(await db.readPassword(recorderId, gate.version!)).toBe('secret-pass')
     expect(job.cameras.map((c) => c.channel)).toEqual([1, 2])
     await db.applyResults(orgId, [{ type: 'recorder', id: recorderId, ok: false, at: new Date().toISOString() }], 1)
     expect((await db.loadRecorderJobs([recorderId]))[0].nvr_status).toBe('down')
   })
 
-  it('loads a recorder without a saved password with an empty one, and only the recorders asked for', async () => {
+  it('loads a recorder without a saved password (its jobs hold no password at all), and only the recorders asked for', async () => {
     const jobs = await db.loadRecorderJobs([recorderId, bareRecorder, noPassRecorder, randomUUID()])
     expect(jobs.map((j) => j.code).sort()).toEqual(['DB1', 'DB2', 'DB3'])
     expect(jobs.find((j) => j.id === bareRecorder)).toMatchObject({ password: '', cameras: [] })
@@ -150,26 +153,39 @@ describe('SupabaseMonitorDb (per recorder)', () => {
     expect(after.get(r3)).toEqual([[c3, 5]])
   })
 
-  it('leaves a recorder out of the round when its password cannot be read; only that recorder\'s login is read', async () => {
+  it('a password that cannot be read is "none" for this round; only that recorder\'s login is read', async () => {
+    clearPasswordCache()
     const { client, reads } = watched(true)
-    expect(await new SupabaseMonitorDb(client, { orgId }).loadRecorderJobs([noPassRecorder])).toEqual([])
-    expect(reads).toEqual([noPassRecorder])
+    const v = (await db.loginGate([recorderId], { claim: false, now: Date.now() })).get(recorderId)!.version!
+    expect(await new SupabaseMonitorDb(client, { orgId }).readPassword(recorderId, v)).toBeNull()
+    expect(reads).toEqual([recorderId])
   })
 
-  it('does not read the password of a recorder without cameras or with a recent NVR "down", and still returns it', async () => {
-    const { client, reads } = watched(true) // a vault that is down must not matter for these recorders
-    const jobs = await new SupabaseMonitorDb(client, { orgId }).loadRecorderJobs([recorderId, bareRecorder], new Date(Date.now() - 180_000))
+  it('loading the jobs reads no password at all (also not for a recorder without cameras or with a recent NVR "down")', async () => {
+    const { client, reads } = watched(true) // a vault that is down must not matter for loading
+    const jobs = await new SupabaseMonitorDb(client, { orgId }).loadRecorderJobs([recorderId, bareRecorder, noPassRecorder], new Date(Date.now() - 180_000))
     expect(reads).toEqual([])
-    expect(jobs.map((j) => j.code).sort()).toEqual(['DB1', 'DB2'])
+    expect(jobs.map((j) => j.code).sort()).toEqual(['DB1', 'DB2', 'DB3'])
     expect(jobs.find((j) => j.id === recorderId)).toMatchObject({ password: '', nvr_status: 'down' })
     expect(jobs.find((j) => j.id === recorderId)?.nvr_checked_at).not.toBeNull()
+    expect((await db.loginGate([noPassRecorder], { claim: false, now: Date.now() })).get(noPassRecorder)?.decision).toBe('no_password')
   })
 
-  it('reads the password again when the NVR "down" is out of date', async () => {
+  it('review C M-2: the password is read once per login version (kept in memory), and again when the saved password changes', async () => {
+    clearPasswordCache()
     const { client, reads } = watched()
-    const [job] = await new SupabaseMonitorDb(client, { orgId }).loadRecorderJobs([recorderId], new Date(Date.now() + 60_000))
+    const w = new SupabaseMonitorDb(client, { orgId })
+    const v1 = (await w.loginGate([recorderId], { claim: false, now: Date.now() })).get(recorderId)!.version!
+    for (let i = 0; i < 3; i++) expect(await w.readPassword(recorderId, v1)).toBe('secret-pass')
+    expect(await new SupabaseMonitorDb(client, { orgId }).readPassword(recorderId, v1)).toBe('secret-pass') // a new epoch too
     expect(reads).toEqual([recorderId])
-    expect(job).toMatchObject({ password: 'secret-pass', nvr_status: 'down' })
+    await admin().rpc('recorder_store_credential', { p_recorder: recorderId, p_secret: 'secret-pass-2' })
+    const v2 = (await w.loginGate([recorderId], { claim: false, now: Date.now() })).get(recorderId)!.version!
+    expect(v2).not.toBe(v1)
+    expect(await w.readPassword(recorderId, v2)).toBe('secret-pass-2')
+    expect(reads).toEqual([recorderId, recorderId])
+    await admin().rpc('recorder_store_credential', { p_recorder: recorderId, p_secret: 'secret-pass' })
+    clearPasswordCache()
   })
 
   it('applies results, records camera addresses, and surfaces database errors', async () => {

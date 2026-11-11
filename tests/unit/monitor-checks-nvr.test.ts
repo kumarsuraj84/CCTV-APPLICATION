@@ -15,45 +15,50 @@ describe('a wrong or missing NVR password never makes cameras look down', () => 
     nvr: () => ({ channelStatus: async () => { throw new NvrError(kind, 'x') }, channels: async () => { throw new NvrError(kind, 'x') } }),
   })
   const quietLog = () => vi.spyOn(console, 'log').mockImplementation(() => {})
-  const loginLines = (spy: ReturnType<typeof quietLog>) => spy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('NVR login problem'))
+  // Final fix X (NB-1): the line says the login was refused (the shared back-off); "forbidden" with a working video login is no problem.
+  const loginLines = (spy: ReturnType<typeof quietLog>) => spy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('NVR login refused'))
 
-  it('sends nothing for a camera whose only answer is a refused login, for ISAPI auth and for forbidden', async () => {
+  it('sends nothing for a camera whose only answer is a refused login, for ISAPI auth and for forbidden then a refused video login', async () => {
     for (const kind of ['auth', 'forbidden'] as const) {
       const db = new MemoryDb()
       db.recorders = [recorder()]
       const spy = quietLog()
-      await checkCameras(deps(db, { ...refused(kind), rtsp: async () => ({ code: 401 }) }))
+      let rtsp = 0
+      await checkCameras(deps(db, { ...refused(kind), rtsp: async () => { rtsp++; return { code: 401 } } }))
       expect(db.results()).toHaveLength(0)
       expect(db.applied).toHaveLength(0)
+      expect(rtsp).toBe(kind === 'auth' ? 0 : 1) // review C I-1: no video login after a refused web login
       expect(loginLines(spy)).toHaveLength(1)
-      expect(loginLines(spy)[0]).toContain('NVR login problem at location S1')
+      expect(loginLines(spy)[0]).toContain('NVR login refused at location S1')
       expect(loginLines(spy)[0]).not.toContain('"pw"')
       spy.mockRestore()
     }
   })
 
-  it('still lets the other answers count: 200 is Live, no answer and an odd answer are failures', async () => {
+  it('a viewer account ("forbidden" on the status): the video answers count; 200 is Live, no answer and an odd answer are failures', async () => {
+    // Was "after a refused web login the other answers still count" (P2): since review C I-1 nothing follows a refused web login, and
+    // since I-3 "forbidden" is not one.
     const db = new MemoryDb()
     db.recorders = [recorder()]
     quietLog()
-    await checkCameras(deps(db, { ...refused(), rtsp: async (t) => ({ code: [200, 0, 404][t.channel - 1] }) }))
+    await checkCameras(deps(db, { ...refused('forbidden'), rtsp: async (t) => ({ code: [200, 0, 404][t.channel - 1] }) }))
     expect(db.results().map((r) => [r.id, r.ok])).toEqual([['c1', true], ['c2', false], ['c3', false]])
-    expect(db.results()[1].error).toBe('The NVR refused the user name or password.')
+    expect(db.results()[1].error).toBe('The NVR user is not allowed to read camera status.')
     expect(db.results()[2].error).toBe('The camera gave an answer this app does not expect.')
   })
 
-  it('sends nothing, and does not try to log in to the NVR, when the store has no saved password', async () => {
+  it('sends nothing, and does not contact the NVR at all (no ISAPI, no RTSP), when it has no saved password', async () => {
     const db = new MemoryDb()
     db.recorders = [recorder({ password: '' })]
     const spy = quietLog()
     let asked = 0
     await checkCameras(deps(db, {
       nvr: () => ({ channelStatus: async () => { asked++; return new Map() }, channels: async () => { asked++; return [] } }),
-      rtsp: async () => ({ code: 401 }),
+      rtsp: async () => { asked++; return { code: 401 } },
     }))
     expect(asked).toBe(0)
     expect(db.results()).toHaveLength(0)
-    expect(loginLines(spy)).toHaveLength(1)
+    expect(spy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('has no saved password'))).toHaveLength(1)
   })
 
   it('with a good login a 401 from RTSP is a normal failure, and nothing is logged about the login', async () => {
@@ -106,8 +111,8 @@ describe('a wrong or missing NVR password never makes cameras look down', () => 
       const spy = quietLog()
       const { db, nvr, rtsp } = await run('secret-pass', 'wrong-pass', { 1: false, 2: true }, 3)
       expect(db.results()).toHaveLength(0)
-      expect(nvr.requests.length).toBeGreaterThan(0) // the NVR really was asked, and refused
-      expect(rtsp.requests.length).toBeGreaterThan(0)
+      expect(nvr.authorizations).toHaveLength(1) // the NVR really was asked once, and refused
+      expect(rtsp.requests).toHaveLength(0) // review C I-1: no video login after it
       expect(loginLines(spy)).toHaveLength(1) // one line when the back-off starts, not one per round
     })
 

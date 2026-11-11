@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { checkCameras, checkDevices, checkNvrs, checkRecorderCameras, loginBackoffCount } from '@/lib/monitor/checks'
+import { checkCameras, checkDevices, checkNvrs, checkRecorderCameras } from '@/lib/monitor/checks'
+import type { MonitorDb } from '@/lib/monitor/types'
 import { loadMonitorConfig } from '@/lib/monitor/config'
 import { NvrError } from '@/lib/nvr/client'
 import { MemoryDb } from '../helpers/memory-db'
@@ -9,6 +10,8 @@ afterEach(() => vi.restoreAllMocks())
 
 const quietLog = () => vi.spyOn(console, 'log').mockImplementation(() => {})
 const lines = (spy: ReturnType<typeof quietLog>, text: string) => spy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes(text))
+/** Final fix X: the back-off is the data layer's shared login state now (NB-1); how many NVRs stand refused. */
+const loginBackoffCount = (db: MonitorDb) => [...(db as MemoryDb).logins.values()].filter((s) => s.outcome === 'refused').length
 
 describe('a wrong password cannot be tried again and again through the video port (minor 1)', () => {
   it('after the first refused video login, when the NVR web port did not answer, the other cameras are not tried and the back-off starts', async () => {
@@ -27,7 +30,7 @@ describe('a wrong password cannot be tried again and again through the video por
     expect(counts.rtsp).toBe(1) // not one per camera
     expect(db.results()).toHaveLength(0) // a refused login says nothing about the cameras
     expect(loginBackoffCount(d.db)).toBe(1)
-    expect(lines(spy, 'NVR login problem at location S1')).toHaveLength(1)
+    expect(lines(spy, 'NVR login refused at location S1')).toHaveLength(1)
 
     await checkCameras(d) // still inside the window: the recorder is left alone
     expect(counts.nvr).toBe(1)
@@ -77,13 +80,23 @@ describe('a wrong password cannot be tried again and again through the video por
     })
 
     it('a camera that does not answer first does not prove anything: a refusal after it still starts the back-off', async () => {
-      const { d, db } = await run([0, 401, 401, 401])
+      const { d, db, asked } = await run([0, 401, 401, 401])
       expect(loginBackoffCount(d.db)).toBe(1)
-      expect(db.results().map((r) => r.id)).toEqual(['c1']) // the one that did not answer is a plain failure; refusals say nothing
+      expect(asked).toEqual([1, 2]) // final fix X: one at a time until the login is proven, so ONE refused video login, not three
+      expect(db.results()).toHaveLength(0) // a refused login says nothing about any camera of that NVR
     })
 
-    it('a refusal alongside a live answer in the same round does not start the back-off', async () => {
-      const { d } = await run([0, 401, 200, 200])
+    it('final fix X (NB-1): a refusal before any proof stops the round, even if later cameras would have answered', async () => {
+      // Replaces "a refusal alongside a live answer does not start the back-off": that sent the later cameras side by side with the same
+      // possibly wrong password (one refused login each). Now the cameras go one at a time until one proves the login.
+      const { d, asked } = await run([0, 401, 200, 200])
+      expect(asked).toEqual([1, 2])
+      expect(loginBackoffCount(d.db)).toBe(1)
+    })
+
+    it('three silent cameras in a row: the video port is not answering logins at all, so the rest go side by side', async () => {
+      const { d, asked } = await run([0, 0, 0, 200, 0])
+      expect(asked.sort()).toEqual([1, 2, 3, 4, 5])
       expect(loginBackoffCount(d.db)).toBe(0)
     })
   })
