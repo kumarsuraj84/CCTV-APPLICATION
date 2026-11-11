@@ -26,7 +26,8 @@ What it does, in order (and why):
 | 5 Migrate | `npx supabase migration up` of the new release (forward migrations only; each has its rollback script in `supabase/rollback/`) | roll back |
 | 6 Switch | `app\current` → the new release (a junction) | roll back |
 | 7 Start | worker, gateway, web app | roll back |
-| 8 Check | `/api/version` = the new build id AND `/api/health` = `ok`, within `HealthTimeoutSec` (180 s; the worker needs up to 20 s to take its lease) | roll back |
+| 8 Check | the new release (final review C-I5): `/api/version` = the new build id within `HealthTimeoutSec` (180 s), every started service running (a start-up self-check that refused stops its service), the gateway answering `/g/health`, the database at the level the release needs | roll back |
+| 8b Health | `/api/health`: `ok`; `degraded` for a reason of the server (disk, a worker stopped or in standby, the Vault canary, the clocks, a missed backup) | **no roll back**: the new release is kept, the update says so and ends with exit code 3; look at the Health page |
 
 After a good update the newest `KeepReleases` (3) releases are kept; the open pages show "A new version is available" (the version
 banner compares their build id with `/api/version`) and people refresh.
@@ -47,6 +48,14 @@ The services are stopped and started by calling `drishti-services.ps1` inside th
 migrations the password goes to the Supabase CLI as `PGPASSWORD` of that one child process, never on its command line (review I-2).
 
 ## 2. The automatic roll back
+
+A worker kept stopped on purpose (a pilot without monitoring): `WorkerExpected = $false` in the configuration; the update then
+neither starts nor counts it (and `DRISHTI_WORKER_EXPECTED=false` in `web.env` makes the Health page say "stopped on purpose").
+`app\current` is taken as the running release only when it is a junction to a folder directly under `app\releases`; anything else
+is refused before anything changes (review 2 N-3). `MigrationMode = 'Local'` (the Supabase CLI's seeded stack) is refused by the
+update even on a test server (review 2 m1): there, apply the migrations by hand (`npx supabase migration up --local`) and point
+`app\current` at the new release; never switch the test fixture switch off to get past the refusal (the update would then mark the
+test database as a production one for good). Verification status: verified by design and unit-tested; the behaviour on real folders (locks, junctions, hard links) is checked by the Windows lab suite on the production server before the install (`windows-services.md` section 7.0), not yet run there.
 
 On a failure in steps 4–8 the script:
 

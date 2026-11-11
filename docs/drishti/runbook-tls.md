@@ -34,7 +34,7 @@ browser ──https/wss──► Caddy (443, the only listener on the network)
 3. The company's root certificate must be trusted by the PCs that open Drishti (normally already through Group Policy).
 4. Lab only: `tls internal` in the Caddyfile makes Caddy's own local CA sign a certificate (self-signed root). Trust that root on the
    test PCs only. Never use it for production.
-5. Renewal: before the certificate ends, replace the two files and reload Caddy (`caddy reload --config C:\Drishti\caddy\Caddyfile`).
+5. Renewal: before the certificate ends, replace the two files and reload Caddy (`caddy reload --config C:\Drishti\config\Caddyfile`).
 
 ## 3. Settings of the app and the gateway (production env file, outside the repository)
 
@@ -135,9 +135,14 @@ ON CONFLICT (org_id) DO UPDATE SET mfa_enforced = true, updated_at = now();
 
 ## 6. First run through Caddy (to do and record)
 
-1. Download Caddy for Windows (amd64) from the official release page **with the owner's approval**, put `caddy.exe` in
-   `C:\Drishti\caddy\`, check its signature/hash, run it as a service under a dedicated account (WP-5.4).
-2. `caddy validate --config C:\Drishti\caddy\Caddyfile`, then start it.
+1. Download Caddy for Windows (amd64) from the official release page **with the owner's approval**, check its signature/hash, and
+   copy `caddy.exe` to `C:\Drishti\caddy\` only after `drishti-services.ps1 -Action Install` has made and locked that folder.
+   It runs as the `DrishtiProxy` Windows service under `NT SERVICE\DrishtiProxy` (P5.4 fix round 3, final review C-I12: set `CaddyExe`
+   and add `DrishtiProxy` to `Services` in `drishti.config.psd1`). The layout that fits the folder locks: the Caddyfile in
+   `C:\Drishti\config\Caddyfile`, the certificate and key in `C:\Drishti\config\certs` (both read by the proxy account only),
+   Caddy's storage in `C:\Drishti\data\caddy` and its log in `C:\Drishti\logs\DrishtiProxy` (written by the proxy account only);
+   `windows-services.md` section 1.
+2. `caddy validate --config C:\Drishti\config\Caddyfile`, then `drishti-services.ps1 -Action Start -Service DrishtiProxy`.
 3. From another PC: open `https://drishti.citykart.local` — no certificate warning; sign in; the response headers show the CSP with a
    nonce and HSTS; the Live wall plays (the browser's network panel shows `wss://drishti.citykart.local/g/ws?…` with status 101); the
    console shows no CSP violation; `http://drishti.citykart.local` redirects to https.

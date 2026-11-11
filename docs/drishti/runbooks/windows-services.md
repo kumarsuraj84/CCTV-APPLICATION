@@ -7,7 +7,7 @@ or registry entry. What is verified, by tests: every script parses (`[System.Man
 PSScriptAnalyzer would apply (it is not installed here, and nothing was installed for this), the dry runs (`-WhatIf`) of install,
 update with its roll back, and backup retention (`tests/unit/windows-scripts.test.ts`); the service host compiled with the computer's
 own C# compiler and run in its console mode with a stand-in program: settings from the env file, clean stop by Ctrl+C, restart after a
-crash, log rolling, forced end of a program that ignores the stop together with what it started (`tests/integration/windows-service-host.test.ts`);
+crash, log rolling, forced end of a program that ignores the stop together with what it started (`tests/windows-lab/windows-service-host.lab.test.ts`);
 backup and restore in a disposable database (`tests/integration/backup-restore.test.ts`, runbook `backup-restore.md`). The first real
 installation must follow section 7 and record the result in `docs/drishti/DELIVERY-STATUS.md` (LG-37, SO-12).
 
@@ -26,6 +26,21 @@ The web account may read the free space of the data and backup disks (proved wit
 install and the update refuse a database mode and migration mode that do not fit, the update refuses a database seeded for tests and
 marks a production database, and every Windows tool is called by its full path.
 
+**Fix round 3 (re-review 2 and final review C; finished 2026-11-11).** The lock never runs `icacls /T` or `takeown /R` (both follow
+junctions): it reads the tree first without following any link and refuses on a junction (other than a checked `app\current`, a
+junction to a folder directly under `app\releases`), a hard link, a path that is itself a link, or an existing folder owned by anybody
+but SYSTEM, the Administrators or TrustedInstaller; then it locks the folder itself, and only then resets what is below it, again
+without following a link. Caddy can run as the `DrishtiProxy` service; the update rolls back only for a broken release (a problem of
+the server is reported and the release kept); the Health page has "Last backup".
+
+**Status, honestly: verified by design and unit-tested, lab verification pending on a real server.** The default test run of the
+development PC may not change access lists, plant junctions or compile programs (its antivirus quarantines such test helpers, and no
+exclusion can be added). So the default run tests the DECISIONS on made-up data (which links, hard links, owners and unreadable items
+refuse a lock, when an item is reset, which `app\current` is trusted, which backups retention removes, which update failures roll
+back, the virtual-account SIDs) and the plans (`-WhatIf` / `-DryRun`), while the BEHAVIOUR on the real file system and the service
+host (real locks, junctions and hard links to decoy folders, `statfs` under the List entry, retention with junctions, the compiled
+host) is checked by the Windows lab suite, which an administrator runs on the production server before the install (section 7.0).
+
 ## 1. What runs
 
 | Service | Program | Listens | Env file | Account |
@@ -34,11 +49,26 @@ marks a production database, and every Windows tool is called by its full path.
 | `DrishtiWorker` | `node tsx services\worker\index.ts` | nothing | `worker.env` | `NT SERVICE\DrishtiWorker` |
 | `DrishtiGateway` | `node tsx services\gateway\index.ts` (depends on go2rtc) | 127.0.0.1:3412 | `gateway.env` | `NT SERVICE\DrishtiGateway` |
 | `DrishtiWeb` | `node .next\standalone\server.js` | 127.0.0.1:3212 | `web.env` | `NT SERVICE\DrishtiWeb` |
-| Caddy (runbook-tls.md) | `caddy.exe run` | 443 (and 80 for the redirect) | — | its own service account |
+| `DrishtiProxy` (when `CaddyExe` is set; runbook-tls.md) | `caddy.exe run --config C:\Drishti\config\Caddyfile --adapter caddyfile` | 443 (and 80 for the redirect) | `proxy.env` (no secret: Caddy's storage under `C:\Drishti\data\caddy`) | `NT SERVICE\DrishtiProxy` |
 
-Start order: go2rtc, worker, gateway, web app. Stop order: web app, gateway, worker, go2rtc (`deploy/windows/lib/Drishti.Common.ps1`).
-The Supabase stack (PostgreSQL, PostgREST, GoTrue) runs separately: self-hosted Supabase in Docker on this server or another one, or a
-hosted project (runbook-tls.md section 3: its API stays private).
+Start order: go2rtc, worker, gateway, web app, proxy. Stop order: proxy, web app, gateway, worker, go2rtc
+(`deploy/windows/lib/Drishti.Common.ps1`). Final review C-I12, the Caddy layout that fits the locks: `caddy.exe` in its own folder
+(for example `C:\Drishti\caddy\caddy.exe`, `CaddyExe` in the configuration: read and run by the proxy account only), the `Caddyfile`
+in `C:\Drishti\config` (read by the proxy account only), the certificate and its key in `C:\Drishti\config\certs` (read by the proxy
+account only), Caddy's own storage in `C:\Drishti\data\caddy` and its output in `C:\Drishti\logs\DrishtiProxy` (written by the proxy
+account only). Copy `deploy\windows\Caddyfile.example` to `C:\Drishti\config\Caddyfile` after step 4 has locked that folder.
+
+**The database (final review C-I13, honestly).** The Supabase stack (PostgreSQL, PostgREST, GoTrue) runs separately. Supported for
+production:
+- self-hosted Supabase under **Docker Engine on a Linux host** (or WSL2 with Docker Engine started as a system service), on this
+  server's network, its API private (runbook-tls.md section 3); or
+- a **managed PostgreSQL / hosted Supabase project** reachable over the private network.
+
+**Docker Desktop is not suitable for an unattended server**: it starts only when somebody signs in to Windows, so after a reboot with
+nobody signed in the database does not come back by itself. If it must be used for a pilot, a person signs in after every restart
+(and the VNC session must not sign out of it). When the database is not there, the web app's start-up says so in one plain line
+("The database does not answer … Docker Desktop starts only when somebody signs in …") and the service host starts it again with a
+growing pause until the database answers; the Health page's Database check says the same.
 
 Folders (all in `deploy/windows/drishti.config.example.psd1`, copied to `C:\Drishti\config\drishti.config.psd1`):
 
@@ -82,19 +112,27 @@ this server and for the NVRs (RTSP/HTTP over the VPN).
 and the services run what is in these folders (as their accounts, and the nightly task as SYSTEM). So before the install writes
 anything, every Drishti folder is created if missing and locked:
 
-- ownership is taken for the Administrators (`takeown /A`, with everything below a folder): a folder somebody else made before the
-  install (`C:\Drishti`, `C:\Drishti\bin`, `D:\DrishtiBackups`…) no longer lets them change its rules. Such a folder is named in a
-  WARNING ("existed already and belongs to …"): look at what is in it;
-- the access list is rebuilt from nothing, in one call: no inherited entry and no explicit entry of anybody else survives. SYSTEM and
-  Administrators get full control (by their SIDs `*S-1-5-18` and `*S-1-5-32-544`, so it works on a Windows in any language), then
-  only the entries below. Everything inside the folder loses its own entries and inherits the new list (`icacls /reset /T`); the
-  sub-folders and files that need their own entries are locked after their parent;
-- a folder that holds a junction or link the installation did not make (only `app\current` is allowed) is REFUSED: a junction in a
-  folder made before the install could point at `C:\Windows`, and nothing is followed;
-- the virtual accounts are given by their SIDs, computed from the service names (as `sc.exe showsid` does), so the folders can be
-  locked before the services exist.
+- a folder or file that existed already is **refused** when it is itself a junction or link, or when its owner is not SYSTEM, the
+  Administrators or TrustedInstaller (a folder somebody else made before the install, for example `C:\Drishti`, `C:\Drishti\bin` or
+  `D:\DrishtiBackups`): "Refused: … existed already and belongs to …". Look at what is in it, remove it (or, once you are sure of it,
+  take it over yourself), and run the install again (fix round 3, review 2 N-3: a warning was not enough);
+- before anything is changed, everything below the folder is read WITHOUT following any link: a junction or link anywhere (the one
+  exception is `app\current`, and only when it is a junction to a release folder directly under `app\releases`), or a file with more
+  than one name (a hard link could be any other file of the volume), refuses the lock, and nothing is followed or changed;
+- then the folder ITSELF is locked first, in one call: the Administrators as owner, no inherited entry, no entry of anybody else;
+  SYSTEM and Administrators full control (by their SIDs `*S-1-5-18` and `*S-1-5-32-544`, so it works on a Windows in any language),
+  then only the entries below. From then on nobody else can add anything inside it;
+- only then everything below it is walked, again without following any link (`icacls /T` and `takeown /R` are no longer used: they
+  follow junctions): each item gets the Administrators as owner and no entry of its own, so it inherits the new list. Elevated, the
+  restore, take-ownership and backup privileges are switched on for this, so an item's own rules cannot keep the Administrators out
+  (and no `takeown /D` answer in the Windows language is needed). An item that already looks right is left alone. The sub-folders and
+  files that need their own entries are locked after their parent;
+- the virtual accounts are given by their SIDs, computed from the service names (as `sc.exe showsid` does, also for a service that
+  does not exist yet), so the folders can be locked before the services exist.
 
-Locking `app` resets everything below it, `node_modules` included: on a server with several releases it can take a few minutes.
+`update.ps1` takes `app\current` as the release that runs only when it is that junction to a release folder; anything else is refused
+before anything is changed (a planted `app\current` can never become the release a roll back starts). Locking `app` reads everything
+below it, `node_modules` included: on a server with several releases it can take a minute or two.
 
 | Folder | Service accounts | Nobody else |
 |---|---|---|
@@ -112,8 +150,9 @@ Check them at any time, from an elevated PowerShell: `drishti-services.ps1 -Acti
 Administrators or TrustedInstaller; every folder or file where anybody but that folder's own service account may write; and on the
 secret paths (the configuration folder and file, every env file, `go2rtc.yaml`, `data`, `BackupDir`, `KeyBackupDir`) every entry that
 lets anybody else even READ, so `Users:(R)` on `web.env` fails it. It never trusts the person running it. A path whose rules it
-cannot read (not elevated) is reported as such. It ends with exit code 1 when there is a problem. `-Action Status` says
-`access rules: ok` or how many problems. Put them right with `-Action RepairAcl` (elevated): it applies the same plan again and
+cannot read (not elevated) is reported as such; it also lists any junction or link in the installation other than the checked
+`app\current`. It ends with exit code 1 when there is a problem. `-Action Status` says `access rules: ok` or how many problems when it
+runs elevated, and `access rules: not checked (run elevated …)` otherwise (review 2 m4: no false problems from a normal prompt). Put them right with `-Action RepairAcl` (elevated): it applies the same plan again and
 removes foreign entries, so a repair really repairs. update.ps1, restore.ps1 and backup.ps1 refuse to run (`Run drishti-services.ps1 -Action RepairAcl`) while the configuration
 file or the scripts folder may be written by others.
 
@@ -133,12 +172,14 @@ which runs the install scripts of every dependency, here as an Administrator: us
 `package-lock.json` unchanged. Better, when there is one: build on a separate build computer and copy the finished release folder.
 
 0. Before anything: `C:\Drishti`, `D:\DrishtiBackups` and `E:\DrishtiKeys` should not exist yet. If one does and you did not make it,
-   look at what is in it before going on (the install takes it over, locks it and warns about it).
-1. Node.js 20 or later (the version the release is built with) at `C:\Program Files\nodejs`; Git (to stamp the build id); Docker
-   Desktop for a self-hosted Supabase here. `DockerExe` and `GitExe` in the configuration give their full paths (the scripts never
-   take a program from PATH). go2rtc for Windows amd64, the pinned 1.9.9: download it into YOUR OWN folder (Downloads), with the
-   owner's approval, check its SHA-256 against the release page and `Unblock-File` it. It is copied to `C:\Drishti\go2rtc\go2rtc.exe`
-   only after step 4 has made and locked that folder. Caddy as in runbook-tls.md.
+   look at what is in it: the install REFUSES a folder that belongs to somebody else, or that holds a junction or link.
+1. Node.js 20 or later (the version the release is built with) at `C:\Program Files\nodejs`; Git (to stamp the build id). The database
+   as in section 1 ("The database"). `DockerExe` (needed for `Container` mode) and `GitExe` (needed unless every update passes
+   `-BuildId`) in the configuration give their full paths: the scripts never take a program from PATH, and refuse when one is not
+   set. go2rtc for Windows amd64, the pinned 1.9.9, and Caddy: download them into YOUR OWN folder (Downloads), with the owner's
+   approval, check their SHA-256 against the release pages and `Unblock-File` them. They are copied to `C:\Drishti\go2rtc\go2rtc.exe`
+   and `C:\Drishti\caddy\caddy.exe` only after step 4 has made and locked those folders (set `CaddyExe` and add `DrishtiProxy` to
+   `Services` for the proxy service, section 1).
 2. The env files, first, because they create `C:\Drishti\config` locked:
    `node scripts\gen-secrets.mjs --production --out-dir C:\Drishti\config --jwt-secret-env DRISHTI_JWT_SECRET` (set
    `$env:DRISHTI_JWT_SECRET` in this session to the project's JWT secret first, then remove it). It creates the folder locked (SYSTEM
@@ -172,9 +213,15 @@ which runs the install scripts of every dependency, here as an Administrator: us
    to a production database). After the migrations it marks the database as a production one, so the switch can never be turned on
    there (the seed fails). It builds
    into `app\releases\<id>`, backs up the database, applies the migrations, points `app\current` at the release, starts the worker, the
-   gateway and the web app, and waits until `/api/version` shows the new build and `/api/health` says `ok`. Then `-Action Status` and the
-   Health page (super administrators, `/admin/health`): every check "OK".
-9. The nightly backup as a scheduled task running `C:\Drishti\scripts\backup.ps1` (runbook `backup-restore.md` section 4).
+   gateway and the web app, and checks the new release (final review C-I5): `/api/version` shows the new build, the services run, the
+   gateway answers, the database is at the release's level. Only a failure there rolls back. A degraded `/api/health` for a reason of the
+   server (disk, worker, Vault canary, clocks, backup) keeps the new release, says so and ends with exit code 3: look at the Health page.
+   A pilot that runs without monitoring keeps the worker stopped on purpose: `WorkerExpected = $false` in the configuration (the update
+   then neither starts nor counts it) and `DRISHTI_WORKER_EXPECTED=false` in `web.env` (the Health page then shows "stopped on
+   purpose" as a warning, not a failure). Then `-Action Status` (elevated) and the Health page (super administrators,
+   `/admin/health`): every check "OK".
+9. The nightly backup as a scheduled task running `C:\Drishti\scripts\backup.ps1` (runbook `backup-restore.md` section 4). Each good
+   backup is recorded; the Health page's "Last backup" check fails when the last good one is older than 26 hours (final review C-I11).
 10. Rehearse a restore into a disposable database (runbook `backup-restore.md` section 5), then the first-run checks of section 7.
 
 ## 5. Every day
@@ -193,7 +240,21 @@ accounts disappear with their services.
 
 ## 7. First real installation (to do and record)
 
-On a test server (never the development computer): steps 1-10, then:
+### 7.0 Before the install: the Windows lab suite (on the production server)
+
+The checks that change access lists, plant junctions and hard links (to decoy folders they make themselves, never to a real folder),
+call `statfs` under a locked folder, and compile and run the service host. They never run in the default test run (`npm test`):
+
+1. On the server, in a checkout of the release (with `npm ci` done), open a NORMAL PowerShell (not elevated: some checks prove what
+   the service accounts alone may do and are skipped when elevated; the run says which).
+2. `$env:DRISHTI_WINDOWS_LAB = '1'; npm run test:windows-lab`. Without the variable the command refuses and changes nothing.
+3. Everything it makes is under `<checkout>\.scratch\windows-lab` (and `%TEMP%\drishti-lab-prod-env-*` for the env files, which
+   gen-secrets refuses inside the checkout); both are removed afterwards. Nothing is installed: no service, account, task or rule.
+4. Expected: every test passes (`tests/windows-lab/windows-scripts.lab.test.ts`, `prod-env.lab.test.ts`,
+   `windows-service-host.lab.test.ts`). Record the result with the date and Windows version in the tracker (LG-37, SO-11, SO-12).
+   A failure stops the install: the locks or the host do not behave on this server as they were designed.
+
+Then, on a test server (never the development computer): steps 1-10, then:
 
 1. Stop each service from `services.msc` and check its log ends with the program's clean stop (`worker_stopped`, `gateway_stopped`).
    **The real worker under the host (review M-5):** the worker and the gateway run under `tsx`, which is two processes; on Windows tsx

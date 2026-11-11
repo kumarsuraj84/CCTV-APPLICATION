@@ -25,11 +25,15 @@ Rules that hold for every step below:
   "Elevated" is read from the token's integrity level (`whoami /groups` lists `S-1-16-12288`), not from `net session`, which also
   fails when the Server service is stopped (re-review M-new-7).
   To put a production env file's ACL right by hand, use `C:\Drishti\scripts\drishti-services.ps1 -Action RepairAcl` (it applies the
-  whole plan of `windows-services.md` section 3), or for one file (well-known SIDs, so it works in any Windows language):
+  whole plan of `windows-services.md` section 3 and removes everybody else's entries). For one file by hand, in two steps (well-known
+  SIDs, so it works in any Windows language; review 2 m5: `/grant:r` alone keeps other people's explicit entries, so the file is first
+  reset to nothing of its own, then given exactly its entries):
+  `icacls C:\Drishti\config\web.env /reset` then
   `icacls C:\Drishti\config\web.env /inheritance:r /grant:r *S-1-5-18:F /grant:r *S-1-5-32-544:F /grant:r "NT SERVICE\DrishtiWeb:R"`
-  (`worker.env`: `NT SERVICE\DrishtiWorker`; `gateway.env`: `NT SERVICE\DrishtiGateway`; `go2rtc.env`: `NT SERVICE\DrishtiGo2rtc`).
+  (`worker.env`: `NT SERVICE\DrishtiWorker`; `gateway.env`: `NT SERVICE\DrishtiGateway`; `go2rtc.env`: `NT SERVICE\DrishtiGo2rtc`),
+  and check it with `drishti-services.ps1 -Action Audit`.
   Never `/grant:r "%USERNAME%:F"` alone on a production file: it takes the service's read right away and the service no longer starts.
-  On a development computer, `.env.local` may stay as it is.
+  On a development computer, `.env.local` may stay as it is. Verification status: verified by design and unit-tested; the behaviour on real folders (locks, junctions, hard links) is checked by the Windows lab suite on the production server before the install (`windows-services.md` section 7.0), not yet run there.
 - Production mode (review round 1, I-1): `DRISHTI_ENV=production` in every process's environment (`deploy/production.env.example`).
   Each process then checks its own keys and secrets at start-up and refuses with one plain line (exit code 1) when one is missing,
   ended or in the wrong process; development only warns. Give each process its own env file: in production the worker and the gateway

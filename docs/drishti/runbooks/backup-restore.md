@@ -96,6 +96,11 @@ Register-ScheduledTask -TaskName 'Drishti nightly backup' -Action $a -Trigger $t
 account, never in the task's arguments.) Check the next morning: a new folder, `manifest.json` with the expected counts, and the task's
 last result 0.
 
+Fix round 3: each good backup of the live database is recorded (`housekeeping_runs` task `backup`, written by backup.ps1 as the
+database owner; a test run writes `backup:test`, which never counts). The Health page's "Last backup" check fails in production when
+the last good one is older than 26 hours (final review C-I11): the nightly task has stopped working. An existing `KeyBackupDir` is
+checked (not a link; nobody else may read or write it) before the Vault root key or the configuration copy goes into it (review 2 m3). Verification status: verified by design and unit-tested; the behaviour on real folders (locks, junctions, hard links) is checked by the Windows lab suite on the production server before the install (`windows-services.md` section 7.0), not yet run there.
+
 Fix round 2 (re-review M-new-8): a backup also refuses a `BackupDir` that anybody but SYSTEM, the Administrators and the web app's
 free-space entry may write or read, and it refuses a dated backup folder that exists already (the names are predictable: one that is
 there was not made by this run). Both say `Run drishti-services.ps1 -Action RepairAcl` or what to look at.

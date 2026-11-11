@@ -132,7 +132,9 @@ A lost phone: a super administrator resets it (§7.3).
 
 - **Health** (Admin → Health, super administrators): database, Vault (saved NVR logins), video gateway, monitoring worker (and who holds
   its lease), clocks, database version against the release, free disk space, the clean-up of unused video sessions, and the test
-  fixture switch (a "Problem" in production means the database was seeded for tests: see update-rollback.md section 1). Each check says
+  fixture switch (a "Problem" in production means the database was seeded for tests: see update-rollback.md section 1), and the last
+  good backup ("Problem" in production when it is older than 26 hours: the nightly backup stopped). A worker kept stopped on purpose
+  (`DRISHTI_WORKER_EXPECTED=false`) is "Needs attention", not a problem. Each check says
   "OK", "Needs attention", "Problem" or "Not known", with what to do. Problems: `docs/drishti/runbooks/incidents.md`.
 - **Monitoring** (Admin → Monitoring): is the checker running, what it found, NVRs that refuse their login, the gaps when it was not
   running, the video gateway.
