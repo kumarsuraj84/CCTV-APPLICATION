@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useState, useTransition } from 'react'
 import { reactivationReviewAction, resetPasswordAction, setActiveAction, setRoleAction, type ReactivationState } from '@/lib/actions/admin/users'
 import { ROLE_CHANGE_EFFECT, ROLE_LABELS, type Role } from '@/lib/admin/roles'
-import { resetFactorsAction, signOutEverywhereAction } from '@/lib/actions/admin/sessions'
+import { clearCodeLockAction, resetFactorsAction, signOutEverywhereAction } from '@/lib/actions/admin/sessions'
 import { Select } from '@/components/ui/select'
 import { formatDateTime } from '@/lib/time'
 import { formatDay, SOURCE_LABELS, STATE_LABELS } from './access-labels'
@@ -30,6 +30,8 @@ export type UserRowData = {
   /** Review I-4: when (ISO) and from which address the app was set up (the sign-in audit), so an unexpected set-up stands out. */
   two_step_since?: string | null
   two_step_from?: string | null
+  /** Final fix Y (review B I-2): wrong codes in a row, and whether the code step is locked (until when, or until a super administrator). */
+  code_lock?: { failures: number; lockedUntil: string | null; forGood: boolean } | null
 }
 
 type Listed = { id: string; capabilityLabel: string; scopeLabel: string; lastDay: string | null; state: string; source: string }
@@ -127,7 +129,7 @@ export function RoleChangePanel(p: {
 export function UserRow({ u, showSummary = false, allowedRoles = [] }: { u: UserRowData; showSummary?: boolean; allowedRoles?: string[] }) {
   const [pending, start] = useTransition()
   const [otp, setOtp] = useState<string | null>(null)
-  const [panel, setPanel] = useState<'deactivate' | 'reactivate' | 'role' | 'signout' | 'two-step' | null>(null)
+  const [panel, setPanel] = useState<'deactivate' | 'reactivate' | 'role' | 'signout' | 'two-step' | 'unlock' | null>(null)
   const [resetReason, setResetReason] = useState('')
   const [review, setReview] = useState<ReactivationState | null>(null)
   const [roleResult, setRoleResult] = useState<{ revoked: number; remaining: Listed[] | null } | null>(null)
@@ -187,6 +189,15 @@ export function UserRow({ u, showSummary = false, allowedRoles = [] }: { u: User
       done(res.ok ? {} : { error: res.error }, `Two-step sign-in of ${name} was reset and they are signed out everywhere.${res.ok && res.removed === 0 ? ' They had no authenticator app.' : ''}`)
       if (res.ok) setResetReason('')
     })
+  // Final fix Y (review B I-2): unlock a code step locked by wrong codes in a row (super administrators, with a reason).
+  const unlock = () =>
+    start(async () => {
+      const res = await clearCodeLockAction(u.id, resetReason)
+      done(res.ok ? {} : { error: res.error }, `The code step of ${name} is unlocked.`)
+      if (res.ok) setResetReason('')
+    })
+  const lock = u.code_lock ?? null
+  const locked = !!lock && (lock.forGood || lock.lockedUntil !== null)
 
   return (
     <>
@@ -204,6 +215,13 @@ export function UserRow({ u, showSummary = false, allowedRoles = [] }: { u: User
               {u.two_step && u.two_step_since && (
                 <span className="block" translate="no">set up {formatDateTime(u.two_step_since)} IST{u.two_step_from ? ` from ${u.two_step_from}` : ''}</span>
               )}
+            </span>
+          )}
+          {lock && lock.failures > 0 && (
+            <span className={`block text-xs ${locked ? 'font-medium text-destructive' : 'text-muted-foreground'}`}>
+              {lock.forGood ? `Code step locked after ${lock.failures} wrong codes in a row: a super administrator must unlock it`
+                : lock.lockedUntil ? `Code step locked until ${formatDateTime(lock.lockedUntil)} IST (${lock.failures} wrong codes in a row)`
+                  : `${lock.failures} wrong ${lock.failures === 1 ? 'code' : 'codes'} in a row`}
             </span>
           )}
         </td>
@@ -226,6 +244,9 @@ export function UserRow({ u, showSummary = false, allowedRoles = [] }: { u: User
             )}
             {u.can_reset_two_step && !u.is_self && u.two_step && (
               <button type="button" className={BTN} disabled={pending} onClick={() => { setMessage(null); setPanel('two-step') }}>Reset two-step sign-in…</button>
+            )}
+            {u.can_reset_two_step && !u.is_self && locked && (
+              <button type="button" className={BTN} disabled={pending} onClick={() => { setMessage(null); setPanel('unlock') }}>Unlock code step…</button>
             )}
           </div>
         </td>
@@ -265,6 +286,24 @@ export function UserRow({ u, showSummary = false, allowedRoles = [] }: { u: User
             </div>
             <div className="flex flex-wrap gap-2">
               <button type="button" className={DANGER} disabled={pending || resetReason.trim().length < 3} onClick={resetTwoStep}>Reset two-step sign-in</button>
+              <button type="button" className={BTN} disabled={pending} onClick={() => setPanel(null)}>Cancel</button>
+            </div>
+          </td>
+        </tr>
+      )}
+      {panel === 'unlock' && (
+        <tr className="bg-muted/40">
+          <td colSpan={cols} className="space-y-2 px-3 py-3 text-sm">
+            <p>
+              <span className="font-medium">Unlock the code step of {name}?</span> It locked after wrong codes in a row, which can mean somebody
+              who knows their password is guessing codes. Speak to {name} first; if they did not type the codes, also reset their password.
+            </p>
+            <div className="max-w-xl space-y-1.5">
+              <label htmlFor={`unlock-reason-${u.id}`} className="block text-sm font-medium">Reason (kept in the audit log)</label>
+              <input id={`unlock-reason-${u.id}`} value={resetReason} onChange={(e) => setResetReason(e.target.value)} maxLength={500} className={FIELD} placeholder="Phone clock was wrong, confirmed by call" />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className={DANGER} disabled={pending || resetReason.trim().length < 3} onClick={unlock}>Unlock code step</button>
               <button type="button" className={BTN} disabled={pending} onClick={() => setPanel(null)}>Cancel</button>
             </div>
           </td>
