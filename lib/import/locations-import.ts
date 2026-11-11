@@ -4,6 +4,7 @@ import { pickPrimaries } from '@/lib/inventory/recorders'
 import { parseLocationsCsv, type ImportIssue } from '@/lib/import/locations-csv'
 import { planImport, type ApplyPlan, type ImportPreview, type ImportSnapshot, type PlanOptions } from '@/lib/import/locations-plan'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
+import { isProductionMode } from '@/lib/runtime-mode'
 import { dropLiveStreams } from '@/lib/streams/go2rtc'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import type { Json } from '@/types/database'
@@ -93,7 +94,8 @@ export async function prepareImport(admin: AdminClient, actor: Actor, text: stri
 }
 
 async function prepare(admin: AdminClient, actor: Actor, text: string, opts: PlanOptions) {
-  return planImport(parseLocationsCsv(text), await loadImportSnapshot(admin, actor.orgId), opts)
+  // Final fix X (NB-4): in production a new NVR without a monitoring value in the file starts switched off.
+  return planImport(parseLocationsCsv(text), await loadImportSnapshot(admin, actor.orgId), { newRecordersMonitored: !isProductionMode(), ...opts })
 }
 
 /** Validate + preview: reads the file and the inventory, writes nothing. The preview holds no password and compares none (B-I3). */

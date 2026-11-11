@@ -14,7 +14,8 @@ function line(nvr: string, r: Reconciliation): string {
     case 'channel_taken':
       return `${nvr}, channel ${r.channel}: the restored camera "${r.cameraName}" was on this channel, which another camera now uses; it was left unlinked.`
     case 'unplaced':
-      return `${nvr}: the restored camera "${r.cameraName}" (last on channel ${r.channel}) could not be placed; link it on the Reconciliation page.`
+      // Review C M-30: the Reconciliation page cannot link an "unplaced" camera (its old channel is gone); say what can be done.
+      return `${nvr}: the restored camera "${r.cameraName}" (last on channel ${r.channel}) could not be placed; on the Reconciliation page merge it with the camera the NVR shows now, link it to a channel in the mapping editor, or take it off the list.`
   }
 }
 

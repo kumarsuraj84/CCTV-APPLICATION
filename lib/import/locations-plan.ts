@@ -122,6 +122,12 @@ export type PlanOptions = {
   archive?: boolean
   /** "Keep the current display names": no rename to "CODE - City" (a display_name column still applies; review B-M1). */
   keepNames?: boolean
+  /**
+   * Final fix X (release 1 review C I-4; ruling NB-4): whether a NEW NVR whose row leaves the monitoring column empty starts monitored.
+   * Production (DRISHTI_ENV=production): no — imported NVRs start switched off and are switched on by region, cluster or location
+   * (Monitoring → Rollout), so a first import never makes the worker contact the whole estate. Default (development): yes, as before.
+   */
+  newRecordersMonitored?: boolean
 }
 
 const host = (h: string | null) => (h ?? '').trim().toLowerCase()
@@ -293,10 +299,11 @@ export function planImport(parsed: ParsedLocations, snap: ImportSnapshot, opts: 
         const toAdd = row.channels ?? 0
         const http = row.http_port ?? 80
         const rtsp = row.rtsp_port ?? 554
-        recViews.push({ line: row.line, action: 'create', id: null, name: nvrName, host: row.host, http_port: http, rtsp_port: rtsp, matchedBy: null, changes: [], password: 'set', monitoring: row.monitoring === false ? 'off' : 'on', camerasToAdd: toAdd, camerasToRelink: 0 })
+        const monitored = row.monitoring ?? opts.newRecordersMonitored ?? true
+        recViews.push({ line: row.line, action: 'create', id: null, name: nvrName, host: row.host, http_port: http, rtsp_port: rtsp, matchedBy: null, changes: [], password: 'set', monitoring: monitored ? 'on' : 'off', camerasToAdd: toAdd, camerasToRelink: 0 })
         recApply.push({
           line: row.line, action: 'create', id: null, name: nvrName, host: row.host, http_port: http, rtsp_port: rtsp, username: row.username,
-          channels: row.channels, password: row.password, monitoring: row.monitoring !== false, placeholders: toAdd,
+          channels: row.channels, password: row.password, monitoring: monitored, placeholders: toAdd,
         })
       }
     })

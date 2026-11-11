@@ -19,6 +19,13 @@ const SHUTDOWN_WAIT_MS = 15_000
 async function main() {
   // A forgotten rejection must not stop monitoring; it is logged and the loops carry on.
   process.on('unhandledRejection', (e) => logger.error({ event: 'worker_unhandled_rejection', error: e }))
+  // Release 1 review C M-25: an uncaught exception goes through the masking logger (never Node's own unmasked print to the service
+  // log), then the process ends so the service host restarts it; the lease expires within 20 s and the next start respects the
+  // shared NVR login state (nothing in it is lost with the process).
+  process.on('uncaughtException', (e) => {
+    logger.error({ event: 'worker_uncaught_exception', error: e })
+    process.exit(1)
+  })
 
   const started: { supervisor?: WorkerSupervisor } = {}
   let stopping = false

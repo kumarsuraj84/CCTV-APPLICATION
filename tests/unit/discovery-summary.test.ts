@@ -45,6 +45,8 @@ describe('the "Find cameras" summary', () => {
   // P2-5c-1 (re-review N-1 / N-2): a restored camera that discovery could not place is listed too, never left aside silently.
   it('lists a restored camera it could not place, pointing to the reconciliation list', () => {
     const s = discoverySummary(base([{ recorderId: 'a', name: 'Ground', ok: true, result: result({ reconciliation: [{ kind: 'unplaced', channel: 3, cameraId: 'c9', cameraName: 'Camera 03' }] }) }]))
-    expect(s.details).toEqual(['Ground: the restored camera "Camera 03" (last on channel 3) could not be placed; link it on the Reconciliation page.'])
+    // Final fix X (release 1 review C M-30): the old words advised a link that linkFinding refuses for an "unplaced" camera
+    // (MSG_UNPLACED_LINK); they now give the three things that can be done.
+    expect(s.details).toEqual(['Ground: the restored camera "Camera 03" (last on channel 3) could not be placed; on the Reconciliation page merge it with the camera the NVR shows now, link it to a channel in the mapping editor, or take it off the list.'])
   })
 })

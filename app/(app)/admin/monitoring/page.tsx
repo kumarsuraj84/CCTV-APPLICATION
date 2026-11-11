@@ -8,7 +8,10 @@ import { coversSomeWholeLocation } from '@/lib/auth/capabilities'
 import { requireAdministration } from '@/lib/auth/profile'
 import { getWorkerStatus } from '@/lib/monitor/health'
 import { describeRounds } from '@/lib/monitor/last-checked'
-import { isStale, nvrLoginProblem, type StateRow } from '@/lib/queries/status'
+import { NvrLoginProblems } from '@/components/admin/NvrLoginProblems'
+import { loadNvrLoginProblems } from '@/lib/inventory/monitoring-rollout'
+import { isStale } from '@/lib/queries/status'
+import Link from 'next/link'
 import { openVideoSessions, readGatewayHealth } from '@/lib/streams/gateway-health'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { fetchAll } from '@/lib/supabase/fetch-all'
@@ -35,15 +38,14 @@ export default async function MonitoringPage() {
   const admin = createAdminClient()
   const now = new Date()
   const since = new Date(now.getTime() - GAP_DAYS * 86_400_000).toISOString()
-  const [worker, states, stores, cameras, recorders, gapsRead, gateway, orgOpen] = await Promise.all([
+  const [worker, states, loginProblems, gapsRead, gateway, orgOpen] = await Promise.all([
     getWorkerStatus(admin),
     fetchAll((from, to) =>
       admin.from('check_state').select('target_type, target_id, status, method, down_since, last_checked_at, last_up_at').eq('org_id', me.org_id).order('id').range(from, to),
     ),
-    fetchAll((from, to) => admin.from('locations').select('id, code, name').eq('org_id', me.org_id).eq('is_active', true).is('archived_at', null).order('code').range(from, to)),
-    fetchAll((from, to) => admin.from('cameras').select('id, recorder_id').eq('org_id', me.org_id).eq('is_active', true).is('archived_at', null).order('id').range(from, to)),
-    // P2-5b: every NVR (recorder) of the organisation, each with its own state and its own cameras (their active mappings).
-    fetchAll((from, to) => admin.from('recorders').select('id, location_id, assets!recorders_asset_fk!inner(name, archived_at)').eq('org_id', me.org_id).is('assets.archived_at', null).order('created_at').order('id').range(from, to)),
+    // Final fix X (review C I-1, M-19; ruling NB-3): the NVR login problems are the shared login state itself (nvr_login_state), which
+    // every path writes — no longer guessed from how recent the cameras' results are — each with a link to its NVR and "Try again".
+    loadNvrLoginProblems(admin, me.org_id, now).catch(() => []),
     // The gaps are about the whole checker, not one organisation. A failed read only leaves this list out.
     admin.from('monitor_gaps').select('id, started_at, ended_at').gte('ended_at', since).order('started_at', { ascending: false }).limit(GAPS_SHOWN),
     // P2-4: the video gateway's health (its /g/health counts) and this organisation's open video sessions (the registry).
@@ -56,28 +58,12 @@ export default async function MonitoringPage() {
   // "Live" here means live and checked lately: a live result older than the limit is counted as not checked lately.
   // P4-L1 review I-3: a camera down only because its NVR cannot be reached (method nvr_down) is "recorder not reachable", not offline.
   const counts: Record<string, { up: number; down: number; unknown: number; stale: number; unreachable: number }> = {}
-  const nvrStates = new Map<string, StateRow>()
-  const cameraStates = new Map<string, StateRow>()
   for (const s of states) {
     const c = (counts[s.target_type] ??= { up: 0, down: 0, unknown: 0, stale: 0, unreachable: 0 })
     if (s.status === 'up' && isStale(s.last_checked_at, now)) c.stale++
     else if (s.target_type === 'camera' && s.status === 'down' && s.method === 'nvr_down') c.unreachable++
     else c[s.status as 'up' | 'down' | 'unknown']++
-    const row: StateRow = { ...s, status: s.status as StateRow['status'], error: null }
-    if (s.target_type === 'recorder') nvrStates.set(s.target_id, row)
-    else if (s.target_type === 'camera') cameraStates.set(s.target_id, row)
   }
-
-  // "The NVR answers but refuses our login": per NVR, judged from its OWN cameras; only meaningful while the checker is running,
-  // because it is judged from how recent the results are.
-  const camerasByRecorder = new Map<string, string[]>()
-  for (const c of cameras) if (c.recorder_id) camerasByRecorder.set(c.recorder_id, [...(camerasByRecorder.get(c.recorder_id) ?? []), c.id])
-  const storeById = new Map(stores.map((s) => [s.id, s]))
-  const loginProblems = worker.ok
-    ? (recorders as unknown as { id: string; location_id: string; assets: { name: string } }[])
-        .filter((r) => storeById.has(r.location_id) && nvrLoginProblem({ nvr: nvrStates.get(r.id), cameraIds: camerasByRecorder.get(r.id) ?? [], cameraStates, now }))
-        .map((r) => ({ id: r.id, store: storeById.get(r.location_id)!, name: r.assets.name }))
-    : []
 
   const asked = worker.requestedAt && (!worker.runStartedAt || new Date(worker.requestedAt) > new Date(worker.runStartedAt))
   const activity = worker.running
@@ -125,22 +111,12 @@ export default async function MonitoringPage() {
 
       <GatewayHealthPanel gateway={gateway} orgOpen={orgOpen} />
 
-      {loginProblems.length > 0 && (
-        <section className="space-y-2">
-          <h2 className="font-medium">NVR login problems ({loginProblems.length})</h2>
-          <p className="text-sm text-muted-foreground">
-            These NVRs answer, but their cameras have no recent result. The saved NVR user name or password is probably wrong. Open Locations and NVRs, choose the location, then the NVR, and check its login.
-            A location that was only just added looks the same for a few minutes.
-          </p>
-          <ul className="divide-y rounded-xl border bg-card text-sm">
-            {loginProblems.map((p) => (
-              <li key={p.id} className="px-3 py-2">
-                {p.store.code} · {p.store.name} · NVR {p.name}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <NvrLoginProblems problems={loginProblems} />
+
+      <p className="text-sm">
+        <Link className="underline underline-offset-2" href="/admin/monitoring/rollout">Monitoring rollout</Link>
+        <span className="text-muted-foreground"> — switch monitoring on or off for a location, a cluster or a region.</span>
+      </p>
 
       <section className="space-y-2">
         <h2 className="font-medium">What it found</h2>

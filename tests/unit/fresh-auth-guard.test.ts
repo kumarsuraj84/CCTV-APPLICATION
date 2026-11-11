@@ -182,6 +182,8 @@ const MUST_BE_GUARDED = [
   'lib/actions/admin/inventory.ts#restoreInventoryAction', 'lib/actions/admin/import-locations.ts#applyLocationImportAction',
   'lib/actions/admin/discover-all.ts#startDiscoverAllAction', 'lib/actions/auth.ts#changePassword',
   'lib/actions/mfa.ts#startEnrolmentAction', 'lib/actions/mfa.ts#removeOwnFactorAction', 'app/api/vod/route.ts#GET',
+  // Final fix X (rulings NB-3, NB-4): the monitoring rollout and "Try again" change what is sent to real NVRs.
+  'lib/actions/admin/monitoring.ts#setMonitoringRolloutAction', 'lib/actions/admin/monitoring.ts#tryNvrLoginAgainAction',
 ]
 
 const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
@@ -231,6 +233,29 @@ describe('the scanner itself (release 1, re-review N-1: no blind spots)', () => 
     expect(one(`await save()\n${guard}`)).toBe(false) // work before the guard
     expect(one("const g = await requireFreshAdministration('admin.inventory')\nif (!g.ok) console.log(g)")).toBe(false) // does not return
     expect(one('const s = mode === 1 ? 2 : 3\n' + guard)).toBe(true) // plain work before it is fine
+  })
+
+  // Final fix Y (final review B minor 1): the remaining blind spots.
+  it('work started before the guard counts as work even without await, and only a plain refusal check counts', () => {
+    const one = (body: string) => kinds(`'use server'\nexport async function x() {\n${body}\n}`).exports[0][1]
+    expect(one(`void admin.rpc('x')\n${guard}`)).toBe(false) // a write fired before the guard
+    expect(one(`save()\n${guard}`)).toBe(false)
+    expect(one(`const r = save()\n${guard}`)).toBe(false)
+    expect(one("const g = await requireFreshAdministration('admin.inventory')\nif (g.ok && false) return {}")).toBe(false) // inverted
+    expect(one("const g = await requireFreshAdministration('admin.inventory')\nif (g) return {}")).toBe(false)
+    expect(one("const g = await requireFreshAdministration('admin.inventory')\nif (!g.ok) return { error: g.error }")).toBe(true)
+    expect(one("const g = await requireFreshAdministration('admin.inventory')\nif (g.ok === false) return { error: g.error }")).toBe(true)
+  })
+
+  it('every JavaScript and TypeScript file of the app is scanned, and a pages/ folder is refused', () => {
+    expect(SCANNED_EXTENSIONS.test('x.mjs') && SCANNED_EXTENSIONS.test('x.js') && SCANNED_EXTENSIONS.test('x.cjs') && SCANNED_EXTENSIONS.test('x.jsx')).toBe(true)
+    expect(SCANNED_EXTENSIONS.test('x.mts') && SCANNED_EXTENSIONS.test('x.cts') && SCANNED_EXTENSIONS.test('x.tsx')).toBe(true)
+    expect(SCANNED_EXTENSIONS.test('x.d.ts')).toBe(false)
+    const files = scanned().map(rel)
+    expect(files).toContain('scripts/lib/runtime-mode.mjs')
+    expect(files.some((f) => f.startsWith('tests/') || f.includes('node_modules/'))).toBe(false)
+    expect(files.filter((f) => /(^|\/)pages\//.test(f) && !f.startsWith('public/'))).toEqual([])
+    expect(files.some((f) => /(^|\/)route\.(m?js|jsx)$/.test(f) && !f.startsWith('public/'))).toBe(false)
   })
 
   it('a guard in another function next to the export does not count', () => {
