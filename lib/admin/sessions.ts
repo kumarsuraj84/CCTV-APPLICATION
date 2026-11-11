@@ -22,7 +22,8 @@ async function loadTarget(admin: AdminClient, actor: Actor, userId: string) {
 }
 
 async function endEverything(admin: AdminClient, actor: Actor, userId: string, reason: string): Promise<boolean> {
-  const ended = await admin.rpc('revoke_user_sessions', { p_user: userId })
+  // Final fix Y (review A M-6): the web app's form names the organisation; the database refuses a person of another one.
+  const ended = await admin.rpc('revoke_user_sessions', { p_org: actor.orgId, p_user: userId })
   if (ended.error) {
     logger.error({ event: 'revoke_sessions_failed', userId, code: ended.error.code })
     return false
@@ -82,7 +83,39 @@ export async function resetFactors(admin: AdminClient, actor: Actor, userId: str
     return { ok: false, error: 'The authenticator apps were removed, but the current sign-ins could not be ended. Use "Sign out everywhere…" now.' }
   }
   await recordAuthEvent({ event: 'mfa_factor_reset', userId, actorId: actor.id, detail: { removed } })
+  // Final fix Y (review B I-2): a new app starts with a clean count of wrong codes (a locked code step is cleared, audited).
+  const cleared = await admin.rpc('mfa_code_lock_clear', { p_org: actor.orgId, p_actor: actor.id, p_user: userId, p_reason: `Two-step sign-in reset: ${why}`.slice(0, 500) })
+  if (cleared.error) logger.warn({ event: 'mfa_code_lock_clear_failed', code: cleared.error.code })
   return { ok: true, removed }
+}
+
+export const MSG_LOCK_OWNER_ONLY = 'Only a super administrator can unlock someone’s code step.'
+
+/**
+ * Final fix Y (review B I-2): a super administrator unlocks a person's code step (after 10 wrong codes in a row it locks for a while,
+ * after 100 until this). Never their own; with a reason; the database checks it again and audits it (auth_events, admin_audit_log).
+ */
+export async function clearCodeLock(admin: AdminClient, actor: Actor, userId: string, reason: unknown): Promise<Result<object>> {
+  if (actor.role !== 'platform_owner') return { ok: false, error: MSG_LOCK_OWNER_ONLY }
+  const why = typeof reason === 'string' ? reason.trim() : ''
+  if (why.length < 3 || why.length > 500) return { ok: false, error: MSG_REASON }
+  const target = await loadTarget(admin, actor, userId)
+  if (!target) return { ok: false, error: MSG_NOT_FOUND }
+  if (target.id === actor.id) return { ok: false, error: MSG_NOT_SELF }
+  const { error } = await admin.rpc('mfa_code_lock_clear', { p_org: actor.orgId, p_actor: actor.id, p_user: userId, p_reason: why })
+  if (error) return { ok: false, error: error.code === '42501' ? MSG_LOCK_OWNER_ONLY : 'The code step could not be unlocked. Please try again.' }
+  return { ok: true }
+}
+
+export type CodeLock = { failures: number; lockedUntil: string | null; forGood: boolean }
+
+/** Final fix Y (review B I-2): people of the organisation with wrong codes in a row or a locked code step (the people screen). */
+export async function codeLocks(admin: AdminClient, orgId: string): Promise<Map<string, CodeLock> | null> {
+  const { data, error } = await admin.rpc('mfa_code_locks', { p_org: orgId })
+  if (error) return null
+  return new Map(((data ?? []) as { user_id: string; failures: number; locked_until: string | null; for_good: boolean }[]).map((r) => [
+    r.user_id, { failures: r.failures, lockedUntil: r.locked_until, forGood: r.for_good },
+  ]))
 }
 
 export type TwoStep = { factors: number; enrolledAt: string | null; enrolledIp: string | null }

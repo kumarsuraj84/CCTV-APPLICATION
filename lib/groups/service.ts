@@ -200,6 +200,7 @@ export async function addCamerasByKeyword(deps: GroupDeps, actor: Actor, groupId
 export type RuleKind = 'region' | 'cluster' | 'location' | 'recorder' | 'name'
 const RULE_KINDS: readonly RuleKind[] = ['region', 'cluster', 'location', 'recorder', 'name']
 export const MSG_RULE_PLACE = 'You can only add a rule for a place where you may watch every camera live.'
+export const MSG_RULE_PLACE_REMOVE = 'You can only remove a rule for a place where you may watch every camera live.'
 export type GroupRule = { id: string; kind: RuleKind; refId: string | null; label: string; nameContains: string | null }
 
 export async function addGroupRule(deps: GroupDeps, actor: Actor, groupId: string, input: { kind: RuleKind; refId?: string | null; nameContains?: string | null }): Promise<Result<{ ruleId: string }>> {
@@ -234,6 +235,17 @@ export async function removeGroupRule(deps: GroupDeps, actor: Actor, groupId: st
   if (!may.ok) return may
   const found = await findGroup(deps, actor, groupId)
   if (!found.ok) return found
+  // Final fix Y (review A M-5): removing a place rule needs what adding it needs, live view of that whole place (as the person), so an
+  // editor who sees one camera of a shared group cannot delete a region rule somebody else added. A name rule needs nothing more.
+  const { data: rule, error: readError } = await deps.admin.from('camera_group_rules').select('id, kind, ref_id')
+    .eq('id', ruleId).eq('group_id', found.group.id).eq('org_id', actor.orgId).maybeSingle()
+  if (readError?.code === MALFORMED_ID || (!readError && !rule)) return { ok: false, error: 'That rule is not in this group.' }
+  if (readError) return { ok: false, error: sanitizeError(readError, { route: 'removeGroupRule', fallback: 'Could not remove the rule.' }) }
+  if (rule!.kind !== 'name') {
+    const { data: holds, error: capError } = await deps.rls.rpc('has_capability_for', { p_cap: 'cctv.live', p_kind: rule!.kind, p_id: rule!.ref_id as string })
+    if (capError) return { ok: false, error: 'Could not check your access. Please try again.' }
+    if (holds !== true) return { ok: false, error: MSG_RULE_PLACE_REMOVE }
+  }
   const { data, error } = await deps.admin.from('camera_group_rules').delete().eq('id', ruleId).eq('group_id', found.group.id).eq('org_id', actor.orgId).select('id, kind')
   if (error?.code === MALFORMED_ID) return { ok: false, error: 'That rule is not in this group.' }
   if (error) return { ok: false, error: sanitizeError(error, { route: 'removeGroupRule', fallback: 'Could not remove the rule.' }) }

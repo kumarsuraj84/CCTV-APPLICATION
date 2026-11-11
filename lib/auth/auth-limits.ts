@@ -6,7 +6,9 @@ import { processSingleton } from '@/lib/process-singleton'
 // P3-1 brief item 5: the multi-factor and "Confirm it's you" steps use the shared database-backed limiter of P2-6 (its store
 // rate_limit_hit and its hashed keys, lib/rate-limit-shared.ts) with an in-process first filter, counted per person. Kept in this file
 // so the shared limiter's own list stays untouched. All fail closed: when the count cannot be read the step is refused.
-//   mfa_verify  6 codes per person in 5 minutes (a 6-digit code: 6 tries in 5 minutes make guessing hopeless)
+//   mfa_verify  6 codes per person in 5 minutes (the rate). Final fix Y (review B I-2): the rate alone is no ceiling (about 14 % in 30
+//               days for a patient guesser), so consecutive wrong codes are also counted in the database (lib/auth/mfa.ts): 10 in a
+//               row lock the code step for 15 minutes (doubling, at most 24 hours), 100 until a super administrator unlocks it.
 //   mfa_enrol   10 new authenticator set-ups per person an hour
 //   reauth      6 password confirmations per person in 15 minutes
 

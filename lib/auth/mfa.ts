@@ -55,23 +55,69 @@ async function claimCode(userId: string, code: string, web: () => Client): Promi
   return data === true
 }
 
+/** Final fix Y (review B I-2): what mfa_code_attempt_begin answered. */
+export type AttemptGate = { allowed: boolean; locked_until: string | null; for_good: boolean; locks_if_wrong: boolean }
+const istTime = (iso: string) =>
+  new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(iso))
+export const MSG_CODES_LOCKED_FOR_GOOD =
+  'Too many wrong codes in a row, so the code step of your account is locked. A super administrator can unlock it on the People page.'
+export const msgCodesLockedUntil = (iso: string) =>
+  `Too many wrong codes in a row, so the code step is locked until ${istTime(iso)} (India time). Check the time on your phone, then try again after that.`
+/** The words for a refused or just-locked code step. */
+export function lockedMessage(g: Pick<AttemptGate, 'locked_until' | 'for_good'>): string {
+  return g.for_good || !g.locked_until ? MSG_CODES_LOCKED_FOR_GOOD : msgCodesLockedUntil(g.locked_until)
+}
+
+/**
+ * Final fix Y (review B I-2): consecutive failed codes are counted in the database (mfa_code_attempt_begin / _end). Every try counts
+ * before the code is checked (so tries at the same moment never pass the limit) and is given back only when the auth server could not
+ * judge it; a right code resets the count. 10 wrong in a row lock the code step for 15 minutes (doubling, at most 24 hours), 100 until a
+ * super administrator unlocks it. Null answer = the count could not be read: refused (fail closed).
+ */
+async function beginAttempt(userId: string, web: () => Client): Promise<AttemptGate | null> {
+  const { data, error } = await web().rpc('mfa_code_attempt_begin', { p_user: userId })
+  if (error || !data || typeof data !== 'object') {
+    logger.warn({ event: 'mfa_attempt_begin_failed', code: error?.code ?? 'no_answer' })
+    return null
+  }
+  return data as unknown as AttemptGate
+}
+async function endAttempt(userId: string, outcome: 'correct' | 'wrong' | 'not_counted', web: () => Client): Promise<void> {
+  const { error } = await web().rpc('mfa_code_attempt_end', { p_user: userId, p_outcome: outcome })
+  if (error) logger.warn({ event: 'mfa_attempt_end_failed', code: error.code })
+}
+
 async function check(client: Client, me: Me, factorId: string, code: string, ok: 'mfa_enrolled' | 'mfa_verified' | 'reauth', o: { ip?: string | null; web?: () => Client } = {}): Promise<Done> {
   if (!CODE.test(code)) return { ok: false, error: MSG_CODE_FORMAT }
   const slow = await authRefusal('mfa_verify', me.id)
   if (slow) return { ok: false, error: slow }
-  const fresh = await claimCode(me.id, code, o.web ?? createAdminClient)
-  if (fresh === null) return { ok: false, error: MSG_TRY_AGAIN }
+  const web = o.web ?? createAdminClient
+  const gate = await beginAttempt(me.id, web)
+  if (!gate) return { ok: false, error: MSG_TRY_AGAIN }
+  if (!gate.allowed) return { ok: false, error: lockedMessage(gate) }
+  const fresh = await claimCode(me.id, code, web)
+  if (fresh === null) {
+    await endAttempt(me.id, 'not_counted', web)
+    return { ok: false, error: MSG_TRY_AGAIN }
+  }
   if (!fresh) {
+    await endAttempt(me.id, 'not_counted', web)
     await recordAuthEvent({ event: ok === 'reauth' ? 'reauth_failed' : 'mfa_failed', userId: me.id, ip: o.ip, detail: { step: ok, reason: 'code_reused' } })
     return { ok: false, error: MSG_CODE_USED }
   }
   const { error } = await client.auth.mfa.challengeAndVerify({ factorId, code })
   if (error) {
     const wrong = (error as { code?: string }).code === 'mfa_verification_failed' || /invalid totp/i.test(error.message)
+    await endAttempt(me.id, wrong ? 'wrong' : 'not_counted', web)
     await recordAuthEvent({ event: ok === 'reauth' ? 'reauth_failed' : 'mfa_failed', userId: me.id, ip: o.ip, detail: { step: ok } })
     if (!wrong) logger.warn({ event: 'mfa_verify_failed', code: (error as { code?: string }).code ?? 'error' })
+    if (wrong && gate.locks_if_wrong) {
+      const now = await beginAttempt(me.id, web) // the lock this try caused, read back for its end time (refused: nothing counted)
+      return { ok: false, error: lockedMessage(now ?? { locked_until: null, for_good: true }) }
+    }
     return { ok: false, error: wrong ? MSG_BAD_CODE : MSG_TRY_AGAIN }
   }
+  await endAttempt(me.id, 'correct', web)
   await recordAuthEvent({ event: ok, userId: me.id, ip: o.ip, detail: { method: 'totp' } })
   return { ok: true }
 }

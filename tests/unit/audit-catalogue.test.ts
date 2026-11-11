@@ -48,8 +48,9 @@ describe('audit catalogue (P5.4)', () => {
   })
 
   it('every auth_events kind the database accepts is catalogued, and nothing else is', () => {
-    const sql = read('supabase/migrations/20261021000034_p31_mfa_sessions.sql')
-    const check = /event text NOT NULL CHECK \(event IN \(([^)]*)\)\)/.exec(sql)
+    // Final fix Y: migration 0049 replaced the check (three code-step lock events); the latest definition is the one that counts.
+    const sql = read('supabase/migrations/20261021000049_final_fix_y.sql')
+    const check = /ADD CONSTRAINT auth_events_event_check CHECK \(event = ANY \(ARRAY\[([^\]]*)\]\)\)/.exec(sql)
     expect(check).not.toBeNull()
     const kinds = [...check![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort()
     const ours = AUDIT_ACTIONS.filter((a) => a.table === 'auth_events').map((a) => a.action).sort()

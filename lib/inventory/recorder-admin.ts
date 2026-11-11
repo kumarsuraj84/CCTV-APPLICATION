@@ -90,13 +90,14 @@ export async function saveRecorder(clients: InventoryClients, actor: Actor, loca
   }
   const recorderId = saved as string
   if (password) {
-    const cred = await admin.rpc('recorder_store_credential', { p_recorder: recorderId, p_secret: password })
+    // Final fix Y (review A M-6): the web app's form names the organisation and the actor; the database checks both and writes the
+    // recorder_password_set audit row in the same transaction.
+    const cred = await admin.rpc('recorder_store_credential', { p_org: actor.orgId, p_recorder: recorderId, p_secret: password, p_actor: actor.id })
     if (cred.error) {
       // A new NVR without its password is not left behind (review M-7); archived, never deleted.
       if (!current) await admin.rpc('inventory_archive', { p_org: actor.orgId, p_kind: 'recorder', p_id: recorderId, p_actor: actor.id })
       return { ok: false, error: sanitizeError(cred.error, { route: 'saveRecorder.credential', fallback: 'Could not save the NVR password.' }) }
     }
-    await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'recorder_password_set', entityType: 'recorder', entityId: recorderId })
   }
   const { error: offErr } = await admin.from('recorders').update({ clock_offset_sec: offset.value, clock_offset_source: offset.value === null ? null : 'manual' })
     .eq('id', recorderId).eq('org_id', actor.orgId)

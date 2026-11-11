@@ -46,6 +46,8 @@ export const updateUserSchema = z.object({
 // A role change keeps the person's other grants but revokes what the new role may not hold (review I-2, ruling E-1: admin.* and
 // cctv.export when leaving the administrative roles; the owner-only rights when leaving super administrator).
 export const MSG_LAST_SUPER_ADMIN = 'There must always be at least one active super administrator.'
+export const MSG_RESET_NEEDS_OWNER =
+  'This person holds rights you do not hold yourself, so only a super administrator can reset their password (the one-time password would let you sign in as them).'
 
 const firstIssue = (e: z.ZodError) => e.issues[0]?.message ?? 'Check the form and try again.'
 
@@ -72,14 +74,11 @@ export async function createUser(admin: AdminClient, actor: Actor, input: unknow
     return { ok: false, error: sanitizeError(created.error, { route: 'createUser', fallback: 'Could not create the user. The e-mail may already be in use.' }) }
   }
   const userId = created.data.user.id
-  const { error } = await admin.from('profiles').insert({
-    id: userId,
-    org_id: actor.orgId,
-    email: v.email,
-    full_name: v.full_name,
-    role: v.role,
-    must_reset_password: true,
-    location_id: v.store_id ?? null, // the home location (P2-5a rename of profiles.store_id)
+  // Final fix Y (review A M-7): the profile is made by the database (create_person), which checks the actor's admin.users and the role
+  // they may give; the web app has no INSERT on profiles. The home location is information only (P2-5a rename of profiles.store_id).
+  const { error } = await admin.rpc('create_person', {
+    p_org: actor.orgId, p_actor: actor.id, p_user: userId, p_email: v.email, p_full_name: v.full_name, p_role: v.role,
+    p_location: (v.store_id ?? null) as unknown as string,
   })
   if (error) {
     const undone = await admin.auth.admin.deleteUser(userId)
@@ -165,7 +164,7 @@ export async function updateUser(admin: AdminClient, actor: Actor, userId: strin
     }
     if (!patch.is_active) {
       // End the sessions that exist now, so they stay dead even if the person is reactivated later.
-      const ended = await admin.rpc('revoke_user_sessions', { p_user: userId })
+      const ended = await admin.rpc('revoke_user_sessions', { p_org: actor.orgId, p_user: userId })
       if (ended.error) {
         logger.error({ event: 'revoke_sessions_failed', userId, error: ended.error })
         return { ok: false, error: 'The person was deactivated, but their current sign-ins could not be ended. Please try again.' }
@@ -196,13 +195,21 @@ export async function resetUserPassword(admin: AdminClient, actor: Actor, userId
   if (!target) return { ok: false, error: 'User not found.' }
   if (target.id === actor.id) return { ok: false, error: 'Use “Choose a new password” to change your own password.' }
   if (!canManageRole(actor.role, target.role)) return { ok: false, error: 'You are not allowed to change this user.' }
+  // Final fix Y (review A M-1): the one-time password lets the administrator sign in as the person, so a plain administrator may reset
+  // it only when every live grant of the person is one they hold themselves (equal or wider scope, as long); otherwise only a super
+  // administrator. Checked in the database before anything changes.
+  const allowed = await admin.rpc('access_check_password_reset', { p_org: actor.orgId, p_actor: actor.id, p_user: userId })
+  if (allowed.error) {
+    if (allowed.error.code === '42501' && /super administrator/.test(allowed.error.message)) return { ok: false, error: MSG_RESET_NEEDS_OWNER }
+    return { ok: false, error: dbRefusal(allowed.error, 'resetUserPassword.check') }
+  }
   const oneTimePassword = generateOneTimePassword()
   const res = await admin.auth.admin.updateUserById(userId, { password: oneTimePassword })
   if (res.error) return { ok: false, error: sanitizeError(res.error, { route: 'resetUserPassword', fallback: 'Could not reset the password.' }) }
   const { error } = await admin.from('profiles').update({ must_reset_password: true }).eq('id', userId).eq('org_id', actor.orgId)
   if (error) return { ok: false, error: sanitizeError(error, { route: 'resetUserPassword.flag', fallback: 'Could not reset the password.' }) }
   // The old password is gone, so end every sign-in made with it.
-  const ended = await admin.rpc('revoke_user_sessions', { p_user: userId })
+  const ended = await admin.rpc('revoke_user_sessions', { p_org: actor.orgId, p_user: userId })
   if (ended.error) {
     logger.error({ event: 'revoke_sessions_failed', userId, error: ended.error })
     return { ok: false, error: 'The password was reset, but the current sign-ins could not be ended. Please try again.' }

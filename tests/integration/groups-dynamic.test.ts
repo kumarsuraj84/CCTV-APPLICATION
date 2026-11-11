@@ -108,6 +108,24 @@ describe('camera groups with dynamic rules', () => {
     expect(ids(await getVisibleGroup(boss.client, groupId))).toEqual([l1e])
   })
 
+  // Final fix Y (review A M-5): removing a place rule needs the same right as adding it (live view of the whole place); before, any editor
+  // who could see one camera of a shared group could delete a region rule another administrator had added. Name rules: as before.
+  it('removing a place rule needs live view of that whole place, as adding it does', async () => {
+    const g = await createGroup(deps(boss), bossActor, 'Shared wall')
+    const groupId = g.ok ? g.groupId : ''
+    expect((await addGroupRule(deps(boss), bossActor, groupId, { kind: 'region', refId: regionId })).ok).toBe(true)
+    expect((await addGroupRule(deps(boss), bossActor, groupId, { kind: 'name', nameContains: 'till' })).ok).toBe(true)
+    const op: Actor = { id: opL1.id, orgId, role: 'operator' }
+    const rules = await listGroupRules(deps(opL1), op, groupId)
+    expect(rules.ok).toBe(true)
+    const regionRule = rules.ok ? rules.rules.find((x) => x.kind === 'region')!.id : ''
+    const nameRule = rules.ok ? rules.rules.find((x) => x.kind === 'name')!.id : ''
+    expect(await removeGroupRule(deps(opL1), op, groupId, regionRule)).toEqual({ ok: false, error: 'You can only remove a rule for a place where you may watch every camera live.' })
+    expect((await admin().from('camera_group_rules').select('id').eq('id', regionRule)).data).toHaveLength(1)
+    expect(await removeGroupRule(deps(opL1), op, groupId, nameRule)).toEqual({ ok: true })
+    expect(await removeGroupRule(deps(boss), bossActor, groupId, regionRule)).toEqual({ ok: true })
+  })
+
   it('adding a rule needs live view of the whole place; a viewer cannot change groups; ids of other organisations are not found', async () => {
     const g = await createGroup(deps(opL1), { id: opL1.id, orgId, role: 'operator' }, 'Operator group')
     const groupId = g.ok ? g.groupId : ''

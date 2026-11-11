@@ -60,7 +60,8 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   A('cctv_export_ended', 'video', 'Saving a recording ended', 'lib/streams/vod.ts'),
   A('cctv_export_denied', 'video', 'Saving a recording refused', 'lib/streams/vod.ts'),
   // NVR passwords (write-only; never the value).
-  A('recorder_password_set', 'credentials', 'NVR password saved', 'lib/inventory/recorder-admin.ts'),
+  // Final fix Y (review A M-6): written in the same transaction as the password (recorder_store_credential with the organisation).
+  A('recorder_password_set', 'credentials', 'NVR password saved', 'supabase/migrations/20261021000049_final_fix_y.sql'),
   // Imports.
   A('locations_imported', 'import', 'Locations imported', 'supabase/migrations/20261021000033_p26_service_roles.sql'),
   // Release 1 (T-1 review L2): the legacy writers left the application; rows written before stay labelled. Written now only by the test
@@ -121,6 +122,8 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   A('group_rule_removed', 'groups', 'Group rule removed', GROUPS),
   // Security settings (written by the database when the owner changes them).
   A('mfa_enforced_changed', 'security', 'Two-step sign-in requirement switched', 'supabase/migrations/20261021000037_p31_review_fixes.sql'),
+  // Final fix Y (review B I-2): a super administrator unlocked a person's code step (wrong codes in a row).
+  A('mfa_code_lock_cleared', 'two_step', 'Code step unlocked by a super administrator', 'supabase/migrations/20261021000049_final_fix_y.sql'),
   // Release 1 (P3-1 re-review N-4): the owner deleted an organisation's security settings row (the defaults apply again).
   A('security_settings_deleted', 'security', 'Security settings removed (defaults apply again)', 'supabase/migrations/20261021000044_release1_cleanups.sql'),
   // Sign-in events (auth_events).
@@ -137,6 +140,10 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   E('mfa_factor_reset', 'two_step', 'Authenticator app reset by a super administrator', SESSIONS),
   E('reauth', 'sign_in', 'Identity confirmed', MFA),
   E('reauth_failed', 'sign_in', 'Identity confirmation failed', MFA),
+  // Final fix Y (review B I-2): consecutive wrong codes (10 in a row: for a while, doubling; 100: until a super administrator unlocks it).
+  E('mfa_locked', 'two_step', 'Code step locked for a while (wrong codes in a row)', 'supabase/migrations/20261021000049_final_fix_y.sql'),
+  E('mfa_locked_for_good', 'two_step', 'Code step locked until a super administrator unlocks it', 'supabase/migrations/20261021000049_final_fix_y.sql'),
+  E('mfa_lock_cleared', 'two_step', 'Code step unlocked', 'supabase/migrations/20261021000049_final_fix_y.sql'),
 ]
 
 /** The plain label of an action, or the action itself when it is not catalogued (an old row). */
