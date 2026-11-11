@@ -4,6 +4,12 @@ import { cameraFor, MSG_ACCESS_CHECK_FAILED, recorderFor } from '@/lib/auth/reso
 import { MSG_MONITORING_OFF, MSG_NOT_MAPPED, readRecorderPassword, resolveCameraRoutes, type CameraRoute, type Recorder, type RouteAnswer } from '@/lib/inventory/recorders'
 import { describeNvrError, NvrClient, NvrError, type NvrEndpoint } from '@/lib/nvr/client'
 import { clockOffsetMs, findOldestRecording, findSegments, recordedDays, type ClockOffset } from '@/lib/nvr/playback'
+import { realProbes } from '@/lib/monitor/probes'
+import type { Probes } from '@/lib/monitor/types'
+import {
+  gateLoginPatiently, guardNvrClient, LIVE_LOGIN_FRESH_SEC, LoginTicket, mayLogIn, MSG_LOGIN_STATE_UNREADABLE, MSG_NVR_LOGIN_CHECKING, MSG_NVR_LOGIN_REFUSED,
+  proveVideoLogin,
+} from '@/lib/nvr/login-guard'
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 import { checkRecorderTarget } from '@/lib/security/targets'
@@ -69,6 +75,8 @@ export type LookupDeps = PlaybackDeps & {
 }
 export type OpenPlaybackDeps = PlaybackDeps & {
   go2rtc: Go2rtcClient
+  /** The RTSP DESCRIBE that proves an NVR login before a go2rtc source is registered (default: the guarded real probe). */
+  rtsp?: Probes['rtsp']
   /** Milliseconds since the epoch (default Date.now). */
   now?: () => number
   env?: Record<string, string | undefined>
@@ -98,7 +106,7 @@ export function parsePlaybackOffset(raw: string | undefined): number {
  * P2-5b: the camera (with the channel of its ACTIVE mapping) and the recorder of that mapping (its own address, ports, login and clock
  * offset), the NVR password unless it is not needed, and whether the recorder is the demo (loopback) one.
  */
-export type Found = CameraRoute & { password: string | null; demo: boolean }
+export type Found = CameraRoute & { password: string | null; demo: boolean; ticket?: LoginTicket }
 
 /**
  * The clock offset to use for this recorder (ruling R13 direction): its own measured or manual `clock_offset_sec` when it has one,
@@ -127,6 +135,8 @@ export async function findCamera(
     password: 'always' | 'unless-demo' | 'later'; env?: Record<string, string | undefined>; capability: RecordingCapability | readonly RecordingCapability[]; orgId: string
     /** P2-6: the person the NVR login is read for (logged in vault_reads). */
     actorId?: string
+    /** Final fix X: a proven login older than this needs a new proof (1x playback through go2rtc: 600). */
+    freshSec?: number
   },
 ): Promise<Result<Found>> {
   if (typeof cameraId !== 'string' || !UUID.test(cameraId)) return { ok: false, error: MSG_CAMERA_NOT_FOUND }
@@ -168,7 +178,7 @@ export async function findCamera(
     recorder = { ...found, host: target.address }
   }
   if (demo || o.password === 'later') return { ok: true, camera, recorder, password: null, demo }
-  return readRecorderLogin(deps, { camera, recorder, demo }, { purpose: 'playback', actorId: o.actorId })
+  return readRecorderLogin(deps, { camera, recorder, demo }, { purpose: 'playback', actorId: o.actorId, freshSec: o.freshSec })
 }
 
 /**
@@ -176,16 +186,39 @@ export async function findCamera(
  * calendar, the day's recordings and 1x playback, `vod` for fast playback), in the same plain words as findCamera.
  */
 export async function readRecorderLogin(
-  deps: PlaybackDeps, f: Omit<Found, 'password'>, o: { purpose: 'playback' | 'vod'; actorId?: string },
+  deps: PlaybackDeps, f: Omit<Found, 'password' | 'ticket'>, o: { purpose: 'playback' | 'vod'; actorId?: string; freshSec?: number },
 ): Promise<Result<Found>> {
   const { camera, recorder, demo } = f
+  // Final fix X (release 1 review C I-2; ruling NB-1): the shared NVR login back-off first, before the password is read. An NVR whose
+  // login stands refused (or that refused 3 logins in 30 minutes) is not asked: people with the IT view of it read "Login refused: ask an
+  // administrator to check the NVR password", everybody else the camera-terms message. A login never proven is tried by one caller.
+  let gate
+  try {
+    gate = await gateLoginPatiently(deps.admin, recorder.id, { path: o.purpose, freshSec: o.freshSec })
+  } catch {
+    logger.error({ event: 'playback_login_state_failed', location: camera.code, recorder: recorder.id })
+    return { ok: false, error: await recorderMessage(deps.rls, recorder.id, MSG_LOGIN_STATE_UNREADABLE, 'login_state_unreadable') }
+  }
+  if (gate.decision === 'no_password') return { ok: false, error: await recorderMessage(deps.rls, recorder.id, MSG_NO_LOGIN, 'no_saved_login') }
+  if (!mayLogIn(gate)) {
+    const words = gate.decision === 'refused' || gate.decision === 'paused' ? MSG_NVR_LOGIN_REFUSED : MSG_NVR_LOGIN_CHECKING
+    return { ok: false, error: await recorderMessage(deps.rls, recorder.id, words, `nvr_login_${gate.decision}`) }
+  }
+  const ticket = new LoginTicket(deps.admin, recorder.id, gate, o.purpose)
   const read = await readRecorderPassword(deps.admin, recorder.id, o.purpose, o.actorId)
+  if (!read.ok || !read.password) await ticket.close()
   if (!read.ok) {
     logger.error({ event: 'playback_credential_failed', location: camera.code, recorder: recorder.id, errorCode: read.code })
     return { ok: false, error: await recorderMessage(deps.rls, recorder.id, MSG_READ_LOGIN, 'credential_read_failed') }
   }
   if (!read.password) return { ok: false, error: await recorderMessage(deps.rls, recorder.id, MSG_NO_LOGIN, 'no_saved_login') }
-  return { ok: true, camera, recorder, password: read.password, demo }
+  return { ok: true, camera, recorder, password: read.password, demo, ticket }
+}
+
+/** The NVR client for a found camera: every request settles its login ticket (lib/nvr/login-guard.ts guardNvrClient). */
+function nvrFor(deps: LookupDeps, f: Found): NvrClient {
+  const client = (deps.nvr ?? defaultNvr)({ host: f.recorder.host!, port: f.recorder.http_port, username: f.recorder.username, password: f.password! })
+  return f.ticket ? guardNvrClient(client, f.ticket) : client
 }
 
 // ── NVR and credential trouble, for whom (P2-2 fix round 1, I-2) ──────────────
@@ -230,9 +263,9 @@ export async function listRecordedDays(deps: LookupDeps, actor: Who, cameraId: s
   if (deps.limiter && !(await deps.limiter.allow(actor.id))) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
   const c = await findCamera(deps, cameraId, { password: 'always', capability: 'cctv.playback', orgId: actor.orgId, actorId: actor.id })
   if (!c.ok) return c
-  const { camera, recorder, password } = c
+  const { camera, recorder } = c
   try {
-    const client = (deps.nvr ?? defaultNvr)({ host: recorder.host!, port: recorder.http_port, username: recorder.username, password: password! })
+    const client = nvrFor(deps, c)
     const shift = clockOffsetMs(recorderOffset(recorder, offsetMin)) ?? 0
     const months = nvrMonthsFor(year, month, shift).filter((m) => m.year >= 2000 && m.year <= 2100)
     const nvrDays: { year: number; month: number; days: number[] }[] = []
@@ -255,9 +288,9 @@ export async function listOldestRecording(deps: LookupDeps, actor: Who, cameraId
   if (deps.limiter && !(await deps.limiter.allow(actor.id))) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
   const c = await findCamera(deps, cameraId, { password: 'always', capability: 'cctv.playback', orgId: actor.orgId, actorId: actor.id })
   if (!c.ok) return c
-  const { camera, recorder, password } = c
+  const { camera, recorder } = c
   try {
-    const client = (deps.nvr ?? defaultNvr)({ host: recorder.host!, port: recorder.http_port, username: recorder.username, password: password! })
+    const client = nvrFor(deps, c)
     const oldest = await findOldestRecording(client, { channel: camera.channel, nowShownMs: shownNowMs((deps.now ?? Date.now)()), ...recorderOffset(recorder, offsetMin) })
     return { ok: true, oldest: oldest ? oldest.toISOString() : null }
   } catch (e) {
@@ -281,9 +314,9 @@ export async function listDaySegments(
   if (deps.limiter && !(await deps.limiter.allow(actor.id))) return { ok: false, error: MSG_TOO_MANY_REQUESTS }
   const c = await findCamera(deps, cameraId, { password: 'always', capability: 'cctv.playback', orgId: actor.orgId, actorId: actor.id })
   if (!c.ok) return c
-  const { camera, recorder, password } = c
+  const { camera, recorder } = c
   try {
-    const client = (deps.nvr ?? defaultNvr)({ host: recorder.host!, port: recorder.http_port, username: recorder.username, password: password! })
+    const client = nvrFor(deps, c)
     // The recorder's own clock offset when it has one (P2-5b), else the default `offsetMin`.
     const found = await findSegments(client, { channel: camera.channel, day, ...recorderOffset(recorder, offsetMin) })
     return {
@@ -321,9 +354,14 @@ export async function openPlayback(deps: OpenPlaybackDeps, actor: Who, cameraId:
   const length = Math.min(MAX_PLAY_MINUTES, Math.max(MIN_PLAY_MINUTES, Math.round(minutes)))
   const wanted = Math.floor(start.getTime() / 1000)
 
-  const c = await findCamera(deps, cameraId, { password: 'unless-demo', env: deps.env, capability: 'cctv.playback', orgId: actor.orgId, actorId: actor.id })
+  const c = await findCamera(deps, cameraId, { password: 'unless-demo', env: deps.env, capability: 'cctv.playback', orgId: actor.orgId, actorId: actor.id, freshSec: LIVE_LOGIN_FRESH_SEC })
   if (!c.ok) return c
   const { camera, recorder, password, demo } = c
+  // Final fix X (review C I-2): go2rtc dials the NVR when the viewer connects; a login that needs a proof is proven here first, once.
+  if (!demo && c.ticket) {
+    const proof = await proveVideoLogin(c.ticket, () => (deps.rtsp ?? realProbes.rtsp)({ host: recorder.host!, port: recorder.rtsp_port, username: recorder.username, password: password!, channel: camera.channel }))
+    if (proof === 'refused') return { ok: false, error: await recorderMessage(deps.rls, recorder.id, MSG_NVR_LOGIN_REFUSED, 'nvr_login_refused') }
+  }
   try {
     let unreadable = 0
     for (let shift = 0; shift < MAX_START_SHIFTS; shift++) {

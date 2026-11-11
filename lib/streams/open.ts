@@ -1,7 +1,13 @@
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { mapLimit } from '@/lib/async/pool'
-import { camerasFor } from '@/lib/auth/resource'
+import { IT_VIEW } from '@/lib/auth/capabilities'
+import { camerasFor, recorderFor } from '@/lib/auth/resource'
 import { MSG_MONITORING_OFF, MSG_NOT_MAPPED, readRecorderPassword, resolveCameraRoutes, type RouteAnswer } from '@/lib/inventory/recorders'
+import { realProbes } from '@/lib/monitor/probes'
+import type { Probes } from '@/lib/monitor/types'
+import {
+  gateLoginPatiently, LIVE_LOGIN_FRESH_SEC, LoginTicket, mayLogIn, MSG_CAMERA_NOT_AVAILABLE, MSG_NVR_LOGIN_REFUSED, proveVideoLogin,
+} from '@/lib/nvr/login-guard'
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 import { checkRecorderTarget } from '@/lib/security/targets'
@@ -16,8 +22,11 @@ import { signStreamToken, streamName, TOKEN_LIFETIME_SEC, verifyStreamToken } fr
 // password and no address, only the token the browser hands to the gateway.
 
 export type OpenedStream = { cameraId: string; name: string; storeCode: string; channel: number; token: string; kind: 'sub' | 'main' }
-/** `paused`: cameras left out because the person already has LIVE_MAX_STREAMS_PER_USER live streams open (P4-L1); only when any. */
-export type OpenedStreams = { streams: OpenedStream[]; paused?: string[] }
+/**
+ * `paused`: cameras left out because the person already has LIVE_MAX_STREAMS_PER_USER live streams open (P4-L1); only when any.
+ * `unavailable` (final fix X, NB-2): cameras of an NVR whose login stands refused, with the words to show on the tile; only when any.
+ */
+export type OpenedStreams = { streams: OpenedStream[]; paused?: string[]; unavailable?: { cameraId: string; message: string }[] }
 
 /** The most streams one request may open (a 6 by 6 wall). */
 export const MAX_STREAMS_PER_REQUEST = 36
@@ -36,6 +45,8 @@ export type OpenDeps = {
   /** The person's own signed-in client: it answers which cameras they may watch live. */
   rls: AdminClient
   go2rtc: Go2rtcClient
+  /** The RTSP DESCRIBE that proves an NVR login before go2rtc dials it (default: the guarded real probe; final fix X). */
+  rtsp?: Probes['rtsp']
   env?: Record<string, string | undefined>
   /** Milliseconds since the epoch (default Date.now). */
   now?: () => number
@@ -205,7 +216,16 @@ export async function openStreams(
   // go2rtc then carries the checked address, so go2rtc never resolves a name. A refused NVR's cameras are left out (nothing is read).
   const passwords = new Map<string, string | null>()
   const addresses = new Map<string, string>()
+  // Final fix X (release 1 review C I-2; ruling NB-2): the shared NVR login back-off before anything. An NVR whose login stands refused
+  // (or paused) gets no password read, no go2rtc source and no token: its cameras come back in `unavailable` with plain words ("Login
+  // refused: ask an administrator to check the NVR password" for people with the IT view of that NVR, "Camera not available." for
+  // everybody else), and the wall asks again only every 30 s, which contacts nothing while the back-off lasts. When this request holds
+  // the ONE attempt (a login never proven, or proven more than 10 minutes ago) it proves the login with one RTSP DESCRIBE first, so a
+  // wall of 16 tiles costs at most one refused login; go2rtc dials only a login proven moments ago.
+  const refusedRecorders = new Set<string>()
   const recorders = [...new Map(registered.map((r) => [r.recorder.id, r.recorder])).values()]
+  const firstChannel = new Map<string, number>()
+  for (const r of registered) if (!firstChannel.has(r.recorder.id)) firstChannel.set(r.recorder.id, r.camera.channel)
   await mapLimit(recorders, 4, async (rec) => {
     if (isDemoRecorder(rec, env)) return
     const target = await checkRecorderTarget(rec, { env })
@@ -215,10 +235,45 @@ export async function openStreams(
       return
     }
     addresses.set(rec.id, target.address)
+    let gate
+    try {
+      gate = await gateLoginPatiently(deps.admin, rec.id, { path: 'live', freshSec: LIVE_LOGIN_FRESH_SEC })
+    } catch {
+      logger.error({ event: 'open_streams_login_state_failed', location: rec.code, recorder: rec.id })
+      passwords.set(rec.id, null)
+      return
+    }
+    if (gate.decision === 'refused' || gate.decision === 'paused') {
+      refusedRecorders.add(rec.id)
+      passwords.set(rec.id, null)
+      return
+    }
+    if (!mayLogIn(gate)) {
+      passwords.set(rec.id, null) // no password saved, or another caller is proving the login right now: asked again in 30 s
+      return
+    }
+    const ticket = new LoginTicket(deps.admin, rec.id, gate, 'live')
     const read = await readRecorderPassword(deps.admin, rec.id, 'live', actor.id)
     if (!read.ok) logger.error({ event: 'open_streams_credential_failed', location: rec.code, recorder: rec.id, errorCode: read.code })
-    passwords.set(rec.id, read.ok ? read.password : null)
+    const password = read.ok ? read.password : null
+    if (!password) {
+      await ticket.close()
+      passwords.set(rec.id, null)
+      return
+    }
+    const proof = await proveVideoLogin(ticket, () => (deps.rtsp ?? realProbes.rtsp)({ host: target.address, port: rec.rtsp_port, username: rec.username, password, channel: firstChannel.get(rec.id) ?? 1 }))
+    if (proof === 'refused') {
+      refusedRecorders.add(rec.id)
+      passwords.set(rec.id, null)
+      return
+    }
+    passwords.set(rec.id, password)
   })
+  const unavailable: { cameraId: string; message: string }[] = []
+  for (const recId of refusedRecorders) {
+    const message = (await itViewOfRecorder(deps.rls, recId)) ? MSG_NVR_LOGIN_REFUSED : MSG_CAMERA_NOT_AVAILABLE
+    for (const r of registered) if (r.recorder.id === recId) unavailable.push({ cameraId: r.camera.id, message })
+  }
 
   const now = deps.now ?? Date.now
   const exp = Math.floor(now() / 1000) + TOKEN_LIFETIME_SEC
@@ -248,6 +303,16 @@ export async function openStreams(
   // Streams nobody has watched for a long time are removed from go2rtc (at most once a minute; never waits, never fails the request).
   void deps.go2rtc.prune({ now: now() }).catch(() => {})
   const streams = opened.filter((s): s is OpenedStream => s !== null)
-  if (streams.length === 0 && failed > 0) return { ok: false, error: MSG_UNAVAILABLE }
-  return { ok: true, ...withPaused(streams) }
+  if (streams.length === 0 && failed > 0 && unavailable.length === 0) return { ok: false, error: MSG_UNAVAILABLE }
+  const result = withPaused(streams)
+  return { ok: true, ...result, ...(unavailable.length > 0 ? { unavailable } : {}) }
+}
+
+/** Whether the person has the IT view of this NVR (it.inventory.view or it.monitoring.view covering it), asked as the person. */
+async function itViewOfRecorder(rls: AdminClient, recorderId: string): Promise<boolean> {
+  for (const cap of IT_VIEW) {
+    const r = await recorderFor(rls, cap, recorderId)
+    if (r.ok && r.allowed) return true
+  }
+  return false
 }

@@ -83,6 +83,10 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   A('recorder_monitoring_enabled', 'inventory', 'NVR monitoring switched on', 'supabase/migrations/20261021000019_p25_locations_recorders_access.sql'),
   A('recorder_monitoring_disabled', 'inventory', 'NVR monitoring switched off', 'supabase/migrations/20261021000019_p25_locations_recorders_access.sql'),
   A('recorder_connection_tested', 'inventory', 'NVR connection tested', 'lib/inventory/recorder-admin.ts'),
+  // Final fix X (rulings NB-3, NB-4): "Try again" on an NVR whose login stands refused; monitoring switched for a whole scope.
+  A('nvr_login_try_again', 'inventory', 'NVR login tried again (back-off ended)', 'supabase/migrations/20261021000048_fx_nvr_login_rollout.sql'),
+  A('recorders_monitoring_enabled', 'inventory', 'Monitoring switched on for a region, cluster, location or everything', 'supabase/migrations/20261021000048_fx_nvr_login_rollout.sql'),
+  A('recorders_monitoring_disabled', 'inventory', 'Monitoring switched off for a region, cluster, location or everything', 'supabase/migrations/20261021000048_fx_nvr_login_rollout.sql'),
   A('camera_remapped', 'inventory', 'Camera moved to another NVR or channel', 'supabase/migrations/20261021000022_p25_review_fixes.sql'),
   A('camera_merged', 'inventory', 'Duplicate camera merged', 'supabase/migrations/20261021000027_p25c_review_fixes.sql'),
   A('inventory_archived', 'inventory', 'Archived', 'supabase/migrations/20261021000024_p25b_contract.sql'),

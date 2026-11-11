@@ -1,18 +1,13 @@
-import { createHash } from 'node:crypto'
-import { loadMonitorConfig } from '@/lib/monitor/config'
-import { NvrError } from '@/lib/nvr/client'
-import { processSingleton } from '@/lib/process-singleton'
+import type { LoginGate } from '@/lib/nvr/login-policy'
+import { MSG_NVR_LOGIN_CHECKING } from '@/lib/nvr/login-guard'
 
-// The login back-off of the web server (ruling R9; P2-5c-1 review I-3). After an NVR refuses a login, every path of the web server that
-// would log in to it again — the connection test, "Find cameras" for one NVR or a location, and "find cameras for all" (all of them
-// through lib/monitor/discovery.ts or lib/inventory/recorder-admin.ts) — leaves that NVR alone until the window is over or its saved
-// login changes. One table per process (processSingleton), keyed by recorder id, holding a hash of the login (address, web port, user
-// name, password), never the password. The worker keeps its own table (lib/monitor/checks.ts, another process).
+// The words of the NVR login back-off on the administrators' screens (ruling R9; P2-5c-1 review I-3; fix round 2 A-N3).
 //
-// Fix round 2 (A-N3): a new login ends that wait, so saving one wrong password after another would still ask the NVR each time and could
-// lock its account (Hikvision locks after 5–7 failures). So the web server also counts refused logins per NVR, whatever the login: after
-// LOGIN_REFUSALS_ALLOWED within LOGIN_REFUSAL_WINDOW_SEC it does not ask that NVR again, with any password, until the oldest of them
-// leaves the window.
+// Final fix X (release 1 review C I-1; ruling NB-1): the back-off itself is no longer kept here. Since migration 0048 there is ONE
+// back-off for every process, in the database (nvr_login_state; rules in lib/nvr/login-policy.ts, calls in lib/nvr/login-guard.ts),
+// shared by the worker, "Find cameras", "find cameras for all", the connection test, live video, playback and the gateway. It escalates
+// (15 minutes doubling to 6 hours), survives restarts, and still pauses an NVR after 3 refused logins within 30 minutes whatever the
+// login (A-N3), so saving one wrong password after another cannot lock its account.
 
 export const MSG_LOGIN_BACKOFF = 'The NVR refused this login a short while ago. To protect its account it is not asked again for a while; check the saved user name and password.'
 export const LOGIN_REFUSALS_ALLOWED = 3
@@ -20,43 +15,10 @@ export const LOGIN_REFUSAL_WINDOW_SEC = 1800
 export const MSG_LOGIN_PAUSED =
   'This NVR refused 3 logins in the last 30 minutes. To keep its account from being locked it is not asked again for a while, even with a new password. Check the user name and password on the NVR itself, then try again later.'
 
-type Entry = { until: number; login: string }
-const table = processSingleton('nvr.webLoginBackoff', () => new Map<string, Entry>())
-/** Times of refused logins per NVR (any login), newest last; only those inside the window are kept. */
-const refusals = processSingleton('nvr.webLoginRefusals', () => new Map<string, number[]>())
-
-/** Identifies a saved login without keeping any of it readable. */
-export const loginFingerprint = (host: string, port: number, username: string, password: string): string =>
-  createHash('sha256').update(`${host}|${port}|${username}:${password}`).digest('hex')
-
-function recentRefusals(recorderId: string, now: number): number[] {
-  const kept = (refusals.get(recorderId) ?? []).filter((t) => now - t < LOGIN_REFUSAL_WINDOW_SEC * 1000)
-  if (kept.length) refusals.set(recorderId, kept)
-  else refusals.delete(recorderId)
-  return kept
-}
-
-/** Why this NVR must not be asked with this login now (a plain sentence), or null. An ended window, or one for another login, is forgotten. */
-export function loginBlock(recorderId: string, login: string, now: number = Date.now()): string | null {
-  if (recentRefusals(recorderId, now).length >= LOGIN_REFUSALS_ALLOWED) return MSG_LOGIN_PAUSED
-  const e = table.get(recorderId)
-  if (!e) return null
-  if (now >= e.until || e.login !== login) {
-    table.delete(recorderId)
-    return null
-  }
-  return MSG_LOGIN_BACKOFF
-}
-
-/** True while this NVR must not be asked with this login (see loginBlock). */
-export function inLoginBackoff(recorderId: string, login: string, now: number = Date.now()): boolean {
-  return loginBlock(recorderId, login, now) !== null
-}
-
-/** A refused login (ISAPI "auth" or "forbidden") starts the window for this NVR and login, and counts towards the NVR's limit. */
-export function noteLoginResult(recorderId: string, login: string, error: unknown, now: number = Date.now(), seconds?: number): void {
-  if (error instanceof NvrError && (error.kind === 'auth' || error.kind === 'forbidden')) {
-    table.set(recorderId, { until: now + (seconds ?? loadMonitorConfig().nvrLoginBackoffSec) * 1000, login })
-    refusals.set(recorderId, [...recentRefusals(recorderId, now), now])
-  }
+/** Why an administrator's action may not log in to this NVR now (plain words), or null when it may. */
+export function loginBlockMessage(g: LoginGate): string | null {
+  if (g.decision === 'refused') return MSG_LOGIN_BACKOFF
+  if (g.decision === 'paused') return MSG_LOGIN_PAUSED
+  if (g.decision === 'wait' || (g.decision === 'probe' && !g.claimed)) return MSG_NVR_LOGIN_CHECKING
+  return null
 }

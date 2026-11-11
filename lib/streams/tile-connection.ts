@@ -21,8 +21,13 @@ export function reconnectDelayMs(failures: number, afterNormalRun: boolean): num
   return Math.min(BACKOFF_MAX_MS, BACKOFF_FIRST_MS * 2 ** (k - 1))
 }
 
-export type TileView = 'connecting' | 'playing' | 'reconnecting' | 'unavailable' | 'paused'
-export type Connector = (url: string, events: { onPlaying: () => void; onEnded: () => void }) => () => void
+/** `refused` (final fix X, review C I-2): the gateway said the camera's NVR login stands refused; the tile waits for a new token. */
+export type TileView = 'connecting' | 'playing' | 'reconnecting' | 'unavailable' | 'paused' | 'refused'
+/** The gateway's one error value for an NVR whose login stands refused (lib/streams/gateway.ts LOGIN_REFUSED_VALUE). */
+export const LOGIN_REFUSED_REASON = 'nvr_login_refused'
+/** The neutral words for a camera whose NVR login stands refused (CCTV-only viewers; also the tile's own view of a gateway refusal). */
+export const MSG_CAMERA_NOT_AVAILABLE = 'Camera not available.'
+export type Connector = (url: string, events: { onPlaying: () => void; onEnded: (reason?: string) => void }) => () => void
 
 type Timers = { setTimeout: (fn: () => void, ms: number) => unknown; clearTimeout: (t: unknown) => void }
 
@@ -32,7 +37,7 @@ export type TileConnection = {
   dispose(): void
 }
 
-export function createTileConnection(o: { connect: Connector; onView: (v: TileView) => void; now?: () => number; timers?: Timers }): TileConnection {
+export function createTileConnection(o: { connect: Connector; onView: (v: TileView) => void; onRefused?: () => void; now?: () => number; timers?: Timers }): TileConnection {
   const now = o.now ?? Date.now
   const timers: Timers = o.timers ?? { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (t) => clearTimeout(t as ReturnType<typeof setTimeout>) }
   let url: string | null = null
@@ -45,6 +50,8 @@ export function createTileConnection(o: { connect: Connector; onView: (v: TileVi
   let playedAt = 0
   let failures = 0
   let view: TileView | null = null
+  /** The token the gateway refused for an NVR login: not used again; a new token (the wall asks the server again) is. */
+  let refusedUrl: string | null = null
 
   const show = (v: TileView) => {
     if (v === view || disposed) return
@@ -66,10 +73,19 @@ export function createTileConnection(o: { connect: Connector; onView: (v: TileVi
     stop = null
     playedAt = 0
   }
-  const ended = (gen: number) => {
+  const ended = (gen: number, reason?: string) => {
     if (gen !== generation || disposed) return
     const normal = playedAt > 0 && now() - playedAt >= NORMAL_RUN_MS
     close()
+    if (reason === LOGIN_REFUSED_REASON) {
+      // No reconnect of its own: every try would cost nothing at the NVR (the gateway refuses it), but nothing would change either.
+      clearRetry()
+      refusedUrl = url
+      failures = 0
+      show('refused')
+      o.onRefused?.()
+      return
+    }
     failures = normal ? 0 : failures + 1
     show(normal ? 'reconnecting' : 'unavailable')
     clearRetry()
@@ -79,9 +95,9 @@ export function createTileConnection(o: { connect: Connector; onView: (v: TileVi
     }, reconnectDelayMs(failures, normal))
   }
   const connectNow = () => {
-    if (disposed || paused || url === null || stop) return
+    if (disposed || paused || url === null || stop || url === refusedUrl) return
     const gen = ++generation
-    if (view !== 'reconnecting' && view !== 'unavailable') show('connecting')
+    if (view !== 'reconnecting' && view !== 'unavailable' && view !== 'refused') show('connecting')
     stop = o.connect(url, {
       onPlaying: () => {
         if (gen !== generation || disposed) return
@@ -89,7 +105,7 @@ export function createTileConnection(o: { connect: Connector; onView: (v: TileVi
         if (playedAt === 0) playedAt = now()
         show('playing')
       },
-      onEnded: () => ended(gen),
+      onEnded: (reason) => ended(gen, reason),
     })
     watchdog = timers.setTimeout(() => {
       watchdog = null

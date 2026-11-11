@@ -21,6 +21,21 @@ export type RegistryClient = {
   stillValid(sids: readonly string[]): Promise<Map<string, string>>
   /** Marks the session closed. Never throws (closing is best effort: an unclosed session simply expires). */
   close(sid: string): Promise<void>
+  /**
+   * Final fix X (review C I-2, ruling NB-2): may this open session's camera be dialled now? 'refused' while its NVR's login stands
+   * refused (media_session_login_check). Throws when it cannot be asked (the gateway then dials nothing).
+   */
+  loginCheck?(sid: string): Promise<'go' | 'refused'>
+  /** go2rtc said the NVR refused the login on this session's stream (media_session_login_refused). Never throws. */
+  loginRefused?(sid: string): Promise<void>
+}
+
+type LoginCheckRow = { decision: string }
+const loginDecision = (rows: unknown): 'go' | 'refused' => {
+  const r = (Array.isArray(rows) ? rows[0] : rows) as LoginCheckRow | undefined
+  if (!r || typeof r.decision !== 'string') throw new Error('The access registry gave an unexpected answer.')
+  // 'no_session' cannot happen for a session the gateway just opened; it dials nothing for it either.
+  return r.decision === 'go' ? 'go' : 'refused'
 }
 
 /** How long one registry call may take before it counts as failed (D-3: 15 s poll + 5 s call = 20 s worst case). */
@@ -110,12 +125,22 @@ export function createRestRegistry(o: { url: string; serviceKey: string; timeout
         // best effort: an unclosed session expires by itself
       }
     },
+    async loginCheck(sid) {
+      return loginDecision(await rpc('media_session_login_check', { p_sid: sid }))
+    },
+    async loginRefused(sid) {
+      try {
+        await rpc('media_session_login_refused', { p_sid: sid })
+      } catch {
+        // best effort: the worker and the web server's next proof find the refused login too
+      }
+    },
   }
 }
 
 /** The same registry through the web app's service-role client (the fast-playback route). */
 export function adminRegistry(admin: AdminClient, timeoutMs = REGISTRY_TIMEOUT_MS): RegistryClient {
-  const call = async (name: 'media_session_open' | 'media_sessions_still_valid' | 'media_session_close', args: Record<string, unknown>) => {
+  const call = async (name: 'media_session_open' | 'media_sessions_still_valid' | 'media_session_close' | 'media_session_login_check' | 'media_session_login_refused', args: Record<string, unknown>) => {
     const { data, error } = await admin.rpc(name, args as never).abortSignal(AbortSignal.timeout(timeoutMs))
     if (error) throw new Error(`The access registry refused the request (${error.code ?? 'error'}).`)
     return data as unknown
@@ -130,6 +155,16 @@ export function adminRegistry(admin: AdminClient, timeoutMs = REGISTRY_TIMEOUT_M
     async close(sid) {
       try {
         await call('media_session_close', { p_sid: sid })
+      } catch {
+        // best effort
+      }
+    },
+    async loginCheck(sid) {
+      return loginDecision(await call('media_session_login_check', { p_sid: sid }))
+    },
+    async loginRefused(sid) {
+      try {
+        await call('media_session_login_refused', { p_sid: sid })
       } catch {
         // best effort
       }

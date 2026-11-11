@@ -2,6 +2,7 @@ import type { ProbeResult } from '@/lib/probes'
 import type { NvrChannel } from '@/lib/nvr/isapi'
 import type { NvrEndpoint } from '@/lib/nvr/client'
 import type { RtspTarget } from '@/lib/rtsp/describe'
+import type { LoginGate, LoginOutcome } from '@/lib/nvr/login-policy'
 
 // P2-5b: the worker runs on the recorder model. An NVR is a recorder (recorders.id); its results are ('recorder', recorder id). A camera
 // is checked through the recorder of its ACTIVE channel mapping only; a camera without one is never probed.
@@ -20,6 +21,7 @@ export type NvrJob = { id: string; org_id: string; location_id: string; ip: stri
  */
 export type RecorderJob = {
   id: string; org_id: string; location_id: string; code: string; name: string
+  /** `password`: no longer filled by loadRecorderJobs (final fix X: read through readPassword, only when the login gate allows it). */
   ip: string; rtsp_port: number; http_port: number; username: string; password: string
   nvr_status: 'up' | 'down' | 'unknown'
   /** When the NVR's own reachability check last ran (ISO time); null if never. */
@@ -46,6 +48,19 @@ export interface MonitorDb {
    * not read (nothing needs it) and comes back as ''.
    */
   loadRecorderJobs(recorderIds?: string[], staleBefore?: Date): Promise<RecorderJob[]>
+  /**
+   * Final fix X (release 1 review C I-1; ruling NB-1): the shared NVR login state of these recorders (nvr_login_gate; lib/nvr/login-policy.ts
+   * has the rules). `claim`: take the one attempt where a try is needed. `now` is for data layers without a clock of their own (the
+   * database uses its own). Throws when it cannot be asked (then nothing is sent to those NVRs).
+   */
+  loginGate(recorderIds: string[], o: { claim: boolean; now: number }): Promise<Map<string, LoginGate>>
+  /** What a login did (nvr_login_report). */
+  reportLogin(recorderId: string, version: string, outcome: LoginOutcome, now: number, cfg: { baseSec: number; maxSec: number }): Promise<void>
+  /**
+   * The saved password of a recorder for that login version (M-2: read from the vault once per version and hour, kept in memory, never
+   * logged), or null when none is saved or the login changed meanwhile.
+   */
+  readPassword(recorderId: string, version: string): Promise<string | null>
   applyResults(orgId: string, results: CheckResult[], threshold: number): Promise<void>
   /** Camera addresses an NVR reported; `recorderId` is that NVR: an address is saved only while the camera is still mapped to it. */
   saveCameraIps(orgId: string, rows: { cameraId: string; ip: string; recorderId: string }[]): Promise<void>
@@ -76,6 +91,11 @@ export type MonitorConfig = {
   deviceCheckSec: number; cameraCheckSec: number; pollSec: number; failThreshold: number
   /** How many recorders (NVRs) are checked at the same time; RTSP checks per recorder. */
   deviceConcurrency: number; recorderConcurrency: number; rtspPerRecorder: number; tcpTimeoutMs: number; nvrTimeoutMs: number
-  /** After an NVR refuses the login, it is left alone for this long (seconds), so a wrong password cannot lock the account. */
+  /** After an NVR refuses the login, it is left alone for this long (seconds), doubling with each refusal in a row up to the maximum. */
   nvrLoginBackoffSec: number
+  nvrLoginBackoffMaxSec: number
+  /** Failed reachability checks in a row before an NVR is called down (cameras: failThreshold). */
+  recorderFailThreshold: number
+  /** The staggered start: NVRs whose login was never proven that one camera round may contact (doubling while they succeed). */
+  newRecordersPerRound: number
 }

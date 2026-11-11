@@ -33,8 +33,8 @@ export function loadPlayer(gateway: string): Promise<void> {
 export type PlayerEvents = {
   /** The picture is moving. */
   onPlaying: () => void
-  /** The socket closed or go2rtc reported an error. */
-  onEnded: () => void
+  /** The socket closed or go2rtc reported an error; `reason`: the gateway's own error value (final fix X: 'nvr_login_refused'). */
+  onEnded: (reason?: string) => void
   /** The picture element, as soon as it exists (its currentTime says how far the picture has played). */
   onVideo?: (video: HTMLVideoElement) => void
 }
@@ -56,8 +56,8 @@ export function startPlayer(host: HTMLElement, socketUrl: string, events: Player
   el.style.height = '100%'
 
   const proto = Object.getPrototypeOf(el) as { onopen: (this: VideoStreamElement) => string[] }
-  const ended = () => {
-    if (!stopped) events.onEnded()
+  const ended = (reason?: string) => {
+    if (!stopped) events.onEnded(reason)
   }
   // The player would reconnect by itself with the same (maybe expired) token; the tile decides when to try again instead.
   Object.defineProperty(el, 'onclose', {
@@ -76,7 +76,7 @@ export function startPlayer(host: HTMLElement, socketUrl: string, events: Player
     value: () => {
       const modes = proto.onopen.call(el)
       el.onmessage['tile'] = (msg) => {
-        if (msg.type === 'error') ended()
+        if (msg.type === 'error') ended(typeof msg.value === 'string' ? msg.value : undefined)
       }
       return modes
     },

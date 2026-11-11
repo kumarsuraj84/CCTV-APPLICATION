@@ -4,7 +4,8 @@ import { cleanId, inventoryAdmin, type InventoryClients } from '@/lib/inventory/
 import { ensurePlaceholderCameras } from '@/lib/inventory/cameras'
 import { isHostOrIp, optionalText, parseClockOffset, parseWhole } from '@/lib/inventory/forms'
 import { isMonitored, MSG_MONITORING_OFF, readRecorderPassword } from '@/lib/inventory/recorders'
-import { loginBlock, loginFingerprint, MSG_LOGIN_BACKOFF, noteLoginResult } from '@/lib/monitor/login-backoff'
+import { loginBlockMessage, MSG_LOGIN_BACKOFF } from '@/lib/monitor/login-backoff'
+import { gateLoginPatiently, guardNvrClient, LoginTicket, MSG_LOGIN_STATE_UNREADABLE } from '@/lib/nvr/login-guard'
 import { realProbes } from '@/lib/monitor/probes'
 import type { Probes } from '@/lib/monitor/types'
 import { describeNvrError, NvrError } from '@/lib/nvr/client'
@@ -138,9 +139,9 @@ export async function setRecorderMonitoring(clients: InventoryClients, actor: Ac
   return { ok: true }
 }
 
-// After a refused login this NVR is not asked again until the window is over or its saved login changes — the web server's ONE
-// back-off (lib/monitor/login-backoff.ts), shared with "Find cameras" and "find cameras for all" (review I-3).
-type TestDeps = { nvr: Probes['nvr']; now?: () => number; backoffSec?: number }
+// After a refused login this NVR is not asked again until the window is over or its saved login changes — the ONE shared back-off of
+// every process (final fix X, NB-1: lib/nvr/login-guard.ts, in the database). `backoffSec`: the first window (tests).
+type TestDeps = { nvr: Probes['nvr']; backoffSec?: number }
 
 /** Asks the NVR once, read-only, whether the saved login works and how many cameras it reports. */
 export async function testRecorderConnection(clients: InventoryClients, actor: Actor, recorderId: string, deps: TestDeps = { nvr: realProbes.nvr }): Promise<Result<{ message: string; channels: number }>> {
@@ -161,25 +162,35 @@ export async function testRecorderConnection(clients: InventoryClients, actor: A
   if (!row.assets.ip) return { ok: false, error: 'This NVR has no address saved.' }
   // P2-6 (SO-4): the NVR as saved in the database is the registered endpoint the test may reach (lib/security/targets.ts).
   registerEndpoints([{ host: row.assets.ip, port: row.http_port }])
-  const read = await readRecorderPassword(clients.credentials ?? admin, id, 'connection_test', actor.id)
+  const credentials = clients.credentials ?? admin
+  // Final fix X (ruling NB-1): the ONE shared login back-off (in the database; the worker, discovery, live video and playback use the
+  // same), asked before the password is read.
+  let gate
+  try {
+    gate = await gateLoginPatiently(credentials, id, { path: 'connection_test' })
+  } catch {
+    return { ok: false, error: MSG_LOGIN_STATE_UNREADABLE }
+  }
+  if (gate.decision === 'no_password') return { ok: false, error: 'This NVR has no password saved yet.' }
+  const blocked = loginBlockMessage(gate)
+  if (blocked) return { ok: false, error: blocked }
+  const ticket = new LoginTicket(credentials, id, gate, 'connection_test', deps.backoffSec ? { baseSec: deps.backoffSec, maxSec: Math.max(deps.backoffSec, 21_600) } : undefined)
+  const read = await readRecorderPassword(credentials, id, 'connection_test', actor.id)
+  if (!read.ok || !read.password) await ticket.close()
   if (!read.ok) return { ok: false, error: sanitizeError({ code: read.code }, { route: 'testRecorderConnection', fallback: 'Could not read the NVR password.' }) }
   if (!read.password) return { ok: false, error: 'This NVR has no password saved yet.' }
   const host = row.assets.ip
   const username = row.username ?? ''
-  const login = loginFingerprint(host, row.http_port, username, read.password)
-  const now = (deps.now ?? Date.now)()
-  const blocked = loginBlock(id, login, now)
-  if (blocked) return { ok: false, error: blocked }
   let outcome: string
   try {
-    const status = await deps.nvr({ host, port: row.http_port, username, password: read.password }, { timeoutMs: 8000 }).channelStatus()
+    const status = await guardNvrClient(deps.nvr({ host, port: row.http_port, username, password: read.password }, { timeoutMs: 8000 }), ticket).channelStatus()
     outcome = 'ok'
     await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'recorder_connection_tested', entityType: 'recorder', entityId: id, detail: { outcome, channels: status.size } })
     const n = status.size
     return { ok: true, channels: n, message: `The NVR answered and accepted the login. It reports ${n} ${n === 1 ? 'camera' : 'cameras'}.` }
   } catch (e) {
     outcome = e instanceof NvrError ? e.kind : 'failed'
-    noteLoginResult(id, login, e, now, deps.backoffSec)
+    await ticket.close()
     await addAudit(admin, { orgId: actor.orgId, actorId: actor.id, action: 'recorder_connection_tested', entityType: 'recorder', entityId: id, detail: { outcome } })
     return { ok: false, error: describeNvrError(e) }
   }

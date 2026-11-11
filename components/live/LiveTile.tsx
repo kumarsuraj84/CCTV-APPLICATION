@@ -5,7 +5,7 @@ import { StatusBadge } from '@/components/monitor/StatusBadge'
 import type { CameraState } from '@/lib/live/rollups'
 import type { Status } from '@/lib/queries/status'
 import { MSG_PAUSED_FOR_BANDWIDTH } from '@/lib/streams/concurrency'
-import { createTileConnection, type TileConnection, type TileView } from '@/lib/streams/tile-connection'
+import { createTileConnection, MSG_CAMERA_NOT_AVAILABLE, type TileConnection, type TileView } from '@/lib/streams/tile-connection'
 import { gatewaySocketUrl } from '@/lib/streams/wall'
 import { cn } from '@/lib/utils'
 import { loadPlayer, startPlayer } from './player'
@@ -30,6 +30,9 @@ const MESSAGES = {
   paused: 'Paused',
   bandwidth: MSG_PAUSED_FOR_BANDWIDTH,
   unavailable: 'Video is not available right now.',
+  // Final fix X (review C I-2): the gateway refused the socket because the camera's NVR login stands refused (neutral words; the wall's
+  // next opening brings the server's own words, with the NVR detail for people with the IT view of it).
+  refused: MSG_CAMERA_NOT_AVAILABLE,
 } as const
 
 /**
@@ -45,7 +48,13 @@ export function LiveTile({
   size = 'tile',
   onOpen,
   actions,
+  notice,
+  onRefused,
 }: {
+  /** Final fix X: the server's words for a camera it did not open because its NVR login stands refused (shown instead of a picture). */
+  notice?: string
+  /** The gateway refused the socket for that reason: the wall forgets the token and asks the server again (which says why). */
+  onRefused?: () => void
   camera: TileCamera
   /** The signed token for this camera, or null while there is none yet. */
   token: string | null
@@ -62,6 +71,10 @@ export function LiveTile({
   // P3-1: derived from the page's own address when NEXT_PUBLIC_STREAM_GATEWAY_URL is unset, `auto` or a path (undefined until hydrated).
   const GATEWAY = useGatewayBase()
   const conn = useRef<TileConnection | null>(null)
+  const refusedRef = useRef(onRefused)
+  useEffect(() => {
+    refusedRef.current = onRefused
+  })
   const [view, setView] = useState<TileView>('connecting')
   const isPaused = paused !== false
   const url = GATEWAY && token ? gatewaySocketUrl(GATEWAY, token) : null
@@ -88,6 +101,7 @@ export function LiveTile({
         }
       },
       onView: setView,
+      onRefused: () => refusedRef.current?.(),
     })
     conn.current = c
     return () => {
@@ -131,9 +145,9 @@ export function LiveTile({
         </div>
         <span className="mt-0.5 block truncate">{camera.name}</span>
       </div>
-      {shown !== 'playing' && (
+      {(shown !== 'playing' || (notice && !token)) && (
         <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center p-3 text-center text-xs text-white/90">
-          <span className="rounded bg-black/60 px-2 py-1">{MESSAGES[shown]}</span>
+          <span className="rounded bg-black/60 px-2 py-1">{notice && !token ? notice : shown === 'playing' ? '' : MESSAGES[shown]}</span>
         </div>
       )}
       {actions && (

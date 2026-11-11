@@ -13,7 +13,8 @@ import { createClient } from '@/lib/supabase/server'
 import { createMediaClient } from '@/lib/supabase/service-clients'
 
 /** `paused` (P4-L1): cameras left out because the person's live streams are at LIVE_MAX_STREAMS_PER_USER; the wall says so. */
-export type OpenStreamsState = { ok: true; streams: OpenedStream[]; paused?: string[] } | { ok: false; error: string }
+/** `unavailable` (final fix X, NB-2): cameras of an NVR whose login stands refused, with the words for their tiles. */
+export type OpenStreamsState = { ok: true; streams: OpenedStream[]; paused?: string[]; unavailable?: { cameraId: string; message: string }[] } | { ok: false; error: string }
 
 // Live video needs cctv.live (P2-2). The count is the live one (30 a minute per person, its own: lib/streams/request-limit.ts).
 const limiter = liveRequestLimiter
@@ -37,7 +38,7 @@ async function run(cameraIds: string[], kind: 'sub' | 'main', route: 'openStream
     if (route === 'openStreamsAction' && res.streams.length > 0) {
       await auditAccess(createAdminClient(), { orgId: p.org_id, actorId: p.id, action: 'cctv_live_opened', capability: 'cctv.live', cameraIds: res.streams.map((s) => s.cameraId), detail: { kind } })
     }
-    return res.paused ? { ok: true, streams: res.streams, paused: res.paused } : { ok: true, streams: res.streams }
+    return { ok: true, streams: res.streams, ...(res.paused ? { paused: res.paused } : {}), ...(res.unavailable ? { unavailable: res.unavailable } : {}) }
   } catch (error) {
     // The kind of error only, never its message: it can carry an address or a camera password.
     logger.error({ event: 'open_streams_action_failed', route, errorName: error instanceof Error ? error.name : typeof error })

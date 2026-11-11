@@ -44,9 +44,11 @@ type State = {
   refreshFailed: boolean
   /** P4-L1: cameras the server left out because the person's live streams are at their limit (asked for again every 30 s). */
   paused: string[]
+  /** Final fix X (review C I-2): cameras of an NVR whose login stands refused, with the server's words (asked again every 30 s; no NVR contact). */
+  unavailable: Record<string, string>
 }
 
-const fresh = (key: string): State => ({ key, phase: 'loading', streams: {}, error: null, issuedAt: 0, fullAt: 0, triedAt: 0, refreshFailed: false, paused: [] })
+const fresh = (key: string): State => ({ key, phase: 'loading', streams: {}, error: null, issuedAt: 0, fullAt: 0, triedAt: 0, refreshFailed: false, paused: [], unavailable: {} })
 
 // P4-L1 review M-5: when each camera's stream was last opened in full (registered in go2rtc) in this page, per kind. A list made only of
 // cameras opened in full within 8 minutes (a tour going round, a tab coming back) starts with new tokens alone: no NVR login, no go2rtc
@@ -163,7 +165,9 @@ export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: bo
           const streams: Record<string, HeldStream> = everyone ? {} : { ...prev.streams }
           for (const s of res.streams) streams[s.cameraId] = { cameraId: s.cameraId, token: s.token }
           const paused = everyone ? (res.paused ?? []) : [...prev.paused.filter((id) => !which.includes(id)), ...(res.paused ?? [])]
-          return { ...prev, phase: 'ready', streams, error: null, triedAt: now, refreshFailed: false, issuedAt: everyone ? now : prev.issuedAt, fullAt: everyone ? now : prev.fullAt, paused }
+          const unavailable: Record<string, string> = everyone ? {} : Object.fromEntries(Object.entries(prev.unavailable).filter(([id]) => !which.includes(id)))
+          for (const u of res.unavailable ?? []) unavailable[u.cameraId] = u.message
+          return { ...prev, phase: 'ready', streams, error: null, triedAt: now, refreshFailed: false, issuedAt: everyone ? now : prev.issuedAt, fullAt: everyone ? now : prev.fullAt, paused, unavailable }
         })
       })
       .catch(() => {
@@ -186,5 +190,17 @@ export function useOpenedStreams(ids: string[], kind: 'sub' | 'main', active: bo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, key, idsText, current.phase, current.issuedAt, current.triedAt, current.refreshFailed, loaded, pausedText])
 
-  return { phase: current.phase, streams: active ? current.streams : ({} as Record<string, HeldStream>), error: current.error, paused: active ? current.paused : [] }
+  /** The gateway refused a camera's socket because its NVR login stands refused: its token is dropped, so the next request asks the server. */
+  const forget = (cameraId: string) =>
+    setState((prev) => {
+      if (prev.key !== key || !prev.streams[cameraId]) return prev
+      const streams = { ...prev.streams }
+      delete streams[cameraId]
+      return { ...prev, streams }
+    })
+
+  return {
+    phase: current.phase, streams: active ? current.streams : ({} as Record<string, HeldStream>), error: current.error, paused: active ? current.paused : [],
+    unavailable: active ? current.unavailable : ({} as Record<string, string>), forget,
+  }
 }

@@ -3,6 +3,7 @@ import { auditAccess } from '@/lib/auth/access-audit'
 import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { MSG_MONITORING_OFF, MSG_NOT_MAPPED, type CameraRoute } from '@/lib/inventory/recorders'
 import { describeNvrError, MAX_DOWNLOAD_BYTES, MAX_DOWNLOAD_MS, NvrClient, NvrError, type NvrEndpoint } from '@/lib/nvr/client'
+import { guardNvrClient } from '@/lib/nvr/login-guard'
 import { clockOffsetMs, findSegments } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
 import { processSingleton } from '@/lib/process-singleton'
@@ -425,7 +426,9 @@ export async function deliverRecording(o: DeliverOptions): Promise<Response> {
     if (signal?.aborted || transfer.signal.aborted) return new Response(null, { status: 499 })
     // The recorder's own clock offset when it has one (P2-5b), else PLAYBACK_OFFSET_MIN.
     const offset = recorderOffset(recorder, deps.offsetMin ?? parsePlaybackOffset(env.PLAYBACK_OFFSET_MIN))
-    const client = (deps.nvr ?? ((ep) => new NvrClient(ep)))({ host: recorder.host!, port: recorder.http_port, username: recorder.username, password: password! })
+    const raw = (deps.nvr ?? ((ep) => new NvrClient(ep)))({ host: recorder.host!, port: recorder.http_port, username: recorder.username, password: password! })
+    // Final fix X (NB-1): every NVR request of this download settles its login ticket (a refused login starts the shared back-off).
+    const client = login.ticket ? guardNvrClient(raw, login.ticket) : raw
 
     // Shown time (ruling R13): the NVR is asked for shown time - offset.
     const startMs = o.startMs

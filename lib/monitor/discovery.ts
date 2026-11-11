@@ -8,7 +8,8 @@ import { loadRecorders, MSG_MONITORING_OFF, readRecorderPassword, recordersOfLoc
 import { realProbes } from '@/lib/monitor/probes'
 import type { Probes } from '@/lib/monitor/types'
 import { describeNvrError } from '@/lib/nvr/client'
-import { loginBlock, loginFingerprint, noteLoginResult } from '@/lib/monitor/login-backoff'
+import { loginBlockMessage } from '@/lib/monitor/login-backoff'
+import { gateLoginPatiently, guardNvrClient, LoginTicket, MSG_LOGIN_STATE_UNREADABLE } from '@/lib/nvr/login-guard'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { dropLiveStreams, type Go2rtcClient } from '@/lib/streams/go2rtc'
 import { fetchAll } from '@/lib/supabase/fetch-all'
@@ -116,25 +117,35 @@ async function discoverOne(clients: Clients, actor: Actor, rec: Recorder, deps: 
   if (!rec.monitored) return { ok: false, error: MSG_MONITORING_OFF }
   if (!rec.location_active) return { ok: false, error: MSG_LOCATION_OFF }
   if (!rec.host) return { ok: false, error: 'This NVR has no address saved.' }
-  // The password is read here, used for this one call and not kept anywhere.
-  const read = await readRecorderPassword(clients.credentials ?? admin, rec.id, 'discovery', actor.id)
-  if (!read.ok) return { ok: false, error: sanitizeError({ code: read.code }, { route: 'discoverRecorderCameras', fallback: 'Could not read the NVR password.' }) }
-  if (!read.password) {
+  const credentials = clients.credentials ?? admin
+  const noPassword = async () => {
     const { data: primary } = await admin.rpc('recorder_primary_of', { p_location: rec.location_id })
-    return { ok: false, error: primary === rec.id ? MSG_NO_NVR_PASSWORD : MSG_NO_NVR_PASSWORD_OTHER }
+    return { ok: false as const, error: primary === rec.id ? MSG_NO_NVR_PASSWORD : MSG_NO_NVR_PASSWORD_OTHER }
   }
-
-  // Review I-3 (P2-5c-1): the web server's one login back-off, shared with the connection test and "find cameras for all": after a
-  // refused login this NVR is not asked again with the same login until the window is over (R9), and after several refused logins not
-  // with any login for a while (fix round 2, A-N3).
-  const login = loginFingerprint(rec.host, rec.http_port, rec.username, read.password)
-  const blocked = loginBlock(rec.id, login)
+  // Final fix X (ruling NB-1): the ONE shared login back-off (the worker, the connection test, "find cameras for all", live video and
+  // playback use the same, in the database): after a refused login this NVR is not asked again until its window is over (15 minutes,
+  // doubling) or its saved login changes; after 3 refused logins in 30 minutes not with any login (A-N3); a login never proven is
+  // tried by one caller at a time. Asked BEFORE the password is read, so a refused NVR costs no vault read either.
+  let gate
+  try {
+    gate = await gateLoginPatiently(credentials, rec.id, { path: 'discovery' })
+  } catch {
+    return { ok: false, error: MSG_LOGIN_STATE_UNREADABLE }
+  }
+  if (gate.decision === 'no_password') return noPassword()
+  const blocked = loginBlockMessage(gate)
   if (blocked) return { ok: false, error: blocked }
+  const ticket = new LoginTicket(credentials, rec.id, gate, 'discovery')
+  // The password is read here, used for this one call and not kept anywhere.
+  const read = await readRecorderPassword(credentials, rec.id, 'discovery', actor.id)
+  if (!read.ok || !read.password) await ticket.close()
+  if (!read.ok) return { ok: false, error: sanitizeError({ code: read.code }, { route: 'discoverRecorderCameras', fallback: 'Could not read the NVR password.' }) }
+  if (!read.password) return noPassword()
   let channels
   try {
-    channels = await deps.nvr({ host: rec.host, port: rec.http_port, username: rec.username, password: read.password }).channels()
+    channels = await guardNvrClient(deps.nvr({ host: rec.host, port: rec.http_port, username: rec.username, password: read.password }), ticket).channels()
   } catch (e) {
-    noteLoginResult(rec.id, login, e)
+    await ticket.close()
     return { ok: false, error: describeNvrError(e) }
   }
   if (channels.length === 0) return { ok: false, error: 'The NVR did not list any cameras.' }

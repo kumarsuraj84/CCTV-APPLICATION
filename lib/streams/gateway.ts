@@ -3,6 +3,7 @@ import http from 'node:http'
 import { isIP } from 'node:net'
 import type { Duplex } from 'node:stream'
 import WebSocket, { WebSocketServer, type RawData } from 'ws'
+import { isGo2rtcLoginRefusal } from '@/lib/nvr/login-guard'
 import { usableSecret } from '@/lib/secrets'
 import { basicAuthHeader, type Go2rtcAuth } from '@/lib/streams/go2rtc-auth'
 import { REGISTRY_TIMEOUT_MS, type RegistryClient } from '@/lib/streams/registry'
@@ -24,7 +25,7 @@ export type GatewayEvent = {
   event: 'gateway_session'
   outcome:
     | 'started' | 'ended' | 'denied_origin' | 'denied_token' | 'denied_message' | 'rate_limited' | 'full' | 'upstream_failed' | 'backpressure' | 'stalled'
-    | 'denied_session' | 'unverified' | 'revoked' | 'fail_closed' | 'check_failed'
+    | 'denied_session' | 'unverified' | 'revoked' | 'fail_closed' | 'check_failed' | 'login_refused' | 'upstream_silent'
   /** First 8 hex characters of the SHA-256 of the camera id; never the id, the stream name, the person or the token. */
   camera?: string
   kind?: StreamClaims['k']
@@ -87,6 +88,8 @@ export type GatewayOptions = {
   backpressureStallMs?: number
   /** Where outcomes go (no personal data, see GatewayEvent). Default: nowhere. */
   log?: (e: GatewayEvent) => void
+  /** A picture that played and then sent no video for this long is ended (default 30 s; final fix X). */
+  upstreamSilenceMs?: number
 }
 
 export type GatewayServer = http.Server & {
@@ -143,6 +146,22 @@ function allowedBrowserMessage(data: Buffer, isBinary: boolean): boolean {
 }
 
 const GENERIC_STREAM_ERROR = 'The video is not available.'
+/** Final fix X: the close of a socket whose NVR's login stands refused, and the one error value the tile understands for it. */
+export const CLOSE_LOGIN_REFUSED = 4401
+export const LOGIN_REFUSED_VALUE = 'nvr_login_refused'
+const MSG_LOGIN_REFUSED = 'NVR login refused'
+export const DEFAULT_UPSTREAM_SILENCE_MS = 30_000
+
+/** go2rtc's error message for a refused RTSP login (lib/nvr/login-guard.ts isGo2rtcLoginRefusal), read before it is replaced. */
+function upstreamLoginRefusal(data: Buffer): boolean {
+  if (data.length === 0 || data.length > 8192 || data[0] !== 0x7b) return false
+  try {
+    const o: unknown = JSON.parse(data.toString('utf8'))
+    return typeof o === 'object' && o !== null && (o as { type?: unknown }).type === 'error' && typeof (o as { value?: unknown }).value === 'string' && isGo2rtcLoginRefusal((o as { value: string }).value)
+  } catch {
+    return false
+  }
+}
 
 const shortHash = (id: string) => createHash('sha256').update(id).digest('hex').slice(0, 8)
 
@@ -260,6 +279,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
   const socketsPerIp = new Map<string, number>()
   const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
   const hops = opts.trustedProxyHops ?? 0
+  const upstreamSilenceMs = opts.upstreamSilenceMs ?? DEFAULT_UPSTREAM_SILENCE_MS
   if (!Number.isInteger(hops) || hops < 0 || hops > 5) throw new Error('The number of trusted proxies (TRUSTED_PROXY_HOPS) must be a whole number from 0 to 5.')
 
   const origin = upstreamBase.origin
@@ -512,6 +532,17 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     const stops: (() => void)[] = []
     let sessionTimer: NodeJS.Timeout | undefined
     let toUpstream: ((data: Buffer, isBinary: boolean) => void) | null = null
+    // Final fix X (review C I-2): a picture that played and then got no video for upstreamSilenceMs is ended, so the viewer's tile
+    // reconnects through the login check instead of go2rtc retrying the NVR (with a login that may now be wrong) behind an open socket.
+    let lastVideoAt = 0
+    let silenceTimer: NodeJS.Timeout | undefined
+    const watchSilence = () => {
+      if (silenceTimer || ended) return
+      silenceTimer = setInterval(() => {
+        if (Date.now() - lastVideoAt > upstreamSilenceMs) end(1011, 'The video stopped.', 'upstream_silent')
+      }, Math.min(5000, upstreamSilenceMs))
+      silenceTimer.unref?.()
+    }
 
     const session: Session = { sid, validatedAt: now(), end: (code, reason, outcome, why) => end(code, reason, outcome, why) }
     pending.add(session)
@@ -520,6 +551,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
       if (ended) return
       ended = true
       clearTimeout(sessionTimer)
+      if (silenceTimer) clearInterval(silenceTimer)
       pending.delete(session)
       sessions.delete(session)
       held = []
@@ -572,7 +604,20 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
         session.validatedAt = now()
         sessions.add(session)
         sessionTimer = setTimeout(() => end(1000, 'Session ended'), maxSessionMs)
-        connectUpstream()
+        // Final fix X (review C I-2, NB-2): go2rtc dials the NVR when this socket connects upstream, so an NVR whose login stands
+        // refused is not dialled at all; the tile is told so and does not keep reconnecting.
+        if (!registry.loginCheck) return connectUpstream()
+        withDeadline(registry.loginCheck(sid)).then(
+          (decision) => {
+            if (ended) return
+            if (decision === 'refused') return refuseLogin()
+            connectUpstream()
+          },
+          () => {
+            if (ended) return
+            end(CLOSE_CANNOT_VERIFY, MSG_CANNOT_VERIFY, 'unverified')
+          },
+        )
       },
       () => {
         registryFailing = true // review m-2: a broken key or an unreachable database shows on the health page
@@ -584,6 +629,13 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
         closeSocket(client, CLOSE_CANNOT_VERIFY, MSG_CANNOT_VERIFY)
       },
     )
+
+    /** The NVR's login stands refused: one fixed message the player understands, then the close (no NVR detail, no go2rtc text). */
+    function refuseLogin() {
+      if (ended) return
+      if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: 'error', value: LOGIN_REFUSED_VALUE }))
+      end(CLOSE_LOGIN_REFUSED, MSG_LOGIN_REFUSED, 'login_refused')
+    }
 
     /** Sends one message across; if the other side falls behind, the source is paused until it catches up, or the session is cut. */
     function makePipe(src: WebSocket, dst: WebSocket, clean: (b: Buffer) => Buffer = (b) => b) {
@@ -639,7 +691,18 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
         held = []
         for (const m of queue) send(m.data, m.isBinary)
       })
-      up.on('message', (raw: RawData, isBinary: boolean) => toClient(toBuffer(raw), isBinary))
+      up.on('message', (raw: RawData, isBinary: boolean) => {
+        const data = toBuffer(raw)
+        if (isBinary) {
+          lastVideoAt = Date.now()
+          watchSilence()
+        } else if (upstreamLoginRefusal(data)) {
+          // go2rtc's "wrong user/pass": a refused NVR login for this session's camera (the shared back-off starts for every path).
+          void registry.loginRefused?.(sid)
+          return refuseLogin()
+        }
+        toClient(data, isBinary)
+      })
       up.on('error', () => {
         if (!upstreamOpen) end(1011, 'The video is not available.', 'upstream_failed')
       })

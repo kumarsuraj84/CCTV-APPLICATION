@@ -328,6 +328,8 @@ export function LiveWall({ cameras, maxStreams = DEFAULT_MAX_STREAMS_PER_USER, m
                     token={s?.token ?? null}
                     failed={!s && !loading && reason !== 'bandwidth'}
                     paused={reason}
+                    notice={grid.unavailable[c.id]}
+                    onRefused={() => grid.forget(c.id)}
                     onOpen={() => open(c.id)}
                     actions={
                       <>
@@ -384,7 +386,7 @@ export function LiveWall({ cameras, maxStreams = DEFAULT_MAX_STREAMS_PER_USER, m
           </div>
           <div className="flex min-h-0 flex-1 items-center justify-center">
             <div className="w-full">
-              <LiveTile camera={big} size="large" token={large.streams[big.id]?.token ?? null} failed={!large.streams[big.id] && large.phase !== 'loading' && !large.paused.includes(big.id)} paused={!visible ? 'hidden' : large.paused.includes(big.id) ? 'bandwidth' : false} />
+              <LiveTile camera={big} size="large" token={large.streams[big.id]?.token ?? null} notice={large.unavailable[big.id]} onRefused={() => large.forget(big.id)} failed={!large.streams[big.id] && large.phase !== 'loading' && !large.paused.includes(big.id)} paused={!visible ? 'hidden' : large.paused.includes(big.id) ? 'bandwidth' : false} />
             </div>
           </div>
           {large.error && <p role="status" className="text-center text-sm text-white/80">{large.error}</p>}

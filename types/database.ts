@@ -735,6 +735,32 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"mfa_code_failures": {
+                  Row: {
+                    "failures": number,"last_failed_at": string | null,"lock_recorded": boolean,"locked_for_good": boolean,"locked_until": string | null,"lockouts": number,"org_id": string,"updated_at": string,"user_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "failures"?: number,"last_failed_at"?: string | null,"lock_recorded"?: boolean,"locked_for_good"?: boolean,"locked_until"?: string | null,"lockouts"?: number,"org_id": string,"updated_at"?: string,"user_id": string
+                  }
+                  Update: {
+                    "failures"?: number,"last_failed_at"?: string | null,"lock_recorded"?: boolean,"locked_for_good"?: boolean,"locked_until"?: string | null,"lockouts"?: number,"org_id"?: string,"updated_at"?: string,"user_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "mfa_code_failures_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "mfa_code_failures_user_id_fkey"
+      columns: ["user_id"]
+isOneToOne: true
+      referencedRelation: "profiles"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"mfa_used_codes": {
                   Row: {
                     "code_hash": string,"used_at": string,"user_id": string
@@ -795,16 +821,48 @@ isOneToOne: false
       referencedColumns: ["id","org_id"]
     }
                   ]
-                },"organizations": {
+                },"nvr_login_state": {
                   Row: {
-                    "created_as_test": boolean,"created_at": string,"id": string,"is_owner": boolean,"name": string,"slug": string,"status": string,"updated_at": string
+                    "attempt_path": string | null,"attempt_until": string | null,"ever_ok_at": string | null,"last_ok_at": string | null,"last_refused_at": string | null,"last_refused_path": string | null,"level": number,"org_id": string,"outcome": string | null,"recorder_id": string,"refusals": (string)[],"refused_until": string | null,"updated_at": string,"version": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "created_as_test"?: boolean,"created_at"?: string,"id"?: string,"is_owner"?: boolean,"name": string,"slug": string,"status"?: string,"updated_at"?: string
+                    "attempt_path"?: string | null,"attempt_until"?: string | null,"ever_ok_at"?: string | null,"last_ok_at"?: string | null,"last_refused_at"?: string | null,"last_refused_path"?: string | null,"level"?: number,"org_id": string,"outcome"?: string | null,"recorder_id": string,"refusals"?: (string)[],"refused_until"?: string | null,"updated_at"?: string,"version": string
                   }
                   Update: {
-                    "created_as_test"?: boolean,"created_at"?: string,"id"?: string,"is_owner"?: boolean,"name"?: string,"slug"?: string,"status"?: string,"updated_at"?: string
+                    "attempt_path"?: string | null,"attempt_until"?: string | null,"ever_ok_at"?: string | null,"last_ok_at"?: string | null,"last_refused_at"?: string | null,"last_refused_path"?: string | null,"level"?: number,"org_id"?: string,"outcome"?: string | null,"recorder_id"?: string,"refusals"?: (string)[],"refused_until"?: string | null,"updated_at"?: string,"version"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "nvr_login_state_recorder_fk"
+      columns: ["recorder_id","org_id"]
+isOneToOne: false
+      referencedRelation: "recorder_endpoints"
+      referencedColumns: ["recorder_id","org_id"]
+    },{
+      foreignKeyName: "nvr_login_state_recorder_fk"
+      columns: ["recorder_id","org_id"]
+isOneToOne: false
+      referencedRelation: "recorder_status"
+      referencedColumns: ["recorder_id","org_id"]
+    },{
+      foreignKeyName: "nvr_login_state_recorder_fk"
+      columns: ["recorder_id","org_id"]
+isOneToOne: false
+      referencedRelation: "recorders"
+      referencedColumns: ["id","org_id"]
+    }
+                  ]
+                },"organizations": {
+                  Row: {
+                    "created_as_demo": boolean,"created_as_test": boolean,"created_at": string,"id": string,"is_owner": boolean,"name": string,"slug": string,"status": string,"updated_at": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_as_demo"?: boolean,"created_as_test"?: boolean,"created_at"?: string,"id"?: string,"is_owner"?: boolean,"name": string,"slug": string,"status"?: string,"updated_at"?: string
+                  }
+                  Update: {
+                    "created_as_demo"?: boolean,"created_as_test"?: boolean,"created_at"?: string,"id"?: string,"is_owner"?: boolean,"name"?: string,"slug"?: string,"status"?: string,"updated_at"?: string
                   }
                   Relationships: [
                     
@@ -947,14 +1005,14 @@ isOneToOne: false
                   ]
                 },"security_settings": {
                   Row: {
-                    "mfa_enforced": boolean,"note": string | null,"org_id": string,"service_role_credential_reads": boolean,"updated_at": string
+                    "mfa_enforced": boolean,"mfa_off_at": string | null,"mfa_off_by": string | null,"mfa_off_reason": string | null,"note": string | null,"org_id": string,"service_role_credential_reads": boolean,"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "mfa_enforced"?: boolean,"note"?: string | null,"org_id": string,"service_role_credential_reads"?: boolean,"updated_at"?: string
+                    "mfa_enforced"?: boolean,"mfa_off_at"?: string | null,"mfa_off_by"?: string | null,"mfa_off_reason"?: string | null,"note"?: string | null,"org_id": string,"service_role_credential_reads"?: boolean,"updated_at"?: string
                   }
                   Update: {
-                    "mfa_enforced"?: boolean,"note"?: string | null,"org_id"?: string,"service_role_credential_reads"?: boolean,"updated_at"?: string
+                    "mfa_enforced"?: boolean,"mfa_off_at"?: string | null,"mfa_off_by"?: string | null,"mfa_off_reason"?: string | null,"note"?: string | null,"org_id"?: string,"service_role_credential_reads"?: boolean,"updated_at"?: string
                   }
                   Relationships: [
                     {
@@ -981,14 +1039,14 @@ isOneToOne: true
                   ]
                 },"test_fixture_switch": {
                   Row: {
-                    "honoured": boolean,"id": boolean
+                    "honoured": boolean,"id": boolean,"production": boolean
                   }
                   ComputedFields: never
                   Insert: {
-                    "honoured"?: boolean,"id"?: boolean
+                    "honoured"?: boolean,"id"?: boolean,"production"?: boolean
                   }
                   Update: {
-                    "honoured"?: boolean,"id"?: boolean
+                    "honoured"?: boolean,"id"?: boolean,"production"?: boolean
                   }
                   Relationships: [
                     
@@ -1306,6 +1364,9 @@ isOneToOne: false
             "access_aal2_of":
 { Args: { "p_claims": Json }; Returns: boolean
                            },
+"access_admin_lock":
+{ Args: { "p_org": string }; Returns: undefined
+                           },
 "access_ancestry":
 { Args: { "p_id": string,"p_kind": string,"p_org": string }; Returns: {
               "asset_id": string,"camera_id": string,"cluster_id": string,"location_id": string,"recorder_id": string,"region_id": string
@@ -1343,6 +1404,9 @@ isOneToOne: false
                            },
 "access_check_manager":
 { Args: { "p_actor": string,"p_org": string,"p_user": string }; Returns: Database["public"]['Enums']["user_role"]
+                           },
+"access_check_password_reset":
+{ Args: { "p_actor": string,"p_org": string,"p_user": string }; Returns: undefined
                            },
 "access_check_people_admin":
 { Args: { "p_actor": string,"p_new_role": Database["public"]['Enums']["user_role"],"p_org": string,"p_user": string }; Returns: undefined
@@ -1508,6 +1572,9 @@ isOneToOne: false
 "change_person_role":
 { Args: { "p_actor": string,"p_expected_version"?: number,"p_org": string,"p_role": Database["public"]['Enums']["user_role"],"p_user": string }; Returns: Json
                            },
+"create_person":
+{ Args: { "p_actor": string,"p_email": string,"p_full_name": string,"p_location"?: string,"p_org": string,"p_role": Database["public"]['Enums']["user_role"],"p_user": string }; Returns: string
+                           },
 "credential_purpose_allowed":
 { Args: { "p_purpose": string,"p_role": string }; Returns: boolean
                            },
@@ -1550,6 +1617,9 @@ isOneToOne: false
 "has_capability_for_user":
 { Args: { "p_aal2"?: boolean,"p_cap": string,"p_id": string,"p_kind": string,"p_user": string }; Returns: boolean
                            },
+"housekeeping_task_name":
+{ Args: { "p_task": string }; Returns: string
+                           },
 "inventory_affected_people":
 { Args: { "p_id": string,"p_kind": string,"p_org": string }; Returns: (string)[]
                            },
@@ -1558,6 +1628,12 @@ isOneToOne: false
                            },
 "inventory_archive":
 { Args: { "p_actor"?: string,"p_id": string,"p_kind": string,"p_org": string }; Returns: Json
+                           },
+"inventory_check_admin":
+{ Args: { "p_actor": string,"p_org": string }; Returns: undefined
+                           },
+"inventory_devices_import":
+{ Args: { "p_actor": string,"p_apply"?: boolean,"p_org": string,"p_rows": Json }; Returns: Json
                            },
 "inventory_effective_snapshot":
 { Args: { "p_at"?: string,"p_org": string }; Returns: {
@@ -1638,6 +1714,14 @@ isOneToOne: false
 "media_session_finish":
 { Args: { "p_media_sec": number,"p_sid": string }; Returns: boolean
                            },
+"media_session_login_check":
+{ Args: { "p_sid": string }; Returns: {
+              "decision": string,"until": string
+            }[]
+                           },
+"media_session_login_refused":
+{ Args: { "p_sid": string }; Returns: boolean
+                           },
 "media_session_open":
 { Args: { "p_camera": string,"p_kind": string,"p_sid": string,"p_stream": string,"p_user": string }; Returns: {
               "expires_at": string,"kind": string,"ok": boolean,"reason": string,"stream": string
@@ -1680,8 +1764,31 @@ isOneToOne: false
               "reason": string,"sid": string
             }[]
                            },
+"mfa_code_attempt_begin":
+{ Args: { "p_user": string }; Returns: Json
+                           },
+"mfa_code_attempt_end":
+{ Args: { "p_outcome": string,"p_user": string }; Returns: undefined
+                           },
 "mfa_code_claim":
 { Args: { "p_hash": string,"p_user": string }; Returns: boolean
+                           },
+"mfa_code_lock_clear":
+{ Args: { "p_actor": string,"p_org": string,"p_reason": string,"p_user": string }; Returns: boolean
+                           },
+"mfa_code_lock_minutes":
+{ Args: { "p_lockouts": number }; Returns: number
+                           },
+"mfa_code_lock_record":
+{ Args: { "p_failures": number,"p_for_good": boolean,"p_lockouts": number,"p_org": string,"p_user": string }; Returns: undefined
+                           },
+"mfa_code_locks":
+{ Args: { "p_org": string }; Returns: {
+              "failures": number,"for_good": boolean,"locked_until": string,"user_id": string
+            }[]
+                           },
+"mfa_default_enforced":
+{ Args: Record<PropertyKey, never>; Returns: boolean
                            },
 "mfa_enforced":
 { Args: Record<PropertyKey, never>; Returns: boolean
@@ -1750,6 +1857,51 @@ isOneToOne: false
 "network_validate_address":
 { Args: { "p_asset": string,"p_host": string,"p_org": string }; Returns: string
                            },
+"nvr_login_current":
+{ Args: { "p_org": string,"p_recorder": string,"p_version": string }; Returns: {
+              "attempt_path": string | null,
+"attempt_until": string | null,
+"ever_ok_at": string | null,
+"last_ok_at": string | null,
+"last_refused_at": string | null,
+"last_refused_path": string | null,
+"level": number,
+"org_id": string,
+"outcome": string | null,
+"recorder_id": string,
+"refusals": (string)[],
+"refused_until": string | null,
+"updated_at": string,
+"version": string
+            }
+                          SetofOptions: {
+        from: "*"
+        to: "nvr_login_state"
+        isOneToOne: true
+        isSetofReturn: false
+      } },
+"nvr_login_gate":
+{ Args: { "p_claim"?: boolean,"p_fresh_sec"?: number,"p_path": string,"p_recorders": (string)[] }; Returns: {
+              "baselined": boolean,"claimed": boolean,"decision": string,"level": number,"recorder_id": string,"until": string,"version": string
+            }[]
+                           },
+"nvr_login_path_ok":
+{ Args: { "p_path": string }; Returns: boolean
+                           },
+"nvr_login_report":
+{ Args: { "p_base_sec"?: number,"p_max_sec"?: number,"p_outcome": string,"p_path": string,"p_recorder": string,"p_version": string }; Returns: {
+              "applied": boolean,"level": number,"outcome": string,"until": string
+            }[]
+                           },
+"nvr_login_state_age_test":
+{ Args: { "p_recorder": string,"p_seconds": number }; Returns: undefined
+                           },
+"nvr_login_try_again":
+{ Args: { "p_actor": string,"p_org": string,"p_recorder": string }; Returns: Json
+                           },
+"nvr_login_version":
+{ Args: { "p_recorder": string }; Returns: string
+                           },
 "ops_health_status":
 { Args: Record<PropertyKey, never>; Returns: Json
                            },
@@ -1811,7 +1963,12 @@ isOneToOne: false
 "recorder_set_monitoring":
 { Args: { "p_actor"?: string,"p_enabled": boolean,"p_org": string,"p_reason": string,"p_recorder": string }; Returns: Json
                            },
+"recorder_set_monitoring_bulk":
+{ Args: { "p_actor": string,"p_enabled": boolean,"p_org": string,"p_reason": string,"p_scope": string,"p_scope_id": string }; Returns: Json
+                           },
 "recorder_store_credential":
+{ Args: { "p_actor": string,"p_org": string,"p_recorder": string,"p_secret": string }; Returns: string
+                           } |
 { Args: { "p_recorder": string,"p_secret": string }; Returns: string
                            },
 "replace_user_grants":
@@ -1827,7 +1984,17 @@ isOneToOne: false
 { Args: { "p_actor"?: string,"p_expected_version"?: number,"p_grant_ids": (string)[],"p_org": string,"p_reason"?: string,"p_user": string }; Returns: Json
                            },
 "revoke_user_sessions":
+{ Args: { "p_org": string,"p_user": string }; Returns: undefined
+                           } |
 { Args: { "p_user": string }; Returns: undefined
+                           },
+"security_mfa_overview":
+{ Args: Record<PropertyKey, never>; Returns: {
+              "enforced": boolean,"off_at": string,"opted_out": boolean,"org_id": string,"reason": string
+            }[]
+                           },
+"security_set_mfa":
+{ Args: { "p_actor": string,"p_enforced": boolean,"p_org": string,"p_reason"?: string }; Returns: Json
                            },
 "security_settings_set_mfa_test":
 { Args: { "p_mfa_enforced": boolean,"p_org": string }; Returns: undefined
@@ -1877,6 +2044,15 @@ isOneToOne: false
 { Args: { "p_ids": (string)[],"p_now"?: string,"p_org": string,"p_type": string,"p_window": string }; Returns: {
               "target_id": string,"uptime_pct": number
             }[]
+                           },
+"test_fixtures_enabled":
+{ Args: Record<PropertyKey, never>; Returns: boolean
+                           },
+"test_org_allowed":
+{ Args: { "p_demo"?: boolean,"p_org": string }; Returns: boolean
+                           },
+"test_org_require":
+{ Args: { "p_demo": boolean,"p_org": string }; Returns: undefined
                            },
 "vault_reads_prune":
 { Args: { "p_keep"?: string }; Returns: number

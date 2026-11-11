@@ -15,7 +15,7 @@ export const DEFAULT_CYCLE_WATCHDOG_MS = 10 * 60_000
 type Kind = 'devices' | 'nvrs' | 'cameras'
 
 /** The calls whose failure the checks log and swallow. The runner counts them, so that a run is never reported clean when its database work failed. */
-const COUNTED: ReadonlySet<string | symbol> = new Set(['loadDevices', 'loadNvrs', 'loadRecorderJobs', 'applyResults'])
+const COUNTED: ReadonlySet<string | symbol> = new Set(['loadDevices', 'loadNvrs', 'loadRecorderJobs', 'applyResults', 'loginGate'])
 
 /**
  * The checks never throw: a database error is logged and the round carries on. That is right for a schedule, but a "check now" must not say
@@ -65,7 +65,8 @@ export class MonitorRunner {
   private halt = new AbortController()
 
   constructor(deps: Deps, opts: { cycleWatchdogMs?: number; beatGapMs?: number } = {}) {
-    this.deps = { ...deps, db: counting(deps.db, () => (this.dbFailures += 1)), signal: this.halt.signal }
+    // Final fix X (NB-4): the staggered start's allowance lives as long as this runner (one lease epoch).
+    this.deps = { ...deps, db: counting(deps.db, () => (this.dbFailures += 1)), signal: this.halt.signal, rollout: deps.rollout ?? { allowance: deps.cfg.newRecordersPerRound ?? 10 } }
     this.watchdogMs = opts.cycleWatchdogMs ?? DEFAULT_CYCLE_WATCHDOG_MS
     this.beatGapMs = opts.beatGapMs ?? DEFAULT_BEAT_GAP_MS
   }

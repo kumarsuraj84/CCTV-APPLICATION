@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { mapLimit } from '@/lib/async/pool'
 import type { Database, Json } from '@/types/database'
+import { gateLogins } from '@/lib/nvr/login-guard'
+import type { LoginGate, LoginOutcome } from '@/lib/nvr/login-policy'
 import { logger } from '@/lib/observability/logger'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import { isLeaseLost, LEASE_REFUSED_SQLSTATE, LeaseLostError, type LeaseFence } from '@/lib/monitor/lease'
@@ -64,6 +65,12 @@ export type SupabaseMonitorDbOptions = {
    */
   fence?: LeaseFence
 }
+
+/** Review C M-2: the worker's passwords in memory (never logged), per recorder and login version, at most an hour old. */
+const PASSWORD_CACHE_MS = 3_600_000
+const passwordCache = new Map<string, { version: string; password: string; at: number }>()
+/** Tests: forget the cached passwords. */
+export const clearPasswordCache = (): void => passwordCache.clear()
 
 type FenceArgs = { p_lease: string; p_fencing_token: number }
 /** A worker clock further than this from the database clock is warned about (and the database dates results more than this ahead now()). */
@@ -175,30 +182,53 @@ export class SupabaseMonitorDb implements MonitorDb {
       })
       for (const s of states) state.set(s.target_id, { status: s.status as 'up' | 'down' | 'unknown', checkedAt: s.last_checked_at })
     }
-    const jobs = await mapLimit(recorders, 10, async (r): Promise<RecorderJob | null> => {
+    // Final fix X (NB-1, M-2): no password is read here any more. The checks ask the shared login state first and read the password
+    // (readPassword) only for an NVR they may log in to, so an NVR in its back-off costs no vault read either.
+    return recorders.map((r): RecorderJob => {
       const st = state.get(r.id)
-      const own = cameras.get(r.id) ?? []
       // The one place that decides whether the NVR is known to be down: the checks use the answer as it is.
       const knownDown = isNvrKnownDown(st?.status, st?.checkedAt, staleBefore)
-      const job = (password: string): RecorderJob => ({
+      return {
         id: r.id, org_id: r.org_id, location_id: r.location_id, code: r.locations.code, name: r.assets.name,
-        ip: r.assets.ip as string, rtsp_port: r.rtsp_port, http_port: r.http_port, username: r.username ?? '', password,
-        nvr_status: st?.status ?? 'unknown', nvr_checked_at: st?.checkedAt ?? null, knownDown, cameras: own,
-      })
-      // Nothing needs the password when there are no cameras, or when the NVR is known to be down (its cameras are then marked down without logging in).
-      if (own.length === 0 || knownDown) return job('')
-      // The login of THIS recorder, through the one logged credential read keyed by recorder (P2-6: purpose `monitoring`, the worker's
-      // own database role; it refuses a switched-off NVR).
-      const { data, error } = await this.admin.rpc('recorder_credential_read', { p_recorder: r.id, p_purpose: 'monitoring' })
-      if (error) {
-        // Not being able to read the password says nothing about the cameras: leave this recorder out of this round instead of reporting a false outage.
-        logger.error({ event: 'nvr_credential_read_failed', location: r.locations.code, recorder: r.id, errorCode: error.code })
-        return null
+        ip: r.assets.ip as string, rtsp_port: r.rtsp_port, http_port: r.http_port, username: r.username ?? '', password: '',
+        nvr_status: st?.status ?? 'unknown', nvr_checked_at: st?.checkedAt ?? null, knownDown, cameras: cameras.get(r.id) ?? [],
       }
-      return job(typeof data === 'string' ? data : '')
     })
-    return jobs.filter((j): j is RecorderJob => j !== null)
   }
+
+  /** The shared NVR login state (nvr_login_gate; the database's clock, `now` is not used). Throws when it cannot be asked. */
+  async loginGate(recorderIds: string[], o: { claim: boolean; now: number }): Promise<Map<string, LoginGate>> {
+    void o.now
+    return gateLogins(this.admin, recorderIds, { path: 'monitoring', claim: o.claim })
+  }
+
+  async reportLogin(recorderId: string, version: string, outcome: LoginOutcome, now: number, cfg: { baseSec: number; maxSec: number }): Promise<void> {
+    void now
+    const { error } = await this.admin.rpc('nvr_login_report', { p_recorder: recorderId, p_version: version, p_outcome: outcome, p_path: 'monitoring', p_base_sec: cfg.baseSec, p_max_sec: cfg.maxSec })
+    if (error) throw new Error(`saving the NVR login outcome failed: ${error.message}`)
+  }
+
+  /**
+   * The password of THIS recorder for this login version, through the one logged credential read (P2-6: purpose `monitoring`; it refuses
+   * a switched-off NVR). Review C M-2: kept in this process per recorder and version, read again when the saved login changes or after
+   * an hour, so 216 NVRs cost about 216 logged reads an hour instead of every 5 minutes.
+   */
+  async readPassword(recorderId: string, version: string): Promise<string | null> {
+    const hit = passwordCache.get(recorderId)
+    if (hit && hit.version === version && Date.now() - hit.at < PASSWORD_CACHE_MS) return hit.password
+    const { data, error } = await this.admin.rpc('recorder_credential_read', { p_recorder: recorderId, p_purpose: 'monitoring' })
+    if (error) {
+      // Not being able to read the password says nothing about the cameras: this recorder is left out of this round.
+      logger.error({ event: 'nvr_credential_read_failed', recorder: recorderId, errorCode: error.code })
+      passwordCache.delete(recorderId)
+      return null
+    }
+    const password = typeof data === 'string' && data !== '' ? data : null
+    if (password) passwordCache.set(recorderId, { version, password, at: Date.now() })
+    else passwordCache.delete(recorderId)
+    return password
+  }
+
 
   async applyResults(orgId: string, results: CheckResult[], threshold: number): Promise<void> {
     const clean = cleanResults(results)
