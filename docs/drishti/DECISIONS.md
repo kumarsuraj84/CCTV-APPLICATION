@@ -103,3 +103,52 @@ idle rule for every signed-in person and a forgotten wall otherwise keeps a pers
 written in the server's clock (fix round 2, N-2), so a wrong PC clock does not change the limit. If the owner wants control-room screens
 to run longer, the options are a per-person "display screen" exception with its own longer limit, or a longer idle limit for operators
 (`SESSION_IDLE_MINUTES`, default 480, in `lib/auth/session-policy.ts`; administrators: `SESSION_IDLE_MINUTES_ADMIN`); both would be recorded here first.
+
+## Rulings NB-1..NB-6 (final fix X, 2026-11-11): protecting real NVRs from failed-login storms, and a safe monitoring rollout
+Source: release 1 final review C (Important I-1, I-2, I-3, I-4; Minor M-1, M-2, M-6, M-19, M-25, M-29, M-30 and the estate-scale
+estimate). Builds on the owner's ruling R9 ("NVR login back-off so a wrong password cannot lock the account") and replaces how it was
+built (two in-memory tables, one per process, a fixed 15-minute window). Where these rulings differ from older rulings, these win.
+
+- **NB-1 One shared login back-off, in the database.** Every path that logs in to an NVR asks `nvr_login_gate` first and reports what
+  the login did (`nvr_login_report`): the worker's checks, "Find cameras" (one NVR, a location, all), the connection test, live video,
+  1x playback, fast playback, the calendar / day search / oldest recording and the downloads, and the video gateway. The state is one
+  row per NVR for its CURRENT saved login (a hash of the vault secret, address, ports and user name; never the password), so it survives
+  restarts and lease changes and is the same for the web server, the worker and the gateway. Rules (`lib/nvr/login-policy.ts`, the same
+  in SQL): a refused login (401 on the Digest login, an RTSP 401 with nothing proving the login, go2rtc's "wrong user/pass") keeps every
+  path away for 15 minutes, doubling to at most 6 hours (`NVR_LOGIN_BACKOFF_SEC`, `NVR_LOGIN_BACKOFF_MAX_SEC`); when a window ends, or
+  a login was never proven, exactly ONE caller may try (a one-minute claim) and everyone else waits for its answer, so there is at most
+  one refused login per window across all paths; the level is reset only by a new saved login (password, user name or address; re-saving
+  the same password does not), a success, or an administrator's "Try again"; three refused logins within 30 minutes, whatever the login,
+  pause the NVR for every login until the oldest is 30 minutes old (Hikvision locks at 5-7); an NVR without a saved password is never
+  contacted; when the state cannot be read nothing is sent (fail closed). **"Forbidden" is not a refused login**: a 403 after the Digest
+  login means the user name and password were accepted (a viewer account may not read the channel status); the worker then checks the
+  cameras by RTSP, the first ones one at a time until one answer proves the video login. No RTSP login ever follows a refused ISAPI login.
+- **NB-2 Live and playback never hammer.** Before a go2rtc source is registered (live wall, 1x playback) a login that is not proven
+  within the last 10 minutes is proven with ONE RTSP DESCRIBE by the web server; an NVR whose login stands refused gets no password read,
+  no source and no token: its tiles say "Login refused: ask an administrator to check the NVR password" to people with the IT view of
+  that NVR and "Camera not available." to everybody else, and the wall asks again every 30 s at no cost to the NVR. The gateway asks
+  `media_session_login_check` (by session id only) before it dials go2rtc, passes go2rtc's "wrong user/pass" on
+  (`media_session_login_refused`), tells the tile with one fixed value (the tile then stops reconnecting until it has a new token), and
+  ends a picture that sent no video for 30 s so go2rtc's own retry loop stops when the last viewer leaves. A wall of 16 tiles with a wrong
+  password costs one refused login. Residual (stated honestly): if the password is changed on the NVR itself while a login was proven
+  within the last 10 minutes, tiles that reconnect in the same few seconds can each fail once before the first refusal is recorded.
+- **NB-3 "Try again".** Monitoring lists the NVRs whose login stands refused (from the shared state, linked to each NVR). "Try again"
+  (administrators with admin.inventory for the organisation, fresh sign-in, audited `nvr_login_try_again`) ends the window and its level;
+  the 3-in-30-minutes pause still holds. Fixing the password on the NVR page needs no "Try again": a new saved login is tried at once.
+- **NB-4 Safe rollout.** (a) Staggered start: per camera round the worker contacts at most `MONITOR_NEW_RECORDERS_PER_ROUND` (default 10)
+  NVRs whose login was never proven, doubling with the ones that succeed (10, 20, 40, 80 ...; 218 NVRs are all reached in the 5th round);
+  NVRs proven before are checked every round. (b) Monitoring → Monitoring rollout switches the existing per-NVR switch
+  (`recorders.monitoring_enabled`) for a whole location, cluster, region or the organisation, with a reason, each NVR audited
+  (`recorder_set_monitoring_bulk`), fresh sign-in required. (c) In production (`DRISHTI_ENV=production`) a newly imported NVR whose row
+  leaves "monitoring" empty starts switched off. (d) Pilot procedure: everything off before the first start, one location, then its
+  cluster, then the rest by region (docs/drishti/runbooks/monitoring-rollout.md). A deliberately stopped worker is the P5.4 builder's
+  health classification.
+- **NB-5 Politeness defaults for 216 NVRs** (review C's estimate adopted): devices and NVR reachability every 60 s (50 at a time, 3 s
+  TCP), cameras every 300 s with 10 NVRs at a time, one lane per NVR, at most 4 RTSP checks per NVR (8 s NVR and 5 s RTSP timeouts), an
+  NVR called down after 3 failed reachability checks in a row (`RECORDER_FAIL_THRESHOLD`, M-6; cameras after 2), passwords read from the
+  vault once per saved login and hour (M-2), run start and finish on the database clock (M-1). Shown at 218 fake NVRs: at most 10 logins
+  at once, one per NVR, per round per NVR one status read, one channel list and one RTSP check per camera the NVR reports offline.
+- **NB-6 Deferred, with reasons.** M-4 (Offline / Recorder not reachable never become "Not checked lately") contradicts the standing rule
+  "offline stays offline however old" (lib/queries/status.ts) and changes every screen: owner decision. M-7 (estate-wide "Check now" for a
+  location-scoped holder): with NB-1 an extra run can no longer cost refused logins; the per-person scope needs the shared check-now test
+  rework of the other builder. M-3 / M-8: documentation only (admin guide, incidents runbook) for their owners. M-5 was fixed by P5.4.
