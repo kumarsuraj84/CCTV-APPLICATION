@@ -16,6 +16,9 @@ import { openVideoSessions, readGatewayHealth } from '@/lib/streams/gateway-heal
 import { createAdminClient } from '@/lib/supabase/admin'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import { formatDateTime } from '@/lib/time'
+import { startHint } from '@/lib/ops/service-hints'
+
+const workerHint = startHint('worker')
 
 export const metadata = { title: 'Monitoring' }
 
@@ -104,7 +107,11 @@ export default async function MonitoringPage() {
         <WorkerClockNotice skewSec={worker.clockSkewSec} warning={worker.clockSkewWarning} />
         {!worker.ok && (
           <p className="text-sm text-destructive">
-            The checker is not running, so the status shown elsewhere may be out of date. Start it with <code className="font-mono">npm run worker</code> on the server.
+            {/* Final review C-I10 (left to the admin screens by P5.4, lib/ops/service-hints.ts): the Windows service in production. */}
+            The checker is not running, so the status shown elsewhere may be out of date.{' '}
+            {workerHint.production
+              ? <>Start the {workerHint.service} Windows service on the server (<code className="font-mono">{workerHint.command}</code>; see the incidents runbook).</>
+              : <>Start it with <code className="font-mono">{workerHint.command}</code> on the server.</>}
           </p>
         )}
       </section>
