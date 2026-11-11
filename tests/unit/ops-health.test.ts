@@ -24,6 +24,8 @@ const dbStatus = (o: Partial<OpsDbStatus> = {}): OpsDbStatus => ({
     { task: 'backup', last_run_at: iso(10 * 3_600_000), removed: 0, db_role: 'backup.ps1' },
   ],
   test_fixtures: { on: false, production: true },
+  // Final fix Y (review A I-1, B I-1; migration 0049): two-step sign-in of every active organisation (checked in production-checks.test.ts).
+  ...({ mfa: { active: 1, enforced: 1, off: 0, opted_out: 0 } } as object),
   ...o,
 })
 
@@ -53,7 +55,7 @@ describe('assessHealth (P5.4)', () => {
     const h = assessHealth(inputs())
     expect(h.status).toBe('ok')
     expect(h.checks.map((c) => [c.key, c.state])).toEqual([
-      ['database', 'ok'], ['vault', 'ok'], ['gateway', 'ok'], ['worker', 'ok'], ['clock', 'ok'], ['migrations', 'ok'], ['disk', 'ok'], ['cleanup', 'ok'], ['fixtures', 'ok'], ['backup', 'ok'],
+      ['database', 'ok'], ['vault', 'ok'], ['gateway', 'ok'], ['worker', 'ok'], ['clock', 'ok'], ['migrations', 'ok'], ['disk', 'ok'], ['cleanup', 'ok'], ['fixtures', 'ok'], ['backup', 'ok'], ['mfa', 'ok'],
     ])
     expect(check(h, 'worker').summary).toBe('Running; it holds the monitoring lease (renewed 2 seconds ago).')
     expect(check(h, 'cleanup').summary).toBe('Unused video sessions were last cleaned up 4 minutes ago (12 removed).')

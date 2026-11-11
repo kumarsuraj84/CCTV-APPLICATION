@@ -64,6 +64,15 @@ describe('worker and gateway start-up in production mode (DRISHTI_ENV, no NODE_E
     expect(r.out).toContain('GO2RTC_API_USERNAME')
   }, 30_000)
 
+  it('the gateway refuses a production address other than this computer (final fix Y, review B minor 3)', async () => {
+    const r = await run('gateway', {
+      DRISHTI_ENV: 'production', SUPABASE_URL: 'http://127.0.0.1:1', STREAM_TOKEN_SECRET: STREAM, GATEWAY_ALLOWED_ORIGINS: 'https://drishti.example.test',
+      SUPABASE_VIDEO_GATEWAY_KEY: signServiceJwt(SECRET, 'video_gateway'), GO2RTC_API_USERNAME: 'drishti', GO2RTC_API_PASSWORD: GO2RTC, GATEWAY_HOST: '0.0.0.0',
+    })
+    expect(r.code).toBe(1)
+    expect(r.out).toContain('GATEWAY_HOST must be 127.0.0.1')
+  }, 30_000)
+
   it('the gateway refuses when go2rtc answers without its login (start-up probe)', async () => {
     const http = await import('node:http')
     const open = http.createServer((_q, res) => { res.setHeader('content-type', 'application/json'); res.end('{}') })
@@ -73,6 +82,8 @@ describe('worker and gateway start-up in production mode (DRISHTI_ENV, no NODE_E
         DRISHTI_ENV: 'production', SUPABASE_URL: 'http://127.0.0.1:1', STREAM_TOKEN_SECRET: STREAM, GATEWAY_ALLOWED_ORIGINS: 'http://localhost:3212',
         SUPABASE_VIDEO_GATEWAY_KEY: signServiceJwt(SECRET, 'video_gateway'), GO2RTC_URL: `http://127.0.0.1:${port}`,
         GO2RTC_API_USERNAME: 'drishti', GO2RTC_API_PASSWORD: GO2RTC,
+        // Final fix Y (review B minor 3): production gateways listen on this computer only (else refused before the go2rtc probe).
+        GATEWAY_HOST: '127.0.0.1',
       })
       expect(r.code).toBe(1)
       expect(r.out).toContain('without its login')

@@ -27,9 +27,10 @@ const ctxOf = (p: CurrentProfile) => ({ profile: p, admin: createUserAdminClient
 const limited = (actorId: string) => adminRefusalFor('users_change', actorId)
 
 export async function createUserAction(_prev: CreateUserState, formData: FormData): Promise<CreateUserState> {
-  const values = submittedValues(formData, ['full_name', 'email', 'role', 'store_id'])
+  // Final fix Y (review B minor 1): the guard is the first call of every action (the scanner refuses any call before it).
   const g = await requireFreshAdministration('admin.users')
-  if (!g.ok) return { error: g.error, values }
+  if (!g.ok) return { error: g.error, values: submittedValues(formData, ['full_name', 'email', 'role', 'store_id']) }
+  const values = submittedValues(formData, ['full_name', 'email', 'role', 'store_id'])
   const { admin, actor } = ctxOf(g.profile)
   const slow = await limited(actor.id)
   if (slow) return { error: slow, values }

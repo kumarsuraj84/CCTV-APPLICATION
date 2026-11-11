@@ -3,6 +3,7 @@ import path from 'node:path'
 import type { WorkerStatus } from '@/lib/monitor/health'
 import { HOUSEKEEPING_EVERY_MS } from '@/lib/monitor/housekeeping'
 import type { GatewayHealthView } from '@/lib/streams/gateway-health'
+import { mfaHealthCheck } from '@/lib/security/production-checks' // final fix Y (review A I-1, B I-1): two-step sign-in
 
 // P5.4 brief item 3: the detailed health of an installation, for super administrators (the Health page /admin/health and
 // /api/health/detail). The public /api/health says only "ok" or "degraded" (publicStatus). Each check is judged on its own, in plain
@@ -10,7 +11,7 @@ import type { GatewayHealthView } from '@/lib/streams/gateway-health'
 // an address or an error text from the database: only states, ages, counts and the migration level.
 
 export type CheckState = 'ok' | 'warning' | 'failed' | 'unknown'
-export type CheckKey = 'database' | 'vault' | 'gateway' | 'worker' | 'clock' | 'migrations' | 'disk' | 'cleanup' | 'fixtures' | 'backup'
+export type CheckKey = 'database' | 'vault' | 'gateway' | 'worker' | 'clock' | 'migrations' | 'disk' | 'cleanup' | 'fixtures' | 'backup' | 'mfa'
 export type HealthCheck = { key: CheckKey; label: string; state: CheckState; summary: string; facts: [string, string][] }
 export type DetailedHealth = { status: 'ok' | 'degraded'; build: string; checkedAt: string; checks: HealthCheck[] }
 
@@ -250,7 +251,7 @@ function backup(i: HealthInputs): HealthCheck {
 
 /** The judgement of every check. "degraded" when any check failed; warnings and unknowns alone keep "ok". */
 export function assessHealth(i: HealthInputs): DetailedHealth {
-  const checks = [database(i), vault(i), gateway(i), worker(i), clock(i), migrations(i), disk(i), cleanup(i), fixtures(i), backup(i)]
+  const checks = [database(i), vault(i), gateway(i), worker(i), clock(i), migrations(i), disk(i), cleanup(i), fixtures(i), backup(i), mfaHealthCheck(i.db.ok ? (i.db.status as Parameters<typeof mfaHealthCheck>[0]) : null, i.production === true)]
   return { status: checks.some((c) => c.state === 'failed') ? 'degraded' : 'ok', build: i.build, checkedAt: i.now.toISOString(), checks }
 }
 

@@ -5,6 +5,7 @@ import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
 import { isProductionMode } from '@/lib/runtime-mode'
 import { refusalMessage, startupProblems, watchKeyExpiry } from '@/lib/startup-checks'
+import { productionConfigFindings } from '@/lib/security/production-checks'
 import { go2rtcApiAuth, probeGo2rtcLogin } from '@/lib/streams/go2rtc-auth'
 import { createRestRegistry } from '@/lib/streams/registry'
 import { requireServiceKey, serviceKeyFor } from '@/lib/supabase/service-clients'
@@ -19,6 +20,7 @@ async function main() {
   // P2-6 review round 1 (I-1, I-2, M-4): production mode (DRISHTI_ENV=production; tsx sets no NODE_ENV) refuses to start without the
   // gateway's own key, with the old service key in its environment, without go2rtc's API login, or with an ended key.
   const startup = startupProblems('gateway')
+  startup.problems.push(...productionConfigFindings('gateway').problems) // final fix Y (review B minor 3): loopback only in production
   for (const w of startup.warnings) logger.warn({ event: 'gateway_startup_warning', message: w })
   if (startup.problems.length > 0) {
     logger.error({ event: 'gateway_config_refused', message: refusalMessage('gateway', startup.problems) })

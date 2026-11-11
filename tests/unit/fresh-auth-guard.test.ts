@@ -15,18 +15,23 @@ import { describe, expect, it } from 'vitest'
 
 const ROOT = path.resolve(__dirname, '../..')
 const rel = (p: string) => path.relative(ROOT, p).replace(/\\/g, '/')
+// Final fix Y (final review B minor 1): every JavaScript and TypeScript extension, in the whole tree but node_modules, dot folders and
+// tests/ (a 'use server' .mjs file or a route.js would otherwise be invisible).
+const SCANNED_EXTENSIONS = /^(?!.*\.d\.[cm]?ts$).*\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/
 function walk(dir: string, out: string[] = []): string[] {
   for (const e of readdirSync(dir)) {
     const p = path.join(dir, e)
-    if (e === 'node_modules' || e.startsWith('.')) continue
+    if (e === 'node_modules' || e.startsWith('.') || (dir === ROOT && e === 'tests')) continue
     if (statSync(p).isDirectory()) walk(p, out)
-    else if (/\.(ts|tsx)$/.test(e) && !e.endsWith('.d.ts')) out.push(p)
+    else if (SCANNED_EXTENSIONS.test(e)) out.push(p)
   }
   return out
 }
 
 const GUARDS = new Set(['requireFreshAdministration', 'requireFreshProfile', 'requireFreshFor'])
-const parse = (src: string, file: string) => ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
+const scriptKind = (file: string) =>
+  /\.(tsx)$/.test(file) ? ts.ScriptKind.TSX : /\.(jsx)$/.test(file) ? ts.ScriptKind.JSX : /\.(m?js|cjs)$/.test(file) ? ts.ScriptKind.JS : ts.ScriptKind.TS
+const parse = (src: string, file: string) => ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, scriptKind(file))
 
 /** The file's directive prologue says 'use server' (comments before it do not matter). */
 export function isUseServer(sf: ts.SourceFile): boolean {
@@ -68,26 +73,38 @@ export function exportsOfSource(sf: ts.SourceFile): { name: string; fn: FnLike |
   return out
 }
 
-const containsAwait = (n: ts.Node): boolean => {
-  let found = false
-  const visit = (x: ts.Node) => {
-    if (found) return
-    if (ts.isAwaitExpression(x)) found = true
-    else if (!ts.isFunctionLike(x)) ts.forEachChild(x, visit)
-  }
-  visit(n)
-  return found
-}
-/** `const g = [await] requireFresh…(…)`: the variable's name, else null. */
-function guardVariable(s: ts.Statement): string | null {
+/** `const g = [await] requireFresh…(…)`: the variable's name and the guard used, else null. */
+function guardVariable(s: ts.Statement): { name: string; guard: string } | null {
   if (!ts.isVariableStatement(s) || s.declarationList.declarations.length !== 1) return null
   const d = s.declarationList.declarations[0]
   let init = d.initializer
   if (init && ts.isAwaitExpression(init)) init = init.expression
   if (!init || !ts.isCallExpression(init) || !ts.isIdentifier(init.expression) || !GUARDS.has(init.expression.text)) return null
-  return ts.isIdentifier(d.name) ? d.name.text : null
+  return ts.isIdentifier(d.name) ? { name: d.name.text, guard: init.expression.text } : null
 }
-const mentions = (n: ts.Node, name: string): boolean => (ts.isIdentifier(n) && n.text === name) || (ts.forEachChild(n, (c) => (mentions(c, name) ? true : undefined)) ?? false)
+/** Final fix Y (B minor 1): any call (awaited or not, `void x()` too) is work; plain declarations before the guard are fine. */
+const containsCall = (n: ts.Node): boolean => {
+  let found = false
+  const visit = (x: ts.Node) => {
+    if (found) return
+    if (ts.isAwaitExpression(x) || ts.isCallExpression(x) || ts.isNewExpression(x) || ts.isTaggedTemplateExpression(x)) found = true
+    else if (!ts.isFunctionLike(x)) ts.forEachChild(x, visit)
+  }
+  visit(n)
+  return found
+}
+/**
+ * The refusal check of the guard's result, exactly: `!g.ok`, `!g`, or `g.ok === false`; for requireFreshFor (it returns the refusal's
+ * words or null) the plain `g`.
+ */
+function refusalCheck(e: ts.Expression, g: string, guard: string): boolean {
+  while (ts.isParenthesizedExpression(e)) e = e.expression
+  const isG = (x: ts.Expression) => ts.isIdentifier(x) && x.text === g
+  if (guard === 'requireFreshFor') return isG(e)
+  const isGok = (x: ts.Expression) => ts.isPropertyAccessExpression(x) && isG(x.expression) && x.name.text === 'ok'
+  if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) return isG(e.operand) || isGok(e.operand)
+  return ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken && isGok(e.left) && e.right.kind === ts.SyntaxKind.FalseKeyword
+}
 const returns = (s: ts.Statement): boolean => ts.isReturnStatement(s) || (ts.isBlock(s) && s.statements.some((x) => ts.isReturnStatement(x)))
 
 /**
@@ -110,8 +127,8 @@ export function isGuarded(fn: FnLike | null, kind: 'action' | 'route'): boolean 
       const g = guardVariable(list[i])
       if (!g) continue
       const next = list[i + 1]
-      const checked = !!next && ts.isIfStatement(next) && mentions(next.expression, g) && returns(next.thenStatement)
-      const first = kind === 'route' || list.slice(0, i).every((s) => !containsAwait(s))
+      const checked = !!next && ts.isIfStatement(next) && refusalCheck(next.expression, g.name, g.guard) && returns(next.thenStatement)
+      const first = kind === 'route' || list.slice(0, i).every((s) => !containsCall(s))
       if (checked && first) return true
     }
   }
@@ -184,14 +201,13 @@ const MUST_BE_GUARDED = [
   'lib/actions/mfa.ts#startEnrolmentAction', 'lib/actions/mfa.ts#removeOwnFactorAction', 'app/api/vod/route.ts#GET',
   // Final fix X (rulings NB-3, NB-4): the monitoring rollout and "Try again" change what is sent to real NVRs.
   'lib/actions/admin/monitoring.ts#setMonitoringRolloutAction', 'lib/actions/admin/monitoring.ts#tryNvrLoginAgainAction',
+  // Final fix Y: unlocking a person's code step; the owner-only two-step switch.
+  'lib/actions/admin/sessions.ts#clearCodeLockAction', 'lib/actions/admin/security.ts#setMfaRequirementAction',
 ]
 
 const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
-/** Every file the app could serve an action or a handler from: lib, app, components, services and the project root's own files. */
-const scanned = () => [
-  ...['lib', 'app', 'components', 'services'].flatMap((d) => walk(path.join(ROOT, d))),
-  ...readdirSync(ROOT).filter((e) => /\.(ts|tsx)$/.test(e) && !e.endsWith('.d.ts')).map((e) => path.join(ROOT, e)),
-]
+/** Every file the app could serve an action or a handler from: the whole tree but node_modules, dot folders and tests/ (final fix Y). */
+const scanned = () => walk(ROOT)
 
 /** key `<file>#<export>` → whether it is guarded. */
 function inventory(): Map<string, boolean> {
@@ -200,7 +216,7 @@ function inventory(): Map<string, boolean> {
     const r = rel(f)
     const sf = parse(readFileSync(f, 'utf8'), r)
     if (isUseServer(sf)) for (const e of exportsOfSource(sf)) out.set(`${r}#${e.name}`, isGuarded(e.fn, 'action'))
-    if (/(^|\/)route\.tsx?$/.test(r)) for (const e of exportsOfSource(sf)) if (HTTP_METHODS.has(e.name)) out.set(`${r}#${e.name}`, isGuarded(e.fn, 'route'))
+    if (/(^|\/)route\.(tsx?|m?jsx?|cjs|[cm]ts)$/.test(r)) for (const e of exportsOfSource(sf)) if (HTTP_METHODS.has(e.name)) out.set(`${r}#${e.name}`, isGuarded(e.fn, 'route'))
   }
   return out
 }

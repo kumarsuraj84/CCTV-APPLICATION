@@ -2,6 +2,7 @@ import { logger } from '@/lib/observability/logger'
 import { isProductionMode } from '@/lib/runtime-mode'
 import { refusalMessage, startupProblems, watchKeyExpiry } from '@/lib/startup-checks'
 import { webStartupProblems } from '@/lib/startup-web'
+import { securityStartupProblems } from '@/lib/security/production-checks'
 import { probeGo2rtcLogin } from '@/lib/streams/go2rtc-auth'
 import { fastPlaybackStartupNote } from '@/lib/streams/remux'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -31,6 +32,10 @@ export async function runWebStartupCheck(env: Record<string, string | undefined>
       return data
     },
   })
+  // Final fix Y (review A I-1, B I-1, B minor 3): two-step sign-in and the TLS / CSP settings (lib/security/production-checks.ts).
+  const security = await securityStartupProblems(env, { mfaOverview: async () => { const { data, error } = await createAdminClient().rpc('security_mfa_overview'); if (error || !Array.isArray(data)) throw new Error('not readable'); return data } })
+  for (const w of security.warnings) logger.warn({ event: 'web_startup_warning', message: w })
+  problems.push(...security.problems)
   if (problems.length > 0) {
     logger.error({ event: 'web_config_refused', message: refusalMessage('web', problems) })
     process.exit(1)
