@@ -3,6 +3,7 @@ import { CreateUserForm } from '@/components/admin/CreateUserForm'
 import { FIELD, FOCUS, NOTE, RT } from '@/components/admin/fields'
 import { UserRow } from '@/components/admin/UserRow'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { Select } from '@/components/ui/select'
 import { accessSummaries, listReview } from '@/lib/admin/access'
 import { canManageRole, ROLE_LABELS, ROLES } from '@/lib/admin/roles'
 import { listStoresForAccess, listUsers } from '@/lib/admin/users'
@@ -65,10 +66,10 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
         </div>
         <div className="space-y-1.5">
           <label htmlFor="users-role" className="block text-sm font-medium">Role</label>
-          <select id="users-role" name="role" defaultValue={roleFilter} className={`${FIELD} text-base sm:text-sm`}>
+          <Select id="users-role" name="role" defaultValue={roleFilter}>
             <option value="">Every role</option>
             {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
-          </select>
+          </Select>
         </div>
         <button type="submit" className={`rounded-md border px-3 py-2 text-sm ${FOCUS}`}>Find</button>
         {(q || roleFilter) && <Link href="/admin/users" className={`text-sm underline ${FOCUS}`}>Show everybody</Link>}
