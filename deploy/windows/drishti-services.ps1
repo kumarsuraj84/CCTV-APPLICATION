@@ -33,7 +33,7 @@
 param(
   [Parameter(Mandatory = $true)][ValidateSet('Install', 'Uninstall', 'Start', 'Stop', 'Restart', 'Status', 'Audit', 'RepairAcl')][string]$Action,
   [string]$ConfigPath = 'C:\Drishti\config\drishti.config.psd1',
-  [ValidateSet('DrishtiGo2rtc', 'DrishtiWorker', 'DrishtiGateway', 'DrishtiWeb')][string[]]$Service,
+  [ValidateSet('DrishtiGo2rtc', 'DrishtiWorker', 'DrishtiGateway', 'DrishtiWeb', 'DrishtiProxy')][string[]]$Service,
   [switch]$DryRun
 )
 
@@ -72,7 +72,7 @@ $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 function Set-DrishtiFolderLocks {
   # Every folder created and locked BEFORE anything is written into it (review C-2, I-3).
   foreach ($p in (Get-DrishtiAclPlan -Config $config -Definitions $allDefs)) {
-    Set-DrishtiAcl -Path $p.Path -ReadAccounts $p.Read -ModifyAccounts $p.Modify -ListAccounts $p.List -AllowedLinks $p.AllowedLinks -DryRun:$dry
+    Set-DrishtiAcl -Path $p.Path -ReadAccounts $p.Read -ModifyAccounts $p.Modify -ListAccounts $p.List -AllowedLinks $p.AllowedLinks -InstallRoot $config.InstallRoot -DryRun:$dry
   }
 }
 
@@ -85,6 +85,10 @@ function Set-DrishtiFileLocks {
     if ($d.Name -eq 'DrishtiGo2rtc') {
       $yaml = Join-Path $config.ConfigDir 'go2rtc.yaml'
       if ($dry -or (Test-Path -LiteralPath $yaml)) { Set-DrishtiAcl -Path $yaml -ReadAccounts @($account) -IsFile -DryRun:$dry }
+    }
+    if ($d.Name -eq 'DrishtiProxy') {
+      $caddyfile = Join-Path $config.ConfigDir 'Caddyfile'
+      if ($dry -or (Test-Path -LiteralPath $caddyfile)) { Set-DrishtiAcl -Path $caddyfile -ReadAccounts @($account) -IsFile -DryRun:$dry }
     }
   }
   if ($dry -or (Test-Path -LiteralPath $ConfigPath)) { Set-DrishtiAcl -Path $ConfigPath -IsFile -DryRun:$dry }
@@ -109,9 +113,18 @@ function Install-DrishtiService {
   $conf = Join-Path $servicesDir "$($d.Name).conf"
   $logs = Join-Path $config.LogDir $d.Name
   if (Get-Service -Name $d.Name -ErrorAction SilentlyContinue) { Write-DrishtiStep -Kind warn -Message "$($d.Name) is installed already: uninstall it first to change it (-Action RepairAcl renews its access rules)"; return }
-  if (-not $dry -and -not (Test-Path -LiteralPath $d.EnvFile)) { throw "$($d.EnvFile) is missing: make it with node scripts/gen-secrets.mjs --production --out-dir $($config.ConfigDir)" }
+  if (-not $dry -and $d.Name -ne 'DrishtiProxy' -and -not (Test-Path -LiteralPath $d.EnvFile)) { throw "$($d.EnvFile) is missing: make it with node scripts/gen-secrets.mjs --production --out-dir $($config.ConfigDir)" }
   if ($dry) { Write-DrishtiStep -Kind plan -Message "would write $conf (no secret: it names $($d.EnvFile))" }
   else { Set-Content -LiteralPath $conf -Value (ConvertTo-DrishtiHostConf -Definition $d -Config $config) -Encoding UTF8 -NoNewline }
+  if ($d.Name -eq 'DrishtiProxy') {
+    # Caddy keeps its storage (the certificates it manages, its locks) under DataDir\caddy, never under the user profile.
+    $caddyfile = Join-Path $config.ConfigDir 'Caddyfile'
+    if (-not $dry -and -not (Test-Path -LiteralPath $caddyfile)) { throw "$caddyfile is missing: copy deploy\windows\Caddyfile.example there and fill the host name and the certificate paths (C:\Drishti\config\certs)." }
+    $data = Join-Path $config.DataDir 'caddy'
+    $proxyEnv = "XDG_DATA_HOME=$(Join-Path $data 'data')`r`nXDG_CONFIG_HOME=$(Join-Path $data 'config')`r`n"
+    if ($dry) { Write-DrishtiStep -Kind plan -Message "would write $($d.EnvFile) (no secret: Caddy's storage under $data) if missing" }
+    elseif (-not (Test-Path -LiteralPath $d.EnvFile)) { Set-Content -LiteralPath $d.EnvFile -Value $proxyEnv -Encoding ASCII -NoNewline }
+  }
   if ($d.Name -eq 'DrishtiGo2rtc') {
     $yaml = Join-Path $config.ConfigDir 'go2rtc.yaml'
     if ($dry) { Write-DrishtiStep -Kind plan -Message "would copy go2rtc.windows.yaml to $yaml (if missing)" }
@@ -154,6 +167,14 @@ function Get-DrishtiAuditProblems {
     $account = Get-DrishtiServiceAccount -Config $config -Name $d.Name
     $problems += @(Test-DrishtiPathAcl -Path $d.EnvFile -ReadAccounts @($account) -Secret)
     $problems += @(Test-DrishtiPathAcl -Path (Join-Path $servicesDir "$($d.Name).conf"))
+  }
+  # Review 2 N-3: no link anywhere in the installation but the checked appcurrent junction (never followed).
+  foreach ($p in @($config.InstallRoot, $config.LogDir, $config.DataDir, $config.BackupDir) | Select-Object -Unique) {
+    if (-not (Test-Path -LiteralPath $p)) { continue }
+    $allowed = @()
+    try { if (Get-DrishtiCurrentRelease -InstallRoot $config.InstallRoot) { $allowed = @([IO.Path]::GetFullPath((Join-Path $config.InstallRoot 'appcurrent'))) } } catch { $problems += $_.Exception.Message }
+    try { foreach ($l in @(Get-DrishtiReparsePoints -Path $p)) { if ($allowed -notcontains $l.TrimEnd('')) { $problems += "$($l): a junction or link the installation did not make" } } }
+    catch { $problems += "$($p): its contents cannot be read from here (run elevated)" }
   }
   return $problems
 }
@@ -231,7 +252,11 @@ switch ($Action) {
     if ($config.ContainsKey('HealthUrl')) {
       try { Write-Output "health: $((Invoke-RestMethod -Uri $config.HealthUrl -TimeoutSec 5 -UseBasicParsing).status)" } catch { Write-Output 'health: not answering' }
     }
-    $problems = @(Get-DrishtiAuditProblems)
-    Write-Output $(if ($problems.Count -eq 0) { 'access rules: ok' } else { "access rules: $($problems.Count) problem(s), see -Action Audit" })
+    # Review 2 m4: without elevation the locked folders cannot even be read: say so instead of counting false problems.
+    if (-not (Test-DrishtiAdministrator)) { Write-Output 'access rules: not checked (run elevated to check them, or -Action Audit from an elevated PowerShell)' }
+    else {
+      $problems = @(Get-DrishtiAuditProblems)
+      Write-Output $(if ($problems.Count -eq 0) { 'access rules: ok' } else { "access rules: $($problems.Count) problem(s), see -Action Audit" })
+    }
   }
 }

@@ -1,4 +1,5 @@
 import { StatusBadge } from '@/components/monitor/StatusBadge'
+import { startHint } from '@/lib/ops/service-hints'
 import type { GatewayHealthView } from '@/lib/streams/gateway-health'
 
 // P2-4 brief item 3: the video gateway on the Monitoring page — how many videos are open, how old its last access check is, and a plain
@@ -6,7 +7,8 @@ import type { GatewayHealthView } from '@/lib/streams/gateway-health'
 
 const ago = (sec: number | null) => (sec === null ? 'Not yet' : sec < 120 ? `${sec} seconds ago` : `${Math.round(sec / 60)} minutes ago`)
 
-export function GatewayHealthPanel({ gateway, orgOpen }: { gateway: GatewayHealthView; orgOpen: number | null }) {
+export function GatewayHealthPanel({ gateway, orgOpen, production }: { gateway: GatewayHealthView; orgOpen: number | null; production?: boolean }) {
+  const hint = startHint('gateway', production)
   const h = gateway.ok ? gateway.health : null
   // Review m-2: green only when the registry answered lately (the gateway asks it every interval, also with no video open).
   const recent = h !== null && h.lastValidationAgeSec !== null && h.lastValidationAgeSec <= h.validateEverySec * 2 + 5
@@ -20,7 +22,12 @@ export function GatewayHealthPanel({ gateway, orgOpen }: { gateway: GatewayHealt
       </div>
       {h === null ? (
         <p className="text-sm text-destructive">
-          The video gateway is not answering. Live video and playback do not work until it runs. Start it with <code className="font-mono">npm run gateway</code> on the server.
+          The video gateway is not answering. Live video and playback do not work until it runs.{' '}
+          {hint.production ? (
+            <>Start the <strong>{hint.service}</strong> Windows service on the server (<code className="font-mono">{hint.command}</code>, as an administrator).</>
+          ) : (
+            <>Start it with <code className="font-mono">{hint.command}</code> on the server.</>
+          )}
         </p>
       ) : (
         <>

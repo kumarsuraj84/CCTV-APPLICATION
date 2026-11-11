@@ -10,7 +10,7 @@ import type { GatewayHealthView } from '@/lib/streams/gateway-health'
 // an address or an error text from the database: only states, ages, counts and the migration level.
 
 export type CheckState = 'ok' | 'warning' | 'failed' | 'unknown'
-export type CheckKey = 'database' | 'vault' | 'gateway' | 'worker' | 'clock' | 'migrations' | 'disk' | 'cleanup' | 'fixtures'
+export type CheckKey = 'database' | 'vault' | 'gateway' | 'worker' | 'clock' | 'migrations' | 'disk' | 'cleanup' | 'fixtures' | 'backup'
 export type HealthCheck = { key: CheckKey; label: string; state: CheckState; summary: string; facts: [string, string][] }
 export type DetailedHealth = { status: 'ok' | 'degraded'; build: string; checkedAt: string; checks: HealthCheck[] }
 
@@ -37,10 +37,14 @@ export type HealthInputs = {
   disk: DiskInfo | null | (DiskInfo | null)[]
   /** Production mode (DRISHTI_ENV=production): the test fixture switch must be off. */
   production?: boolean
+  /** Final review C-I5: false when the worker is kept stopped on purpose (DRISHTI_WORKER_EXPECTED=false). */
+  workerExpected?: boolean
 }
 
 /** More than this between two clocks is a warning (the same 30 s as the worker's own warning, docs/drishti/worker-lease.md section 9). */
 export const CLOCK_SKEW_WARN_SEC = 30
+/** A worker heartbeat older than this is a worker that is not running: its clock is not compared (the Worker check says it is down). */
+export const WORKER_CLOCK_STALE_SEC = 300
 /** The clean-up runs every 10 minutes; three missed runs is a warning. */
 export const CLEANUP_STALE_MS = 3 * HOUSEKEEPING_EVERY_MS
 const GB = 1024 ** 3
@@ -61,7 +65,13 @@ const gb = (b: number) => `${(b / GB).toFixed(1)} GB`
 
 function database(i: HealthInputs): HealthCheck {
   const base = { key: 'database' as const, label: 'Database' }
-  if (!i.db.ok) return { ...base, state: 'failed', summary: 'The database could not be reached or did not answer the health question.', facts: [] }
+  if (!i.db.ok) {
+    return {
+      ...base, state: 'failed', facts: [],
+      // Final review C-I13: after an unattended restart the database may simply not have started yet.
+      summary: 'The database could not be reached or did not answer the health question. After a restart of the server: is the database server running? Docker Desktop starts only when somebody signs in, so it does not bring a database back by itself (docs/drishti/runbooks/windows-services.md section 1).',
+    }
+  }
   return { ...base, state: 'ok', summary: `Answering (${i.db.latencyMs} ms).`, facts: [['Answer time', `${i.db.latencyMs} ms`]] }
 }
 
@@ -100,6 +110,9 @@ function worker(i: HealthInputs): HealthCheck {
     if (host) facts.push(['Lease taken on', host.slice(0, 64)])
     facts.push(['Lease taken', ago((i.now.getTime() - Date.parse(w.lease.acquiredAt)) / 1000)])
   }
+  if (!w.ok && i.workerExpected === false) {
+    return { ...base, state: 'warning', facts, summary: 'Not running: stopped on purpose (DRISHTI_WORKER_EXPECTED=false). Monitoring results are not checked while it is stopped.' }
+  }
   if (!w.ok) {
     return { ...base, state: 'failed', facts, summary: `Not running: no sign of life ${w.heartbeatAgeSec === null ? 'ever' : `for ${ago(w.heartbeatAgeSec).replace(' ago', '')}`}. Status on the other pages is going out of date.` }
   }
@@ -114,7 +127,12 @@ function clock(i: HealthInputs): HealthCheck {
   const notes: string[] = []
   const facts: [string, string][] = []
   let known = false
-  if (i.worker && i.worker.clockSkewSec !== null) {
+  // P5.4 fix round 3 (P5.5 report defect 3): the skew comes from the worker's last heartbeat; a worker that has not run for more than
+  // WORKER_CLOCK_STALE_SEC is not running, and an old heartbeat is not a clock difference.
+  const stale = i.worker && (i.worker.heartbeatAgeSec === null || i.worker.heartbeatAgeSec > WORKER_CLOCK_STALE_SEC)
+  if (i.worker && stale) {
+    facts.push(["Worker's clock against the database", 'not compared: the worker is not running'])
+  } else if (i.worker && i.worker.clockSkewSec !== null) {
     known = true
     const s = i.worker.clockSkewSec
     facts.push(["Worker's clock against the database", s === 0 ? 'the same' : `${secs(s)} ${s > 0 ? 'ahead' : 'behind'}`])
@@ -212,9 +230,27 @@ function fixtures(i: HealthInputs): HealthCheck {
   return { ...base, state: 'ok', facts, summary: 'On: expected on a development or test stack (supabase/seed.sql); never on a production database.' }
 }
 
+/** Final review C-I11: a nightly backup that stops is noticed. backup.ps1 records each good backup ('backup'; a test run's 'backup:test'). */
+export const BACKUP_STALE_HOURS = 26
+function backup(i: HealthInputs): HealthCheck {
+  const base = { key: 'backup' as const, label: 'Last backup' }
+  if (!i.db.ok) return { ...base, state: 'unknown', summary: 'Not known: the database could not be read.', facts: [] }
+  const run = i.db.status.housekeeping.find((h) => h.task === 'backup')
+  if (!run) return { ...base, state: 'warning', facts: [], summary: 'No backup is recorded yet (backup.ps1 records each good one; the nightly task: docs/drishti/runbooks/backup-restore.md section 4).' }
+  const ageSec = (i.now.getTime() - Date.parse(run.last_run_at)) / 1000
+  const facts: [string, string][] = [['Last good backup', ago(ageSec)]]
+  if (ageSec > BACKUP_STALE_HOURS * 3600) {
+    return {
+      ...base, state: i.production ? 'failed' : 'warning', facts,
+      summary: `The last good backup was ${ago(ageSec)}: the nightly backup has not worked since. Look at the scheduled task "Drishti nightly backup" and its last result (docs/drishti/runbooks/backup-restore.md section 4).`,
+    }
+  }
+  return { ...base, state: 'ok', facts, summary: `The last good backup was ${ago(ageSec)}.` }
+}
+
 /** The judgement of every check. "degraded" when any check failed; warnings and unknowns alone keep "ok". */
 export function assessHealth(i: HealthInputs): DetailedHealth {
-  const checks = [database(i), vault(i), gateway(i), worker(i), clock(i), migrations(i), disk(i), cleanup(i), fixtures(i)]
+  const checks = [database(i), vault(i), gateway(i), worker(i), clock(i), migrations(i), disk(i), cleanup(i), fixtures(i), backup(i)]
   return { status: checks.some((c) => c.state === 'failed') ? 'degraded' : 'ok', build: i.build, checkedAt: i.now.toISOString(), checks }
 }
 
@@ -232,6 +268,7 @@ export type HealthDeps = {
   expectedMigration: () => string | null
   timeoutMs?: number
   production?: boolean
+  workerExpected?: boolean
 }
 
 const within = <T>(p: Promise<T>, ms: number): Promise<T> =>
@@ -253,7 +290,7 @@ export async function collectHealth(d: HealthDeps): Promise<DetailedHealth> {
   } catch {
     expected = null
   }
-  return assessHealth({ build: d.build, now: d.now(), db, worker: w, gateway: g, expectedMigration: expected, disk, production: d.production })
+  return assessHealth({ build: d.build, now: d.now(), db, worker: w, gateway: g, expectedMigration: expected, disk, production: d.production, workerExpected: d.workerExpected })
 }
 
 /**

@@ -37,6 +37,8 @@ param(
   [switch]$IncludeConfig,
   [switch]$ApplyRetention,
   [switch]$RetentionOnly,
+  # Final review C-I11: how a good backup of the live database is recorded for the Health page ('backup:test' for a test run).
+  [ValidateSet('backup', 'backup:test')][string]$RecordAs = 'backup',
   [string]$ResultPath,
   [switch]$DryRun
 )
@@ -74,6 +76,18 @@ elseif (-not $dry) {
   if ($rootProblems.Count -gt 0) { throw "Backup refused: others may change or read the backup folder ($($rootProblems -join '; ')). Run drishti-services.ps1 -Action RepairAcl." }
 }
 
+# Checked before any work, in a dry run too: docker by its configured full path (review 2 nit), and an existing key folder (review 2
+# m3: not a link; nobody else may read or write it) before the Vault root key or the services' secrets could go into it.
+if (-not $RetentionOnly -and $db.Mode -eq 'Container') { $null = Get-DrishtiTool -Config $config -Name docker }
+if (-not $RetentionOnly -and ($IncludeVaultKey -or $IncludeConfig)) {
+  if (-not $keyDir) { throw 'VaultKey.KeyBackupDir is needed for the key and configuration copies (they hold secrets: never the dump folder).' }
+  if (Test-Path -LiteralPath $keyDir) {
+    if ((Get-Item -LiteralPath $keyDir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Refused: the key folder $keyDir is a junction or link. Nothing was copied." }
+    $keyProblems = @(Test-DrishtiPathAcl -Path $keyDir -Secret -TrustOperator)
+    if ($keyProblems.Count -gt 0) { throw "Refused: others may change or read the key folder ($($keyProblems -join '; ')). Nothing was copied. Run drishti-services.ps1 -Action RepairAcl." }
+  }
+}
+
 if (-not $RetentionOnly) {
   Write-DrishtiStep -Message "backup of database '$dbName' to $folder$(if ($dry) { ' (dry run: nothing is written)' })"
   if ($dry) {
@@ -108,7 +122,7 @@ if (-not $RetentionOnly) {
 
     $keyHash = Get-DrishtiVaultKeyHash -Config $config
     $keyCopy = $null
-    if (($IncludeVaultKey -or $IncludeConfig) -and -not $keyDir) { throw 'VaultKey.KeyBackupDir is needed for the key and configuration copies (they hold secrets: never the dump folder).' }
+    # The key folder: checked before the dump (above); made locked here when it is missing.
     if (($IncludeVaultKey -or $IncludeConfig) -and -not (Test-Path -LiteralPath $keyDir)) { Set-DrishtiAcl -Path $keyDir }
     if ($IncludeVaultKey) {
       $vk = $config.VaultKey
@@ -137,6 +151,13 @@ if (-not $RetentionOnly) {
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $folder 'manifest.json') -Encoding UTF8
     Write-DrishtiStep -Kind ok -Message "backup written: $folder ($([math]::Round($manifest.dump.bytes / 1MB, 1)) MB, migration $migration, $($counts['public.cameras']) cameras, $($counts['vault.secrets']) Vault secrets)"
     if ($ResultPath) { @{ folder = $folder; manifest = $manifest } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $ResultPath -Encoding UTF8 }
+    # Final review C-I11: the Health page's "Last backup" (housekeeping_runs, migration 0047), for the live database only.
+    $liveName = if ($db.ContainsKey('Name')) { [string]$db.Name } else { 'postgres' }
+    if ($dbName -eq $liveName) {
+      try {
+        Invoke-DrishtiSql -Config $config -Database $dbName -Sql "INSERT INTO public.housekeeping_runs AS h (task, last_run_at, last_removed, db_role) VALUES ('$RecordAs', now(), 0, 'backup.ps1') ON CONFLICT (task) DO UPDATE SET last_run_at = EXCLUDED.last_run_at, last_removed = 0, db_role = EXCLUDED.db_role, runs = h.runs + 1;" | Out-Null
+      } catch { Write-DrishtiStep -Kind warn -Message "the backup is good, but it could not be recorded for the Health page (migration 20261021000047 not applied?)" }
+    }
   }
 }
 
@@ -149,30 +170,31 @@ if ($ApplyRetention -or $RetentionOnly) {
   if (-not (Test-Path -LiteralPath $root)) { return }
   $rootProblems = @(Test-DrishtiPathAcl -Path $root -ReadAccounts $webReader -Secret -TrustOperator)
   if ($rootProblems.Count -gt 0) { throw "Retention refused: others may change or read the backup folder ($($rootProblems -join '; ')). Run drishti-services.ps1 -Action RepairAcl." }
-  $candidates = @()
+  # Read only: one record per folder of the backup folder (never entering a link), then the pure decision (Get-DrishtiRetentionPlan).
+  $folders = @()
   foreach ($e in [IO.Directory]::GetDirectories($root)) {
     $name = [IO.Path]::GetFileName($e)
-    if ($name -notmatch '^\d{8}-\d{6}-[a-z0-9-]+$') { continue }
-    if ([IO.File]::GetAttributes($e) -band [IO.FileAttributes]::ReparsePoint) { Write-DrishtiStep -Kind warn -Message "skipped ${name}: a junction or link, not a backup"; continue }
-    $m = Join-Path $e 'manifest.json'
-    if (-not [IO.File]::Exists($m) -or ([IO.File]::GetAttributes($m) -band [IO.FileAttributes]::ReparsePoint)) { continue }
+    $isReparse = [bool]([IO.File]::GetAttributes($e) -band [IO.FileAttributes]::ReparsePoint)
     $kind = $null
-    try { $kind = (Get-Content -LiteralPath $m -Raw | ConvertFrom-Json).kind } catch { $kind = $null }
-    if ($kind -ne 'drishti-backup') { continue }
-    $candidates += $name
+    $below = $false
+    if (-not $isReparse -and $name -match '^\d{8}-\d{6}-[a-z0-9-]+$') {
+      $m = Join-Path $e 'manifest.json'
+      if ([IO.File]::Exists($m) -and -not ([IO.File]::GetAttributes($m) -band [IO.FileAttributes]::ReparsePoint)) {
+        try { $kind = (Get-Content -LiteralPath $m -Raw | ConvertFrom-Json).kind } catch { $kind = $null }
+      }
+      if ($kind -eq 'drishti-backup') { $below = Test-DrishtiHasReparsePoint -Path $e }
+    }
+    $folders += [pscustomobject]@{ Name = $name; IsReparse = $isReparse; ManifestKind = $kind; HasReparseBelow = $below }
   }
-  $cutoff = (Get-Date).AddDays(-$days)
-  $i = 0
-  foreach ($name in ($candidates | Sort-Object -Descending)) {
-    $i++
-    $made = [datetime]::ParseExact($name.Substring(0, 15), 'yyyyMMdd-HHmmss', $null)
-    if ($i -le $keep -or $made -ge $cutoff) { continue }
-    $path = Join-Path $root $name
-    if (Test-DrishtiHasReparsePoint -Path $path) { Write-DrishtiStep -Kind warn -Message "kept ${path}: it contains a junction or link (not made by this script; look at it by hand)"; continue }
+  foreach ($d in (Get-DrishtiRetentionPlan -Folders $folders -Days $days -Keep $keep -Now (Get-Date))) {
+    $path = Join-Path $root $d.Name
+    if ($d.Action -eq 'skip-link') { Write-DrishtiStep -Kind warn -Message "skipped $($d.Name): a junction or link, not a backup"; continue }
+    if ($d.Action -eq 'keep-link') { Write-DrishtiStep -Kind warn -Message "kept ${path}: it contains a junction or link (not made by this script; look at it by hand)"; continue }
+    if ($d.Action -ne 'remove') { continue }
     if ($dry) { Write-DrishtiStep -Kind plan -Message "would remove the old backup $path (older than $days days, beyond the newest $keep)"; continue }
     if ($PSCmdlet.ShouldProcess($path, 'remove old backup')) {
       & $script:CmdExe /d /c "rmdir /s /q `"$path`"" | Out-Host
-      if (Test-Path -LiteralPath $path) { Write-DrishtiStep -Kind warn -Message "could not remove $path" } else { Write-DrishtiStep -Message "removed the old backup $name" }
+      if (Test-Path -LiteralPath $path) { Write-DrishtiStep -Kind warn -Message "could not remove $path" } else { Write-DrishtiStep -Message "removed the old backup $($d.Name)" }
     }
   }
 }

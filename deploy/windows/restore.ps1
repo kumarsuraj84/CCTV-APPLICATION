@@ -104,7 +104,7 @@ $swapState = $null
 try {
   if ($isLive -and $PreRestoreBackup) {
     Write-DrishtiStep -Message "backing up the live database $TargetDatabase before the restore"
-    & $script:PowerShellExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'backup.ps1') -ConfigPath $ConfigPath -Database $TargetDatabase -Tag 'before-restore'
+    & $script:PowerShellExe -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'backup.ps1') -ConfigPath $ConfigPath -Database $TargetDatabase -Tag 'before-restore'
     if ($LASTEXITCODE -ne 0) { throw 'The backup before the restore failed: nothing was restored, the live database is unchanged.' }
   }
   $exists = Invoke-DrishtiSql -Config $config -Database $maint -Sql "SELECT count(*) FROM pg_database WHERE datname = '$work';"

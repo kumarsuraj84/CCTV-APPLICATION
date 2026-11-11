@@ -12,6 +12,7 @@
     "test": "vitest run tests/unit",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
+    "test:windows-lab": "node scripts/windows-lab.mjs",
     "db:start": "supabase start -x logflare,vector,edge-runtime,realtime,imgproxy,supavisor",
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",

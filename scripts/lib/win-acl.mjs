@@ -6,7 +6,8 @@
 // Nothing here prints; on other systems these do nothing (the 0600 mode applies there).
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, rmSync } from 'node:fs'
+import { appendFileSync, existsSync, lstatSync, mkdirSync, rmSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 const isWindows = process.platform === 'win32'
@@ -46,9 +47,28 @@ function operatorSid() {
   return (operator = sid)
 }
 
+/**
+ * P5.4 fix round 3 (the owner's antivirus): the default test run never changes access rules on this computer. With
+ * DRISHTI_ACL_RECORD=<file> each lock is written to that file (one JSON line: the path and whether it is a folder) instead of being
+ * made, and the folder checks are skipped. Honoured ONLY for paths under the system temporary folder, so it can never leave a real
+ * env file (C:\Drishti\config) open; the real locks are exercised by the lab suite (tests/windows-lab, npm run test:windows-lab).
+ */
+function recording(p) {
+  const file = process.env.DRISHTI_ACL_RECORD
+  if (!file) return null
+  const tmp = path.resolve(os.tmpdir()).toLowerCase() + path.sep
+  if (!path.resolve(p).toLowerCase().startsWith(tmp)) throw new Error('DRISHTI_ACL_RECORD is for test folders under the temporary folder only: nothing was written.')
+  return file
+}
+
 /** Locks a file or folder: SYSTEM, Administrators (and the non-elevated operator) only. */
 export function lockPath(p, { folder = false } = {}) {
   if (!isWindows) return
+  const rec = recording(p)
+  if (rec) {
+    appendFileSync(rec, JSON.stringify({ lock: path.resolve(p), folder }) + '\n')
+    return
+  }
   const inh = folder ? '(OI)(CI)' : ''
   const args = [p, '/inheritance:r', '/grant:r', `*S-1-5-18:${inh}F`, '/grant:r', `*S-1-5-32-544:${inh}F`]
   const me = operatorSid()
@@ -66,7 +86,57 @@ export function lockedWorkDir(parent) {
   const dir = path.join(parent, `.gen-secrets-${process.pid}-${randomBytes(4).toString('hex')}`)
   mkdirSync(dir) // fails if it exists: never a folder someone else made
   lockPath(dir, { folder: true })
+  assertOwnFolder(dir) // review 2 nit: not swapped for somebody else's folder in the moment before the lock
   return { dir, done: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+/** The owner SID of a path (PowerShell's Get-Acl; the path is passed in the environment, never on a command line it could break). */
+function ownerOf(p) {
+  const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  return execFileSync(ps, ['-NoProfile', '-NonInteractive', '-Command', '(Get-Acl -LiteralPath $env:DRISHTI_ACL_PATH).GetOwner([Security.Principal.SecurityIdentifier]).Value'],
+    { encoding: 'utf8', env: { ...process.env, DRISHTI_ACL_PATH: p } }).trim()
+}
+
+/** Review 2 N-3 nit: a folder this run made and locked is still a plain folder owned by this person, the Administrators or SYSTEM. */
+export function assertOwnFolder(dir) {
+  if (!isWindows || recording(dir)) return
+  if (lstatSync(dir).isSymbolicLink()) throw new Error(`${dir} is a link, not the folder this run made: nothing was written.`)
+  const owner = ownerOf(dir)
+  const me = operatorSid() ?? currentSid()
+  if (![me, 'S-1-5-32-544', 'S-1-5-18'].includes(owner)) throw new Error(`${dir} belongs to ${owner}, not to the person running this: somebody replaced it. Nothing was written.`)
+}
+
+function currentSid() {
+  try {
+    const out = execFileSync(sys32('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' })
+    return /"(S-1-[0-9-]+)"/.exec(out)?.[1] ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Review 2 N-3: makes a folder and every missing folder above it, each one LOCKED as soon as it exists and checked (a plain folder of
+ * this person), top down, so not even C:\Drishti exists for a moment with the drive's open rules. An existing folder is left as it is.
+ */
+export function mkdirLocked(target) {
+  if (!isWindows) {
+    mkdirSync(target, { recursive: true, mode: 0o700 })
+    return
+  }
+  const missing = []
+  let p = path.resolve(target)
+  while (!existsSync(p)) {
+    missing.unshift(p)
+    const up = path.dirname(p)
+    if (up === p) break
+    p = up
+  }
+  for (const dir of missing) {
+    mkdirSync(dir) // fails if somebody made it in the meantime
+    lockPath(dir, { folder: true })
+    assertOwnFolder(dir)
+  }
 }
 
 export const windowsAcl = isWindows

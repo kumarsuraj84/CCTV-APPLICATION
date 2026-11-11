@@ -17,13 +17,13 @@
 //
 // After writing: restart the processes that read the changed keys (docs/drishti/runbooks/secret-rotation.md says which).
 import { execSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnvOutput } from './lib/env-output.mjs'
 import { ALL_KEYS, plan, render, SERVICE_KEYS, valueFor } from './lib/gen-secrets-core.mjs'
 import { insideDir, PRODUCTION_FILES, productionEnvFiles } from './lib/prod-env.mjs'
-import { lockPath, lockedWorkDir, windowsAcl } from './lib/win-acl.mjs'
+import { lockPath, lockedWorkDir, mkdirLocked, windowsAcl } from './lib/win-acl.mjs'
 
 const args = process.argv.slice(2)
 const flag = (name) => args.find((a) => a === `--${name}` || a.startsWith(`--${name}=`))
@@ -58,10 +58,8 @@ if (args.includes('--production')) {
     process.exit(0)
   }
   // Review I-7: a folder made here is locked at once; each file is created EMPTY, locked, and only then given its secrets.
-  if (!existsSync(target)) {
-    mkdirSync(target, { recursive: true })
-    lockPath(target, { folder: true })
-  }
+  // Review 2 N-3: every folder made here is locked as soon as it exists, C:Drishti itself included (not only the last one).
+  if (!existsSync(target)) mkdirLocked(target)
   // Re-review M-new-5: an existing folder may not be locked: the temporary copies are made in a locked folder of their own.
   const work = lockedWorkDir(target)
   try {

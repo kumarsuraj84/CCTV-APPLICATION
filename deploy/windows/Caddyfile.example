@@ -1,5 +1,6 @@
 # CityKart Drishti — one HTTPS address for the web app and the video gateway (P3-1, docs/drishti/runbook-tls.md).
-# Copy to C:\Drishti\caddy\Caddyfile, replace the host name and the certificate paths, never commit the real file or any key.
+# Copy to C:\Drishti\config\Caddyfile (the locked config folder; the DrishtiProxy service reads it: drishti-services.ps1 with
+# CaddyExe set, final review C-I12), replace the host name and the certificate paths, never commit the real file or any key.
 #
 #   https://drishti.citykart.local/          -> the web app      (Next.js, 127.0.0.1:3212, listening on loopback only)
 #   https://drishti.citykart.local/g/*       -> the video gateway (127.0.0.1:3412, GATEWAY_HOST=127.0.0.1): wss://…/g/ws, player scripts
@@ -24,7 +25,7 @@ http://drishti.citykart.local {
 
 drishti.citykart.local {
 	# Certificate and key issued by the company CA (PEM). Keep the key readable only by the service account that runs Caddy.
-	tls C:\Drishti\certs\drishti.crt C:\Drishti\certs\drishti.key
+	tls C:\Drishti\config\certs\drishti.crt C:\Drishti\config\certs\drishti.key
 	# Lab only, instead of the line above: Caddy's own local CA (self-signed; trust its root on the test PCs).
 	# tls internal
 
@@ -57,7 +58,7 @@ drishti.citykart.local {
 	}
 
 	log {
-		output file C:\Drishti\logs\caddy-access.log {
+		output file C:\Drishti\logs\DrishtiProxy\caddy-access.log {
 			roll_size 20MiB
 			roll_keep 10
 		}

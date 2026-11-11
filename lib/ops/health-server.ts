@@ -35,6 +35,7 @@ export function readDetailedHealth(env: Record<string, string | undefined> = pro
     disk: () => Promise.all(diskDirs(env, process.cwd()).map((d) => diskInfo(d))),
     expectedMigration: () => expectedMigration(process.cwd(), env),
     production: isProductionMode(env),
+    workerExpected: (env.DRISHTI_WORKER_EXPECTED ?? '').trim().toLowerCase() !== 'false',
   })
 }
 

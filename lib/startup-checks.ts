@@ -103,6 +103,12 @@ export function startupProblems(proc: ProcessName, env: Env = process.env, now: 
     if (proc === 'web' && !(Number.isInteger(hops) && hops > 0)) {
       warnings.push('TRUSTED_PROXY_HOPS is not set: the web app cannot tell client addresses apart (no per-address limit of sign-ins; one wrong try per delay keeps a named person waiting). Behind the TLS proxy set TRUSTED_PROXY_HOPS=1 (docs/drishti/runbook-tls.md).')
     }
+    // P5.4 fix round 3 (P5.5 report defect 1): a gateway on this computer only sits behind the TLS proxy, so every socket comes from
+    // 127.0.0.1; without the proxy count its per-address limits (open videos, attempts a minute) apply to everybody together.
+    const gatewayHost = (env.GATEWAY_HOST ?? '').trim().toLowerCase()
+    if (proc === 'gateway' && ['127.0.0.1', '::1', 'localhost'].includes(gatewayHost) && !(Number.isInteger(hops) && hops > 0)) {
+      warnings.push('TRUSTED_PROXY_HOPS is not set: the gateway listens on this computer only, behind the TLS proxy, so every video socket comes from 127.0.0.1 and the per-address limits apply to all users together. Set TRUSTED_PROXY_HOPS=1 in gateway.env (docs/drishti/runbook-tls.md).')
+    }
   }
   return { problems, warnings }
 }

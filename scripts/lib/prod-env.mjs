@@ -42,6 +42,8 @@ export const PRODUCTION_FILES = {
     lines: [
       ...COMMON, ['SUPABASE_VIDEO_GATEWAY_KEY', null], ['STREAM_TOKEN_SECRET', null],
       ['GATEWAY_PORT', '3412'], ['GATEWAY_HOST', '127.0.0.1'],
+      ['# Behind the TLS proxy every video socket comes from 127.0.0.1: believe the one hop Caddy adds (the per-address limits, P5.5).', undefined],
+      ['TRUSTED_PROXY_HOPS', '1'],
       ['# The web app address(es) people open, comma separated (the same as NEXT_PUBLIC_APP_URL behind Caddy).', undefined],
       ['GATEWAY_ALLOWED_ORIGINS', ''],
       ['GO2RTC_URL', 'http://127.0.0.1:1984'], ['GO2RTC_API_USERNAME', null], ['GO2RTC_API_PASSWORD', null],

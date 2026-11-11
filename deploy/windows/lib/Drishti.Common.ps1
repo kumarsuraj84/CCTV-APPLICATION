@@ -4,10 +4,11 @@
 
 Set-StrictMode -Version 2.0
 
-$script:DrishtiServiceNames = @('DrishtiGo2rtc', 'DrishtiWorker', 'DrishtiGateway', 'DrishtiWeb')
-# Stop the services people use first (no new video while the rest goes down), then the worker; go2rtc last. Start in reverse.
-$script:DrishtiStopOrder = @('DrishtiWeb', 'DrishtiGateway', 'DrishtiWorker', 'DrishtiGo2rtc')
-$script:DrishtiStartOrder = @('DrishtiGo2rtc', 'DrishtiWorker', 'DrishtiGateway', 'DrishtiWeb')
+$script:DrishtiServiceNames = @('DrishtiGo2rtc', 'DrishtiWorker', 'DrishtiGateway', 'DrishtiWeb', 'DrishtiProxy')
+# Stop the services people use first (no new video while the rest goes down), then the worker; go2rtc last. Start in reverse. The
+# TLS proxy (Caddy, final review C-I12) is the door: stopped first, started last.
+$script:DrishtiStopOrder = @('DrishtiProxy', 'DrishtiWeb', 'DrishtiGateway', 'DrishtiWorker', 'DrishtiGo2rtc')
+$script:DrishtiStartOrder = @('DrishtiGo2rtc', 'DrishtiWorker', 'DrishtiGateway', 'DrishtiWeb', 'DrishtiProxy')
 # The tables whose row counts a backup records and a restore must reproduce (same snapshot as the dump).
 $script:DrishtiCountTables = @(
   'public.organizations', 'public.profiles', 'public.regions', 'public.clusters', 'public.locations', 'public.assets', 'public.recorders',
@@ -59,6 +60,14 @@ function Get-DrishtiServiceDefinitions {
     [pscustomobject]@{ Name = 'DrishtiGo2rtc'; Display = 'CityKart Drishti go2rtc (loopback video server)'; Exe = $Config.Go2rtcExe; Args = @('-config', (Join-Path $Config.ConfigDir 'go2rtc.yaml'));
       WorkDir = (Split-Path -Parent $Config.Go2rtcExe); EnvFile = (Join-Path $Config.ConfigDir 'go2rtc.env'); StopTimeoutSec = 10; DependsOn = @() }
   )
+  # Final review C-I12: Caddy, the one listener on the network (runbook-tls.md), as a service too, from CaddyExe. Its Caddyfile and
+  # certificates live in the locked ConfigDir (read by its account only), its own data (Caddy's storage) in DataDir\caddy (written by
+  # its account only), its output in its log folder like every other service.
+  if ($Config.ContainsKey('CaddyExe') -and $Config.CaddyExe) {
+    $defs += [pscustomobject]@{ Name = 'DrishtiProxy'; Display = 'CityKart Drishti TLS proxy (Caddy)'; Exe = [string]$Config.CaddyExe
+      Args = @('run', '--config', (Join-Path $Config.ConfigDir 'Caddyfile'), '--adapter', 'caddyfile')
+      WorkDir = (Join-Path $Config.DataDir 'caddy'); EnvFile = (Join-Path $Config.ConfigDir 'proxy.env'); StopTimeoutSec = 10; DependsOn = @() }
+  }
   $wanted = @($Config.Services)
   return @($defs | Where-Object { $wanted -contains $_.Name })
 }
@@ -262,8 +271,9 @@ $script:PowerShellExe = Join-Path $script:Sys32 'WindowsPowerShell\v1.0\powershe
 function Get-DrishtiTool {
   param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)][ValidateSet('docker', 'git', 'npm', 'npx')][string]$Name)
   switch ($Name) {
-    'docker' { if ($Config.ContainsKey('DockerExe') -and $Config.DockerExe) { return [string]$Config.DockerExe } else { return 'docker' } }
-    'git' { if ($Config.ContainsKey('GitExe') -and $Config.GitExe) { return [string]$Config.GitExe } else { return 'git' } }
+    # Review 2 nit: never a docker or git found on PATH (the nightly task runs as SYSTEM): configured by full path, or refused.
+    'docker' { if ($Config.ContainsKey('DockerExe') -and $Config.DockerExe) { return [string]$Config.DockerExe } else { throw "DockerExe is not set in the configuration: give the full path of docker.exe (for example C:\Program Files\Docker\Docker\resources\bin\docker.exe)." } }
+    'git' { if ($Config.ContainsKey('GitExe') -and $Config.GitExe) { return [string]$Config.GitExe } else { throw "GitExe is not set in the configuration: give the full path of git.exe, or pass -BuildId." } }
     default { return (Join-Path (Split-Path -Parent $Config.NodeExe) "$Name.cmd") }
   }
 }
@@ -326,24 +336,195 @@ function Format-DrishtiEntry {
 }
 
 <#
-  Review N-1: makes a file or folder carry EXACTLY the given entries, whatever was there before:
-    - a missing folder is created first, before anything is written into it (review C-2, I-3);
-    - elevated: ownership is taken for the Administrators (takeown /A, with everything below a folder: a folder made by someone else
-      before the install no longer lets them change its rules); a path whose owner is not SYSTEM, the Administrators or TrustedInstaller
-      is named in a warning first;
-    - the access list is built from nothing (protected: no inherited entry; no explicit entry kept): SYSTEM and Administrators full,
-      the non-elevated operator (tests only), then the given accounts; written in one call (Set-AccessControl), so there is no moment
-      with a partial list;
-    - a folder: every file and folder below it loses its own explicit entries and inherits the new list (icacls /reset /T); the
-      plan then locks the sub-folders and files that need their own entries (parents before children).
+  Fix round 3 (re-review 2 N-3): the walk below a folder. It never follows a junction, symbolic link or other reparse point, never
+  changes a file that has more than one name (a hard link could be another file anywhere on the volume), and gives every other item
+  the Administrators as owner (when elevated) and no access entry of its own (it inherits the folder's). It is split in three:
+    - Get-DrishtiTreeEntries reads the tree (nothing is changed; .NET directory listing, one level at a time, never through a link);
+    - Get-DrishtiTreeProblems and Test-DrishtiNeedsReset decide, on plain data only (unit-tested with made-up entries,
+      tests/unit/windows-scripts.test.ts; the real file system is exercised by the lab suite, tests/windows-lab);
+    - Reset-DrishtiTreeItems changes only what the decision says.
+  Elevated, the restore, take-ownership and backup privileges are switched on first (a small C# helper compiled only then: never in a
+  normal prompt, never in the default tests), so an item's own rules cannot keep the Administrators out; no takeown, no /D answer in
+  the Windows language (review 2 m2).
+#>
+$script:DrishtiPrivilegeSource = @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class DrishtiPrivilege {
+  [StructLayout(LayoutKind.Sequential)] struct LUID { public uint Low; public int High; }
+  [StructLayout(LayoutKind.Sequential)] struct TOKEN_PRIVILEGES { public uint Count; public LUID Luid; public uint Attributes; }
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool LookupPrivilegeValue(string system, string name, out LUID luid);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES state, uint length, IntPtr previous, IntPtr returned);
+  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);
+
+  /** Switches one privilege of this process on; false when the token does not hold it (not elevated). */
+  public static bool Enable(string name) {
+    IntPtr token;
+    if (!OpenProcessToken(GetCurrentProcess(), 0x0020 | 0x0008, out token)) return false;
+    try {
+      LUID luid;
+      if (!LookupPrivilegeValue(null, name, out luid)) return false;
+      TOKEN_PRIVILEGES tp = new TOKEN_PRIVILEGES();
+      tp.Count = 1; tp.Luid = luid; tp.Attributes = 0x00000002;
+      if (!AdjustTokenPrivileges(token, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero)) return false;
+      return Marshal.GetLastWin32Error() == 0;
+    } finally { CloseHandle(token); }
+  }
+}
+'@
+
+function Enable-DrishtiAclPrivileges {
+  if (-not ('DrishtiPrivilege' -as [type])) { Add-Type -TypeDefinition $script:DrishtiPrivilegeSource -Language CSharp }
+  foreach ($p in @('SeRestorePrivilege', 'SeTakeOwnershipPrivilege', 'SeBackupPrivilege')) {
+    if (-not [DrishtiPrivilege]::Enable($p)) { throw "Could not switch on $p for this process (an elevated Administrator holds it)." }
+  }
+}
+
+<# Whether a file has more than one name (Windows PowerShell's own LinkType says 'HardLink' then). #>
+function Test-DrishtiHardLink {
+  param([Parameter(Mandatory)][string]$Path)
+  try { return ([string](Get-Item -LiteralPath $Path -Force).LinkType -eq 'HardLink') } catch { return $false }
+}
+
+<#
+  Everything below a folder (not the folder itself), read only, depth first, NEVER through a reparse point: one record per item with
+  Path, IsDirectory, IsReparse, IsHardLink, Error. A reparse point is listed and not entered.
+#>
+function Get-DrishtiTreeEntries {
+  param([Parameter(Mandatory)][string]$Path)
+  $out = New-Object System.Collections.Generic.List[object]
+  $stack = New-Object System.Collections.Generic.Stack[string]
+  $stack.Push([IO.Path]::GetFullPath($Path))
+  while ($stack.Count -gt 0) {
+    $dir = $stack.Pop()
+    $entries = $null
+    try { $entries = [IO.Directory]::GetFileSystemEntries($dir) } catch { $out.Add([pscustomobject]@{ Path = $dir; IsDirectory = $true; IsReparse = $false; IsHardLink = $false; Error = "cannot be read ($($_.Exception.InnerException.Message))" }); continue }
+    foreach ($e in $entries) {
+      $a = $null
+      try { $a = [IO.File]::GetAttributes($e) } catch { $out.Add([pscustomobject]@{ Path = $e; IsDirectory = $false; IsReparse = $false; IsHardLink = $false; Error = 'cannot be read' }); continue }
+      $isReparse = [bool]($a -band [IO.FileAttributes]::ReparsePoint)
+      $isDir = [bool]($a -band [IO.FileAttributes]::Directory)
+      $hard = (-not $isReparse) -and (-not $isDir) -and (Test-DrishtiHardLink -Path $e)
+      $out.Add([pscustomobject]@{ Path = $e; IsDirectory = $isDir; IsReparse = $isReparse; IsHardLink = $hard; Error = $null })
+      if ($isDir -and -not $isReparse) { $stack.Push($e) }
+    }
+  }
+  return $out.ToArray()
+}
+
+<#
+  Pure: what refuses a lock in a tree's records (Get-DrishtiTreeEntries). A link other than the checked ones; a file with more than
+  one name; an item that could not be read. Plain strings, one per problem.
+#>
+function Get-DrishtiTreeProblems {
+  param([object[]]$Entries = @(), [string[]]$AllowedLinks = @())
+  $allowed = @($AllowedLinks | ForEach-Object { ([string]$_).TrimEnd('\').ToLowerInvariant() })
+  $out = @()
+  foreach ($e in $Entries) {
+    if ($e.Error) { $out += "$($e.Path): $($e.Error)"; continue }
+    if ($e.IsReparse) {
+      if ($allowed -notcontains ([string]$e.Path).TrimEnd('\').ToLowerInvariant()) { $out += "$($e.Path): a junction or link the installation did not make (not followed)" }
+      continue
+    }
+    if ($e.IsHardLink) { $out += "$($e.Path): has more than one name, a hard link (not changed)" }
+  }
+  return $out
+}
+
+<# Pure: an item needs its rules reset when it has an entry of its own, a protected list, or (when an owner is wanted) another owner. #>
+function Test-DrishtiNeedsReset {
+  param([int]$ExplicitRules, [bool]$Protected, [string]$Owner, [string]$WantedOwner)
+  if ($ExplicitRules -gt 0 -or $Protected) { return $true }
+  if ($WantedOwner -and $Owner -ne $WantedOwner) { return $true }
+  return $false
+}
+
+<# Pure: whether the owner of an item that existed already is one the installation trusts (SYSTEM, Administrators, TrustedInstaller; the non-elevated operator in tests). #>
+function Test-DrishtiTrustedOwner {
+  param([string]$Owner, [string[]]$Operator = @())
+  return (@($script:SidSystem, $script:SidAdmins, $script:SidTrustedInstaller) + $Operator) -contains $Owner
+}
+
+<# Changes the items of a tree that need it (never a link, never a hard link: those refused before). #>
+function Reset-DrishtiTreeItems {
+  param([object[]]$Entries = @(), [string]$OwnerSid)
+  $owner = if ($OwnerSid) { New-Object Security.Principal.SecurityIdentifier($OwnerSid) } else { $null }
+  $problems = @()
+  foreach ($e in $Entries) {
+    if ($e.IsReparse -or $e.IsHardLink -or $e.Error) { continue }
+    try {
+      $sections = [Security.AccessControl.AccessControlSections]'Access, Owner'
+      $cur = if ($e.IsDirectory) { [IO.Directory]::GetAccessControl($e.Path, $sections) } else { [IO.File]::GetAccessControl($e.Path, $sections) }
+      $explicit = @($cur.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])).Count
+      $curOwner = try { $cur.GetOwner([Security.Principal.SecurityIdentifier]).Value } catch { '' }
+      if (-not (Test-DrishtiNeedsReset -ExplicitRules $explicit -Protected $cur.AreAccessRulesProtected -Owner $curOwner -WantedOwner $OwnerSid)) { continue }
+    } catch { }
+    try {
+      $s = if ($e.IsDirectory) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity }
+      $s.SetAccessRuleProtection($false, $false)
+      if ($owner) { $s.SetOwner($owner) }
+      if ($e.IsDirectory) { [IO.Directory]::SetAccessControl($e.Path, $s) } else { [IO.File]::SetAccessControl($e.Path, $s) }
+    } catch { $problems += "$($e.Path): $($_.Exception.InnerException.Message)" }
+  }
+  return $problems
+}
+
+<#
+  Pure: is a link the junction update.ps1 makes? A junction whose target is a folder directly under the releases folder (and that
+  target exists and is not itself a link: checked by the caller and passed in).
+#>
+function Test-DrishtiReleaseLink {
+  param([bool]$IsJunction, [string]$Target, [string]$ReleasesDir, [bool]$TargetIsPlainFolder)
+  if (-not $IsJunction -or -not $Target -or -not $TargetIsPlainFolder) { return $false }
+  $t = $Target
+  if ($t.StartsWith('\??\')) { $t = $t.Substring(4) }
+  $full = [IO.Path]::GetFullPath($t).TrimEnd('\')
+  return ([IO.Path]::GetDirectoryName($full) -ieq ([IO.Path]::GetFullPath($ReleasesDir).TrimEnd('\')))
+}
+
+<#
+  The only link the installation makes is <InstallRoot>\app\current, a junction to one release under <InstallRoot>\app\releases
+  (update.ps1). It is trusted only when it is exactly that. Anything else is refused (review 2 N-3: a user could plant it pointing at
+  C:\ before the install). Returns the release folder it points at, or $null when there is no link.
+#>
+function Get-DrishtiCurrentRelease {
+  param([Parameter(Mandatory)][string]$InstallRoot)
+  $link = Join-Path $InstallRoot 'app\current'
+  $item = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
+  if (-not $item) { return $null }
+  $releases = Join-Path $InstallRoot 'app\releases'
+  $target = [string](@($item.Target) | Select-Object -First 1)
+  if ($target.StartsWith('\??\')) { $target = $target.Substring(4) }
+  $plain = $false
+  if ($target) {
+    try { $plain = [IO.Directory]::Exists($target) -and -not ([IO.File]::GetAttributes($target) -band [IO.FileAttributes]::ReparsePoint) } catch { $plain = $false }
+  }
+  $isJunction = [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and [string]$item.LinkType -eq 'Junction'
+  if (-not (Test-DrishtiReleaseLink -IsJunction $isJunction -Target $target -ReleasesDir $releases -TargetIsPlainFolder $plain)) {
+    throw "Refused: $link is not the junction update.ps1 makes (to a release in $releases); somebody else may have made it. Look at it, remove the link itself (cmd /c rmdir `"$link`", which never touches its target), and run this again."
+  }
+  return [IO.Path]::GetFullPath($target).TrimEnd('\')
+}
+
+<#
+  Review N-1 and review 2 N-3: makes a file or folder carry EXACTLY the given entries, whatever was there before, without ever following
+  a link:
+    - a path that exists is REFUSED when it is itself a link, or when its owner is not SYSTEM, the Administrators or TrustedInstaller
+      (a folder somebody else made before the install: look at it first); a missing folder is created first (review C-2, I-3);
+    - everything below an existing folder is read first, never through a link: a link other than the checked app\current junction, or
+      a file with more than one name, REFUSES the lock before anything is changed;
+    - the item itself is locked FIRST, in one call: the Administrators as owner (elevated), no inherited entry, no entry of anybody
+      else; SYSTEM and Administrators full, the non-elevated operator (tests only), then the given accounts;
+    - only then the items below are reset (owner, no entry of their own: they inherit the new list). The plan then locks the
+      sub-folders and files that need their own entries (parents before children).
 #>
 function Set-DrishtiAcl {
-  param([Parameter(Mandatory)][string]$Path, [string[]]$ReadAccounts = @(), [string[]]$ModifyAccounts = @(), [string[]]$ListAccounts = @(), [string[]]$AllowedLinks = @(), [switch]$IsFile, [switch]$DryRun)
+  param([Parameter(Mandatory)][string]$Path, [string[]]$ReadAccounts = @(), [string[]]$ModifyAccounts = @(), [string[]]$ListAccounts = @(), [string[]]$AllowedLinks = @(), [string]$InstallRoot = '', [switch]$IsFile, [switch]$DryRun)
   $leaf = $IsFile -or (Test-Path -LiteralPath $Path -PathType Leaf)
   $exists = Test-Path -LiteralPath $Path
-  if (-not $leaf -and -not $exists) {
-    if ($DryRun) { Write-DrishtiStep -Kind plan -Message "would create $Path" } else { New-Item -ItemType Directory -Force -Path $Path | Out-Null }
-  }
   $admin = Test-DrishtiAdministrator
   $entries = New-Object System.Collections.Generic.List[object]
   $entries.Add(@(('*' + $script:SidSystem), 'Full'))
@@ -354,30 +535,43 @@ function Set-DrishtiAcl {
   foreach ($a in $ListAccounts) { $entries.Add(@($a, 'List')) }
   $shown = ($entries | ForEach-Object { Format-DrishtiEntry -Account $_[0] -Kind $_[1] -Leaf:$leaf }) -join ' '
   $owner = if ($admin) { 'owner Administrators' } else { 'owner unchanged (not elevated)' }
-  if ($DryRun) { Write-DrishtiStep -Kind plan -Message "would lock ${Path}: $owner; every other entry removed, nothing inherited; only $shown"; return }
+  if ($DryRun) {
+    if (-not $leaf -and -not $exists) { Write-DrishtiStep -Kind plan -Message "would create $Path" }
+    $below = if ($leaf) { '' } else { '; then everything below it walked without following any link (a link or hard link refuses)' }
+    Write-DrishtiStep -Kind plan -Message "would lock ${Path}: $owner; every other entry removed, nothing inherited; only $shown$below"
+    return
+  }
 
+  $tree = @()
   if ($exists) {
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Refused: $Path is a junction or link, not a folder or file the installation made. Look at it, remove it, and run this again." }
     $current = $null
     try { $current = (Get-Acl -LiteralPath $Path).GetOwner([Security.Principal.SecurityIdentifier]).Value } catch { $current = '(unreadable)' }
-    $trustedOwners = @($script:SidSystem, $script:SidAdmins, $script:SidTrustedInstaller) + @(Get-DrishtiOperatorGrant | ForEach-Object { $_.Substring(1) })
-    if ($trustedOwners -notcontains $current) {
-      Write-DrishtiStep -Kind warn -Message "$Path existed already and belongs to $current, not to the Administrators: somebody may have made it before the install. Ownership is taken and its rules are rebuilt; check what is in it."
+    if (-not (Test-DrishtiTrustedOwner -Owner $current -Operator @(Get-DrishtiOperatorGrant | ForEach-Object { $_.Substring(1) }))) {
+      throw "Refused: $Path existed already and belongs to $current, not to SYSTEM or the Administrators: somebody may have made it before the install. Look at what is in it, remove it (or, once you are sure of it, take it over: takeown /F `"$Path`" /A), and run this again."
     }
+    if ($leaf) {
+      if (Test-DrishtiHardLink -Path $Path) { throw "Refused: $Path has more than one name (a hard link): it may be another file. Look at it, remove it, and run this again." }
+    } else {
+      # The one link the installation makes, checked before anything is done (review 2 N-3).
+      $links = @()
+      if ($InstallRoot) {
+        foreach ($l in $AllowedLinks) {
+          $full = [IO.Path]::GetFullPath($l).TrimEnd('\')
+          if (-not $full.StartsWith([IO.Path]::GetFullPath($Path).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { continue }
+          if (Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue) { $null = Get-DrishtiCurrentRelease -InstallRoot $InstallRoot; $links += $full }
+        }
+      }
+      if ($admin) { Enable-DrishtiAclPrivileges }
+      $tree = @(Get-DrishtiTreeEntries -Path $Path)
+      $found = @(Get-DrishtiTreeProblems -Entries $tree -AllowedLinks $links)
+      if ($found.Count -gt 0) { throw "Refused below $Path (nothing was changed; nothing was followed): $($found -join '; '). Look at each one, remove it, and run this again." }
+    }
+  } elseif (-not $leaf) {
+    New-Item -ItemType Directory -Path $Path | Out-Null # new and empty: nothing below it to walk
   }
-  # Never follow a junction or link out of the folder (one planted in a folder made before the install could point at C:\Windows).
-  if (-not $leaf) {
-    $allowed = @($AllowedLinks | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') })
-    $foreign = @(Get-DrishtiReparsePoints -Path $Path | Where-Object { $allowed -notcontains $_.TrimEnd('\') })
-    if ($foreign.Count -gt 0) { throw "Refused: $Path contains a junction or link the installation did not make ($($foreign -join ', ')). Look at it, remove it, and run this again." }
-  }
-  $hasChildren = (-not $leaf) -and @([IO.Directory]::GetFileSystemEntries($Path)).Count -gt 0
-  if ($admin) {
-    $takeArgs = @('/F', $Path, '/A')
-    if (-not $leaf) { $takeArgs += @('/R', '/D', 'Y') }
-    & $script:TakeownExe @takeArgs | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Could not take ownership of $Path for the Administrators (takeown exit $LASTEXITCODE)." }
-    $global:LASTEXITCODE = 0
-  }
+  if ($admin -and $leaf) { Enable-DrishtiAclPrivileges }
   $sec = if ($leaf) { New-Object Security.AccessControl.FileSecurity } else { New-Object Security.AccessControl.DirectorySecurity }
   $sec.SetAccessRuleProtection($true, $false)
   if ($admin) { $sec.SetOwner((New-Object Security.Principal.SecurityIdentifier($script:SidAdmins))) }
@@ -388,10 +582,10 @@ function Set-DrishtiAcl {
   }
   if ($leaf) { [IO.File]::SetAccessControl($Path, $sec) } else { [IO.Directory]::SetAccessControl($Path, $sec) }
   Write-DrishtiStep -Message "locked ${Path}: $shown"
-  if ($hasChildren) {
-    & $script:IcaclsExe (Join-Path $Path '*') '/reset' '/T' '/C' '/Q' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Could not reset the rules below $Path (icacls exit $LASTEXITCODE)." }
-    $global:LASTEXITCODE = 0
+  if ($tree.Count -gt 0) {
+    $ownerSid = if ($admin) { $script:SidAdmins } else { $null }
+    $problems = @(Reset-DrishtiTreeItems -Entries $tree -OwnerSid $ownerSid)
+    if ($problems.Count -gt 0) { throw "Refused below $Path (the folder itself is locked; nothing was followed): $($problems -join '; '). Look at each one, and run this again." }
   }
 }
 
@@ -425,6 +619,12 @@ function Get-DrishtiAclPlan {
   if ($Config.ContainsKey('VaultKey') -and $Config.VaultKey -and $Config.VaultKey.KeyBackupDir) { & $add $Config.VaultKey.KeyBackupDir @() @() @() $true }
   $go = @($Definitions | Where-Object { $_.Name -eq 'DrishtiGo2rtc' })
   if ($go.Count -gt 0 -and $Config.Go2rtcExe) { & $add (Split-Path -Parent $Config.Go2rtcExe) @($accounts['DrishtiGo2rtc']) @() @() $false }
+  $proxy = @($Definitions | Where-Object { $_.Name -eq 'DrishtiProxy' })
+  if ($proxy.Count -gt 0) {
+    & $add (Split-Path -Parent $Config.CaddyExe) @($accounts['DrishtiProxy']) @() @() $false
+    & $add (Join-Path $Config.ConfigDir 'certs') @($accounts['DrishtiProxy']) @() @() $true
+    & $add (Join-Path $Config.DataDir 'caddy') @() @($accounts['DrishtiProxy']) @() $true
+  }
   # A path below another one is locked after it (its reset would undo the child's own entries otherwise).
   $i = 0
   $ordered = @($plan.ToArray() | ForEach-Object { [pscustomobject]@{ Depth = ([IO.Path]::GetFullPath($_.Path).TrimEnd('\') -split '\\').Count; Index = $i++; Entry = $_ } } | Sort-Object Depth, Index | ForEach-Object { $_.Entry })
@@ -504,7 +704,7 @@ function Assert-DrishtiSafeToRun {
   DbUrl needs Host, Port, Name, PasswordEnv and a user (MigrateUser or User).
 #>
 function Assert-DrishtiConfigConsistent {
-  param([Parameter(Mandatory)]$Config)
+  param([Parameter(Mandatory)]$Config, [switch]$ForUpdate)
   $db = $Config.Database
   $mode = if ($Config.ContainsKey('MigrationMode')) { [string]$Config.MigrationMode } else { '' }
   if (@('Local', 'DbUrl') -notcontains $mode) { throw "MigrationMode must be 'DbUrl' (production) or 'Local' (the Supabase CLI's stack on a test server); it is '$mode'." }
@@ -513,10 +713,63 @@ function Assert-DrishtiConfigConsistent {
     if (-not ($Config.ContainsKey('TestServer') -and $Config.TestServer -eq $true)) {
       throw "MigrationMode 'Local' (the Supabase CLI's local stack, seeded for tests) is for a test server only: set TestServer = `$true there, or use MigrationMode 'DbUrl' on a production server."
     }
+    if ($mode -eq 'Local' -and $ForUpdate) {
+      # Review 2 m1: the CLI's local stack is seeded (its test fixture switch is on): update.ps1 would refuse it every time, and switching
+      # the switch off to get past that would mark a TEST database as a production one for good.
+      throw "update.ps1 is for production databases (MigrationMode 'DbUrl'). On a test server with the Supabase CLI's local stack (seeded for tests: its test fixture switch is on), update by hand instead: npx supabase migration up --local, then point app\current at the new release (docs/drishti/runbooks/update-rollback.md section 5). Do NOT switch the test fixture switch off to get past this: the update would then mark the test database as a production one for good."
+    }
   } else {
     foreach ($k in @('Host', 'Port', 'Name', 'PasswordEnv')) { if (-not ($db.ContainsKey($k) -and $db[$k])) { throw "MigrationMode 'DbUrl' needs Database.$k." } }
     if (-not (($db.ContainsKey('MigrateUser') -and $db.MigrateUser) -or ($db.ContainsKey('User') -and $db.User))) { throw "MigrationMode 'DbUrl' needs Database.MigrateUser (or Database.User)." }
   }
+}
+
+<#
+  Review I-6 (pure, unit-tested with made-up folders): which folders of the backup folder the retention removes. Only folders this
+  script made are candidates: a plain folder (not a link) named <yyyyMMdd-HHmmss>-<tag> whose manifest.json says kind drishti-backup.
+  Kept: everything younger than Days, and the newest Keep whatever their age. A candidate that holds a link anywhere is kept and named
+  ('keep-link'); a folder that is itself a link is named and skipped ('skip-link'); anything else is 'ignore'.
+  Folders: records Name, IsReparse, ManifestKind, HasReparseBelow. Returns records Name, Action (remove, keep, keep-link, skip-link,
+  ignore).
+#>
+function Get-DrishtiRetentionPlan {
+  param([object[]]$Folders = @(), [int]$Days = 30, [int]$Keep = 7, [datetime]$Now = (Get-Date))
+  $pattern = '^\d{8}-\d{6}-[a-z0-9-]+$'
+  $out = @()
+  $candidates = @()
+  foreach ($f in $Folders) {
+    if ($f.IsReparse) { if ($f.Name -match $pattern) { $out += [pscustomobject]@{ Name = $f.Name; Action = 'skip-link' } }; continue }
+    if ($f.Name -notmatch $pattern -or $f.ManifestKind -ne 'drishti-backup') { $out += [pscustomobject]@{ Name = $f.Name; Action = 'ignore' }; continue }
+    $candidates += $f
+  }
+  $cutoff = $Now.AddDays(-$Days)
+  $i = 0
+  foreach ($c in ($candidates | Sort-Object -Property Name -Descending)) {
+    $i++
+    $made = [datetime]::ParseExact($c.Name.Substring(0, 15), 'yyyyMMdd-HHmmss', $null)
+    $action = if ($i -le $Keep -or $made -ge $cutoff) { 'keep' } elseif ($c.HasReparseBelow) { 'keep-link' } else { 'remove' }
+    $out += [pscustomobject]@{ Name = $c.Name; Action = $action }
+  }
+  return $out
+}
+
+<#
+  Final review C-I5 (pure, unit-tested): is the new release broken (roll back), or does the server need a look (keep the release)?
+  Release problems: the version endpoint did not answer with the new build; a started service is not running; the gateway does not
+  answer; the database is below the level the release needs. Otherwise a public health other than 'ok' is a problem of the server.
+#>
+function Get-DrishtiReleaseVerdictFrom {
+  param([bool]$VersionAnswered, [string[]]$NotRunning = @(), [bool]$GatewayChecked, [bool]$GatewayAnswered, [string]$DbLevel, [string]$Expected, [string]$PublicStatus, [string]$VersionUrl = '/api/version', [string]$BuildId = '', [string]$LogDir = '')
+  $reasons = @()
+  if (-not $VersionAnswered) { $reasons += "$VersionUrl did not answer with build $BuildId" }
+  foreach ($n in $NotRunning) { $reasons += "$n is not running (its start-up self-check may have refused: see its log in $LogDir)" }
+  if ($GatewayChecked -and -not $GatewayAnswered) { $reasons += 'the gateway does not answer its /g/health' }
+  if (-not $DbLevel) { $reasons += 'the database level could not be read' }
+  elseif ($Expected -and $DbLevel -lt $Expected) { $reasons += "the database is at $DbLevel, the release needs $Expected" }
+  if ($reasons.Count -gt 0) { return @{ Verdict = 'release'; Reasons = $reasons } }
+  if ($PublicStatus -eq 'ok') { return @{ Verdict = 'ok'; Reasons = @() } }
+  $said = if ($PublicStatus) { $PublicStatus } else { 'nothing' }
+  return @{ Verdict = 'environment'; Reasons = @("the public health says $said") }
 }
 
 <# Review I-6: true when the path or anything below it is a junction or symbolic link (never followed: GetFileSystemEntries per level). #>

@@ -36,7 +36,7 @@ param(
   [ValidateSet('Restore', 'None')][string]$RollbackDatabase = 'Restore',
   [switch]$RestartGo2rtc,
   [switch]$SkipBuild,
-  [ValidateSet('', 'Migrate', 'Start', 'Health', 'Restore')][string]$SimulateFailure = '',
+  [ValidateSet('', 'Migrate', 'Start', 'Health', 'Restore', 'Environment')][string]$SimulateFailure = '',
   [switch]$DryRun
 )
 
@@ -46,7 +46,7 @@ $dry = [bool]($DryRun -or $WhatIfPreference)
 if ($SimulateFailure -and -not $dry) { throw '-SimulateFailure is for a dry run only.' }
 
 $config = Read-DrishtiConfig -Path $ConfigPath
-Assert-DrishtiConfigConsistent -Config $config # review M-13: the database mode and the migration mode fit together
+Assert-DrishtiConfigConsistent -Config $config -ForUpdate # review M-13 (and 2 m1): the modes fit, and never the CLI's seeded test stack
 $services = Join-Path $PSScriptRoot 'drishti-services.ps1'
 $backup = Join-Path $PSScriptRoot 'backup.ps1'
 $restore = Join-Path $PSScriptRoot 'restore.ps1'
@@ -55,6 +55,10 @@ $releases = Join-Path $appRoot 'releases'
 $current = Join-Path $appRoot 'current'
 $timeout = if ($config.ContainsKey('HealthTimeoutSec')) { [int]$config.HealthTimeoutSec } else { 180 }
 $appServices = @('DrishtiWeb', 'DrishtiGateway', 'DrishtiWorker')
+# Final review C-I5: a worker kept stopped on purpose (a pilot without monitoring): WorkerExpected = $false in the configuration (and
+# DRISHTI_WORKER_EXPECTED=false in web.env for the Health page). The update then neither starts it nor counts it.
+$workerExpected = -not ($config.ContainsKey('WorkerExpected') -and $config.WorkerExpected -eq $false)
+if (-not $workerExpected) { $appServices = @($appServices | Where-Object { $_ -ne 'DrishtiWorker' }) }
 if ($RestartGo2rtc) { $appServices += 'DrishtiGo2rtc' }
 $appServices = @($appServices | Where-Object { @($config.Services) -contains $_ })
 $everyService = @($config.Services)
@@ -72,14 +76,16 @@ if (-not $dry) {
 }
 if (-not $BuildId) {
   $sha = ''
-  try { $sha = (& (Get-DrishtiTool -Config $config -Name git) -C $SourcePath rev-parse --short=7 HEAD 2>$null) } catch { $sha = '' }
+  $git = Get-DrishtiTool -Config $config -Name git # refuses when GitExe is not configured (never git from PATH)
+  try { $sha = (& $git -C $SourcePath rev-parse --short=7 HEAD 2>$null) } catch { $sha = '' }
   if (-not $sha) { $sha = 'nogit' }
   $BuildId = "$((Get-Date).ToString('yyyyMMdd-HHmm'))-$sha"
 }
 $expected = Get-DrishtiExpectedMigration -SourcePath $SourcePath
 $release = Join-Path $releases $BuildId
 $previous = $null
-if (Test-Path -LiteralPath $current) { $previous = (Get-Item -LiteralPath $current).Target | Select-Object -First 1 }
+# Review 2 N-3: the current release is trusted only when appcurrent is the junction this script makes, to a release folder.
+$previous = Get-DrishtiCurrentRelease -InstallRoot $config.InstallRoot
 $drive = (Get-Item -LiteralPath $config.InstallRoot -ErrorAction SilentlyContinue)
 Write-DrishtiStep -Message "update to build $BuildId (needs migration $expected) from $SourcePath$(if ($dry) { ' (dry run: nothing is changed)' })"
 Write-DrishtiStep -Message "current release: $(if ($previous) { $previous } else { 'none (first installation)' })"
@@ -120,7 +126,6 @@ function Get-DrishtiDbLevel {
 <# Review I-2: the connection string carries no password; PGPASSWORD is set for the child only, and removed again. #>
 function Get-DrishtiMigrationCommand {
   $mode = [string]$config.MigrationMode # checked by Assert-DrishtiConfigConsistent
-  if ($mode -eq 'Local') { return @{ Args = @('supabase', 'migration', 'up', '--local', '--workdir', $release); Password = $null; Shown = "npx supabase migration up --local --workdir $release" } }
   $db = $config.Database
   $user = if ($db.ContainsKey('MigrateUser') -and $db.MigrateUser) { [string]$db.MigrateUser } else { [string]$db.User }
   $url = "postgresql://$([uri]::EscapeDataString($user))@$($db.Host):$($db.Port)/$($db.Name)"
@@ -193,7 +198,7 @@ $tag = 'pre-update-' + ($BuildId.ToLowerInvariant() -replace '[^a-z0-9-]', '-')
 if ($tag.Length -gt 40) { $tag = $tag.Substring(0, 40) }
 if ($dry) { Write-DrishtiStep -Kind plan -Message "would run: backup.ps1 -Tag $tag (database dump in one snapshot, manifest, Vault root key hash)" }
 else {
-  & $script:PowerShellExe -NoProfile -ExecutionPolicy Bypass -File $backup -ConfigPath $ConfigPath -Tag $tag -ResultPath $backupResult
+  & $script:PowerShellExe -NoProfile -NonInteractive -File $backup -ConfigPath $ConfigPath -Tag $tag -ResultPath $backupResult
   if ($LASTEXITCODE -ne 0) { throw 'The backup failed: nothing was stopped or changed.' }
 }
 $backupFolder = if ($dry) { '<the backup just made>' } else { (Get-Content -LiteralPath $backupResult -Raw | ConvertFrom-Json).folder }
@@ -217,6 +222,41 @@ function Write-DrishtiStopped([string]$Why) {
 $migrated = $false
 $switched = $false
 $exitCode = 0
+$environmentProblem = $false
+
+<#
+  Final review C-I5: is the new release itself broken? Release problems (roll back): /api/version does not answer with the new build id
+  within HealthTimeoutSec; one of the started services is not running (a start-up self-check refused it: see its log); the gateway does
+  not answer its /g/health; the database is not at the level the release needs. Anything else that makes /api/health "degraded" is a
+  problem of the server (disk, worker, Vault, clocks, backup) and does not roll back.
+#>
+function Get-DrishtiReleaseVerdict {
+  $versionUrl = if ($config.ContainsKey('VersionUrl')) { $config.VersionUrl } else { 'http://127.0.0.1:3212/api/version' }
+  $healthUrl = if ($config.ContainsKey('HealthUrl')) { $config.HealthUrl } else { 'http://127.0.0.1:3212/api/health' }
+  $gatewayUrl = if ($config.ContainsKey('GatewayHealthUrl')) { $config.GatewayHealthUrl } else { 'http://127.0.0.1:3412/g/health' }
+  if ($dry) {
+    Write-DrishtiStep -Kind plan -Message "would check the new release for up to $timeout s: $versionUrl = $BuildId, $($appServices -join ', ') running, $gatewayUrl answering, the database at $expected; a release failure rolls back"
+    Write-DrishtiStep -Kind plan -Message "would then read ${healthUrl}: 'degraded' for another reason (disk, worker, Vault, clocks, backup) is reported, the new release kept, nothing rolled back"
+    if ($SimulateFailure -eq 'Environment') { return @{ Verdict = 'environment'; Reasons = @('simulated: the disk is nearly full') } }
+    return @{ Verdict = 'ok'; Reasons = @() }
+  }
+  # The facts (read only), then the pure decision (Get-DrishtiReleaseVerdictFrom, unit-tested).
+  $deadline = (Get-Date).AddSeconds($timeout)
+  $answered = $false
+  while ((Get-Date) -lt $deadline -and -not $answered) {
+    try { $answered = ((Invoke-RestMethod -Uri $versionUrl -TimeoutSec 5 -UseBasicParsing).build -eq $BuildId) } catch { $answered = $false }
+    if (-not $answered) { Start-Sleep -Seconds 5 }
+  }
+  $notRunning = @($appServices | Where-Object { $s = Get-Service -Name $_ -ErrorAction SilentlyContinue; -not $s -or $s.Status -ne 'Running' })
+  $gatewayChecked = $appServices -contains 'DrishtiGateway'
+  $gatewayAnswered = $false
+  if ($gatewayChecked) { try { Invoke-RestMethod -Uri $gatewayUrl -TimeoutSec 5 -UseBasicParsing | Out-Null; $gatewayAnswered = $true } catch { $gatewayAnswered = $false } }
+  $level = $null
+  try { $level = [string](Get-DrishtiDbLevel) } catch { $level = $null }
+  $status = $null
+  try { $status = (Invoke-RestMethod -Uri $healthUrl -TimeoutSec 5 -UseBasicParsing).status } catch { $status = $null }
+  return Get-DrishtiReleaseVerdictFrom -VersionAnswered $answered -NotRunning $notRunning -GatewayChecked $gatewayChecked -GatewayAnswered $gatewayAnswered -DbLevel $level -Expected $expected -PublicStatus $status -VersionUrl $versionUrl -BuildId $BuildId -LogDir $config.LogDir
+}
 try {
   Invoke-DrishtiServices -Action Stop -Names $appServices
   if ($SimulateFailure -eq 'Migrate') { throw 'simulated failure: the migrations' }
@@ -227,9 +267,16 @@ try {
   $switched = $true
   if ($SimulateFailure -eq 'Start' -or $SimulateFailure -eq 'Restore') { throw 'simulated failure: a service did not start' }
   Invoke-DrishtiServices -Action Start -Names $appServices
-  if ($SimulateFailure -eq 'Health') { throw 'simulated failure: not healthy in time' }
-  if (-not (Wait-DrishtiHealthy -Config $config -BuildId $BuildId -TimeoutSec $timeout -DryRun:$dry)) { throw 'The new release did not become healthy.' }
-  Write-DrishtiStep -Kind ok -Message "updated to $BuildId"
+  if ($SimulateFailure -eq 'Health') { throw 'simulated failure: the new release does not answer' }
+  # Final review C-I5: only a failure that shows the NEW RELEASE is broken rolls back (and may restore the database). A degraded Health
+  # page for a reason of the server (disk, a worker stopped on purpose or in standby, the Vault canary, the clocks, a missed backup) is
+  # reported and the new release is kept: restoring the database would not cure it and would lose the data written since step 3.
+  $verdict = Get-DrishtiReleaseVerdict
+  if ($verdict.Verdict -eq 'release') { throw "The new release is not working: $($verdict.Reasons -join '; ')" }
+  if ($verdict.Verdict -eq 'environment') {
+    $environmentProblem = $true
+    Write-DrishtiStep -Kind warn -Message "updated to $BuildId, which works; but the Health page reports a problem of the server, not of the release ($($verdict.Reasons -join '; ')). Nothing was rolled back. Look at /admin/health and docs/drishti/runbooks/incidents.md."
+  } else { Write-DrishtiStep -Kind ok -Message "updated to $BuildId" }
   # The admin-only copy of the scripts the nightly backup runs comes from the release that now runs.
   Invoke-DrishtiCommand -FilePath $script:RobocopyExe -ArgumentList @((Join-Path $release 'deploy\windows'), (Join-Path $config.InstallRoot 'scripts'), '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/NP') -DryRun:$dry -Display "robocopy $release\deploy\windows -> $(Join-Path $config.InstallRoot 'scripts')" -AllowExitCodes @(0, 1, 2, 3)
   # Keep the newest releases (KeepReleases), never the one running or the one before it.
@@ -253,7 +300,7 @@ try {
         Write-DrishtiStep -Kind plan -Message "would run: restore.ps1 -BackupPath $backupFolder -TargetDatabase $dbName -AllowLiveDatabase -PreRestoreBackup (a backup of the database as it is now first; the restored copy proven, then swapped in; the current one kept)"
         if ($SimulateFailure -eq 'Restore') { throw 'simulated failure: the database restore' }
       } else {
-        & $script:PowerShellExe -NoProfile -ExecutionPolicy Bypass -File $restore -ConfigPath $ConfigPath -BackupPath $backupFolder -TargetDatabase $dbName -AllowLiveDatabase -PreRestoreBackup -UnderUpdateLock -SourcePath $(if ($previous) { $previous } else { $SourcePath })
+        & $script:PowerShellExe -NoProfile -NonInteractive -File $restore -ConfigPath $ConfigPath -BackupPath $backupFolder -TargetDatabase $dbName -AllowLiveDatabase -PreRestoreBackup -UnderUpdateLock -SourcePath $(if ($previous) { $previous } else { $SourcePath })
         if ($LASTEXITCODE -ne 0) { throw "the database restore failed (restore.ps1 exit code $LASTEXITCODE; its lines above say what was and was not changed)" }
       }
     } elseif ($migrated) {
@@ -277,4 +324,6 @@ try {
 } finally {
   if ($lock) { $lock.Dispose() }
 }
+# The update worked; the server needs a look (exit code 3, never a roll back).
+if ($environmentProblem -and $exitCode -eq 0 -and -not $dry) { $exitCode = 3 }
 exit $exitCode
