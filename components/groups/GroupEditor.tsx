@@ -2,9 +2,9 @@
 
 import { useState, useTransition } from 'react'
 import { toast } from 'sonner'
-import { addByKeywordAction, addCamerasAction, removeCameraAction, type GroupActionState } from '@/lib/actions/groups'
+import { addCamerasAction, removeCameraAction, type GroupActionState } from '@/lib/actions/groups'
+import { AddByName } from '@/components/groups/AddByName'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import type { GroupCamera, StoreCameraChoice } from '@/lib/queries/groups'
@@ -33,7 +33,6 @@ export function GroupEditor({ groupId, cameras, canManage, stores, selectedStore
   const removable = (id: string) => !removableIds || removableIds.includes(id.toLowerCase())
   const [pending, start] = useTransition()
   const [picked, setPicked] = useState<Set<string>>(new Set())
-  const [word, setWord] = useState('')
 
   const toggle = (id: string) =>
     setPicked((prev) => {
@@ -48,13 +47,6 @@ export function GroupEditor({ groupId, cameras, canManage, stores, selectedStore
       const res = await addCamerasAction(groupId, [...picked])
       tell(res, 'Cameras added.')
       if (res.ok) setPicked(new Set())
-    })
-
-  const addByWord = () =>
-    start(async () => {
-      const res = await addByKeywordAction(groupId, word)
-      tell(res, 'Cameras added.')
-      if (res.ok) setWord('')
     })
 
   const remove = (cameraId: string) =>
@@ -144,20 +136,7 @@ export function GroupEditor({ groupId, cameras, canManage, stores, selectedStore
             )}
           </div>
 
-          <form
-            className="space-y-1.5 border-t pt-4"
-            onSubmit={(e) => {
-              e.preventDefault()
-              addByWord()
-            }}
-          >
-            <Label htmlFor="word">Add by name</Label>
-            <p id="word-hint" className="text-sm text-muted-foreground">Adds every camera you can see, in any location, whose name contains this word (up to 500 at a time). Capitals do not matter.</p>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Input id="word" value={word} maxLength={100} onChange={(e) => setWord(e.target.value)} autoComplete="off" aria-describedby="word-hint" placeholder="For example: door" className="sm:max-w-sm" />
-              <Button type="submit" variant="outline" disabled={pending || word.trim() === ''}>Add matching cameras</Button>
-            </div>
-          </form>
+          <AddByName groupId={groupId} />
         </section>
       )}
     </div>

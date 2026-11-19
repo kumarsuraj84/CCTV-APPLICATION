@@ -164,6 +164,9 @@ const ALLOWED: Record<string, string> = {
   'lib/actions/groups.ts#addRuleAction': 'camera groups never widen access (a rule needs cctv.live for the whole place)',
   'lib/actions/groups.ts#removeRuleAction': 'camera groups never widen access',
   'lib/actions/groups.ts#removeCameraAction': 'camera groups never widen access',
+  // Final clean-up (C M-20): the "Add by name" preview reads only; the undo takes out cameras the person may watch live.
+  'lib/actions/groups.ts#previewByKeywordAction': 'reads only (what "Add by name" would add); camera groups never widen access',
+  'lib/actions/groups.ts#removeCamerasAction': 'camera groups never widen access (the undo of an addition; each camera checked for cctv.live)',
   'lib/actions/monitor.ts#requestCheckNowAction': 'asks for an early check; writes only the request (3 a minute)',
   'lib/actions/playback.ts#listRecordedDaysAction': 'viewing: recordings calendar, checked per camera (cctv.playback, no MFA capability)',
   'lib/actions/playback.ts#listDaySegmentsAction': 'viewing: day search, checked per camera',

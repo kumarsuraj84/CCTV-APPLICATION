@@ -5,13 +5,22 @@ import { hasGroupEditingAuthority, MSG_GROUPS_DENIED } from '@/lib/admin/roles'
 import type { Actor } from '@/lib/admin/types'
 import { holds } from '@/lib/auth/capabilities'
 import { requireProfile } from '@/lib/auth/profile'
-import { addCameras, addCamerasByKeyword, addGroupRule, createGroup, deleteGroup, removeCamera, removeGroupRule, type GroupDeps, type RuleKind } from '@/lib/groups/service'
+import {
+  addCameras, addCamerasByKeyword, addGroupRule, createGroup, deleteGroup, previewCamerasByKeyword, removeCamera, removeCameras, removeGroupRule, type GroupDeps,
+  type RuleKind,
+} from '@/lib/groups/service'
 import { logger } from '@/lib/observability/logger'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 
 /** What every group action answers with. `message` is plain text for a toast; nothing here is ever thrown to the browser. */
-export type GroupActionState = { ok?: boolean; error?: string; message?: string; groupId?: string; values?: Record<string, string> }
+export type GroupActionState = {
+  ok?: boolean; error?: string; message?: string; groupId?: string; values?: Record<string, string>
+  /** Final clean-up (C M-20): the cameras an addition put in the group (for its undo). */
+  cameraIds?: string[]
+  /** Final clean-up (C M-20): what "Add by name" would add (nothing changed yet). */
+  preview?: { cameras: { id: string; name: string }[]; truncated: boolean }
+}
 
 const DENIED = MSG_GROUPS_DENIED
 const FAILED = 'Something went wrong. Please try again.'
@@ -54,9 +63,27 @@ export async function deleteGroupAction(groupId: string): Promise<GroupActionSta
 
 export async function addCamerasAction(groupId: string, cameraIds: string[]): Promise<GroupActionState> {
   return run('addCamerasAction', async (deps, actor) => {
-    const res = await addCameras(deps, actor, String(groupId), Array.isArray(cameraIds) ? cameraIds : [])
+    const res = await addCameras(deps, actor, String(groupId), Array.isArray(cameraIds) ? cameraIds : [], { returnIds: true })
     if (!res.ok) return { error: res.error }
-    return { ok: true, message: res.added === 0 ? 'Those cameras are already in the group.' : `Added ${plural(res.added, 'camera', 'cameras')} to the group.` }
+    return { ok: true, cameraIds: res.ids ?? [], message: res.added === 0 ? 'Those cameras are already in the group.' : `Added ${plural(res.added, 'camera', 'cameras')} to the group.` }
+  })
+}
+
+/** Final clean-up (C M-20): what "Add by name" would add; reads only. */
+export async function previewByKeywordAction(groupId: string, keyword: string): Promise<GroupActionState> {
+  return run('previewByKeywordAction', async (deps, actor) => {
+    const res = await previewCamerasByKeyword(deps, actor, String(groupId), String(keyword ?? ''))
+    if (!res.ok) return { error: res.error }
+    return { ok: true, preview: { cameras: res.cameras, truncated: res.truncated } }
+  })
+}
+
+/** Final clean-up (C M-20): the undo of an addition (only the cameras it put in the group). */
+export async function removeCamerasAction(groupId: string, cameraIds: string[]): Promise<GroupActionState> {
+  return run('removeCamerasAction', async (deps, actor) => {
+    const res = await removeCameras(deps, actor, String(groupId), Array.isArray(cameraIds) ? cameraIds : [])
+    if (!res.ok) return { error: res.error }
+    return { ok: true, message: `Took ${plural(res.removed, 'camera', 'cameras')} out of the group again.` }
   })
 }
 

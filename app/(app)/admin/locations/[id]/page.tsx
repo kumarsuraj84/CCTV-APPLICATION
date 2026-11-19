@@ -63,7 +63,7 @@ export default async function LocationPage({ params }: { params: Promise<{ id: s
               </ul>
             )}
             {detail.unmappedCameras > 0 && <p className="text-sm">{detail.unmappedCameras} {detail.unmappedCameras === 1 ? 'camera is' : 'cameras are'} not linked to an NVR channel (they are not checked or shown). Link them on an NVR’s page.</p>}
-            {findings.length > 0 && <p className="text-sm"><Link href="/admin/reconciliation" className={LINK}>{findings.length} {findings.length === 1 ? 'item needs' : 'items need'} a look</Link> after the last camera discovery.</p>}
+            {findings.length > 0 && <p className="text-sm"><Link href={`/admin/reconciliation?location=${l.id}`} className={LINK}>{findings.length} {findings.length === 1 ? 'item needs' : 'items need'} a look</Link> after the last camera discovery.</p>}
             <details className="rounded-md border p-3">
               <summary className="cursor-pointer text-sm font-medium">Add an NVR</summary>
               <div className="mt-3"><RecorderForm locationId={l.id} /></div>

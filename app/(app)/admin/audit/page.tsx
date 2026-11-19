@@ -8,7 +8,7 @@ import { AUDIT_ACTIONS, AUDIT_CATEGORY_LABELS, type AuditCategory } from '@/lib/
 import { requireAdministration } from '@/lib/auth/profile'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
-import { formatDateTime } from '@/lib/time'
+import { AuditEntries } from '@/components/admin/AuditEntries'
 
 export const metadata = { title: 'Audit log' }
 
@@ -82,31 +82,7 @@ export default async function AuditPage({ searchParams }: { searchParams: Promis
         <p className="text-sm text-muted-foreground">Nothing matches these filters.</p>
       ) : (
         <>
-          <div className="overflow-x-auto rounded-xl border bg-card">
-            <table className="w-full min-w-[640px] text-sm">
-              <caption className="sr-only">Audit entries, newest first</caption>
-              <thead className="text-left text-muted-foreground">
-                <tr className="border-b">
-                  <th scope="col" className="px-3 py-2 font-medium">When</th>
-                  <th scope="col" className="px-3 py-2 font-medium">Who</th>
-                  <th scope="col" className="px-3 py-2 font-medium">What</th>
-                  <th scope="col" className="px-3 py-2 font-medium">About</th>
-                  <th scope="col" className="px-3 py-2 font-medium">Details</th>
-                </tr>
-              </thead>
-              <tbody>
-                {result.rows.map((r) => (
-                  <tr key={r.id} className="border-b align-top last:border-0">
-                    <td className="whitespace-nowrap px-3 py-2">{formatDateTime(r.at)}</td>
-                    <td className="px-3 py-2"><span translate="no">{r.who}</span></td>
-                    <td className="px-3 py-2">{r.what}</td>
-                    <td className="px-3 py-2"><span translate="no">{r.target}</span></td>
-                    <td className="max-w-[28rem] break-words px-3 py-2 text-muted-foreground">{r.detail}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <AuditEntries rows={result.rows} />
           <nav aria-label="Pages" className="flex gap-2 text-sm">
             {f.page > 0 && <Link href={auditHref(f, { page: f.page - 1 })} className="rounded-md border px-3 py-1.5">Newer</Link>}
             {result.hasMore && <Link href={auditHref(f, { page: f.page + 1 })} className="rounded-md border px-3 py-1.5">Older</Link>}

@@ -10,6 +10,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 
 export const metadata = { title: 'Regions and clusters' }
 const LINK = 'font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring'
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 
 // P2-5c-1 brief item 1 (ruling C-1): Organization → Region → Cluster → Location. Both levels are optional for every location. A
 // cluster is moved to another region with the effect on access shown first; a region or cluster is archived only when empty.
@@ -38,11 +39,18 @@ export default async function RegionsPage() {
         </ul>
         <div className="border-t pt-3"><h3 className="mb-2 text-sm font-semibold">Add a region</h3><RegionForm /></div>
       </Section>
-      <Section id="clusters" title={`Clusters (${clusters.filter((c) => !c.archived_at).length})`} description={`${unclustered} ${unclustered === 1 ? 'location has' : 'locations have'} no cluster.`}>
+      <Section id="clusters" title={`Clusters (${clusters.filter((c) => !c.archived_at).length})`}>
+        {/* Final clean-up (review C M-20): the counts open the locations they count. */}
+        <p className="text-sm text-muted-foreground">
+          <Link href="/admin/locations?cluster=none" className={LINK}>{plural(unclustered, 'location', 'locations')}</Link> {unclustered === 1 ? 'has' : 'have'} no cluster.
+        </p>
         <ul className="space-y-3">
           {clusters.map((c) => (
             <li key={c.id} className="space-y-3 rounded-md border p-3">
-              <p className="text-sm text-muted-foreground">{c.locations} {c.locations === 1 ? 'location' : 'locations'} · {c.region_id ? `region ${regionName.get(c.region_id) ?? ''}` : 'No region'}{c.archived_at ? ' · archived' : ''}</p>
+              <p className="text-sm text-muted-foreground">
+                {c.archived_at ? plural(c.locations, 'location', 'locations') : <Link href={`/admin/locations?cluster=${c.id}`} className={LINK}>{plural(c.locations, 'location', 'locations')}</Link>}
+                {' · '}{c.region_id ? `region ${regionName.get(c.region_id) ?? ''}` : 'No region'}{c.archived_at ? ' · archived' : ''}
+              </p>
               {c.archived_at ? <p className="font-medium">{c.code} · {c.name}</p> : (
                 <>
                   <ClusterForm regions={liveRegions} cluster={c} />

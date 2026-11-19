@@ -18,7 +18,8 @@ import { sanitizeError } from '@/lib/observability/sanitize-error'
 //   group_deleted              detail { capability, name }
 //   group_cameras_added        cameras chosen one by one; detail { capability, cameraIds, count, added }
 //   group_cameras_added_by_keyword  cameras found by a word in their name; detail { capability, cameraIds, count, keyword, added }
-//   group_camera_removed       detail { capability, cameraIds: [camera], count: 1 }
+//   group_camera_removed       detail { capability, cameraIds: [camera], count: 1 }; the undo of an addition (final clean-up, C M-20):
+//                              detail { capability, cameraIds, count, undo: 'add' }
 // Adding that changes nothing (every camera already in the group) records nothing.
 
 // `rls` is the person's own signed-in client: whatever it can read is what that person may see.
@@ -131,19 +132,22 @@ export async function deleteGroup(deps: GroupDeps, actor: Actor, groupId: string
 
 type AddAction = 'group_cameras_added' | 'group_cameras_added_by_keyword'
 
-/** Puts cameras into a group. Cameras already there are ignored; `added` counts only the new ones. */
-async function insertItems(deps: GroupDeps, actor: Actor, groupId: string, cameraIds: string[], action: AddAction, detail: Record<string, string | number>): Promise<Result<{ added: number }>> {
-  if (cameraIds.length === 0) return { ok: true, added: 0 }
+/** Puts cameras into a group. Cameras already there are ignored; `added` counts only the new ones, `ids` names them. */
+async function insertItems(deps: GroupDeps, actor: Actor, groupId: string, cameraIds: string[], action: AddAction, detail: Record<string, string | number>): Promise<Result<{ added: number; ids: string[] }>> {
+  if (cameraIds.length === 0) return { ok: true, added: 0, ids: [] }
   const rows = cameraIds.map((camera_id) => ({ org_id: actor.orgId, group_id: groupId, camera_id }))
   const { data, error } = await deps.admin.from('camera_group_items').upsert(rows, { onConflict: 'group_id,camera_id', ignoreDuplicates: true }).select('camera_id')
   if (error) return { ok: false, error: sanitizeError(error, { route: 'addCameras', fallback: 'Could not add the cameras.' }) }
   const added = (data ?? []).map((r) => r.camera_id as string)
   if (added.length > 0) await audit(deps, actor, action, groupId, { ...detail, added: added.length }, [...added].sort())
-  return { ok: true, added: added.length }
+  return { ok: true, added: added.length, ids: [...added].sort() }
 }
 
-/** All-or-nothing: if any id is a camera the person may not watch live (or does not exist), nothing is added and the answer is the same either way. */
-export async function addCameras(deps: GroupDeps, actor: Actor, groupId: string, cameraIds: string[]): Promise<Result<{ added: number }>> {
+/**
+ * All-or-nothing: if any id is a camera the person may not watch live (or does not exist), nothing is added and the answer is the same
+ * either way. `returnIds` (final clean-up, C M-20): also name the cameras this call put in the group, for an undo.
+ */
+export async function addCameras(deps: GroupDeps, actor: Actor, groupId: string, cameraIds: string[], opts: { returnIds?: boolean } = {}): Promise<Result<{ added: number; ids?: string[] }>> {
   const may = await mayEdit(deps, actor)
   if (!may.ok) return may
   if (!Array.isArray(cameraIds)) return { ok: false, error: 'Choose at least one camera.' }
@@ -158,7 +162,32 @@ export async function addCameras(deps: GroupDeps, actor: Actor, groupId: string,
   const allowed = await camerasFor(deps.rls, 'cctv.live', ids)
   if (!allowed.ok) return { ok: false, error: 'Could not check the cameras.' }
   if (allowed.ids.length !== ids.length) return { ok: false, error: NOT_AVAILABLE }
-  return insertItems(deps, actor, groupId, ids, 'group_cameras_added', {})
+  const res = await insertItems(deps, actor, groupId, ids, 'group_cameras_added', {})
+  if (!res.ok) return res
+  return opts.returnIds ? { ok: true, added: res.added, ids: res.ids } : { ok: true, added: res.added }
+}
+
+/**
+ * Final clean-up (C M-20): takes the given cameras out of a group in one go (the undo of an addition). All-or-nothing like addCameras:
+ * every camera must be one the person may watch live, else nothing changes. Cameras not in the group are ignored. Audited once.
+ */
+export async function removeCameras(deps: GroupDeps, actor: Actor, groupId: string, cameraIds: string[]): Promise<Result<{ removed: number }>> {
+  const may = await mayEdit(deps, actor)
+  if (!may.ok) return may
+  if (!Array.isArray(cameraIds)) return { ok: false, error: 'Choose at least one camera.' }
+  const ids = [...new Set(cameraIds.map((id) => (typeof id === 'string' ? id.trim().toLowerCase() : '')))]
+  if (ids.length === 0 || ids.includes('')) return { ok: false, error: 'Choose at least one camera.' }
+  if (ids.length > MAX_PER_REQUEST) return { ok: false, error: `Remove at most ${MAX_PER_REQUEST} cameras at a time.` }
+  const found = await findGroup(deps, actor, groupId)
+  if (!found.ok) return found
+  const allowed = await camerasFor(deps.rls, 'cctv.live', ids)
+  if (!allowed.ok) return { ok: false, error: 'Could not check the cameras.' }
+  if (allowed.ids.length !== ids.length) return { ok: false, error: NOT_AVAILABLE }
+  const { data, error } = await deps.admin.from('camera_group_items').delete().eq('group_id', groupId).eq('org_id', actor.orgId).in('camera_id', ids).select('camera_id')
+  if (error) return { ok: false, error: sanitizeError(error, { route: 'removeCameras', fallback: 'Could not take the cameras out.' }) }
+  const removed = (data ?? []).map((r) => r.camera_id as string).sort()
+  if (removed.length > 0) await audit(deps, actor, 'group_camera_removed', groupId, { undo: 'add' }, removed)
+  return { ok: true, removed: removed.length }
 }
 
 // The keyword is matched as a case-insensitive regular expression, so every character that means something in one is escaped:
@@ -190,6 +219,33 @@ export async function addCamerasByKeyword(deps: GroupDeps, actor: Actor, groupId
   if (!live.ok) return { ok: false, error: 'Could not check the cameras.' }
   const res = await insertItems(deps, actor, groupId, live.ids, 'group_cameras_added_by_keyword', { keyword: word })
   return res.ok ? { ok: true, added: res.added, truncated } : res
+}
+
+/**
+ * Final clean-up (C M-20): what "Add by name" would add, without changing anything: the cameras the person may watch live whose name
+ * contains the word (any capitals, at most 500 looked at, in name order) and that are not in the group yet. The screen then adds
+ * exactly these (addCameras, each checked again) and can undo that addition (removeCameras).
+ */
+export async function previewCamerasByKeyword(deps: GroupDeps, actor: Actor, groupId: string, keyword: string): Promise<Result<{ cameras: { id: string; name: string }[]; truncated: boolean }>> {
+  const may = await mayEdit(deps, actor)
+  if (!may.ok) return may
+  const word = typeof keyword === 'string' ? keyword.trim() : ''
+  if (!word) return { ok: false, error: 'Enter a word to look for in the camera names.' }
+  if (word.length > 100) return { ok: false, error: 'The word can be at most 100 characters.' }
+  const found = await findGroup(deps, actor, groupId)
+  if (!found.ok) return found
+  const { data, error } = await deps.rls.from('cameras').select('id, name').filter('name', 'imatch', escapeRegex(word)).order('name').order('id').limit(MAX_PER_REQUEST + 1)
+  if (error) return { ok: false, error: sanitizeError(error, { route: 'previewCamerasByKeyword', fallback: 'Could not look up the cameras.' }) }
+  const matched = (data ?? []).slice(0, MAX_PER_REQUEST)
+  const truncated = (data ?? []).length > MAX_PER_REQUEST
+  const live = await camerasFor(deps.rls, 'cctv.live', matched.map((c) => c.id))
+  if (!live.ok) return { ok: false, error: 'Could not check the cameras.' }
+  const items = await deps.rls.from('camera_group_items').select('camera_id').eq('group_id', groupId).limit(5000)
+  if (items.error) return { ok: false, error: 'Could not look up the group.' }
+  const inGroup = new Set((items.data ?? []).map((r) => String(r.camera_id).toLowerCase()))
+  const allowed = new Set(live.ids.map((id) => id.toLowerCase()))
+  const cameras = matched.filter((c) => allowed.has(c.id.toLowerCase()) && !inGroup.has(c.id.toLowerCase())).map((c) => ({ id: c.id, name: c.name }))
+  return { ok: true, cameras, truncated }
 }
 
 // ── Dynamic rules (P2-5c-1 brief item 6; ruling C-1) ─────────────────────────────────────────────────────────────────────────
