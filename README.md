@@ -1,5 +1,10 @@
 # CityKart Drishti (CKDRISHTI)
 
+> **Release 1 status (2026-11-19):** built, tested on the development PC against fake NVRs, and reviewed (by AI reviewers); ready for a
+> supervised pilot at one real location, not yet validated on real hardware or a real server. Start with
+> [`docs/drishti/RELEASE-1-HANDOVER.md`](docs/drishti/RELEASE-1-HANDOVER.md) (pass/fail table, owner decisions, go-live plan); the
+> review history is [`docs/drishti/REVIEW-HISTORY.md`](docs/drishti/REVIEW-HISTORY.md).
+
 CityKart Drishti (formerly "CityKart Network Monitoring Hub"; the npm package name `cctv-hub` is unchanged). Monitors CCTV cameras, NVRs, servers, attendance machines, footfall counters and any other IP device,
 with live camera feeds and per-user access to locations (stores, head office, distribution centres, warehouses) and cameras. Built on the Citykart Desk stack
 (Next.js 16, Supabase/PostgreSQL, shadcn/ui). The app listens on **port 3212**.
