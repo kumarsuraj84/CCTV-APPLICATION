@@ -152,3 +152,60 @@ built (two in-memory tables, one per process, a fixed 15-minute window). Where t
   "offline stays offline however old" (lib/queries/status.ts) and changes every screen: owner decision. M-7 (estate-wide "Check now" for a
   location-scoped holder): with NB-1 an extra run can no longer cost refused logins; the per-person scope needs the shared check-now test
   rework of the other builder. M-3 / M-8: documentation only (admin guide, incidents runbook) for their owners. M-5 was fixed by P5.4.
+
+## Rulings of the final fix round, builder Y (2026-11-11; release 1 final reviews A, B and C) — the owner may overrule any of these
+- **FY-1 Two-step sign-in is enforced by checks, not by a remembered step** (A I-1, B I-1). In production (`DRISHTI_ENV=production`) the
+  web app refuses to start, and the Health page's "Two-step sign-in" check fails, while any active organisation has it off without an
+  audited opt-out. The opt-out is `security_set_mfa(org, actor, false, reason)`: a super administrator on the Health page (fresh sign-in)
+  or the database owner / service key with no person, with a reason of 10 to 500 characters; every change, also one made by hand in psql,
+  is written to the audit log with the actor and the reason, and an opt-out shows as a warning on the Health page and at start-up. On a
+  database marked as a production one (`test_fixture_switch.production`, set by update.ps1) an organisation without settings and a new
+  settings row are enforced by default; the local stack stays off by default. `ops_health_status()` reports the counts (`mfa`).
+  Chosen over the reviewer's environment-variable opt-out (`DRISHTI_MFA_OFF_OK`) because the reason and who gave it must be in the
+  audit log. First production start: create the first super administrator after the database is marked, or switch it on with the SQL
+  line the refusal prints (runbook-tls section 5).
+- **FY-2 Ceiling on code guessing** (B I-2). Consecutive failed codes per person in `mfa_code_failures`; a try is counted before the code
+  is checked (row lock: tries at the same moment never pass the limit) and given back only when the auth server could not judge it; a
+  right code resets the count. 10 wrong codes in a row lock the code step for 15 minutes, each further 10 double it (at most 24 hours);
+  100 lock it until a super administrator unlocks it on the People page (with a reason; or by resetting the person's two-step sign-in).
+  Locks and unlocks are audited (auth_events `mfa_locked`, `mfa_locked_for_good`, `mfa_lock_cleared`; admin_audit_log
+  `mfa_code_lock_cleared`). The functions are for the web app only and keyed by the signed-in person's own id; an unknown id gets the
+  plain "go ahead" answer and nothing is stored, so nothing tells anyone who has a factor. Sessions are not ended at the lock (the locked
+  person cannot reach aal2 anyway); the People page shows the count and the lock.
+- **FY-3 Password resets by a plain administrator** (A M-1). Allowed only when every live grant of the person is held by the
+  administrator at an equal or wider scope and for as long (the rule of giving a grant); otherwise only a super administrator may reset
+  (checked in SQL, `access_check_password_reset`). The one-time password still goes to the acting administrator (no e-mail delivery in
+  Release 1).
+- **FY-4 Rights checked in SQL** (A M-2, M-3, M-6, M-7). Every inventory function checks "super administrator, or administrator with
+  admin.inventory for the whole organisation" (the import's rule) and needs a named actor from the web app; admin.* and cctv.export are
+  refused for non-administrators on every path and taken away by any role change (trigger); the row security on admin.* also needs an
+  administrative role; recorder_store_credential and revoke_user_sessions take the organisation (the old forms are the service key's);
+  a person is created through create_person (the web app has no INSERT on profiles). Tests that gave admin.* or export to viewers were
+  rewritten to administrators or to expect the refusal.
+- **FY-5 One access or people change per organisation at a time** (A M-4): a transaction advisory lock taken before the actor's own rights
+  are read. Two super administrators revoking each other: the first wins, the second is refused because it no longer holds admin.access.
+  No separate "last holder of admin.access" rule: the last active super administrator rule and P-1 keep one person able to manage access.
+- **FY-6 Group rules** (A M-5): removing a place rule needs live view of the whole place, as adding it does; name rules as before.
+- **FY-7 Request bodies** (B minor 2). Next.js 16 has one global Server Action limit and one proxy buffer limit, not one per action: both
+  6 MB (was 30 MB). The proxy refuses larger bodies per page from Content-Length before any session is looked up: 64 KB on public pages,
+  1 MB on signed-in pages, 6 MB only on the import page; a Server Action without a length outside the import page is refused (411).
+- **FY-8 Production settings** (B minor 3): refused in production: an empty or non-https NEXT_PUBLIC_APP_URL, CSP_REPORT_ONLY, a video
+  address that is neither a path of the app nor wss/https, and a gateway GATEWAY_HOST other than 127.0.0.1 / ::1 (in
+  lib/security/production-checks.ts, called with one line from the web self-check and the gateway).
+- **FY-9 Export downloads** (B minor 4): /api/vod answers only Sec-Fetch-Site same-origin or none (a typed address).
+- **FY-10 Player scripts** (B minor 5, D-12): a pinned copy of go2rtc 1.9.9's two player files in public/vendor/go2rtc-1.9.9, loaded from
+  the app's origin with a subresource integrity hash; both files pinned by a test. The gateway's script route is kept (unused by the
+  app) so the gateway's own tests and older pages keep working; removing it is a later clean-up.
+- **FY-11 Gateway** (B minors 6, 8): browser frames at most 4 KB (a bigger frame closes the socket, 1009); /g/health answers only a direct
+  request from this computer (the Health page reads it there); through the proxy (X-Forwarded-For / Forwarded) it is "Not found".
+- **FY-12 Own password change** (B minor 7): ends the open video of every sign-in too.
+- **FY-13 Device import** (C I-8): strict reader, one transaction (check first, then everything or nothing), messages without cell
+  values; an empty location or notes cell keeps what is saved and the token `(clear)` empties it; a device is matched by address and port
+  among the five device types only, another kind of equipment or an NVR at that address is never changed. One import per organisation
+  at a time (advisory lock) for the device import; the location import is not serialised yet.
+- **FY-14 Manage devices** (C I-7): lists and changes only the five device types; access points, switches, routers and other kinds are
+  changed under Assets. `nvr` stays a device type (non-recorder NVR boxes exist in the data); dropping it is an owner decision.
+- **FY-15 Restores** (C I-9): refused under an archived parent (DR040): restore the region, then the cluster, then the location, then its
+  cameras or devices. Chosen over "move to No cluster" so nothing changes place silently.
+- **FY-16 Wording** (C M-15): "not checked yet" (never checked) and "not checked lately" (stale) are two states on every screen, roll-ups
+  included.
