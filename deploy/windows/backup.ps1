@@ -128,10 +128,19 @@ if (-not $RetentionOnly) {
       $vk = $config.VaultKey
       if ($vk.Mode -eq 'None') { throw 'VaultKey.Mode is None: the root key cannot be copied from here (hosted project: the platform keeps it).' }
       $keyCopy = Join-Path $keyDir "vault-root-$stamp.key"
+      # Re-review 3 m-d: never into a file that exists already (somebody may have planted it under the predictable name).
+      if (Test-Path -LiteralPath $keyCopy) { throw "Refused: $keyCopy exists already; this backup did not make it. Look at it. The Vault root key was not copied." }
       if ($vk.Mode -eq 'ContainerFile') {
         & (Get-DrishtiTool -Config $config -Name docker) cp "$($db.Container):$($vk.Path)" $keyCopy
         if ($LASTEXITCODE -ne 0) { throw 'docker cp of the Vault root key failed.' }
-      } else { Copy-Item -LiteralPath $vk.Path -Destination $keyCopy }
+      } else {
+        # Created new (it fails if the name appeared meanwhile), never opened over an existing file.
+        $src = [IO.File]::OpenRead($vk.Path)
+        try {
+          $dst = New-Object IO.FileStream($keyCopy, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+          try { $src.CopyTo($dst) } finally { $dst.Dispose() }
+        } finally { $src.Dispose() }
+      }
       Set-DrishtiAcl -Path $keyCopy -IsFile
       if ((Get-DrishtiFileSha256 -Path $keyCopy) -ne $keyHash) { throw 'The copy of the Vault root key does not match the key in use.' }
     }
@@ -139,8 +148,11 @@ if (-not $RetentionOnly) {
     $configCopy = $null
     if ($IncludeConfig) {
       $configCopy = Join-Path $keyDir "config-$stamp"
+      if (Test-Path -LiteralPath $configCopy) { throw "Refused: $configCopy exists already; this backup did not make it. Look at it. The configuration was not copied." }
       Set-DrishtiAcl -Path $configCopy
-      Copy-Item -Path (Join-Path $config.ConfigDir '*') -Destination $configCopy -Recurse
+      # Never through a junction or link in the configuration folder (re-review 3 nit): robocopy /XJ; the copies take the locked
+      # folder's rules (robocopy does not copy security by default).
+      Invoke-DrishtiCommand -FilePath $script:RobocopyExe -ArgumentList @($config.ConfigDir, $configCopy, '/E', '/XJ', '/NFL', '/NDL', '/NJH', '/NJS', '/NP') -Display "robocopy $($config.ConfigDir) -> $configCopy" -AllowExitCodes @(0, 1, 2, 3)
     }
     $manifest = [ordered]@{
       kind = 'drishti-backup'; version = 1; createdAt = (Get-Date).ToUniversalTime().ToString('o'); tag = $Tag; database = $dbName; serverVersion = $version

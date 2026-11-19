@@ -260,8 +260,6 @@ $script:SidTrustedInstaller = 'S-1-5-80-956008885-3418522649-1831038044-18532926
 $script:SidCreatorOwner = 'S-1-3-0'
 # Review M-new-6: the Windows tools by their full path (a nightly SYSTEM task never takes one from a folder earlier on PATH).
 $script:Sys32 = Join-Path $env:SystemRoot 'System32'
-$script:IcaclsExe = Join-Path $script:Sys32 'icacls.exe'
-$script:TakeownExe = Join-Path $script:Sys32 'takeown.exe'
 $script:RobocopyExe = Join-Path $script:Sys32 'robocopy.exe'
 $script:CmdExe = Join-Path $script:Sys32 'cmd.exe'
 $script:ScExe = Join-Path $script:Sys32 'sc.exe'
@@ -295,7 +293,7 @@ function Get-DrishtiOperatorGrant {
 }
 
 <#
-  The SID of a service's virtual account NT SERVICE<name>, computed as Windows does (S-1-5-80- and the SHA-1 of the upper-case name
+  The SID of a service's virtual account NT SERVICE\<name>, computed as Windows does (S-1-5-80- and the SHA-1 of the upper-case name
   in UTF-16, as five numbers; what `sc.exe showsid` prints). It exists before the service does, so the install can lock the folders
   before it creates the services (fix round 2: the name alone cannot be resolved until the service exists).
 #>
@@ -342,7 +340,7 @@ function Format-DrishtiEntry {
     - Get-DrishtiTreeEntries reads the tree (nothing is changed; .NET directory listing, one level at a time, never through a link);
     - Get-DrishtiTreeProblems and Test-DrishtiNeedsReset decide, on plain data only (unit-tested with made-up entries,
       tests/unit/windows-scripts.test.ts; the real file system is exercised by the lab suite, tests/windows-lab);
-    - Reset-DrishtiTreeItems changes only what the decision says.
+    - Invoke-DrishtiTreeReset changes only what the decision says, each item checked again just before (re-review 3 N-4).
   Elevated, the restore, take-ownership and backup privileges are switched on first (a small C# helper compiled only then: never in a
   normal prompt, never in the default tests), so an item's own rules cannot keep the Administrators out; no takeown, no /D answer in
   the Windows language (review 2 m2).
@@ -391,25 +389,47 @@ function Test-DrishtiHardLink {
 
 <#
   Everything below a folder (not the folder itself), read only, depth first, NEVER through a reparse point: one record per item with
-  Path, IsDirectory, IsReparse, IsHardLink, Error. A reparse point is listed and not entered.
+  Path, IsDirectory, IsReparse, IsHardLink, Owner (SID; re-review 3 N-4: every item's owner is checked, not only the top folder's),
+  Error. A reparse point is listed and not entered. -Exclude: folders (full paths) neither listed nor entered: the planned folders below
+  this one, which have a walk of their own (nothing is walked twice), and the folders a service may write (never walked at all). A
+  folder is checked again just before it is listed: one that became a link meanwhile is reported, not entered.
 #>
 function Get-DrishtiTreeEntries {
-  param([Parameter(Mandatory)][string]$Path)
+  param([Parameter(Mandatory)][string]$Path, [string[]]$Exclude = @())
+  $skip = @($Exclude | ForEach-Object { [IO.Path]::GetFullPath([string]$_).TrimEnd('\').ToLowerInvariant() })
+  $root = [IO.Path]::GetFullPath($Path).TrimEnd('\')
   $out = New-Object System.Collections.Generic.List[object]
   $stack = New-Object System.Collections.Generic.Stack[string]
-  $stack.Push([IO.Path]::GetFullPath($Path))
+  $stack.Push($root)
   while ($stack.Count -gt 0) {
     $dir = $stack.Pop()
+    if ($dir -ne $root) {
+      $again = $null
+      try { $again = [IO.File]::GetAttributes($dir) } catch { $again = $null }
+      if ($null -eq $again -or ($again -band [IO.FileAttributes]::ReparsePoint)) {
+        $out.Add([pscustomobject]@{ Path = $dir; IsDirectory = $true; IsReparse = $true; IsHardLink = $false; Owner = $null; Error = 'became a junction or link (or moved) while it was read (not followed)' }); continue
+      }
+    }
     $entries = $null
-    try { $entries = [IO.Directory]::GetFileSystemEntries($dir) } catch { $out.Add([pscustomobject]@{ Path = $dir; IsDirectory = $true; IsReparse = $false; IsHardLink = $false; Error = "cannot be read ($($_.Exception.InnerException.Message))" }); continue }
+    try { $entries = [IO.Directory]::GetFileSystemEntries($dir) } catch { $out.Add([pscustomobject]@{ Path = $dir; IsDirectory = $true; IsReparse = $false; IsHardLink = $false; Owner = $null; Error = "cannot be read ($($_.Exception.InnerException.Message))" }); continue }
     foreach ($e in $entries) {
+      if ($skip -contains $e.TrimEnd('\').ToLowerInvariant()) { continue }
       $a = $null
-      try { $a = [IO.File]::GetAttributes($e) } catch { $out.Add([pscustomobject]@{ Path = $e; IsDirectory = $false; IsReparse = $false; IsHardLink = $false; Error = 'cannot be read' }); continue }
+      try { $a = [IO.File]::GetAttributes($e) } catch { $out.Add([pscustomobject]@{ Path = $e; IsDirectory = $false; IsReparse = $false; IsHardLink = $false; Owner = $null; Error = 'cannot be read' }); continue }
       $isReparse = [bool]($a -band [IO.FileAttributes]::ReparsePoint)
       $isDir = [bool]($a -band [IO.FileAttributes]::Directory)
       $hard = (-not $isReparse) -and (-not $isDir) -and (Test-DrishtiHardLink -Path $e)
-      $out.Add([pscustomobject]@{ Path = $e; IsDirectory = $isDir; IsReparse = $isReparse; IsHardLink = $hard; Error = $null })
-      if ($isDir -and -not $isReparse) { $stack.Push($e) }
+      $owner = $null
+      $err = $null
+      if (-not $isReparse) {
+        # The owner only (never the access list, never through a link: this item is not a reparse point).
+        try {
+          $sd = if ($isDir) { [IO.Directory]::GetAccessControl($e, [Security.AccessControl.AccessControlSections]::Owner) } else { [IO.File]::GetAccessControl($e, [Security.AccessControl.AccessControlSections]::Owner) }
+          $owner = $sd.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        } catch { $err = 'its owner cannot be read' }
+      }
+      $out.Add([pscustomobject]@{ Path = $e; IsDirectory = $isDir; IsReparse = $isReparse; IsHardLink = $hard; Owner = $owner; Error = $err })
+      if ($isDir -and -not $isReparse -and -not $err) { $stack.Push($e) }
     }
   }
   return $out.ToArray()
@@ -417,11 +437,14 @@ function Get-DrishtiTreeEntries {
 
 <#
   Pure: what refuses a lock in a tree's records (Get-DrishtiTreeEntries). A link other than the checked ones; a file with more than
-  one name; an item that could not be read. Plain strings, one per problem.
+  one name; an item that could not be read; an item whose owner is not SYSTEM, the Administrators, TrustedInstaller or one of
+  -TrustedOwners (re-review 3 N-4: an owner may change its item's rules, or swap it for a junction, until the reset reaches it). Plain
+  strings, one per problem.
 #>
 function Get-DrishtiTreeProblems {
-  param([object[]]$Entries = @(), [string[]]$AllowedLinks = @())
+  param([object[]]$Entries = @(), [string[]]$AllowedLinks = @(), [string[]]$TrustedOwners = @())
   $allowed = @($AllowedLinks | ForEach-Object { ([string]$_).TrimEnd('\').ToLowerInvariant() })
+  $owners = @($script:SidSystem, $script:SidAdmins, $script:SidTrustedInstaller) + @($TrustedOwners)
   $out = @()
   foreach ($e in $Entries) {
     if ($e.Error) { $out += "$($e.Path): $($e.Error)"; continue }
@@ -430,6 +453,8 @@ function Get-DrishtiTreeProblems {
       continue
     }
     if ($e.IsHardLink) { $out += "$($e.Path): has more than one name, a hard link (not changed)" }
+    $own = if ($e.PSObject.Properties['Owner']) { [string]$e.Owner } else { '' }
+    if ($own -and $owners -notcontains $own) { $out += "$($e.Path): belongs to $own, not to SYSTEM, the Administrators or TrustedInstaller (not changed)" }
   }
   return $out
 }
@@ -448,28 +473,110 @@ function Test-DrishtiTrustedOwner {
   return (@($script:SidSystem, $script:SidAdmins, $script:SidTrustedInstaller) + $Operator) -contains $Owner
 }
 
-<# Changes the items of a tree that need it (never a link, never a hard link: those refused before). #>
-function Reset-DrishtiTreeItems {
-  param([object[]]$Entries = @(), [string]$OwnerSid)
-  $owner = if ($OwnerSid) { New-Object Security.Principal.SecurityIdentifier($OwnerSid) } else { $null }
+<#
+  Re-review 3 N-4 (c), pure with an injected provider: is a walked item still where the walk saw it? Every part of its path from the
+  root (not included) down to the item itself must still exist and must not be a reparse point. -GetAttributes returns an item's own
+  attributes ([IO.File]::GetAttributes never follows a link) or $null when it is gone.
+#>
+function Test-DrishtiPathStillInside {
+  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][scriptblock]$GetAttributes)
+  $r = $Root.TrimEnd('\')
+  $p = $Path.TrimEnd('\')
+  if (-not $p.StartsWith($r + '\', [StringComparison]::OrdinalIgnoreCase)) { return $false }
+  $cur = $r
+  foreach ($part in $p.Substring($r.Length + 1).Split([char]'\')) {
+    if (-not $part -or $part -eq '.' -or $part -eq '..') { return $false }
+    $cur = $cur + '\' + $part
+    $a = & $GetAttributes $cur
+    if ($null -eq $a) { return $false }
+    if (([IO.FileAttributes]$a) -band [IO.FileAttributes]::ReparsePoint) { return $false }
+  }
+  return $true
+}
+
+<#
+  Re-review 3 N-4: changes the walked items that need it, in the walk's order (a folder before what is in it, so each item's parent is
+  already locked when it is reached), each one checked again just before its change (Test-DrishtiPathStillInside): an item that became
+  a link, or sits below one, is skipped and reported, never followed. Never a link, a hard link or an unreadable item (refused before).
+  -Provider: GetAttributes, NeedsReset (entry, owner SID) and Reset (entry, owner SID); New-DrishtiTreeResetProvider is the real one,
+  the unit tests pass a fake one. Returns @{ Changed; Problems }.
+#>
+function Invoke-DrishtiTreeReset {
+  param([object[]]$Entries = @(), [Parameter(Mandatory)][string]$Root, [string]$OwnerSid, [Parameter(Mandatory)][hashtable]$Provider)
+  $changed = @()
   $problems = @()
   foreach ($e in $Entries) {
     if ($e.IsReparse -or $e.IsHardLink -or $e.Error) { continue }
+    if (-not (Test-DrishtiPathStillInside -Path $e.Path -Root $Root -GetAttributes $Provider.GetAttributes)) {
+      $problems += "$($e.Path): became a junction or link (or moved) after it was read: skipped, not followed"
+      continue
+    }
     try {
+      if (& $Provider.NeedsReset $e $OwnerSid) { & $Provider.Reset $e $OwnerSid; $changed += $e.Path }
+    } catch { $problems += "$($e.Path): $($_.Exception.Message)" }
+  }
+  return @{ Changed = $changed; Problems = $problems }
+}
+
+<# The real provider of Invoke-DrishtiTreeReset: .NET only, an item's own attributes (never through a link). #>
+function New-DrishtiTreeResetProvider {
+  return @{
+    GetAttributes = { param($p) try { [IO.File]::GetAttributes($p) } catch { $null } }
+    NeedsReset = {
+      param($e, $ownerSid)
       $sections = [Security.AccessControl.AccessControlSections]'Access, Owner'
       $cur = if ($e.IsDirectory) { [IO.Directory]::GetAccessControl($e.Path, $sections) } else { [IO.File]::GetAccessControl($e.Path, $sections) }
       $explicit = @($cur.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])).Count
       $curOwner = try { $cur.GetOwner([Security.Principal.SecurityIdentifier]).Value } catch { '' }
-      if (-not (Test-DrishtiNeedsReset -ExplicitRules $explicit -Protected $cur.AreAccessRulesProtected -Owner $curOwner -WantedOwner $OwnerSid)) { continue }
-    } catch { }
-    try {
+      Test-DrishtiNeedsReset -ExplicitRules $explicit -Protected $cur.AreAccessRulesProtected -Owner $curOwner -WantedOwner $ownerSid
+    }
+    Reset = {
+      param($e, $ownerSid)
       $s = if ($e.IsDirectory) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity }
       $s.SetAccessRuleProtection($false, $false)
-      if ($owner) { $s.SetOwner($owner) }
+      if ($ownerSid) { $s.SetOwner((New-Object Security.Principal.SecurityIdentifier($ownerSid))) }
       if ($e.IsDirectory) { [IO.Directory]::SetAccessControl($e.Path, $s) } else { [IO.File]::SetAccessControl($e.Path, $s) }
-    } catch { $problems += "$($e.Path): $($_.Exception.InnerException.Message)" }
+    }
   }
-  return $problems
+}
+
+<#
+  Re-review 3 N-4 (a), pure: how far each planned folder's lock goes. A folder a service may write (an entry with Modify: its log
+  folder, data\caddy) is locked itself only: nothing in it is ever walked or changed (the service could swap an item for a junction
+  between the walk and the change). Every other folder is walked without the planned folders below it (each is locked and walked by
+  its own entry, after it: nothing is walked twice). Returns, in the plan's order, records Path, Walk, Exclude.
+#>
+function Get-DrishtiLockScope {
+  param([object[]]$Plan = @())
+  $paths = @($Plan | ForEach-Object { ([string]$_.Path).TrimEnd('\') })
+  foreach ($p in $Plan) {
+    $mine = ([string]$p.Path).TrimEnd('\')
+    $walk = @($p.Modify | Where-Object { $_ }).Count -eq 0
+    $below = @($paths | Where-Object { $_.StartsWith($mine + '\', [StringComparison]::OrdinalIgnoreCase) })
+    $nearest = @($below | Where-Object { $b = $_; @($below | Where-Object { $_ -ne $b -and $b.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0 })
+    [pscustomobject]@{ Path = $p.Path; Walk = $walk; Exclude = $(if ($walk) { $nearest } else { @() }) }
+  }
+}
+
+<#
+  Re-review 3 N-4 (a), pure: the services RepairAcl stops before it changes their folders, and starts again afterwards. -Writers: the
+  services that write a folder of the plan; -Services: records Name, Status, CanStop (Get-Service), in the stop order. A writer that
+  runs and cannot be stopped refuses the repair before anything is changed. Returns @{ Stop; StartAgain; Refuse }.
+#>
+function Get-DrishtiRepairServiceSteps {
+  param([string[]]$Writers = @(), [object[]]$Services = @())
+  $stop = @()
+  $again = @()
+  $refuse = @()
+  foreach ($s in $Services) {
+    if ($Writers -notcontains $s.Name) { continue }
+    $status = [string]$s.Status
+    if ($status -eq 'Stopped') { continue }
+    if (-not $s.CanStop) { $refuse += "$($s.Name) is $($status.ToLowerInvariant()) and cannot be stopped: its folder would be changed while it writes there. Nothing was changed."; continue }
+    $stop += $s.Name
+    if ($status -eq 'Running') { $again += $s.Name }
+  }
+  return @{ Stop = $stop; StartAgain = $again; Refuse = $refuse }
 }
 
 <#
@@ -483,6 +590,21 @@ function Test-DrishtiReleaseLink {
   if ($t.StartsWith('\??\')) { $t = $t.Substring(4) }
   $full = [IO.Path]::GetFullPath($t).TrimEnd('\')
   return ([IO.Path]::GetDirectoryName($full) -ieq ([IO.Path]::GetFullPath($ReleasesDir).TrimEnd('\')))
+}
+
+<# Re-review 3 N-5 (pure): the links the installation makes itself: <InstallRoot>\app\current only (update.ps1). #>
+function Get-DrishtiAllowedLinks {
+  param([Parameter(Mandatory)][string]$InstallRoot)
+  return @([IO.Path]::GetFullPath((Join-Path $InstallRoot 'app\current')).TrimEnd('\'))
+}
+
+<# Re-review 3 N-5 (pure): the links that are not allowed (case and a trailing backslash ignored), one problem line each. #>
+function Get-DrishtiLinkProblems {
+  param([string[]]$Links = @(), [string[]]$Allowed = @())
+  $ok = @($Allowed | ForEach-Object { ([string]$_).TrimEnd('\').ToLowerInvariant() })
+  $out = @()
+  foreach ($l in $Links) { if ($ok -notcontains ([string]$l).TrimEnd('\').ToLowerInvariant()) { $out += "$($l): a junction or link the installation did not make" } }
+  return $out
 }
 
 <#
@@ -510,22 +632,26 @@ function Get-DrishtiCurrentRelease {
 }
 
 <#
-  Review N-1 and review 2 N-3: makes a file or folder carry EXACTLY the given entries, whatever was there before, without ever following
-  a link:
+  Review N-1, review 2 N-3 and re-review 3 N-4: makes a file or folder carry EXACTLY the given entries, whatever was there before,
+  without ever following a link:
     - a path that exists is REFUSED when it is itself a link, or when its owner is not SYSTEM, the Administrators or TrustedInstaller
-      (a folder somebody else made before the install: look at it first); a missing folder is created first (review C-2, I-3);
-    - everything below an existing folder is read first, never through a link: a link other than the checked app\current junction, or
-      a file with more than one name, REFUSES the lock before anything is changed;
-    - the item itself is locked FIRST, in one call: the Administrators as owner (elevated), no inherited entry, no entry of anybody
-      else; SYSTEM and Administrators full, the non-elevated operator (tests only), then the given accounts;
-    - only then the items below are reset (owner, no entry of their own: they inherit the new list). The plan then locks the
-      sub-folders and files that need their own entries (parents before children).
+      (a folder somebody else made before the install: look at it first);
+    - a missing folder is CREATED LOCKED, its security given in the same call (re-review 3 m-d: it never has the parent's rules, not
+      even for a moment);
+    - -NoWalk (a folder its service may write): the folder itself only; nothing in it is read or changed;
+    - otherwise everything below an existing folder is read first (without -Exclude: the planned folders below, locked by their own
+      entries), never through a link: a link other than the checked app\current junction, a hard link, an unreadable item or an item
+      of another owner REFUSES the lock before anything is changed;
+    - the item itself is locked in one call: the Administrators as owner (elevated), no inherited entry, no entry of anybody else;
+      SYSTEM and Administrators full, the non-elevated operator (tests only), then the given accounts;
+    - only then the items below are reset, parents first, each checked again just before its change (Invoke-DrishtiTreeReset).
 #>
 function Set-DrishtiAcl {
-  param([Parameter(Mandatory)][string]$Path, [string[]]$ReadAccounts = @(), [string[]]$ModifyAccounts = @(), [string[]]$ListAccounts = @(), [string[]]$AllowedLinks = @(), [string]$InstallRoot = '', [switch]$IsFile, [switch]$DryRun)
+  param([Parameter(Mandatory)][string]$Path, [string[]]$ReadAccounts = @(), [string[]]$ModifyAccounts = @(), [string[]]$ListAccounts = @(), [string[]]$AllowedLinks = @(), [string]$InstallRoot = '', [string[]]$Exclude = @(), [switch]$NoWalk, [switch]$IsFile, [switch]$DryRun)
   $leaf = $IsFile -or (Test-Path -LiteralPath $Path -PathType Leaf)
   $exists = Test-Path -LiteralPath $Path
   $admin = Test-DrishtiAdministrator
+  $operator = @(Get-DrishtiOperatorGrant | ForEach-Object { $_.Substring(1) })
   $entries = New-Object System.Collections.Generic.List[object]
   $entries.Add(@(('*' + $script:SidSystem), 'Full'))
   $entries.Add(@(('*' + $script:SidAdmins), 'Full'))
@@ -536,10 +662,20 @@ function Set-DrishtiAcl {
   $shown = ($entries | ForEach-Object { Format-DrishtiEntry -Account $_[0] -Kind $_[1] -Leaf:$leaf }) -join ' '
   $owner = if ($admin) { 'owner Administrators' } else { 'owner unchanged (not elevated)' }
   if ($DryRun) {
-    if (-not $leaf -and -not $exists) { Write-DrishtiStep -Kind plan -Message "would create $Path" }
-    $below = if ($leaf) { '' } else { '; then everything below it walked without following any link (a link or hard link refuses)' }
+    if (-not $leaf -and -not $exists) { Write-DrishtiStep -Kind plan -Message "would create $Path (locked as it is made: it never has the parent's rules)" }
+    $below = if ($leaf) { '' } elseif ($NoWalk) { '; nothing in it is read or changed (its service writes there)' } else { '; then everything below it walked without following any link (a link, a hard link or an item of another owner refuses)' }
     Write-DrishtiStep -Kind plan -Message "would lock ${Path}: $owner; every other entry removed, nothing inherited; only $shown$below"
     return
+  }
+
+  if ($admin) { Enable-DrishtiAclPrivileges }
+  $sec = if ($leaf) { New-Object Security.AccessControl.FileSecurity } else { New-Object Security.AccessControl.DirectorySecurity }
+  $sec.SetAccessRuleProtection($true, $false)
+  if ($admin) { $sec.SetOwner((New-Object Security.Principal.SecurityIdentifier($script:SidAdmins))) }
+  foreach ($e in $entries) {
+    $sid = New-Object Security.Principal.SecurityIdentifier((ConvertTo-DrishtiSid -Account $e[0]))
+    $inherit = if ($leaf -or $e[1] -eq 'List') { [Security.AccessControl.InheritanceFlags]::None } else { [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' }
+    $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, (Get-DrishtiRights -Kind $e[1] -Leaf:$leaf), $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)))
   }
 
   $tree = @()
@@ -548,12 +684,12 @@ function Set-DrishtiAcl {
     if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Refused: $Path is a junction or link, not a folder or file the installation made. Look at it, remove it, and run this again." }
     $current = $null
     try { $current = (Get-Acl -LiteralPath $Path).GetOwner([Security.Principal.SecurityIdentifier]).Value } catch { $current = '(unreadable)' }
-    if (-not (Test-DrishtiTrustedOwner -Owner $current -Operator @(Get-DrishtiOperatorGrant | ForEach-Object { $_.Substring(1) }))) {
-      throw "Refused: $Path existed already and belongs to $current, not to SYSTEM or the Administrators: somebody may have made it before the install. Look at what is in it, remove it (or, once you are sure of it, take it over: takeown /F `"$Path`" /A), and run this again."
+    if (-not (Test-DrishtiTrustedOwner -Owner $current -Operator $operator)) {
+      throw "Refused: $Path existed already and belongs to $current, not to SYSTEM or the Administrators: somebody may have made it before the install. Look at what is in it, remove it (or, once you are sure of it, take it over as an administrator), and run this again."
     }
     if ($leaf) {
       if (Test-DrishtiHardLink -Path $Path) { throw "Refused: $Path has more than one name (a hard link): it may be another file. Look at it, remove it, and run this again." }
-    } else {
+    } elseif (-not $NoWalk) {
       # The one link the installation makes, checked before anything is done (review 2 N-3).
       $links = @()
       if ($InstallRoot) {
@@ -563,29 +699,21 @@ function Set-DrishtiAcl {
           if (Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue) { $null = Get-DrishtiCurrentRelease -InstallRoot $InstallRoot; $links += $full }
         }
       }
-      if ($admin) { Enable-DrishtiAclPrivileges }
-      $tree = @(Get-DrishtiTreeEntries -Path $Path)
-      $found = @(Get-DrishtiTreeProblems -Entries $tree -AllowedLinks $links)
-      if ($found.Count -gt 0) { throw "Refused below $Path (nothing was changed; nothing was followed): $($found -join '; '). Look at each one, remove it, and run this again." }
+      $tree = @(Get-DrishtiTreeEntries -Path $Path -Exclude $Exclude)
+      $found = @(Get-DrishtiTreeProblems -Entries $tree -AllowedLinks $links -TrustedOwners $operator)
+      if ($found.Count -gt 0) { throw "Refused below $Path (nothing was changed; nothing was followed): $($found -join '; '). Look at each one, remove it (or give it to the Administrators), and run this again." }
     }
-  } elseif (-not $leaf) {
-    New-Item -ItemType Directory -Path $Path | Out-Null # new and empty: nothing below it to walk
+    if ($leaf) { [IO.File]::SetAccessControl($Path, $sec) } else { [IO.Directory]::SetAccessControl($Path, $sec) }
+  } elseif ($leaf) {
+    [IO.File]::SetAccessControl($Path, $sec)
+  } else {
+    [IO.Directory]::CreateDirectory($Path, $sec) | Out-Null # new: locked from its creation, and empty (nothing below it to walk)
   }
-  if ($admin -and $leaf) { Enable-DrishtiAclPrivileges }
-  $sec = if ($leaf) { New-Object Security.AccessControl.FileSecurity } else { New-Object Security.AccessControl.DirectorySecurity }
-  $sec.SetAccessRuleProtection($true, $false)
-  if ($admin) { $sec.SetOwner((New-Object Security.Principal.SecurityIdentifier($script:SidAdmins))) }
-  foreach ($e in $entries) {
-    $sid = New-Object Security.Principal.SecurityIdentifier((ConvertTo-DrishtiSid -Account $e[0]))
-    $inherit = if ($leaf -or $e[1] -eq 'List') { [Security.AccessControl.InheritanceFlags]::None } else { [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' }
-    $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, (Get-DrishtiRights -Kind $e[1] -Leaf:$leaf), $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)))
-  }
-  if ($leaf) { [IO.File]::SetAccessControl($Path, $sec) } else { [IO.Directory]::SetAccessControl($Path, $sec) }
-  Write-DrishtiStep -Message "locked ${Path}: $shown"
+  Write-DrishtiStep -Message "locked ${Path}: $shown$(if ($NoWalk -and -not $leaf) { ' (the folder only: its service writes in it)' })"
   if ($tree.Count -gt 0) {
     $ownerSid = if ($admin) { $script:SidAdmins } else { $null }
-    $problems = @(Reset-DrishtiTreeItems -Entries $tree -OwnerSid $ownerSid)
-    if ($problems.Count -gt 0) { throw "Refused below $Path (the folder itself is locked; nothing was followed): $($problems -join '; '). Look at each one, and run this again." }
+    $r = Invoke-DrishtiTreeReset -Entries $tree -Root ([IO.Path]::GetFullPath($Path)) -OwnerSid $ownerSid -Provider (New-DrishtiTreeResetProvider)
+    if (@($r.Problems).Count -gt 0) { throw "Refused below $Path (the folder itself is locked; nothing was followed): $($r.Problems -join '; '). Look at each one, and run this again." }
   }
 }
 
@@ -598,7 +726,7 @@ function Set-DrishtiAcl {
 function Get-DrishtiAclPlan {
   param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)]$Definitions)
   $plan = New-Object System.Collections.Generic.List[object]
-  $links = @(Join-Path $Config.InstallRoot 'app\current') # the one junction the installation makes itself (update.ps1)
+  $links = @(Get-DrishtiAllowedLinks -InstallRoot $Config.InstallRoot) # the one junction the installation makes itself (update.ps1)
   $add = { param($Path, $Read, $Modify, $List, $Secret) $plan.Add([pscustomobject]@{ Path = $Path; Kind = 'Folder'; Mode = 'Lock'; Read = @($Read); Modify = @($Modify); List = @($List); Secret = [bool]$Secret; AllowedLinks = $links }) }
   $accounts = @{}
   foreach ($d in $Definitions) { $accounts[$d.Name] = Get-DrishtiServiceAccount -Config $Config -Name $d.Name }
@@ -764,8 +892,10 @@ function Get-DrishtiReleaseVerdictFrom {
   if (-not $VersionAnswered) { $reasons += "$VersionUrl did not answer with build $BuildId" }
   foreach ($n in $NotRunning) { $reasons += "$n is not running (its start-up self-check may have refused: see its log in $LogDir)" }
   if ($GatewayChecked -and -not $GatewayAnswered) { $reasons += 'the gateway does not answer its /g/health' }
-  if (-not $DbLevel) { $reasons += 'the database level could not be read' }
-  elseif ($Expected -and $DbLevel -lt $Expected) { $reasons += "the database is at $DbLevel, the release needs $Expected" }
+  # Re-review 3 m-b: a database that does not answer is a problem of the server (the web app and the checks depend on it), never a
+  # broken release: a roll back would restore into a database that does not answer.
+  if (-not $DbLevel) { return @{ Verdict = 'environment'; Database = $true; Reasons = @('the database does not answer (its level could not be read); the other checks depend on it: nothing was rolled back or restored') } }
+  if ($Expected -and $DbLevel -lt $Expected) { $reasons += "the database is at $DbLevel, the release needs $Expected" }
   if ($reasons.Count -gt 0) { return @{ Verdict = 'release'; Reasons = $reasons } }
   if ($PublicStatus -eq 'ok') { return @{ Verdict = 'ok'; Reasons = @() } }
   $said = if ($PublicStatus) { $PublicStatus } else { 'nothing' }

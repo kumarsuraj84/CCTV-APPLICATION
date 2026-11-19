@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  CityKart Drishti: install, uninstall, start, stop, restart, show, audit or repair the four Windows services (P5.4).
+  CityKart Drishti: install, uninstall, start, stop, restart, show, audit or repair the Windows services (P5.4: four, five with the DrishtiProxy service).
 
 .DESCRIPTION
   DrishtiGo2rtc (go2rtc on 127.0.0.1:1984), DrishtiWorker (monitoring), DrishtiGateway (video, 127.0.0.1:3412) and DrishtiWeb (the
@@ -71,9 +71,25 @@ $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 
 function Set-DrishtiFolderLocks {
   # Every folder created and locked BEFORE anything is written into it (review C-2, I-3).
-  foreach ($p in (Get-DrishtiAclPlan -Config $config -Definitions $allDefs)) {
-    Set-DrishtiAcl -Path $p.Path -ReadAccounts $p.Read -ModifyAccounts $p.Modify -ListAccounts $p.List -AllowedLinks $p.AllowedLinks -InstallRoot $config.InstallRoot -DryRun:$dry
+  # Re-review 3 N-4: a folder its service may write is locked itself only (never walked); every other folder is walked without the
+  # planned folders below it (they follow, each with its own walk).
+  $plan = @(Get-DrishtiAclPlan -Config $config -Definitions $allDefs)
+  $scope = @(Get-DrishtiLockScope -Plan $plan)
+  for ($i = 0; $i -lt $plan.Count; $i++) {
+    $p = $plan[$i]
+    Set-DrishtiAcl -Path $p.Path -ReadAccounts $p.Read -ModifyAccounts $p.Modify -ListAccounts $p.List -AllowedLinks $p.AllowedLinks -InstallRoot $config.InstallRoot -Exclude $scope[$i].Exclude -NoWalk:(-not $scope[$i].Walk) -DryRun:$dry
   }
+}
+
+<# Re-review 3 N-4: the services that write a folder of the plan (their log folder, Caddy's data), which RepairAcl stops first. #>
+function Get-DrishtiWriterServices {
+  $writers = @()
+  $plan = @(Get-DrishtiAclPlan -Config $config -Definitions $allDefs)
+  foreach ($d in $allDefs) {
+    $account = Get-DrishtiServiceAccount -Config $config -Name $d.Name
+    if (@($plan | Where-Object { @($_.Modify) -contains $account }).Count -gt 0) { $writers += $d.Name }
+  }
+  return $writers
 }
 
 function Set-DrishtiFileLocks {
@@ -97,7 +113,7 @@ function Set-DrishtiFileLocks {
 function Copy-DrishtiScripts {
   # The scheduled backup and the operator run THIS admin-only copy, never a release or a checkout that others may change (review C-2).
   if ([IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') -ieq [IO.Path]::GetFullPath($scriptsCopy).TrimEnd('\')) { return }
-  Invoke-DrishtiCommand -FilePath $script:RobocopyExe -ArgumentList @($PSScriptRoot, $scriptsCopy, '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/NP') -DryRun:$dry -Display "robocopy $PSScriptRoot -> $scriptsCopy (the admin-only copy of the scripts)" -AllowExitCodes @(0, 1, 2, 3)
+  Invoke-DrishtiCommand -FilePath $script:RobocopyExe -ArgumentList @($PSScriptRoot, $scriptsCopy, '/MIR', '/XJ', '/NFL', '/NDL', '/NJH', '/NJS', '/NP') -DryRun:$dry -Display "robocopy $PSScriptRoot -> $scriptsCopy (the admin-only copy of the scripts)" -AllowExitCodes @(0, 1, 2, 3)
 }
 
 function Install-DrishtiHost {
@@ -168,12 +184,13 @@ function Get-DrishtiAuditProblems {
     $problems += @(Test-DrishtiPathAcl -Path $d.EnvFile -ReadAccounts @($account) -Secret)
     $problems += @(Test-DrishtiPathAcl -Path (Join-Path $servicesDir "$($d.Name).conf"))
   }
-  # Review 2 N-3: no link anywhere in the installation but the checked appcurrent junction (never followed).
+  # Review 2 N-3 and re-review 3 N-5: no link anywhere in the installation but the checked app\current junction (never followed). The
+  # allowed path and the comparison are the pure Get-DrishtiAllowedLinks / Get-DrishtiLinkProblems, the same as the plan's.
+  $allowed = @()
+  try { if (Get-DrishtiCurrentRelease -InstallRoot $config.InstallRoot) { $allowed = @(Get-DrishtiAllowedLinks -InstallRoot $config.InstallRoot) } } catch { $problems += $_.Exception.Message }
   foreach ($p in @($config.InstallRoot, $config.LogDir, $config.DataDir, $config.BackupDir) | Select-Object -Unique) {
     if (-not (Test-Path -LiteralPath $p)) { continue }
-    $allowed = @()
-    try { if (Get-DrishtiCurrentRelease -InstallRoot $config.InstallRoot) { $allowed = @([IO.Path]::GetFullPath((Join-Path $config.InstallRoot 'appcurrent'))) } } catch { $problems += $_.Exception.Message }
-    try { foreach ($l in @(Get-DrishtiReparsePoints -Path $p)) { if ($allowed -notcontains $l.TrimEnd('')) { $problems += "$($l): a junction or link the installation did not make" } } }
+    try { $problems += @(Get-DrishtiLinkProblems -Links @(Get-DrishtiReparsePoints -Path $p) -Allowed $allowed) }
     catch { $problems += "$($p): its contents cannot be read from here (run elevated)" }
   }
   return $problems
@@ -217,8 +234,26 @@ switch ($Action) {
     Write-DrishtiStep -Kind ok -Message 'installed; check with -Action Audit, then start them with -Action Start (go2rtc, worker, gateway, web app)'
   }
   'RepairAcl' {
-    Set-DrishtiFolderLocks
-    Set-DrishtiFileLocks
+    # Re-review 3 N-4: a service that writes a folder of the plan is stopped first (its folder is never changed while it runs), and
+    # started again afterwards; one that runs and cannot be stopped refuses the repair before anything is changed.
+    $states = @($script:DrishtiStopOrder | ForEach-Object { $s = Get-Service -Name $_ -ErrorAction SilentlyContinue; if ($s) { [pscustomobject]@{ Name = $_; Status = [string]$s.Status; CanStop = [bool]$s.CanStop } } })
+    $steps = Get-DrishtiRepairServiceSteps -Writers @(Get-DrishtiWriterServices) -Services $states
+    if (@($steps.Refuse).Count -gt 0) { throw "Refused: $($steps.Refuse -join ' ')" }
+    $stopped = @()
+    try {
+      foreach ($n in $steps.Stop) {
+        if ($dry) { Write-DrishtiStep -Kind plan -Message "would stop $n before its folders are locked (started again afterwards)"; continue }
+        try { Stop-Service -Name $n; (Get-Service -Name $n).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60)); $stopped += $n }
+        catch { throw "Refused: $n did not stop ($($_.Exception.Message)); nothing was changed." }
+      }
+      Set-DrishtiFolderLocks
+      Set-DrishtiFileLocks
+    } finally {
+      foreach ($n in @($script:DrishtiStartOrder | Where-Object { $steps.StartAgain -contains $_ })) {
+        if ($dry) { Write-DrishtiStep -Kind plan -Message "would start $n again"; continue }
+        if ($stopped -contains $n) { try { Start-Service -Name $n; Write-DrishtiStep -Kind ok -Message "$n started again" } catch { Write-DrishtiStep -Kind fail -Message "$n did not start again: $($_.Exception.Message)" } }
+      }
+    }
     Write-DrishtiStep -Kind ok -Message 'access rules applied again; -Action Audit checks them'
   }
   'Audit' {

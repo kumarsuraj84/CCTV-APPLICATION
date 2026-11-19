@@ -15,7 +15,10 @@
 {
 	# No automatic public certificates: this is a company-network address. The certificate comes from the company CA (or a lab one).
 	auto_https disable_redirects
-	admin localhost:2019
+	# No admin API (re-review 3 m-e): on loopback any local user or program could load another configuration through it (for example
+	# one that serves the certificate folder). A changed Caddyfile or new certificate files take effect with a restart of the
+	# DrishtiProxy service (Restart-Service DrishtiProxy), never with caddy reload.
+	admin off
 }
 
 # Plain http on the same name only sends people to https.

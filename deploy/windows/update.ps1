@@ -62,6 +62,8 @@ if (-not $workerExpected) { $appServices = @($appServices | Where-Object { $_ -n
 if ($RestartGo2rtc) { $appServices += 'DrishtiGo2rtc' }
 $appServices = @($appServices | Where-Object { @($config.Services) -contains $_ })
 $everyService = @($config.Services)
+# Re-review 3 m-a: a roll back starts every service again, but never a worker kept stopped on purpose.
+$restartServices = @($everyService | Where-Object { $workerExpected -or $_ -ne 'DrishtiWorker' })
 $dbName = if ($config.Database.ContainsKey('Name')) { [string]$config.Database.Name } else { 'postgres' }
 
 # ── 1. Preflight ──────────────────────────────────────────────────────────────
@@ -84,7 +86,7 @@ if (-not $BuildId) {
 $expected = Get-DrishtiExpectedMigration -SourcePath $SourcePath
 $release = Join-Path $releases $BuildId
 $previous = $null
-# Review 2 N-3: the current release is trusted only when appcurrent is the junction this script makes, to a release folder.
+# Review 2 N-3: the current release is trusted only when app\current is the junction this script makes, to a release folder.
 $previous = Get-DrishtiCurrentRelease -InstallRoot $config.InstallRoot
 $drive = (Get-Item -LiteralPath $config.InstallRoot -ErrorAction SilentlyContinue)
 Write-DrishtiStep -Message "update to build $BuildId (needs migration $expected) from $SourcePath$(if ($dry) { ' (dry run: nothing is changed)' })"
@@ -160,7 +162,7 @@ function Set-DrishtiProductionMark {
 if (-not $SkipBuild) {
   if (-not $dry -and (Test-Path -LiteralPath $release)) { throw "$release exists already: choose another -BuildId." }
   # The release inherits the locked app folder's rules (robocopy does not copy security): administrators write, the services read.
-  Invoke-DrishtiCommand -FilePath $script:RobocopyExe -ArgumentList @($SourcePath, $release, '/MIR', '/XD', '.git', 'node_modules', '.next', '.superpowers', '/XF', '.env', '.env.local', '.env.*.local', '/NFL', '/NDL', '/NJH', '/NJS') -DryRun:$dry -Display "robocopy $SourcePath -> $release (without .git, node_modules, .next, .env files)" -AllowExitCodes @(0, 1, 2, 3)
+  Invoke-DrishtiCommand -FilePath $script:RobocopyExe -ArgumentList @($SourcePath, $release, '/MIR', '/XD', '.git', 'node_modules', '.next', '.superpowers', '/XF', '.env', '.env.local', '.env.*.local', '/XJ', '/NFL', '/NDL', '/NJH', '/NJS') -DryRun:$dry -Display "robocopy $SourcePath -> $release (without .git, node_modules, .next, .env files; never through a junction)" -AllowExitCodes @(0, 1, 2, 3)
   # The public settings are built into the pages (HSTS, the gateway address, the Supabase address): the build reads the NEXT_PUBLIC_*
   # lines of web.env (only those; nothing is printed).
   $webEnv = Join-Path $config.ConfigDir 'web.env'
@@ -184,8 +186,10 @@ if (-not $SkipBuild) {
       Pop-Location
     }
     $standalone = Join-Path $release '.next\standalone'
-    Copy-Item -Recurse -Force -LiteralPath (Join-Path $release 'public') -Destination (Join-Path $standalone 'public')
-    Copy-Item -Recurse -Force -LiteralPath (Join-Path $release '.next\static') -Destination (Join-Path $standalone '.next\static')
+    # Never through a junction (re-review 3 nit): robocopy /XJ, not a recursive Copy-Item.
+    foreach ($sub in @('public', '.next\static')) {
+      Invoke-DrishtiCommand -FilePath $script:RobocopyExe -ArgumentList @((Join-Path $release $sub), (Join-Path $standalone $sub), '/E', '/XJ', '/NFL', '/NDL', '/NJH', '/NJS', '/NP') -Display "robocopy $sub -> the standalone server" -AllowExitCodes @(0, 1, 2, 3)
+    }
     $info = [ordered]@{ buildId = $BuildId; migration = $expected; source = $SourcePath; builtAt = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json
     foreach ($p in @($release, $standalone)) { Set-Content -LiteralPath (Join-Path $p 'release.json') -Value $info -Encoding UTF8 }
   }
@@ -251,8 +255,12 @@ function Get-DrishtiReleaseVerdict {
   $gatewayChecked = $appServices -contains 'DrishtiGateway'
   $gatewayAnswered = $false
   if ($gatewayChecked) { try { Invoke-RestMethod -Uri $gatewayUrl -TimeoutSec 5 -UseBasicParsing | Out-Null; $gatewayAnswered = $true } catch { $gatewayAnswered = $false } }
+  # Re-review 3 m-b: the level is read up to three times; a database that still does not answer is a problem of the server.
   $level = $null
-  try { $level = [string](Get-DrishtiDbLevel) } catch { $level = $null }
+  for ($try = 1; $try -le 3 -and -not $level; $try++) {
+    try { $level = [string](Get-DrishtiDbLevel) } catch { $level = $null }
+    if (-not $level -and $try -lt 3) { Start-Sleep -Seconds 10 }
+  }
   $status = $null
   try { $status = (Invoke-RestMethod -Uri $healthUrl -TimeoutSec 5 -UseBasicParsing).status } catch { $status = $null }
   return Get-DrishtiReleaseVerdictFrom -VersionAnswered $answered -NotRunning $notRunning -GatewayChecked $gatewayChecked -GatewayAnswered $gatewayAnswered -DbLevel $level -Expected $expected -PublicStatus $status -VersionUrl $versionUrl -BuildId $BuildId -LogDir $config.LogDir
@@ -273,12 +281,16 @@ try {
   # reported and the new release is kept: restoring the database would not cure it and would lose the data written since step 3.
   $verdict = Get-DrishtiReleaseVerdict
   if ($verdict.Verdict -eq 'release') { throw "The new release is not working: $($verdict.Reasons -join '; ')" }
-  if ($verdict.Verdict -eq 'environment') {
+  if ($verdict.Verdict -eq 'environment' -and $verdict.ContainsKey('Database') -and $verdict.Database) {
+    # Re-review 3 m-b: stop here and report; a restore would need the very database that does not answer.
+    $environmentProblem = $true
+    Write-DrishtiStep -Kind fail -Message "the update to $BuildId is in place, but the database does not answer, so the release could not be checked. Nothing was rolled back or restored. Bring the database back (docs/drishti/runbooks/incidents.md), then look at /admin/health; if the release then fails, roll back by hand (docs/drishti/runbooks/update-rollback.md section 3)."
+  } elseif ($verdict.Verdict -eq 'environment') {
     $environmentProblem = $true
     Write-DrishtiStep -Kind warn -Message "updated to $BuildId, which works; but the Health page reports a problem of the server, not of the release ($($verdict.Reasons -join '; ')). Nothing was rolled back. Look at /admin/health and docs/drishti/runbooks/incidents.md."
   } else { Write-DrishtiStep -Kind ok -Message "updated to $BuildId" }
   # The admin-only copy of the scripts the nightly backup runs comes from the release that now runs.
-  Invoke-DrishtiCommand -FilePath $script:RobocopyExe -ArgumentList @((Join-Path $release 'deploy\windows'), (Join-Path $config.InstallRoot 'scripts'), '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/NP') -DryRun:$dry -Display "robocopy $release\deploy\windows -> $(Join-Path $config.InstallRoot 'scripts')" -AllowExitCodes @(0, 1, 2, 3)
+  Invoke-DrishtiCommand -FilePath $script:RobocopyExe -ArgumentList @((Join-Path $release 'deploy\windows'), (Join-Path $config.InstallRoot 'scripts'), '/MIR', '/XJ', '/NFL', '/NDL', '/NJH', '/NJS', '/NP') -DryRun:$dry -Display "robocopy $release\deploy\windows -> $(Join-Path $config.InstallRoot 'scripts')" -AllowExitCodes @(0, 1, 2, 3)
   # Keep the newest releases (KeepReleases), never the one running or the one before it.
   $keep = if ($config.ContainsKey('KeepReleases')) { [int]$config.KeepReleases } else { 3 }
   if ($dry) { Write-DrishtiStep -Kind plan -Message "would keep the newest $keep releases under $releases and remove older ones" }
@@ -310,7 +322,7 @@ try {
       if ($previous) { Set-DrishtiCurrent -Target $previous } elseif ($dry) { Set-DrishtiCurrent -Target '<the previous release>' } else { throw 'there is no earlier release to go back to (first installation)' }
     }
     if ($previous -or $dry) {
-      Invoke-DrishtiServices -Action Start -Names $everyService
+      Invoke-DrishtiServices -Action Start -Names $restartServices
       $oldId = if ($dry) { '<the previous build>' } else { (Get-Content -LiteralPath (Join-Path $previous 'release.json') -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json).buildId }
       if (Wait-DrishtiHealthy -Config $config -BuildId $oldId -TimeoutSec $timeout -DryRun:$dry) { Write-DrishtiStep -Kind ok -Message "rolled back to $oldId" }
       else { Write-DrishtiStep -Kind fail -Message "the old release $oldId started but is not healthy: see the Health page and docs/drishti/runbooks/incidents.md" }
