@@ -282,7 +282,19 @@ integration 94 files, 1090 passed, 3 skipped, 1 todo; build passed.
 
 Commits after 85fd55f change documentation only (this handover, REVIEW-HISTORY.md, the tracker, ARCHITECTURE.md section 13, README).
 
-Final rerun: <pending>
+Final rerun (controller, 2026-11-19):
+  at commit 85fd55f (all code; full gate)
+    npm run typecheck          clean
+    npm run lint               clean
+    npm run test:unit          177 files, 2248 passed
+    npm run test:integration   94 files, 1090 passed, 3 skipped, 1 todo, 0 failed
+    next build                 passed (separate distDir)
+  at commit 549f947 (after the documentation commits)
+    npm run typecheck          clean
+    npm run lint               clean
+    npm run test:unit          177 files, 2248 passed
+  The Windows lab suite (npm run test:windows-lab) has NOT been run anywhere (antivirus on the development PC).
+  The 1 todo is EX-3.4 (independent security review): AI-agent reviews were done; an external review is recommended.
 ```
 
 The rerun at the final commit is recorded by the controller in the tracker's Evidence log (`docs/drishti/DELIVERY-STATUS.md`). The 3
