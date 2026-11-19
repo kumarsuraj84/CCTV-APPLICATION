@@ -57,6 +57,9 @@ describe('production env skeleton (P5.4)', () => {
     // P5.4 fix round 3 (P5.5): the gateway believes one proxy hop (Caddy) for its per-address limits, as the web app does.
     expect(gateway.TRUSTED_PROXY_HOPS).toBe('1')
     expect(web.TRUSTED_PROXY_HOPS).toBe('1')
+    // P5.4 fix round 5 (final-fix-Y review R5): the server asks the gateway on this computer, never through the TLS proxy.
+    expect(web.GATEWAY_HEALTH_URL).toBe('http://127.0.0.1:3412')
+    expect(readFileSync(path.resolve(__dirname, '../../deploy/production.env.example'), 'utf8')).toMatch(/^GATEWAY_HEALTH_URL=http:\/\/127\.0\.0\.1:3412$/m)
     const example = readFileSync(path.resolve(__dirname, '../../deploy/production.env.example'), 'utf8')
     expect(example.slice(example.indexOf('# ── Gateway'))).toMatch(/^TRUSTED_PROXY_HOPS=1$/m)
     const secrets = Object.entries(web).filter(([k]) => /SECRET$|PASSWORD$/.test(k)).map(([, v]) => v)

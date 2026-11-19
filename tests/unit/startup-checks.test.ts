@@ -213,6 +213,17 @@ describe('release 1: the forgotten DRISHTI_ENV, the client address, keys that en
     expect(startupProblems('gateway', { SUPABASE_SERVICE_ROLE_KEY: 'svc', GATEWAY_HOST: '127.0.0.1' }, at).warnings.join(' ')).not.toMatch(/TRUSTED_PROXY_HOPS/)
   })
 
+  // P5.4 fix round 5 (final-fix-Y review R5): with an explicit wss/https video address the Health and Monitoring pages would ask the
+  // gateway's /g/health through the TLS proxy, which does not pass it on: production warns unless GATEWAY_HEALTH_URL is set.
+  it('the production web app warns when the video address is explicit and GATEWAY_HEALTH_URL is not set', () => {
+    const explicit = { ...webEnv(), TRUSTED_PROXY_HOPS: '1', NEXT_PUBLIC_STREAM_GATEWAY_URL: 'wss://drishti.example.test' }
+    expect(startupProblems('web', explicit, at).warnings.join(' ')).toMatch(/GATEWAY_HEALTH_URL=http:\/\/127\.0\.0\.1:3412/)
+    expect(startupProblems('web', { ...explicit, GATEWAY_HEALTH_URL: 'http://127.0.0.1:3412' }, at).warnings.join(' ')).not.toMatch(/GATEWAY_HEALTH_URL/)
+    for (const v of ['/', 'auto', '']) {
+      expect(startupProblems('web', { ...explicit, NEXT_PUBLIC_STREAM_GATEWAY_URL: v }, at).warnings.join(' '), v).not.toMatch(/GATEWAY_HEALTH_URL/)
+    }
+  })
+
   it('N-4: keyExpiryWarnings names a key that ends within 30 days, and nothing else', () => {
     const soon = { ...workerEnv(), SUPABASE_MONITOR_WORKER_KEY: key('monitor_worker', 10 * 24 * 3600) }
     expect(keyExpiryWarnings('worker', soon, at).join(' ')).toMatch(/SUPABASE_MONITOR_WORKER_KEY ends in 10 days/)

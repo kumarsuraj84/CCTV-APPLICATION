@@ -23,6 +23,8 @@ export const PRODUCTION_FILES = {
       ['SUPABASE_SERVICE_ROLE_KEY', ''], ['SUPABASE_APP_WEB_KEY', null], ['SUPABASE_MEDIA_SERVICE_KEY', null], ['NEXT_PUBLIC_SUPABASE_ANON_KEY', ''],
       ['# The one https address people open (runbook-tls.md); the gateway on the same address: NEXT_PUBLIC_STREAM_GATEWAY_URL=/', undefined],
       ['NEXT_PUBLIC_APP_URL', ''], ['NEXT_PUBLIC_STREAM_GATEWAY_URL', '/'],
+      ['# The Health and Monitoring pages ask the gateway on this computer, never through the TLS proxy (P5.4 fix round 5).', undefined],
+      ['GATEWAY_HEALTH_URL', 'http://127.0.0.1:3412'],
       ['STREAM_TOKEN_SECRET', null], ['ACCESS_PREVIEW_SECRET', null], ['MERGE_CONFIRM_SECRET', null], ['VERIFIED_USER_SECRET', null],
       ['CRON_SECRET', null], ['SYSTEM_LOG_INGEST_SECRET', null],
       ['GO2RTC_URL', 'http://127.0.0.1:1984'], ['GO2RTC_API_USERNAME', null], ['GO2RTC_API_PASSWORD', null],

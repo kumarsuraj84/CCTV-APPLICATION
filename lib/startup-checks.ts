@@ -103,6 +103,12 @@ export function startupProblems(proc: ProcessName, env: Env = process.env, now: 
     if (proc === 'web' && !(Number.isInteger(hops) && hops > 0)) {
       warnings.push('TRUSTED_PROXY_HOPS is not set: the web app cannot tell client addresses apart (no per-address limit of sign-ins; one wrong try per delay keeps a named person waiting). Behind the TLS proxy set TRUSTED_PROXY_HOPS=1 (docs/drishti/runbook-tls.md).')
     }
+    // P5.4 fix round 5 (final-fix-Y review R5): with an explicit wss/https video address the server would read the gateway's /g/health
+    // through the TLS proxy, which does not pass it on: the Health and Monitoring pages then always say the gateway does not answer.
+    const videoUrl = (env.NEXT_PUBLIC_STREAM_GATEWAY_URL ?? '').trim()
+    if (proc === 'web' && /^(wss?|https?):\/\//i.test(videoUrl) && !env.GATEWAY_HEALTH_URL?.trim()) {
+      warnings.push('GATEWAY_HEALTH_URL is not set while NEXT_PUBLIC_STREAM_GATEWAY_URL is an explicit address: the Health and Monitoring pages would ask the gateway through the TLS proxy, which does not pass /g/health on. Set GATEWAY_HEALTH_URL=http://127.0.0.1:3412 in web.env (docs/drishti/runbook-tls.md).')
+    }
     // P5.4 fix round 3 (P5.5 report defect 1): a gateway on this computer only sits behind the TLS proxy, so every socket comes from
     // 127.0.0.1; without the proxy count its per-address limits (open videos, attempts a minute) apply to everybody together.
     const gatewayHost = (env.GATEWAY_HOST ?? '').trim().toLowerCase()
