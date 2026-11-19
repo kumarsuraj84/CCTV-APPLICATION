@@ -228,6 +228,22 @@ $s2 = Get-DrishtiRepairServiceSteps -Writers @('DrishtiWeb', 'DrishtiGateway') -
 # m-b: the database level cannot be read after an update: a database outage, not a broken release.
 $v = Get-DrishtiReleaseVerdictFrom -VersionAnswered $false -BuildId 'b9' -GatewayChecked $true -GatewayAnswered $true -DbLevel '' -Expected '20261021000047' -PublicStatus 'degraded'
 "verdict-nodb=$($v.Verdict):$($v.Reasons -join ' / ')"
+# Re-review 4 N-4r: a folder its service writes is read (never through a link) before it is locked: a junction, a hard link or an item
+# of anybody but SYSTEM, the Administrators, TrustedInstaller or that service refuses the lock.
+$svcSid = 'S-1-5-80-7'
+$mk = { param($p, $rep, $hard, $own) [pscustomobject]@{ Path = $p; IsDirectory = $false; IsReparse = $rep; IsHardLink = $hard; Error = $null; Owner = $own } }
+"svcfolder-junction=$(@(Get-DrishtiServiceFolderProblems -Entries @((& $mk 'L\evil' $true $false $null)) -ServiceSids @($svcSid)) -join ' | ')"
+"svcfolder-hard=$(@(Get-DrishtiServiceFolderProblems -Entries @((& $mk 'L\x.log' $false $true $svcSid)) -ServiceSids @($svcSid)) -join ' | ')"
+"svcfolder-foreign=$(@(Get-DrishtiServiceFolderProblems -Entries @((& $mk 'L\y.log' $false $false 'S-1-5-21-9')) -ServiceSids @($svcSid)) -join ' | ')"
+"svcfolder-clean=$(@(Get-DrishtiServiceFolderProblems -Entries @((& $mk 'L\a.log' $false $false $svcSid), (& $mk 'L\b.log' $false $false 'S-1-5-32-544')) -ServiceSids @($svcSid)).Count)"
+# Re-review 4 o-1 / N-4r: the lock steps: a folder its service writes that exists already is scanned and locked FIRST (before its
+# parent's lock could pass anything down into it), with only its own service stopped around it; then the plan in order.
+$plan5 = @([pscustomobject]@{ Path = 'C:\D'; Modify = @() }, [pscustomobject]@{ Path = 'C:\D\logs'; Modify = @() }, [pscustomobject]@{ Path = 'C:\D\logs\DrishtiWeb'; Modify = @('NT SERVICE\DrishtiWeb') }, [pscustomobject]@{ Path = 'C:\D\data\caddy'; Modify = @('NT SERVICE\DrishtiProxy') })
+$steps5 = @(Get-DrishtiLockSteps -Plan $plan5 -Scope @(Get-DrishtiLockScope -Plan $plan5) -Writers @{ 'NT SERVICE\DrishtiWeb' = 'DrishtiWeb'; 'NT SERVICE\DrishtiProxy' = 'DrishtiProxy' } -Exists { param($p) $p -eq 'C:\D\logs\DrishtiWeb' -or $p -eq 'C:\D' -or $p -eq 'C:\D\logs' })
+"locksteps=$(($steps5 | ForEach-Object { $_.Path + '(' + $(if ($_.Service) { $_.Service } else { '-' }) + ')' }) -join ' ')"
+# Re-review 4 n-2: a folder made by this run carries exactly the rules it was given; one that appeared meanwhile does not.
+$want = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-7')
+"created=$((Test-DrishtiCreatedLocked -Protected $true -RuleSids @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-7', 'S-1-5-80-7') -WantedSids $want -Owner 'S-1-5-32-544' -WantedOwner 'S-1-5-32-544')),$((Test-DrishtiCreatedLocked -Protected $false -RuleSids @() -WantedSids $want -Owner 'S-1-5-32-544' -WantedOwner 'S-1-5-32-544')),$((Test-DrishtiCreatedLocked -Protected $true -RuleSids @('S-1-5-18') -WantedSids $want -Owner 'S-1-5-21-9' -WantedOwner 'S-1-5-32-544')),$((Test-DrishtiCreatedLocked -Protected $true -RuleSids @('S-1-5-18', 'S-1-5-11') -WantedSids $want -Owner 'S-1-5-21-9' -WantedOwner ''))"
 `.split('\n'))
     })
 
@@ -257,7 +273,24 @@ $v = Get-DrishtiReleaseVerdictFrom -VersionAnswered $false -BuildId 'b9' -Gatewa
     })
 
     it('m-b: a database that does not answer after an update is a problem of the server: nothing is rolled back', () => {
-      expect(line('verdict-nodb')).toBe('environment:the database does not answer (its level could not be read); the other checks depend on it: nothing was rolled back or restored')
+      // Re-review 4 o-4: the release-level findings are named too (they may only be the outage's effect).
+      expect(line('verdict-nodb')).toBe('environment:the database does not answer (its level could not be read); the other checks depend on it: nothing was rolled back or restored / also seen, perhaps only because of the database: /api/version did not answer with build b9')
+    })
+
+    it('N-4r: a folder its service writes refuses a junction, a hard link or an item of another owner before its lock; a clean one is fine', () => {
+      expect(line('svcfolder-junction')).toBe('L\\evil: a junction or link in a folder its service writes (not followed; nothing was changed)')
+      expect(line('svcfolder-hard')).toBe('L\\x.log: has more than one name, a hard link (not changed)')
+      expect(line('svcfolder-foreign')).toBe('L\\y.log: belongs to S-1-5-21-9, not to SYSTEM, the Administrators, TrustedInstaller or the folder\'s own service (not changed)')
+      expect(line('svcfolder-clean')).toBe('0')
+    })
+
+    it('N-4r / o-1: an existing service folder is scanned and locked before its parent, with only its own service stopped', () => {
+      // logs\DrishtiWeb exists: locked first (and not again); data\caddy does not exist yet: made after its parent, in plan order.
+      expect(line('locksteps')).toBe('C:\\D\\logs\\DrishtiWeb(DrishtiWeb) C:\\D(-) C:\\D\\logs(-) C:\\D\\data\\caddy(DrishtiProxy)')
+    })
+
+    it('n-2: a folder this run made has exactly its rules; one that appeared meanwhile is refused', () => {
+      expect(line('created')).toBe('True,False,False,False')
     })
   })
 
@@ -268,7 +301,7 @@ $v = Get-DrishtiReleaseVerdictFrom -VersionAnswered $false -BuildId 'b9' -Gatewa
       const code = readFileSync(f, 'utf8').replace(/<#[\s\S]*?#>/g, '').split(/\r?\n/).map((l) => l.replace(/(^|\s)#.*$/, '')).join('\n')
       const name = path.basename(f)
       expect(code, name).not.toMatch(/\b(icacls|takeown)(\.exe)?\b|IcaclsExe|TakeownExe/i)
-      expect(code, name).not.toMatch(/\s\/(T|R)(\s|'|"|$)/m)
+      expect(code, name).not.toMatch(/(\s|['"])\/(T|R)(\s|'|"|$)/m) // re-review 4 n-1: also '/T' as an array element
       expect(code, name).not.toMatch(/-Recurse\b/i)
       expect(code, name).not.toMatch(/\/reset\b/i)
     }
@@ -277,6 +310,12 @@ $v = Get-DrishtiReleaseVerdictFrom -VersionAnswered $false -BuildId 'b9' -Gatewa
     expect(services).toMatch(/Get-DrishtiLinkProblems -Links @\(Get-DrishtiReparsePoints -Path \$p\) -Allowed \$allowed/)
     expect(services).toMatch(/\$allowed = @\(Get-DrishtiAllowedLinks -InstallRoot \$config\.InstallRoot\)/)
     expect(services).not.toMatch(/'appcurrent'|TrimEnd\(''\)/)
+    // Re-review 4 n-3: the Audit's link scan covers the key folder too.
+    expect(services).toMatch(/\$config\.VaultKey\.KeyBackupDir/)
+    // Re-review 4 o-2: a failed restart after a repair is never an "ok" with exit 0.
+    expect(services).toMatch(/THESE SERVICES ARE STOPPED/)
+    // Re-review 4 m4-1: a second read-only walk after the lock (owner and link check) in the shared library.
+    expect(readFileSync(path.join(WIN, 'lib', 'Drishti.Common.ps1'), 'utf8')).toMatch(/after the lock, read again/)
     // Re-review 3 m-e: Caddy's admin API is off (a restart applies a changed Caddyfile).
     const caddy = readFileSync(path.join(WIN, 'Caddyfile.example'), 'utf8').split(/\r?\n/).filter((l) => !/^\s*#/.test(l)).join('\n')
     expect(caddy).toMatch(/^\s*admin off\s*$/m)

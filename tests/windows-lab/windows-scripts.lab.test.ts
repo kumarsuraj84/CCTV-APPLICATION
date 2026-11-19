@@ -3,7 +3,7 @@
 // tests/unit/windows-scripts.test.ts in fix round 3 (the owner's antivirus): the same rules are unit-tested there on made-up data.
 // Run from a normal (not elevated) prompt: the checks of what the service accounts alone may do need the operator's own entry off.
 import { spawnSync } from 'node:child_process'
-import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { assertLab, CMD, day, grant, ICACLS, icacls, junction, labConfig, ps, psCommon, removeScratch, ROOT, SC, scratch, sddl, unlink } from './lab'
@@ -277,18 +277,65 @@ describe('Windows lab: locks, links and retention on real folders (P5.4)', () =>
     unlink(B)
   })
 
-  // Re-review 3 N-4 (a): a folder its service may write is locked itself only; a junction inside it is neither walked nor changed.
-  it('N-4: -NoWalk locks the folder itself only; a junction inside it is never followed', () => {
+  // Re-review 4 N-4r: a folder its service writes is read before its lock: a junction, a hard link (or a foreign item) refuses it, and a
+  // clean one is locked with its contents untouched. This is a hard gate of section 7.0 before the first install.
+  it('N-4r: -NoWalk refuses a junction or a hard link in a service folder (decoys untouched) and locks a clean one', () => {
     const logs = path.join(dir, 'svc-logs')
     mkdirSync(logs)
     const decoy = path.join(dir, 'decoy-logs')
     mkdirSync(decoy)
     junction(path.join(logs, 'evil'), decoy)
     const before = sddl(decoy)
-    const out = psCommon([`try { Set-DrishtiAcl -Path '${logs}' -ModifyAccounts @('*S-1-5-19') -NoWalk | Out-Null; 'locked' } catch { "refused: $($_.Exception.Message)" }`])
-    expect(out).toMatch(/^locked$/m)
+    const lock = () => psCommon([`try { Set-DrishtiAcl -Path '${logs}' -ModifyAccounts @('*S-1-5-19') -NoWalk | Out-Null; 'locked' } catch { "refused: $($_.Exception.Message)" }`])
+    expect(lock()).toMatch(/refused: Refused in \S+svc-logs, a folder its service writes .*evil: a junction or link in a folder its service writes/)
     expect(sddl(decoy)).toBe(before)
     unlink(path.join(logs, 'evil'))
+    const outside = path.join(dir, 'decoy-logs-hard.txt')
+    writeFileSync(outside, 'another file')
+    linkSync(outside, path.join(logs, 'x.log'))
+    const hardBefore = sddl(outside)
+    expect(lock()).toMatch(/refused: .*x\.log: has more than one name, a hard link/)
+    expect(sddl(outside)).toBe(hardBefore)
+    rmSync(path.join(logs, 'x.log'))
+    writeFileSync(path.join(logs, 'a.log'), 'a line')
+    expect(lock()).toMatch(/^locked$/m)
+  })
+
+  // Re-review 4 N-4r: Windows' own behaviour, measured: locking a folder with a protected list makes Windows pass its inheritable entries
+  // down to what is in it. Does that pass through a junction inside it? The answer decides how much the read before the lock carries;
+  // the decoy must keep exactly its rules.
+  it('N-4r: Windows passing a folder\'s entries down never goes through a junction inside it (measured, raw .NET lock)', () => {
+    const q = path.join(dir, 'propagation')
+    mkdirSync(path.join(q, 'plain'), { recursive: true })
+    writeFileSync(path.join(q, 'plain', 'f.txt'), 'inside')
+    const decoy = path.join(dir, 'decoy-propagation')
+    mkdirSync(decoy)
+    writeFileSync(path.join(decoy, 'keep.txt'), 'outside')
+    junction(path.join(q, 'evil'), decoy)
+    const before = { decoy: sddl(decoy), file: sddl(path.join(decoy, 'keep.txt')) }
+    const out = psCommon([
+      `$q = '${q}'`,
+      '$me = [Security.Principal.WindowsIdentity]::GetCurrent().User',
+      '$s = New-Object Security.AccessControl.DirectorySecurity',
+      '$s.SetAccessRuleProtection($true, $false)',
+      "$s.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($me, 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')))",
+      "$s.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier('S-1-5-19')), 'Modify', 'ContainerInherit, ObjectInherit', 'None', 'Allow')))",
+      '[IO.Directory]::SetAccessControl($q, $s)',
+      // The plain child got the entry (the propagation happened at all), so an unchanged decoy really means "not followed".
+      "\"plain=$(@((Get-Acl -LiteralPath (Join-Path $q 'plain\\f.txt')).Access | Where-Object { $_.IsInherited -and $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq 'S-1-5-19' }).Count)\"",
+    ])
+    expect(out).toMatch(/plain=1/)
+    expect(sddl(decoy)).toBe(before.decoy)
+    expect(sddl(path.join(decoy, 'keep.txt'))).toBe(before.file)
+    unlink(path.join(q, 'evil'))
+  })
+
+  // Re-review 4 m4-1: after the lock the folder is read again; with nothing else able to add anything, a clean tree passes.
+  it('m4-1: a clean folder passes the second read after its lock', () => {
+    const q = path.join(dir, 'second-read')
+    mkdirSync(path.join(q, 'a', 'b'), { recursive: true })
+    writeFileSync(path.join(q, 'a', 'b', 'c.txt'), 'x')
+    expect(psCommon([`try { Set-DrishtiAcl -Path '${q}' | Out-Null; 'locked' } catch { "refused: $($_.Exception.Message)" }`])).toMatch(/^locked$/m)
   })
 
   // Re-review 3 N-5: the Audit accepts the real app\current junction and reports any other link.
