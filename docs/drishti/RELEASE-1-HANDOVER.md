@@ -269,7 +269,8 @@ Recommendation (the owner decides; nobody has pushed or merged anything):
 ## 9. Gate results
 
 ```
-Gate results at commit 0b15bea (controller run, recorded 2026-11-19)
+Gate results at commit ef91a74 (HEAD when this handover was finished; every commit after 85fd55f is documentation only)
+Numbers recorded by the controller for commit 0b15bea (2026-11-19):
   npm run typecheck          clean
   npm run lint               clean
   npm run test:unit          177 files, 2248 passed
