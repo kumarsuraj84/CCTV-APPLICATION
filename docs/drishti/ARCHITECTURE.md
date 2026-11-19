@@ -838,27 +838,22 @@ Hikvision ISAPI variants across firmware (search paging, times without `Z`, `dai
 
 ---
 
-## 13. Readiness statement (2026-10-22; historical)
+## 13. Readiness statement (current: Release 1 handover, 2026-11-19)
 
-> Review C M-9: this statement is the one of 2026-10-22 and is kept as history. Most blockers below were resolved since (P2-4 … P5.5 and
-> the final fixes); the current state is the tracker (`docs/drishti/DELIVERY-STATUS.md`) and `docs/drishti/RELEASE-1.md`. For the real
-> NVRs the pilot follows `docs/drishti/runbooks/monitoring-rollout.md` (everything off, one location, then by cluster).
+> Review C M-9: the statement of 2026-10-22 said "pilot: not ready" with seven blockers; it no longer describes the system and is
+> replaced by this one. Sections 11 and 12.1 above were written earlier in the build and are partly historical (for example the
+> branch tips, "PLANNED" packages and limitations 1, 4, 5, 7, 9, 13 that later packages resolved or reduced); the current state of every
+> requirement is the tracker `docs/drishti/DELIVERY-STATUS.md`, and the handover `docs/drishti/RELEASE-1-HANDOVER.md` gives the
+> pass/fail table against `RELEASE-1.md`.
 
 | Level | Answer | Evidence |
 |---|---|---|
-| **Locally functional** | **Yes, for the demo stack.** With `db:start`, `demo:seed`, `fake:nvr`, `stack:up:demo`, `gateway`, `worker` and `dev`, a person can sign in, see only what their grants allow, watch the generated test picture on the live wall, browse the fake NVR's recordings and play them back, edit camera groups, run check-now, and an administrator can grant and revoke rights with a preview. | Recorded gates at `78fd7d8` (section 10); screenshots `docs/drishti/evidence/p2-3/`, `p3-0/`. The dev server on 3212 is reported running by the ledger; not re-checked here. |
-| **Supervised pilot (one real location, real people)** | **No — not ready.** | See the blockers below. |
-| **Production** | **No.** | All pilot blockers plus durable audit, backup/restore, packaging, alerts, load tests. |
+| **Locally functional** | **Yes.** On the development stack with fake NVRs and synthetic organisations: hierarchy and multi-NVR locations, import, groups, rights with preview and revocation within 60 s, live walls, playback and stream-only fast playback, monitoring with honest states and roll-ups, two-step sign-in, Health page. | Gates in the tracker Evidence log (clean at `0b15bea` and `85fd55f`); `tests/integration/release1-exit.test.ts`; journeys `docs/drishti/evidence/p5/journeys/`; load test `docs/drishti/evidence/p5/load-test.md`. |
+| **Supervised pilot (one real location)** | **Ready, under the go-live plan.** The former blockers are resolved: revocation (P2-4), the real data model and the estate import (P2-5), hardening (P2-6, P3-1, final fix Y), honest monitoring (P4-L1, MC-4), NVR login safety and a staged monitoring rollout (final fix X, `runbooks/monitoring-rollout.md`), fast-playback rights (P4-L2), production binds and TLS layout (P5.4, `runbook-tls.md`). | `RELEASE-1-HANDOVER.md` sections 3 and 7; `docs/drishti/REVIEW-HISTORY.md` (last reviews approved). |
+| **Production beyond the pilot** | **Not yet.** First: the Windows lab suite and a real install on the server, HTTPS through Caddy, a restore onto a second machine with the Vault key, the pilot's real-hardware checks (go2rtc wording, NVR lock policy, H.265, WAN), an external security review, and the owner's decisions. | `RELEASE-1-HANDOVER.md` sections 4, 5 and 6. |
 
-Pilot blockers, each a named package:
-
-1. **Revocation**: (resolved by P2-4) removing a person's access stops video they already opened within a minute (directive target ≤ 60 s, tested: `tests/integration/media-revocation.test.ts`).
-2. **Real data model**: one NVR per store; locations with several NVRs, head office without an NVR and stable camera identity across remaps do not exist; the real estate is not imported (P2-5; D-L4).
-3. **Hardening required "before any real pilot"** by the directive: MFA and fresh authentication for privileged people (P3), per-service least privilege and closed outbound targets (P2-6), go2rtc API credentials and listener review (D-13), shared rate limits (D-11), CSP (D-12), TLS for app and gateway (external certificates), atomic worker lease (P2-7).
-4. **Honest monitoring**: NVR or WAN loss is reported as camera failure (WP-4.1) — a pilot would produce misleading outage figures.
-5. **No real-hardware evidence at all**: ISAPI, RTSP, browser codecs and ffmpeg have only met fakes; a lab NVR with cameras (external dependency 2) is needed before people rely on it.
-6. **Fast playback rights**: resolved in P4-L2 (D-L1: cctv.playback, stream only; `/api/vod` is export only).
-7. **Network exposure in development**: app and gateway listen on all interfaces over HTTP; dev data is reachable over the VPN until an explicit bind is configured (R10).
+What remains unvalidated is listed in section 12.2 and in the handover section 4: every NVR, go2rtc, ffmpeg, Windows-service, Caddy
+and WAN behaviour has met only fakes or dry runs; the reviews were done by AI agents, not human security testers.
 
 ---
 
