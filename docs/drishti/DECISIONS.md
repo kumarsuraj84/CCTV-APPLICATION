@@ -41,7 +41,7 @@ Cameras and devices belong to locations (a location can be a store, head office,
 - **D-L3 (language) — English only:** no Hindi/bilingual interface; UI stays plain English. Non-translatable tokens (`translate="no"`) for codes/IDs/times remain in P3.5.
 - **D-L4 (real data):** still open — needs the owner's CSV/database export to import the real estate.
 
-## Proposal C-1 (2026-10-22, owner request; PROPOSED — awaiting owner confirmation of the three questions at the end)
+## Proposal C-1 (2026-10-22, owner request) — SUPERSEDED: kept for history only; the confirmed strict-tree Ruling C-1 below, as amended by R-1, is what holds (no many-to-many clusters, no nesting of clusters)
 Owner need: groups by NVR, and **clusters** (e.g. 5 locations in one cluster) so a person who handles a cluster is given rights once, sees those 5 locations only, and opens any location to see all its cameras.
 Design:
 1. **Hierarchy**: Organisation → Cluster → Location → Recorder (NVR) → Camera. A *cluster* is a named, managed set of locations (optional parent cluster for Region → Cluster → … nesting, depth ≤ 3). Table `clusters(id, org_id, name, code, parent_cluster_id null, archived_at)` and `cluster_locations(cluster_id, location_id, added_at, added_by)` (many-to-many so a location can be in "Cluster 3" and also "Bihar"; the admin UI warns when a location is in several clusters). Existing free-text `zone`/`state` stay as attributes and can be used to bulk-fill a cluster.
@@ -54,11 +54,11 @@ Questions: (a) may a location belong to more than one cluster (recommended yes),
 
 ## Ruling C-1 (CONFIRMED by owner, 2026-10-22) — fixed hierarchy: Organization → Region → Cluster → Location → NVR → Camera
 Owner statement: "We have organization, then region, then cluster, then location, then NVR, then camera. Some locations have 2–3 NVRs, that's why location, then NVR, then cameras." This replaces the optional-nesting / many-to-many wording of Proposal C-1 above with a strict tree:
-- `regions(id, org_id, name, code, archived_at)`; `clusters(id, org_id, region_id, name, code, archived_at)` (each cluster belongs to exactly ONE region; region may be set later — an 'Unassigned' bucket is shown for migration only); `locations.cluster_id` (each location belongs to exactly ONE cluster; nullable only during migration/import, flagged in the UI); recorders (NVRs) belong to exactly one location (a location holds 1–3+ NVRs); cameras belong to exactly one active recorder mapping (D-4). IT assets/APs belong to a location (and optionally a recorder for NVR-adjacent equipment). The existing free-text `zone`/`state` stay as attributes; a tool proposes cluster/region assignment from them.
+- `regions(id, org_id, name, code, archived_at)`; `clusters(id, org_id, region_id, name, code, archived_at)` (a cluster belongs to at most ONE region; `region_id` may stay empty for good, R-1 amendment); `locations.cluster_id` (a location belongs to at most ONE cluster — a strict tree, never several clusters; it may stay without a cluster for good and is shown quietly as "No cluster", no 'Unassigned' bucket, R-1 amendment); recorders (NVRs) belong to exactly one location (a location holds 1–3+ NVRs); cameras belong to exactly one active recorder mapping (D-4). IT assets/APs belong to a location (and optionally a recorder for NVR-adjacent equipment). The existing free-text `zone`/`state` stay as attributes; a tool proposes cluster/region assignment from them.
 - Grant scope kinds become: organization, region, cluster, location, recorder, camera, asset. Region scope = all clusters/locations/cameras under it (dynamic: items added later are included); cluster scope = all locations in the cluster; location scope = all its recorders and cameras; recorder scope = that NVR's cameras. Union rule unchanged; a CCTV scope never reveals IT assets.
 - Camera groups remain a separate viewing convenience (static camera lists or dynamic rules: region/cluster/location/recorder/name pattern), always intersected with what the viewer may see.
 - Moving a location to another cluster (or a cluster to another region) takes effect immediately for everyone: holders of the old scope lose it (open sessions closed within 60 s by the P2-4 revalidation), holders of the new scope gain it; the change is audited with the list of affected people and shown in the preview before saving.
-- Answers recorded: (a) a location belongs to ONE cluster (strict tree), (b) cluster/region access is dynamic, (c) Region level is required.
+- Answers recorded: (a) a location belongs to at most ONE cluster (strict tree), (b) cluster/region access is dynamic, (c) the Region level exists in the tree. Corrected in the final clean-up (review C M-30): the later R-1 amendment makes region and cluster OPTIONAL for every location (and region optional for a cluster), permanently; "Region level is required" no longer holds.
 - UI: Admin → Regions & clusters (tree editor with drag/search, counts of locations/NVRs/cameras per node, who has access), Locations admin shows cluster/region, access editor modes "A region", "A cluster", "Locations", "NVR(s)", "Cameras"; Live/Playback/Reports navigate Region → Cluster → Location → camera (recorder shown to IT users; for viewers a location simply shows all its cameras); dashboards and incidents roll up by region/cluster (a cluster/region-wide outage correlates as one incident).
 - Placement: schema + effective-access functions in P2-5a; admin screens/editor modes in P2-5c; navigation in P4-L1; roll-ups in P4-L3/P5.
 
@@ -193,7 +193,7 @@ except where these change them.
 - **FY-1 Two-step sign-in is enforced by checks, not by a remembered step** (A I-1, B I-1). In production (`DRISHTI_ENV=production`) the
   web app refuses to start, and the Health page's "Two-step sign-in" check fails, while any active organisation has it off without an
   audited opt-out. The opt-out is `security_set_mfa(org, actor, false, reason)`: a super administrator on the Health page (fresh sign-in)
-  or the database owner / service key with no person, with a reason of 10 to 500 characters; every change, also one made by hand in psql,
+  or the database owner with no person (the service key no longer may: FC-1), with a reason of 10 to 500 characters; every change, also one made by hand in psql,
   is written to the audit log with the actor and the reason, and an opt-out shows as a warning on the Health page and at start-up. On a
   database marked as a production one (`test_fixture_switch.production`, set by update.ps1) an organisation without settings and a new
   settings row are enforced by default; the local stack stays off by default. `ops_health_status()` reports the counts (`mfa`).
@@ -230,18 +230,49 @@ except where these change them.
   lib/security/production-checks.ts, called with one line from the web self-check and the gateway).
 - **FY-9 Export downloads** (B minor 4): /api/vod answers only Sec-Fetch-Site same-origin or none (a typed address).
 - **FY-10 Player scripts** (B minor 5, D-12): a pinned copy of go2rtc 1.9.9's two player files in public/vendor/go2rtc-1.9.9, loaded from
-  the app's origin with a subresource integrity hash; both files pinned by a test. The gateway's script route is kept (unused by the
-  app) so the gateway's own tests and older pages keep working; removing it is a later clean-up.
+  the app's origin with a subresource integrity hash; both files pinned by a test. The gateway's old script route was removed in the
+  final clean-up (FC-8).
 - **FY-11 Gateway** (B minors 6, 8): browser frames at most 4 KB (a bigger frame closes the socket, 1009); /g/health answers only a direct
   request from this computer (the Health page reads it there); through the proxy (X-Forwarded-For / Forwarded) it is "Not found".
 - **FY-12 Own password change** (B minor 7): ends the open video of every sign-in too.
 - **FY-13 Device import** (C I-8): strict reader, one transaction (check first, then everything or nothing), messages without cell
   values; an empty location or notes cell keeps what is saved and the token `(clear)` empties it; a device is matched by address and port
   among the five device types only, another kind of equipment or an NVR at that address is never changed. One import per organisation
-  at a time (advisory lock) for the device import; the location import is not serialised yet.
+  at a time (advisory lock) for the device import; the location import too since the final clean-up (FC-6).
 - **FY-14 Manage devices** (C I-7): lists and changes only the five device types; access points, switches, routers and other kinds are
   changed under Assets. `nvr` stays a device type (non-recorder NVR boxes exist in the data); dropping it is an owner decision.
 - **FY-15 Restores** (C I-9): refused under an archived parent (DR040): restore the region, then the cluster, then the location, then its
   cameras or devices. Chosen over "move to No cluster" so nothing changes place silently.
 - **FY-16 Wording** (C M-15): "not checked yet" (never checked) and "not checked lately" (stale) are two states on every screen, roll-ups
   included.
+
+## Rulings of the Release 1 final clean-up (2026-11-19; final-fix-Y review Y-R1..Y-R11 and Y's not-done items; migration 0051)
+- **FC-1 No person = the database owner** (Y-R1). `security_set_mfa(org, NULL, ...)` is accepted only from the database owner (psql as
+  `postgres` / `supabase_admin`); the service key and the web app must name an active super administrator. The service key can no
+  longer switch two-step sign-in off (it can still reset passwords through the auth server: that residual is unchanged).
+- **FC-2 Break-glass for a locked code step** (Y-R3). `mfa_code_lock_owner_clear(org, person, reason)`, the database owner only (no API
+  role may execute it; `privilege_violations()` flags any grant), a reason of 10 to 500 characters, audited in `auth_events`
+  (`mfa_lock_cleared`, path `database_owner`) and `admin_audit_log` (`mfa_code_lock_cleared`, with the database user). runbook-tls
+  section 5 item 6.
+- **FC-3 Inventory writes** (Y-R4, C M-30). The web role writes regions, clusters, locations, cameras and assets by column grants only:
+  never `archived_at` / `archived_was_*`, never the ids, never `org_id` on an update, never `is_recorder`. A direct write by ANY API role
+  (web role, service key) is checked by `inventory_write_guard`: no archive or restore, no change of organisation, nothing live put
+  under an archived parent (DR040). Archiving and restoring therefore need `inventory_archive` / `inventory_restore`, i.e. admin.inventory
+  in SQL. The service key loses TRUNCATE on these tables. Chosen: column grants AND a trigger (defence in depth) rather than either.
+- **FC-4 The start-up refusal names organisations by slug** (Y-R9): slugs are not sensitive and mean something to the operator; ids
+  are not printed. At most 20 are named; the psql line uses a slug sub-query.
+- **FC-5 Request bodies** (Y-R7). A body without a length (chunked) is refused outside the import page whatever the request is (411);
+  route handlers that read a body count it while reading (`readBodyCapped`): `/api/live/release` 16 KB, `/api/csp-report` 8 KB.
+- **FC-6 One location import per organisation at a time** (C M-30). `inventory_import_run(org, actor, plan, stamp)` takes the device
+  import's advisory lock (one import of either kind at a time; a second waits) and refuses (DR051, "something changed ... check the file
+  again") when `inventory_import_stamp(org)` differs from the stamp read before the plan's snapshot. `inventory_import_apply` is the
+  service key's only.
+- **FC-7 An NVR and its password are one transaction** (C M-29). `recorder_save_login` saves the NVR, its password and its clock offset
+  together; a new NVR whose password cannot be saved leaves nothing (before: an archived row); a new address or web port without the
+  password is refused in SQL too (DR011). The saved-login version (NB-1, NB-10) follows the new vault secret as before.
+- **FC-8 Smaller items.** The gateway's old player-script route is removed (FY-10). The device import names an unknown column by its
+  position and treats a leading tab or carriage return as a formula start (Y-R8; the location import still names unknown columns by
+  their header, which is not a cell value). `access_check_password_reset` takes the organisation's access lock (Y-R11). "Add by name"
+  in groups previews first and can be undone; reconciliation filters by location; cluster counts are links; the audit log is a card
+  list on a phone (C M-20, M-21). The Proposal C-1 text is marked superseded and Ruling C-1's "Region level is required" corrected to
+  the R-1 amendment (optional region and cluster).
