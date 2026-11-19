@@ -38,7 +38,8 @@ drishti.citykart.local {
 	# and removes the one that names the server.
 	header -Server
 
-	# The video gateway: WebSocket upgrade and the two player scripts, path kept (/g/ws, /g/video-stream.js, /g/video-rtc.js).
+	# The video gateway: the WebSocket upgrade, path kept (/g/ws). The player scripts are the app's own pinned copy (/vendor/go2rtc-1.9.9),
+	# no longer served by the gateway (final clean-up). /g/health answers only on this computer directly (through Caddy: 404).
 	handle /g/* {
 		reverse_proxy 127.0.0.1:3412 {
 			# The gateway checks the Origin header against GATEWAY_ALLOWED_ORIGINS; Caddy passes it on unchanged.

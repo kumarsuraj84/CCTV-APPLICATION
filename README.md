@@ -67,7 +67,7 @@ video through; it is the only video address a browser can reach.
 
 | Port | What | Reachable from |
 | --- | --- | --- |
-| 3412 | gateway: `GET /g/health`, `GET /g/video-stream.js`, `GET /g/video-rtc.js`, WebSocket `/g/ws?token=...` | the network (browsers) |
+| 3412 | gateway: `GET /g/health` (this computer only), WebSocket `/g/ws?token=...` | the network (browsers) |
 | 1984 | go2rtc API (with its own login since P2-6) | this machine only (127.0.0.1) |
 
 go2rtc's WebRTC listener (8555) is off and no longer published (P2-6, D-13: live video goes through the gateway WebSocket).
@@ -84,7 +84,7 @@ go2rtc container from `.env.local` (`--env-file`). `node scripts/gen-secrets.mjs
 JSON with the number of open video sessions and the age of the last access check (no ids, people or addresses); the Monitoring page
 shows it (`GATEWAY_HEALTH_URL` overrides the address the web server uses to read it).
 
-The web app reads `NEXT_PUBLIC_STREAM_GATEWAY_URL` (the gateway address a browser can reach, for example `http://localhost:3412`; it is built into the pages, so restart `npm run dev` or rebuild after changing it). The **Live** page loads the player script from `<that address>/g/video-stream.js` and opens its sockets there, so the web app address must also be in `GATEWAY_ALLOWED_ORIGINS`, exactly as a browser spells it (scheme, host and port, no path). If it is not, tiles say "Video is not available right now."
+The web app reads `NEXT_PUBLIC_STREAM_GATEWAY_URL` (the gateway address a browser can reach, for example `http://localhost:3412`; it is built into the pages, so restart `npm run dev` or rebuild after changing it). The **Live** page loads the player script from the app itself (the pinned copy in `public/vendor/go2rtc-1.9.9`) and opens its sockets at that address, so the web app address must also be in `GATEWAY_ALLOWED_ORIGINS`, exactly as a browser spells it (scheme, host and port, no path). If it is not, tiles say "Video is not available right now."
 
 **Live wall** (`/live`, `/live?location=<id>` (the older `?store=<id>` still works), `/live?group=<id>`, `/live?camera=<id>`): the web app asks for the cameras the signed-in person may see (at most 36 per request, 30 requests per person per minute), registers each in go2rtc and hands the browser one signed token per camera; nothing else about the camera, and never its password or RTSP address, reaches the browser. A token opens a socket within 90 seconds and names its own media session; tokens are renewed every minute while the tab is open; pictures stop while the tab is hidden. Needs `STREAM_TOKEN_SECRET`; without it the page says live video is not set up.
 

@@ -75,7 +75,7 @@ export type GatewayOptions = {
   maxSockets?: number
   /** Open browser sockets allowed at once from one address (default 100); more are closed with 1013. */
   maxSocketsPerIp?: number
-  /** Upgrade attempts per address per minute (default 240); more are closed with 1013 (HTTP script requests get a 429). */
+  /** Upgrade attempts per address per minute (default 240); more are closed with 1013. */
   maxUpgradesPerMinute?: number
   /**
    * P5.5: reverse proxies in front of the gateway on this computer (TRUSTED_PROXY_HOPS; 1 behind Caddy, runbook-tls.md). The per-address
@@ -130,9 +130,6 @@ export const MAX_UPSTREAM_PAYLOAD = 16 * 1024 * 1024
 export const SHUTDOWN_MS = 5000
 
 const WS_PATH = '/g/ws'
-const SCRIPT_PATHS: Record<string, string> = { '/g/video-stream.js': '/video-stream.js', '/g/video-rtc.js': '/video-rtc.js' }
-const SCRIPT_TIMEOUT_MS = 5000
-const MAX_SCRIPT_BYTES = 1024 * 1024
 const UPSTREAM_CONNECT_MS = 5000
 /** Messages from the browser that arrive while go2rtc is still being reached are held; a browser only sends a few small ones. */
 const MAX_HELD_MESSAGES = 32
@@ -300,7 +297,6 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
   const allowed = new Set(opts.allowedOrigins.map((o) => normalizeOrigin(o)).filter((o): o is string => o !== null))
   const perMinute = opts.maxUpgradesPerMinute ?? DEFAULT_MAX_UPGRADES_PER_MINUTE
   const upgradeLimiter = new WindowLimiter(perMinute, 60_000, now)
-  const scriptLimiter = new WindowLimiter(perMinute, 60_000, now)
   const maxPerIp = opts.maxSocketsPerIp ?? DEFAULT_MAX_SOCKETS_PER_IP
   const socketsPerIp = new Map<string, number>()
   const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
@@ -418,85 +414,26 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     res.end(text)
   }
 
-  async function readCapped(res: Response): Promise<Buffer | null> {
-    const declared = Number(res.headers.get('content-length'))
-    if (Number.isFinite(declared) && declared > MAX_SCRIPT_BYTES) {
-      await res.body?.cancel().catch(() => {})
-      return null
-    }
-    if (!res.body) return Buffer.alloc(0)
-    const reader = res.body.getReader()
-    const chunks: Uint8Array[] = []
-    let total = 0
-    try {
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        total += value.byteLength
-        if (total > MAX_SCRIPT_BYTES) {
-          await reader.cancel().catch(() => {})
-          return null
-        }
-        chunks.push(value)
-      }
-    } catch {
-      await reader.cancel().catch(() => {})
-      return null
-    }
-    return Buffer.concat(chunks)
-  }
-
-  /** The player scripts are loaded cross-origin by the web app: answer with that exact origin when it is on the list, never with *. */
-  function scriptCors(req: http.IncomingMessage): Record<string, string> {
-    const given = req.headersDistinct.origin
-    const o = given && given.length === 1 ? normalizeOrigin(given[0], true) : null
-    return o !== null && allowed.has(o) ? { 'Access-Control-Allow-Origin': o, Vary: 'Origin' } : { Vary: 'Origin' }
-  }
-
-  async function serveScript(req: http.IncomingMessage, res: http.ServerResponse, upstreamPath: string) {
-    const cors = scriptCors(req)
-    try {
-      // Nothing from the browser's request goes along: not its headers, not its query, only a fixed path.
-      const r = await fetch(`${origin}${upstreamPath}`, { redirect: 'manual', signal: AbortSignal.timeout(SCRIPT_TIMEOUT_MS), headers: upstreamAuth })
-      const body = r.ok ? await readCapped(r) : (await r.body?.cancel().catch(() => {}), null)
-      if (!body) return sendText(res, 502, 'The video server is not available.', cors)
-      res.writeHead(200, {
-        'Content-Type': 'text/javascript',
-        'Content-Length': body.length,
-        'Cache-Control': 'public, max-age=300',
-        'X-Content-Type-Options': 'nosniff',
-        ...cors,
-      })
-      res.end(body)
-    } catch {
-      sendText(res, 502, 'The video server is not available.', cors)
-    }
-  }
-
+  // Final clean-up (FY-10, B minor 5): the old player-script route (/g/video-stream.js, /g/video-rtc.js fetched from go2rtc) is gone;
+  // the web app loads its pinned copy from its own origin with a subresource integrity hash (public/vendor/go2rtc-1.9.9). The plain
+  // HTTP side answers only /g/health (this computer) and 426 on the socket address.
   const server = http.createServer({ connectionsCheckingInterval: 2000, keepAliveTimeout: 5000, headersTimeout: requestTimeoutMs, requestTimeout: requestTimeoutMs }, (req, res) => {
     const path = pathOf(req.url)
-    const known = path === '/g/health' || path === WS_PATH || (path !== null && Object.hasOwn(SCRIPT_PATHS, path))
+    const known = path === '/g/health' || path === WS_PATH
     if (!known) return sendText(res, 404, 'Not found')
     if (path === WS_PATH) return sendText(res, 426, 'This address is for video connections only.', { Upgrade: 'websocket', Connection: 'Upgrade' })
-    // Anything but GET is 405, including a CORS preflight: the player scripts are simple GETs and need none.
+    // Anything but GET is 405, including a CORS preflight (nothing here needs one).
     if (req.method !== 'GET') return sendText(res, 405, 'Method not allowed', { Allow: 'GET' })
-    if (path === '/g/health') {
-      // Final fix Y (final review B minor 8): only a request made on this computer directly (the web app's Health page reads it there,
-      // GATEWAY_HEALTH_URL). Through the TLS proxy (which adds X-Forwarded-For / Forwarded) or from another computer it is "Not found":
-      // the open connections and whether access checks fail are nobody else's business.
-      const peer = clientAddress(req.socket)
-      const proxied = req.headers['x-forwarded-for'] !== undefined || req.headers.forwarded !== undefined
-      if (proxied || !(peer === '127.0.0.1' || peer === '::1')) return sendText(res, 404, 'Not found')
-      // P2-4: counts and ages only (no session id, person, camera or address).
-      const body = JSON.stringify(health())
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body), ...baseHeaders })
-      return res.end(body)
-    }
-    if (!scriptLimiter.allow(limitAddress(req, req.socket, hops))) {
-      log({ event: 'gateway_session', outcome: 'rate_limited' })
-      return sendText(res, 429, 'Too many requests. Try again in a minute.', { 'Retry-After': '60', ...scriptCors(req) })
-    }
-    void serveScript(req, res, SCRIPT_PATHS[path as string])
+    // /g/health. Final fix Y (final review B minor 8): only a request made on this computer directly (the web app's Health page reads
+    // it there, GATEWAY_HEALTH_URL). Through the TLS proxy (which adds X-Forwarded-For / Forwarded) or from another computer it is "Not
+    // found": the open connections and whether access checks fail are nobody else's business.
+    const peer = clientAddress(req.socket)
+    const proxied = req.headers['x-forwarded-for'] !== undefined || req.headers.forwarded !== undefined
+    if (proxied || !(peer === '127.0.0.1' || peer === '::1')) return sendText(res, 404, 'Not found')
+    // P2-4: counts and ages only (no session id, person, camera or address).
+    const body = JSON.stringify(health())
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body), ...baseHeaders })
+    res.end(body)
   }) as GatewayServer
   // Slow or half-finished requests are dropped (checked every 2 s); this does not affect an upgraded video socket.
   server.maxConnections = MAX_HTTP_CONNECTIONS

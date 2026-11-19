@@ -217,44 +217,15 @@ describe('gateway: plain HTTP', () => {
     expect(r.headers['cache-control']).toBe('no-store')
   })
 
-  it('serves the two scripts from go2rtc with the right headers, passing nothing from the browser but the path', async () => {
+  it('final clean-up (FY-10): the old player-script route is gone: the scripts are 404 and go2rtc is never asked (the app loads its pinned copy)', async () => {
     const fake = await startFakeGo2rtc()
-    const { port } = await startGateway(fake.url)
-    const a = await get(port, '/g/video-stream.js?src=evil&token=abc', { Cookie: 'session=secret', Authorization: 'Bearer abc', 'X-Forwarded-For': '9.9.9.9', Origin: APP })
-    const b = await get(port, '/g/video-rtc.js')
-    for (const [r, body] of [[a, STREAM_JS], [b, RTC_JS]] as const) {
-      expect(r.status).toBe(200)
-      expect(r.body).toBe(body)
-      expect(r.headers['content-type']).toBe('text/javascript')
-      expect(r.headers['cache-control']).toBe('public, max-age=300')
-      expect(r.headers['x-content-type-options']).toBe('nosniff')
-      expect(r.headers['set-cookie']).toBeUndefined() // go2rtc's headers are not copied
+    const { port } = await startGateway(fake.url, { allowedOrigins: [APP] })
+    for (const p of ['/g/video-stream.js', '/g/video-rtc.js', '/g/video-stream.js?src=x']) {
+      const r = await get(port, p, { Origin: APP })
+      expect(r.status, p).toBe(404)
+      expect(r.headers['access-control-allow-origin'], p).toBeUndefined()
     }
-    expect(fake.requests.map((q) => q.url)).toEqual(['/video-stream.js', '/video-rtc.js'])
-    for (const q of fake.requests) {
-      expect(q.headers.cookie).toBeUndefined()
-      expect(q.headers.authorization).toBeUndefined()
-      expect(q.headers['x-forwarded-for']).toBeUndefined()
-      expect(q.headers.origin).toBeUndefined()
-    }
-  })
-
-  it('answers 502 in plain text, without go2rtc address, when go2rtc is down or sends too much', async () => {
-    const fake = await startFakeGo2rtc()
-    const { port } = await startGateway(fake.url)
-    fake.setBigScript(true)
-    const big = await get(port, '/g/video-rtc.js')
-    expect(big.status).toBe(502)
-    await fake.close()
-    const down = await get(port, '/g/video-stream.js')
-    for (const r of [big, down]) {
-      expect(r.status).toBe(502)
-      expect(r.headers['content-type']).toContain('text/plain')
-      expect(r.headers['cache-control']).toBe('no-store')
-      expect(r.body).not.toContain('127.0.0.1')
-      expect(r.body).not.toContain(String(fake.port))
-      expect(r.body).not.toMatch(/ECONN|fetch failed/i)
-    }
+    expect(fake.requests).toHaveLength(0)
   })
 
   it('answers 404 for other paths, 405 for other methods and 426 for a plain request to the socket address', async () => {
@@ -267,67 +238,21 @@ describe('gateway: plain HTTP', () => {
       expect(r.headers['cache-control']).toBe('no-store')
     }
     expect((await get(port, '/g/health', {}, 'POST')).status).toBe(405)
-    expect((await get(port, '/g/video-rtc.js', {}, 'DELETE')).status).toBe(405)
+    expect((await get(port, '/g/video-rtc.js', {}, 'DELETE')).status).toBe(404) // final clean-up: no script route any more
     expect((await get(port, '/g/ws')).status).toBe(426)
     expect(fake.requests).toHaveLength(0)
   })
 })
 
-describe('gateway: scripts for the web app (CORS)', () => {
-  it('names the caller as allowed origin only when it is on the list; never * and never credentials', async () => {
-    const fake = await startFakeGo2rtc()
-    const { port } = await startGateway(fake.url, { allowedOrigins: [APP, 'https://cams.example.com/'] })
-    for (const p of ['/g/video-stream.js', '/g/video-rtc.js']) {
-      const same = await get(port, p, { Origin: APP })
-      expect(same.status).toBe(200)
-      expect(same.headers['access-control-allow-origin']).toBe(APP)
-      expect(same.headers.vary).toBe('Origin')
-      expect(same.headers['access-control-allow-credentials']).toBeUndefined()
-      // Spelled differently, same origin: the answer is the normalised spelling the browser compares with.
-      const other = await get(port, p, { Origin: 'HTTPS://Cams.Example.com:443' })
-      expect(other.headers['access-control-allow-origin']).toBe('https://cams.example.com')
-      // No Origin (same-origin or not a browser): no CORS header, but still Vary.
-      const none = await get(port, p)
-      expect(none.status).toBe(200)
-      expect(none.headers['access-control-allow-origin']).toBeUndefined()
-      expect(none.headers.vary).toBe('Origin')
-      // A foreign or malformed Origin gets the script but no permission.
-      for (const o of ['http://evil.test', 'null', '*', APP + '/x', 'http://app.test:9999']) {
-        const r = await get(port, p, { Origin: o })
-        expect(r.status, o).toBe(200)
-        expect(r.headers['access-control-allow-origin'], o).toBeUndefined()
-        expect(r.headers.vary).toBe('Origin')
-      }
-    }
-  })
-
-  it('also names the allowed origin on a 502 and a 429, so the browser shows the real status', async () => {
-    const fake = await startFakeGo2rtc()
-    const { port } = await startGateway(fake.url, { maxUpgradesPerMinute: 3 })
-    fake.setBigScript(true)
-    const bad = await get(port, '/g/video-rtc.js', { Origin: APP })
-    expect(bad.status).toBe(502)
-    expect(bad.headers['access-control-allow-origin']).toBe(APP)
-    expect(bad.headers.vary).toBe('Origin')
-    await get(port, '/g/video-rtc.js', { Origin: APP })
-    await get(port, '/g/video-rtc.js', { Origin: APP })
-    const limited = await get(port, '/g/video-rtc.js', { Origin: APP })
-    expect(limited.status).toBe(429)
-    expect(limited.headers['access-control-allow-origin']).toBe(APP)
-    const foreign = await get(port, '/g/video-rtc.js', { Origin: 'http://evil.test' })
-    expect(foreign.status).toBe(429)
-    expect(foreign.headers['access-control-allow-origin']).toBeUndefined()
-  })
-
-  it('answers a preflight (OPTIONS) with 405 on every path, with no permission headers', async () => {
+describe('gateway: no browser permission headers (CORS)', () => {
+  it('answers a preflight (OPTIONS) with 405, with no permission headers; the old script paths are 404', async () => {
     const fake = await startFakeGo2rtc()
     const { port } = await startGateway(fake.url)
-    for (const p of ['/g/video-stream.js', '/g/video-rtc.js', '/g/health']) {
-      const r = await get(port, p, { Origin: APP, 'Access-Control-Request-Method': 'GET' }, 'OPTIONS')
-      expect(r.status, p).toBe(405)
-      expect(r.headers['access-control-allow-origin']).toBeUndefined()
-      expect(r.headers.allow).toBe('GET')
-    }
+    const r = await get(port, '/g/health', { Origin: APP, 'Access-Control-Request-Method': 'GET' }, 'OPTIONS')
+    expect(r.status).toBe(405)
+    expect(r.headers['access-control-allow-origin']).toBeUndefined()
+    expect(r.headers.allow).toBe('GET')
+    for (const p of ['/g/video-stream.js', '/g/video-rtc.js']) expect((await get(port, p, { Origin: APP, 'Access-Control-Request-Method': 'GET' }, 'OPTIONS')).status, p).toBe(404)
     expect(fake.requests).toHaveLength(0)
   })
 })
@@ -744,21 +669,6 @@ describe('gateway: limits', () => {
     expect(c.ws.readyState).toBe(WebSocket.OPEN)
     expect(events.some((e) => e.outcome === 'stalled')).toBe(false)
     expect(fake.connections[0].closed).toBe(false)
-  })
-
-  it('answers 429 in plain text when the scripts are asked for too often, but never limits health', async () => {
-    const fake = await startFakeGo2rtc()
-    const { port, clock } = await startGateway(fake.url, { maxUpgradesPerMinute: 2 })
-    expect((await get(port, '/g/video-rtc.js')).status).toBe(200)
-    expect((await get(port, '/g/video-rtc.js')).status).toBe(200)
-    const r = await get(port, '/g/video-rtc.js')
-    expect(r.status).toBe(429)
-    expect(r.headers['content-type']).toContain('text/plain')
-    expect(r.headers['retry-after']).toBe('60')
-    for (let i = 0; i < 5; i++) expect((await get(port, '/g/health')).status).toBe(200)
-    clock.t += 61_000
-    expect((await get(port, '/g/video-rtc.js')).status).toBe(200)
-    expect(fake.requests).toHaveLength(3)
   })
 
   it('pauses a fast sender and cuts a session whose receiver stays far behind', async () => {
