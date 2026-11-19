@@ -1646,6 +1646,12 @@ isOneToOne: false
 "inventory_import_apply":
 { Args: { "p_actor": string,"p_org": string,"p_plan": Json }; Returns: Json
                            },
+"inventory_import_run":
+{ Args: { "p_actor": string,"p_org": string,"p_plan": Json,"p_stamp": string }; Returns: Json
+                           },
+"inventory_import_stamp":
+{ Args: { "p_org": string }; Returns: string
+                           },
 "inventory_move_cluster":
 { Args: { "p_actor"?: string,"p_cluster": string,"p_org": string,"p_region": string }; Returns: Json
                            },
@@ -1781,6 +1787,9 @@ isOneToOne: false
                            },
 "mfa_code_lock_minutes":
 { Args: { "p_lockouts": number }; Returns: number
+                           },
+"mfa_code_lock_owner_clear":
+{ Args: { "p_org": string,"p_reason": string,"p_user": string }; Returns: boolean
                            },
 "mfa_code_lock_record":
 { Args: { "p_failures": number,"p_for_good": boolean,"p_lockouts": number,"p_org": string,"p_user": string }; Returns: undefined
@@ -1963,6 +1972,9 @@ isOneToOne: false
 "recorder_save":
 { Args: { "p_actor"?: string,"p_expected_channels"?: number,"p_host": string,"p_http_port": number,"p_location": string,"p_name"?: string,"p_org": string,"p_recorder": string,"p_rtsp_port": number,"p_username": string }; Returns: string
                            },
+"recorder_save_login":
+{ Args: { "p_actor": string,"p_clock_offset_sec": number,"p_expected_channels": number,"p_host": string,"p_http_port": number,"p_location": string,"p_name": string,"p_org": string,"p_recorder": string,"p_rtsp_port": number,"p_secret": string,"p_username": string }; Returns: string
+                           },
 "recorder_secret_equals":
 { Args: { "p_actor": string,"p_org": string,"p_recorder": string,"p_secret": string }; Returns: boolean
                            },
@@ -1996,7 +2008,7 @@ isOneToOne: false
                            },
 "security_mfa_overview":
 { Args: Record<PropertyKey, never>; Returns: {
-              "enforced": boolean,"off_at": string,"opted_out": boolean,"org_id": string,"reason": string
+              "enforced": boolean,"off_at": string,"opted_out": boolean,"org_id": string,"reason": string,"slug": string
             }[]
                            },
 "security_set_mfa":

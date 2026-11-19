@@ -799,7 +799,8 @@ describe('capability access model (P2-1)', () => {
       preview_hierarchy_proposals: web,
       // P2-5c-2 (20261021000028, 31): the location import in one transaction and its placeholder twin (server only); the Wi-Fi
       // inventory for the signed-in reader (it applies the reader's own wifi.inventory.view grants).
-      inventory_import_apply: web,
+      // Final clean-up (C M-30, 20261021000051): the web app runs it only through inventory_import_run (lock and stamp).
+      inventory_import_apply: server,
       inventory_ensure_placeholders: server,
       wifi_inventory: ['authenticated'],
       // P2-6 (20261021000033): logged credential reads per purpose and role, the lock of the service key, the shared rate limiter,
@@ -899,6 +900,13 @@ describe('capability access model (P2-1)', () => {
       mfa_code_lock_record: [],
       profiles_role_rights: [],
       security_settings_mfa_normalise: [],
+      // Final clean-up (20261021000051): the NVR saved with its password in one transaction, the location import's stamp and runner
+      // for the web app; the break-glass for a locked code step and the inventory write guard have no grant at all (the database owner).
+      recorder_save_login: web,
+      inventory_import_stamp: web,
+      inventory_import_run: web,
+      mfa_code_lock_owner_clear: [],
+      inventory_write_guard: [],
     }
     for (const [name, grantees] of Object.entries(expected)) {
       const f = byName.get(name)

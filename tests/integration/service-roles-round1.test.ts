@@ -27,14 +27,26 @@ const SELECT_WEB = [
   'nvr_login_state',
 ]
 const INSERT_WEB = [
-  'admin_audit_log', 'asset_dependencies', 'asset_endpoints', 'assets', 'camera_group_items', 'camera_group_rules', 'camera_groups', 'cameras',
+  'admin_audit_log', 'asset_dependencies', 'asset_endpoints', 'camera_group_items', 'camera_group_rules', 'camera_groups',
   // Final fix Y (review A M-7, 20261021000049): no INSERT on profiles any more: a person is created through create_person.
-  'clusters', 'locations', 'network_definitions', 'regions',
+  'network_definitions',
 ]
-const UPDATE_WEB = [
-  'asset_endpoints', 'assets', 'camera_group_items', 'camera_groups', 'cameras', 'clusters', 'discovery_findings', 'locations',
-  'network_definitions', 'regions',
-]
+const UPDATE_WEB = ['asset_endpoints', 'camera_group_items', 'camera_groups', 'discovery_findings', 'network_definitions']
+// Final clean-up (Y-R4, 20261021000051): the inventory tables by column grants only; never the archive state, the organisation (on an
+// update) or the ids (archiving, restoring and moving go through the audited functions; trigger inventory_write_guard).
+const ASSET_COLUMNS = ['location_id', 'type', 'name', 'ip', 'tcp_port', 'enabled', 'notes', 'address_space_id', 'mac', 'serial', 'vendor', 'model', 'firmware',
+  'role', 'owner', 'criticality', 'lifecycle_state', 'warranty_until', 'management_mode', 'config_owner', 'credential_ref', 'assigned_profile_id',
+  'attached_recorder_id', 'capability_discovered_at', 'last_inventory_at']
+const INVENTORY_COLUMNS: Record<string, { insert: string[]; update: string[] }> = {
+  regions: { insert: ['org_id', 'code', 'name'], update: ['code', 'name'] },
+  clusters: { insert: ['org_id', 'region_id', 'code', 'name'], update: ['region_id', 'code', 'name'] },
+  locations: {
+    insert: ['org_id', 'code', 'name', 'kind', 'city', 'address', 'zone', 'state', 'is_active', 'cluster_id', 'parent_location_id', 'uplink_asset_id'],
+    update: ['code', 'name', 'kind', 'city', 'address', 'zone', 'state', 'is_active', 'cluster_id', 'parent_location_id', 'uplink_asset_id'],
+  },
+  cameras: { insert: ['org_id', 'location_id', 'recorder_id', 'channel', 'name', 'camera_ip', 'is_active'], update: ['location_id', 'recorder_id', 'channel', 'name', 'camera_ip', 'is_active'] },
+  assets: { insert: ['org_id', ...ASSET_COLUMNS], update: ASSET_COLUMNS },
+}
 const DELETE_WEB = ['asset_dependencies', 'camera_group_items', 'camera_group_rules', 'camera_groups', 'network_definitions']
 
 /** The expected grants, one line each: "role PRIVILEGE relation" or "role PRIVILEGE relation(column)". */
@@ -46,6 +58,10 @@ function expectedGrants(): string[] {
   add('app_web', 'UPDATE', UPDATE_WEB)
   add('app_web', 'DELETE', DELETE_WEB)
   add('app_web', 'UPDATE', ['profiles(full_name)', 'profiles(location_id)', 'profiles(must_reset_password)', 'recorders(clock_offset_sec)', 'recorders(clock_offset_source)'])
+  for (const [table, cols] of Object.entries(INVENTORY_COLUMNS)) {
+    add('app_web', 'INSERT', cols.insert.map((c) => `${table}(${c})`))
+    add('app_web', 'UPDATE', cols.update.map((c) => `${table}(${c})`))
+  }
   add('media_service', 'SELECT', ['assets', 'camera_channel_mappings', 'cameras', 'locations', 'recorders'])
   add('media_service', 'INSERT', ['admin_audit_log'])
   add('monitor_worker', 'SELECT', ['assets', 'camera_channel_mappings', 'cameras', 'check_state', 'locations', 'recorders', 'worker_state'])
