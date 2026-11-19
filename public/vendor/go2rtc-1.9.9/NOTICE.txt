@@ -1,0 +1,13 @@
+Third-party notice: go2rtc player files
+
+Files:    video-rtc.js (VideoRTC v1.6.0) and video-stream.js in this folder, copied unchanged.
+Project:  go2rtc, https://github.com/AlexxIT/go2rtc
+Version:  1.9.9 (the same version as the alexxit/go2rtc:1.9.9 image that Drishti runs)
+Licence:  MIT License
+Author:   Alexey Khit (AlexxIT), as named by the project
+
+The MIT License requires its copyright notice and permission notice to accompany copies of the software.
+
+TODO (owner): the full licence text could not be found offline (it is not in the alexxit/go2rtc:1.9.9 image, and nothing was
+downloaded). Copy the LICENSE file of go2rtc release v1.9.9 (https://github.com/AlexxIT/go2rtc/blob/v1.9.9/LICENSE) below this line,
+word for word, including its copyright line, and remove this TODO.
