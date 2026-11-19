@@ -25,6 +25,9 @@ const APP = 'http://app.test:3212'
 const CHECK_MS = 2000
 const BOUND_MS = 25_000
 const admin = () => adminClient()
+// Final fix X round 2 (NB-7): nothing listens on these NVRs' RTSP port, and an NVR whose one RTSP proof gets no answer gets one source
+// only; these tests are about access, so the proof is a fake NVR that accepts the login after the Digest exchange.
+const acceptingNvr = async () => ({ code: 200, authSent: true })
 
 describe('open video stops when access goes (P2-4 acceptance)', () => {
   let orgId: string
@@ -47,7 +50,7 @@ describe('open video stops when access goes (P2-4 acceptance)', () => {
   }
   /** The person opens live video of these cameras the application's way, and connects a socket for each through the gateway. */
   async function watch(u: TestUser, cameras: string[], at = port) {
-    const res = await openStreams({ admin: admin(), rls: u.client, go2rtc: api.client, env: {} }, { id: u.id, orgId }, cameras, 'sub')
+    const res = await openStreams({ admin: admin(), rls: u.client, go2rtc: api.client, env: {}, rtsp: acceptingNvr }, { id: u.id, orgId }, cameras, 'sub')
     if (!res.ok) throw new Error(res.error)
     expect(res.streams.map((s) => s.cameraId).sort()).toEqual([...cameras].sort())
     const opened = res.streams.map((s) => {
@@ -123,7 +126,7 @@ describe('open video stops when access goes (P2-4 acceptance)', () => {
   it('(a) removing a grant closes the socket with 4403 within 25 s; (b) a token issued before cannot open a new socket (1008)', async () => {
     const { u, ids } = await viewer('user', 'cctv.live', [atCamera(cam1), atCamera(cam4)])
     const [s1, s4] = await watch(u, [cam1, cam4])
-    const spare = await openStreams({ admin: admin(), rls: u.client, go2rtc: api.client, env: {} }, { id: u.id, orgId }, [cam1], 'sub')
+    const spare = await openStreams({ admin: admin(), rls: u.client, go2rtc: api.client, env: {}, rtsp: acceptingNvr }, { id: u.id, orgId }, [cam1], 'sub')
     if (!spare.ok) throw new Error(spare.error)
     const t0 = Date.now()
     expect((await admin().rpc('revoke_grant', { p_org: orgId, p_user: u.id, p_grant_ids: [ids[0]], p_reason: 'test: camera taken away' })).error).toBeNull()

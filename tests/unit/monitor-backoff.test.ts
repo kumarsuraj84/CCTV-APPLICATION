@@ -105,6 +105,80 @@ describe('after a refused NVR login the recorder is left alone (shared, escalati
     expect(db.results()).toHaveLength(0)
   })
 
+  // Round 2 (review M-2): the state read at the start of a long round is read again right before each NVR's login.
+  it('an NVR refused by another path during the round is not logged in to (the gate is read again before the login)', async () => {
+    quietLog()
+    const { db, counts, d } = setup('auth', 200)
+    db.recorders = [recorder({ username: 'fine' })]
+    db.provenAll(START)
+    const peek = db.loginGate.bind(db)
+    db.loginGate = async (ids, o) => {
+      const r = await peek(ids, o)
+      // Right after the round's first read, another path (a live wall, discovery) sees the NVR refuse its login.
+      if (!o.claim) for (const id of ids) await db.reportLogin(id, db.version(id)!, 'refused', START, { baseSec: 900, maxSec: 21_600 })
+      return r
+    }
+    await checkCameras(d)
+    expect(counts).toEqual({ nvr: 0, rtsp: 0 })
+  })
+
+  // Round 2 (review M-3): after silent cameras the rest stay one at a time, so a late refusal costs one video login, not four.
+  it('without a proven login the cameras stay one at a time: at most one refused video login per NVR and round', async () => {
+    quietLog()
+    const db = new MemoryDb()
+    db.recorders = [recorder({ cameras: Array.from({ length: 8 }, (_, i) => ({ id: `c${i + 1}`, channel: i + 1, camera_ip: null })) })]
+    const codes = [0, 0, 0, 401, 401, 401, 401, 401]
+    let refused = 0
+    let inFlight = 0
+    let maxInFlight = 0
+    const d = deps(db, {
+      nvr: () => ({ channelStatus: async () => { throw new NvrError('timeout', 'x') }, channels: async () => [] }),
+      rtsp: async (t) => {
+        inFlight++
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        await new Promise((r) => setTimeout(r, 2))
+        inFlight--
+        if (codes[t.channel - 1] === 401) refused++
+        return { code: codes[t.channel - 1] }
+      },
+    })
+    await checkCameras(d)
+    expect(refused).toBe(1)
+    expect(maxInFlight).toBe(1)
+    expect(refusedCount(db)).toBe(1)
+  })
+
+  // Round 2 (review I-2; NB-8): a 200 to a request nobody logged in for proves nothing (the worker and the web paths agree).
+  it('an ISAPI answer that came without any login is used for the cameras but proves nothing: the video logins stay one at a time', async () => {
+    quietLog()
+    const db = new MemoryDb()
+    db.recorders = [recorder()]
+    let rtsp = 0
+    const d = deps(db, {
+      nvr: () => ({ channelStatus: async () => new Map([[1, false], [2, false], [3, false]]), channels: async () => [], loginProven: () => false }),
+      rtsp: async () => { rtsp++; return { code: 401 } },
+    })
+    await checkCameras(d)
+    expect(rtsp).toBe(1) // not verified: the first refusal stops the round
+    expect(refusedCount(db)).toBe(1)
+    expect(db.loginReports.map((r) => r.outcome)).toEqual(['refused'])
+  })
+
+  // Round 2 (review M-4): an RTSP 401 to a request that carried no login (Basic only, a password a header cannot carry) refused nobody.
+  it('an RTSP 401 without any login sent is not a refused login: no back-off, no results, the attempt is given back', async () => {
+    quietLog()
+    const db = new MemoryDb()
+    db.recorders = [recorder()]
+    const d = deps(db, {
+      nvr: () => ({ channelStatus: async () => { throw new NvrError('timeout', 'x') }, channels: async () => [] }),
+      rtsp: async () => ({ code: 401, authSent: false }),
+    })
+    await checkCameras(d)
+    expect(refusedCount(db)).toBe(0)
+    expect(db.results()).toHaveLength(0)
+    expect(db.logins.get('s1')?.attemptUntil).toBeNull()
+  })
+
   it('a "check now" for that NVR does not bypass it', async () => {
     quietLog()
     const { counts, round } = setup()

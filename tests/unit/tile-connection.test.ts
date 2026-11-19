@@ -129,7 +129,7 @@ describe('an NVR whose login stands refused (final fix X, review C I-2)', () => 
       onRefused: () => refused.push(1),
     })
     c.update({ url: 'ws://gw/t1', paused: false })
-    sockets[0].end('nvr_login_refused')
+    sockets[0].end('camera_not_available')
     expect(views.at(-1)).toBe('refused')
     expect(refused).toHaveLength(1)
     expect(vi.getTimerCount()).toBe(0)

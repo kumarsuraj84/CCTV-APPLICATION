@@ -66,8 +66,11 @@ describe('openStreams', () => {
     await fake.close()
   })
 
+  // Final fix X round 2 (NB-7): nothing listens on 127.0.0.1:554, and an NVR whose one RTSP proof gets no answer gets ONE source only;
+  // these tests are about routing and sessions, so the proof is a fake NVR that accepts the login after the Digest exchange.
+  const acceptingNvr = async () => ({ code: 200, authSent: true })
   const open = (user: TestUser, ids: string[], kind: 'sub' | 'main' = 'sub', extra: { env?: Record<string, string | undefined>; now?: () => number; adminClient?: ReturnType<typeof admin> } = {}) =>
-    openStreams({ admin: extra.adminClient ?? admin(), rls: user.client, go2rtc: fake.client, env: extra.env ?? {}, now: extra.now }, { id: user.id, orgId }, ids, kind)
+    openStreams({ admin: extra.adminClient ?? admin(), rls: user.client, go2rtc: fake.client, env: extra.env ?? {}, now: extra.now, rtsp: acceptingNvr }, { id: user.id, orgId }, ids, kind)
   const streamsOf = (r: Awaited<ReturnType<typeof open>>): OpenedStream[] => {
     if (!r.ok) throw new Error(r.error)
     return r.streams
@@ -342,9 +345,11 @@ describe('openStreams', () => {
     // P2-4 / P4-L1 review I-1: first the one call that registers the media sessions under the person's stream cap (no password is
     // read for a refused or paused camera). P2-6: then the logged credential read, for live video, naming the person it is for.
     // Final fix X (NB-2): per NVR, the shared login state is asked before its password is read (and, for a login that needs a proof,
-    // the one RTSP proof is reported: nvr_login_report).
+    // the one RTSP proof is reported: nvr_login_report). Round 2 (review M-1, NB-9): the login state is asked FIRST, so a refused NVR's
+    // cameras never get a media session (and never count against the cap); then the sessions, then the password reads.
     const names = calls.map((c) => c.name)
-    expect(names[0]).toBe('media_session_create_live')
+    expect(names.slice(0, 2)).toEqual(['nvr_login_gate', 'nvr_login_gate'])
+    expect(names[2]).toBe('media_session_create_live')
     expect(names.filter((n) => n === 'nvr_login_gate')).toHaveLength(2)
     expect(names.filter((n) => !['media_session_create_live', 'nvr_login_gate', 'nvr_login_report', 'recorder_credential_read'].includes(n))).toEqual([])
     for (const rec of [rA, rB]) {
@@ -353,7 +358,7 @@ describe('openStreams', () => {
       expect(i).toBeGreaterThan(-1)
       expect(j).toBeGreaterThan(i)
     }
-    expect(calls[0].args).toMatchObject({ p_org: orgId, p_user: manager.id, p_max: 25 })
+    expect(calls.find((c) => c.name === 'media_session_create_live')!.args).toMatchObject({ p_org: orgId, p_user: manager.id, p_max: 25 })
     const reads = calls.filter((c) => c.name === 'recorder_credential_read')
     expect(reads.map((c) => (c.args as { p_recorder: string }).p_recorder).sort()).toEqual([rA, rB].sort())
     for (const c of reads) expect(c.args).toMatchObject({ p_purpose: 'live', p_actor: manager.id })

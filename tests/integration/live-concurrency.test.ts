@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { MSG_FAILED_OPEN, openStreams, releaseStreams, renewStreams } from '@/lib/streams/open'
 import { verifyStreamToken } from '@/lib/streams/token'
 import { startFakeGo2rtc, type FakeGo2rtc } from '../helpers/fake-go2rtc'
+import { acceptingRtspProof } from '../helpers/fake-servers'
 import { adminClient, cleanupOrg, createOrg, createSite, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
 
 // P4-L1 brief item 2 (bounded concurrency) and item 4 (stream opens recorded); review round 1, I-1.
@@ -51,7 +52,7 @@ describe('live streams per person are bounded, and every opening is recorded (P4
   }
   const env = (max: string) => ({ LIVE_MAX_STREAMS_PER_USER: max })
   const open = (u: TestUser, ids: string[], o: { kind?: 'sub' | 'main'; max?: string; release?: { cameraIds: string[]; kind: 'sub' | 'main' }[]; adminClient?: ReturnType<typeof admin>; client?: string } = {}) =>
-    openStreams({ admin: o.adminClient ?? admin(), rls: u.client, go2rtc: fake.client, env: env(o.max ?? '4') }, { id: u.id, orgId }, ids, o.kind ?? 'sub', { release: o.release, client: o.client })
+    openStreams({ admin: o.adminClient ?? admin(), rls: u.client, go2rtc: fake.client, env: env(o.max ?? '4'), rtsp: acceptingRtspProof }, { id: u.id, orgId }, ids, o.kind ?? 'sub', { release: o.release, client: o.client })
   const renew = (u: TestUser, ids: string[], max = '4', client?: string) => renewStreams({ admin: admin(), rls: u.client, env: env(max) }, { id: u.id, orgId }, ids, 'sub', { client })
   /** What the gateway does when the browser's socket arrives with the token. */
   async function connect(token: string): Promise<{ ok: boolean; reason: string | null; sid: string }> {
@@ -232,14 +233,15 @@ describe('live streams per person are bounded, and every opening is recorded (P4
       }) as ReturnType<typeof admin>
       const time = async (f: () => Promise<unknown>) => { const t = performance.now(); await f(); return performance.now() - t }
       fake.seen.length = 0
-      const fullMs = await time(() => openStreams({ admin: spy, rls: u.client, go2rtc: fake.client, env: env('25') }, { id: u.id, orgId }, page, 'sub', { client: W }))
+      const fullMs = await time(() => openStreams({ admin: spy, rls: u.client, go2rtc: fake.client, env: env('25'), rtsp: acceptingRtspProof }, { id: u.id, orgId }, page, 'sub', { client: W }))
       const fullCalls = [...calls]
       const go2rtcFull = fake.seen.length
       calls.length = 0
       fake.seen.length = 0
       const renewMs = await time(() => renewStreams({ admin: spy, rls: u.client, env: env('25') }, { id: u.id, orgId }, page, 'sub', { client: W }))
-      // One NVR: one login state question (final fix X, NB-2), one login read, and the outcome of the one RTSP proof when one was due.
-      expect(fullCalls.filter((c) => c !== 'nvr_login_report')).toEqual(['media_session_create_live', 'nvr_login_gate', 'recorder_credential_read'])
+      // One NVR: one login state question (final fix X, NB-2; asked first since round 2, NB-9), one login read, and the outcome of the
+      // one RTSP proof when one was due.
+      expect(fullCalls.filter((c) => c !== 'nvr_login_report')).toEqual(['nvr_login_gate', 'media_session_create_live', 'recorder_credential_read'])
       expect(fullCalls.filter((c) => c === 'nvr_login_report').length).toBeLessThanOrEqual(1)
       expect(go2rtcFull).toBeGreaterThanOrEqual(16)
       expect(calls).toEqual(['media_session_create_live'])

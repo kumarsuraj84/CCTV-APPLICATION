@@ -177,7 +177,8 @@ describe('rtsp check: safety', () => {
     running.push(s)
     for (const password of ['200', '1', '0', 'RTSP', 'RTSP/1.0', 'OK', '.']) {
       const r = await rtspDescribe({ ...target(s.port), password })
-      expect(r).toEqual({ code: 200, trace: [password === 'OK' ? 'RTSP/1.0 200 ***' : 'RTSP/1.0 200 OK'] })
+      // authSent (final fix X round 2, NB-8): a 200 without a challenge was answered before any password was sent.
+      expect(r).toEqual({ code: 200, trace: [password === 'OK' ? 'RTSP/1.0 200 ***' : 'RTSP/1.0 200 OK'], authSent: false })
     }
   })
   it('reads a status line that arrives in two pieces', async () => {
@@ -190,7 +191,7 @@ describe('rtsp check: safety', () => {
       })
     })
     running.push(s)
-    expect(await rtspDescribe(target(s.port))).toEqual({ code: 200, trace: ['RTSP/1.0 200 OK'] })
+    expect(await rtspDescribe(target(s.port))).toEqual({ code: 200, trace: ['RTSP/1.0 200 OK'], authSent: false })
   })
   it('uses Digest only, and never Basic, whichever order the camera lists them in', async () => {
     for (const mode of ['needs-auth-basic-first', 'needs-auth-digest-first'] as const) {

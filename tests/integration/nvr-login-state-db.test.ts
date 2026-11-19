@@ -100,17 +100,29 @@ describe('the shared NVR login state (nvr_login_gate / nvr_login_report)', () =>
     expect((await report(r, g.version!, 'refused')).applied).toBe(false)
   })
 
-  it('three refused logins within 30 minutes, whatever the password, pause the NVR', async () => {
+  it('three refused logins of one saved login within 30 minutes pause the NVR; a new saved password lifts the pause (round 2, NB-10)', async () => {
     const { recorderId: r } = await site()
-    for (const pw of ['a-1', 'b-2', 'c-3']) {
-      await admin().rpc('recorder_store_credential', { p_recorder: r, p_secret: pw })
+    const web = serviceClient('app_web')
+    for (let i = 0; i < 3; i++) {
       const g = await gate(r)
       await report(r, g.version!, 'refused')
+      await web.rpc('nvr_login_try_again' as never, { p_org: orgId, p_recorder: r, p_actor: actor.id } as never)
     }
-    await admin().rpc('recorder_store_credential', { p_recorder: r, p_secret: 'd-4' })
     const paused = await gate(r)
     expect(paused.decision).toBe('paused')
     expect(minutesLeft(paused.until)).toBe(30)
+    await admin().rpc('recorder_store_credential', { p_recorder: r, p_secret: 'corrected-1' })
+    const fresh = await gate(r)
+    expect(fresh).toMatchObject({ decision: 'probe', claimed: true, level: 0 })
+    const again = await report(r, fresh.version!, 'refused')
+    expect(minutesLeft(again.until)).toBe(15)
+  })
+
+  it('round 2 (review M-9): ten callers asking at the same moment: exactly one holds the attempt', async () => {
+    const { recorderId: r } = await site()
+    const answers = await Promise.all(Array.from({ length: 10 }, (_, i) => gate(r, { client: i % 2 ? media() : worker(), path: i % 2 ? 'live' : 'monitoring' })))
+    expect(answers.filter((a) => a.claimed)).toHaveLength(1)
+    expect(answers.filter((a) => a.decision === 'wait')).toHaveLength(9)
   })
 
   it('an NVR without a saved password is never tried', async () => {
@@ -183,6 +195,28 @@ describe('the shared NVR login state (nvr_login_gate / nvr_login_report)', () =>
     await report(r, probe.version!, 'ok', media())
     expect(await check()).toBe('go')
     expect(((await gw.rpc('media_session_login_check' as never, { p_sid: randomUUID() } as never)).data as unknown as { decision: string }[])[0].decision).toBe('no_session')
+  })
+
+  it('round 2 (review M-8; NB-12): two identical unexplained go2rtc failures without video in between count as a refused login', async () => {
+    const s = await site()
+    await grant(orgId, actor.id, 'cctv.live')
+    const made = await admin().rpc('media_session_create', { p_org: orgId, p_user: actor.id, p_kind: 'live', p_cameras: s.cameraIds, p_streams: [`cam_${s.cameraIds[0]}_sub`] })
+    const sid = (made.data as { sid: string }[])[0].sid
+    const gw = serviceClient('video_gateway')
+    await gw.rpc('media_session_open', { p_sid: sid, p_user: actor.id, p_camera: s.cameraIds[0], p_kind: 'live', p_stream: `cam_${s.cameraIds[0]}_sub` })
+    const say = async (kind: string, hash?: string) =>
+      (await gw.rpc('media_session_login_report' as never, { p_sid: sid, p_kind: kind, ...(hash ? { p_hash: hash } : {}) } as never)).data as unknown as string
+    const h1 = 'a'.repeat(64)
+    const h2 = 'b'.repeat(64)
+    expect(await say('unexplained', h1)).toBe('counted')
+    expect(await say('video')).toBe('cleared') // a picture played: the failure is explained by something else
+    expect(await say('unexplained', h1)).toBe('counted')
+    expect(await say('unexplained', h2)).toBe('counted') // a different failure starts again
+    expect(await say('unexplained', h2)).toBe('refused')
+    expect(await gate(s.recorderId)).toMatchObject({ decision: 'refused', level: 1 })
+    const st = await admin().from('nvr_login_state' as never).select('last_refused_path').eq('recorder_id', s.recorderId).single()
+    expect(st.data).toEqual({ last_refused_path: 'gateway' })
+    expect((await gw.rpc('media_session_login_report' as never, { p_sid: sid, p_kind: 'other' } as never)).error?.code).toBe('22023')
   })
 
   it('the rollout: monitoring switched on or off for a region, a cluster, a location or the organisation, each NVR audited', async () => {

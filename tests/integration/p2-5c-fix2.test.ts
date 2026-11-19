@@ -6,7 +6,7 @@ import { applyProposals, previewProposals } from '@/lib/inventory/hierarchy'
 import { previewMerge, searchCameras } from '@/lib/inventory/mapping'
 import { testRecorderConnection } from '@/lib/inventory/recorder-admin'
 import { discoverRecorderCameras } from '@/lib/monitor/discovery'
-import { MSG_LOGIN_PAUSED } from '@/lib/monitor/login-backoff'
+import { MSG_LOGIN_BACKOFF, MSG_LOGIN_PAUSED } from '@/lib/monitor/login-backoff'
 import { startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
 import {
   adminClient, atCamera, atCluster, atLocation, atRecorder, atRegion, cleanupOrg, createCamera, createCluster, createLocation, createOrg, createRecorder, createRegion,
@@ -62,22 +62,29 @@ describe('P2-5c-1 fix round 2', () => {
     expect(await previewMerge(c(), actor, { keepId: keep, duplicateId: unlinked })).toMatchObject({ ok: true, duplicatePlace: 'FYN2 · not linked', duplicateLinked: false, peopleLosing: 0 })
   })
 
-  it('A-N3: saving one wrong password after another cannot keep asking the NVR (at most 3 refused logins per 30 minutes)', async () => {
+  // Final fix X round 2 (review M-10; ruling NB-10, which replaces the "whatever login" part of A-N3): one refused login per saved
+  // password and window; three refusals of one saved login (with "Try again") pause the NVR; a corrected password is tried at once.
+  it('A-N3: each saved password is tried once; three refusals of one login pause the NVR; a corrected password works at once', async () => {
     const nvr: FakeNvr = await startFakeNvr({ channels: [{ channel: 1, name: 'A' }], statuses: { 1: true } })
     try {
       const loc = await createLocation(orgId, { code: 'FYN3' })
       const rec = await createRecorder(orgId, loc, { host: '127.0.0.1', httpPort: nvr.port, secret: 'wrong-1' })
       const store = async (secret: string) => expect((await admin().rpc('recorder_store_credential', { p_recorder: rec, p_secret: secret })).error).toBeNull()
+      const again = async () => expect((await admin().rpc('nvr_login_try_again' as never, { p_org: orgId, p_recorder: rec, p_actor: me.id } as never)).error).toBeNull()
       expect(await testRecorderConnection(c(), actor, rec)).toEqual({ ok: false, error: 'The NVR refused the user name or password.' })
-      await store('wrong-2')
-      expect(await discoverRecorderCameras(c(), actor, rec)).toEqual({ ok: false, error: 'The NVR refused the user name or password.' })
-      await store('wrong-3')
+      expect(await discoverRecorderCameras(c(), actor, rec)).toEqual({ ok: false, error: MSG_LOGIN_BACKOFF })
+      await again()
       expect(await testRecorderConnection(c(), actor, rec)).toEqual({ ok: false, error: 'The NVR refused the user name or password.' })
-      const asked = nvr.requests.length
-      await store('secret-pass') // even the right one waits: the NVR's own lock counter does not know it is right
+      await again()
+      expect(await testRecorderConnection(c(), actor, rec)).toEqual({ ok: false, error: 'The NVR refused the user name or password.' })
+      await again()
+      const refusedLogins = nvr.authorizations.length
+      expect(refusedLogins).toBe(3)
       expect(await testRecorderConnection(c(), actor, rec)).toEqual({ ok: false, error: MSG_LOGIN_PAUSED })
       expect(await discoverRecorderCameras(c(), actor, rec)).toEqual({ ok: false, error: MSG_LOGIN_PAUSED })
-      expect(nvr.requests.length).toBe(asked)
+      expect(nvr.authorizations.length).toBe(refusedLogins)
+      await store('secret-pass') // the corrected password lifts the pause and is tried at once
+      expect(await testRecorderConnection(c(), actor, rec)).toMatchObject({ ok: true })
     } finally {
       await nvr.close()
     }

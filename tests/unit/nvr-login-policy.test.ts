@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { backoffSeconds, decideLogin, reportLogin, tryAgain, type LoginState } from '@/lib/nvr/login-policy'
+import { backoffSeconds, classifyLoginAnswer, classifyRtspCode, decideLogin, reportLogin, tryAgain, type LoginState } from '@/lib/nvr/login-policy'
 
 // Final fix X (release 1 review C I-1, I-3; ruling NB-1): the rules of the shared NVR login back-off. The database implements the same
 // (tests/integration/nvr-login-state-db.test.ts runs these scenarios against it).
@@ -100,16 +100,49 @@ describe('the NVR login back-off rules', () => {
     expect(n.gate(T0 + 4000)).toMatchObject({ decision: 'go' })
   })
 
-  it('three refused logins within 30 minutes, whatever the login, pause the NVR until the oldest is 30 minutes old', () => {
+  it('three refused logins of one saved login within 30 minutes pause the NVR until the oldest is 30 minutes old', () => {
     const n = nvr()
-    for (const [i, v] of ['a', 'b', 'c'].entries()) {
-      n.setVersion(v)
+    for (let i = 0; i < 3; i++) {
       n.gate(T0 + min(i))
       n.report('refused', T0 + min(i))
+      n.tryAgain()
     }
-    n.setVersion('d')
     expect(n.gate(T0 + min(5))).toMatchObject({ decision: 'paused', until: T0 + min(30) })
     expect(n.gate(T0 + min(30) + 1)).toMatchObject({ decision: 'probe', claimed: true })
+  })
+
+  // Final fix X round 2 (review M-10; ruling NB-10): a NEW saved login (a corrected password) is a fresh state: it lifts the pause and is
+  // tried at once; if it is refused too, the next window is the first one again (15 minutes).
+  it('a new saved login lifts the 3-in-30-minutes pause and starts at the first window', () => {
+    const n = nvr()
+    for (let i = 0; i < 3; i++) {
+      n.gate(T0 + min(i))
+      n.report('refused', T0 + min(i))
+      n.tryAgain()
+    }
+    expect(n.gate(T0 + min(4))).toMatchObject({ decision: 'paused' })
+    n.setVersion('v-corrected')
+    expect(n.gate(T0 + min(5))).toMatchObject({ decision: 'probe', claimed: true, level: 0 })
+    n.report('refused', T0 + min(5))
+    expect(n.gate(T0 + min(6))).toMatchObject({ decision: 'refused', level: 1, until: T0 + min(20) })
+  })
+
+  // Final fix X round 2 (review I-2, M-4; ruling NB-8): ONE classifier for every path. Only an answer that came after the password was
+  // actually sent (a Digest login) says anything about the login.
+  it('the shared classifier: a refusal, a 403 or a success count only after the password was sent', () => {
+    expect(classifyLoginAnswer({ status: 'refused', credentialsSent: true })).toBe('refused')
+    expect(classifyLoginAnswer({ status: 'forbidden', credentialsSent: true })).toBe('ok')
+    expect(classifyLoginAnswer({ status: 'success', credentialsSent: true })).toBe('ok')
+    expect(classifyLoginAnswer({ status: 'forbidden', credentialsSent: false })).toBe('unknown') // a 403 before any login (IP filter, lock page)
+    expect(classifyLoginAnswer({ status: 'success', credentialsSent: false })).toBe('unknown') // a 200 nobody logged in for
+    expect(classifyLoginAnswer({ status: 'refused', credentialsSent: false })).toBe('unknown') // a 401 we never answered (Basic only, unusable password)
+    expect(classifyLoginAnswer({ status: 'other', credentialsSent: true })).toBe('unknown')
+    expect(classifyRtspCode(401, true)).toBe('refused')
+    expect(classifyRtspCode(401, false)).toBe('unknown')
+    expect(classifyRtspCode(200, true)).toBe('ok')
+    expect(classifyRtspCode(200, false)).toBe('unknown')
+    expect(classifyRtspCode(404, true)).toBe('ok')
+    expect(classifyRtspCode(0, true)).toBe('unknown')
   })
 
   it('an administrator\'s "Try again" ends the window and its level, not the 3-in-30-minutes pause', () => {

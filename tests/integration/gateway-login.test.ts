@@ -20,7 +20,7 @@ afterEach(async () => {
 })
 
 /** go2rtc: `refuse` sends go2rtc's refused-login error as soon as a viewer asks for the stream; `once` sends one video frame, then nothing. */
-async function fakeGo2rtc(mode: 'refuse' | 'once') {
+async function fakeGo2rtc(mode: 'refuse' | 'once' | 'odd') {
   const connections: string[] = []
   const server = http.createServer((_req, res) => res.writeHead(404).end())
   const wss = new WebSocketServer({ server, path: '/api/ws' })
@@ -29,6 +29,8 @@ async function fakeGo2rtc(mode: 'refuse' | 'once') {
     socket.on('error', () => {})
     socket.on('message', () => {
       if (mode === 'refuse') socket.send(JSON.stringify({ type: 'error', value: 'streams: wrong user/pass' }))
+      // odd (round 2, M-8): a failure text the gateway does not know (another go2rtc build's wording for a refused login, say).
+      else if (mode === 'odd') socket.send(JSON.stringify({ type: 'error', value: 'streams: rtsp: unexpected answer to the login (build x)' }))
       else socket.send(Buffer.alloc(32, 1), { binary: true })
     })
   })
@@ -39,14 +41,25 @@ async function fakeGo2rtc(mode: 'refuse' | 'once') {
 
 function registry(decision: 'go' | 'refused') {
   const refusedFor: string[] = []
+  const reports: { sid: string; kind: string; hash?: string }[] = []
+  let unexplained = 0
   const r: RegistryClient = {
     open: async (_sid, e) => ({ ok: true, kind: e.kind, stream: e.stream }),
     stillValid: async () => new Map(),
     close: async () => {},
     loginCheck: async () => decision,
     loginRefused: async (sid) => void refusedFor.push(sid),
+    // Like media_session_login_report: the second identical unexplained failure counts as a refused login.
+    loginReport: async (sid, kind, hash) => {
+      reports.push({ sid, kind, hash })
+      if (kind === 'video') {
+        unexplained = 0
+        return 'cleared'
+      }
+      return ++unexplained >= 2 ? 'refused' : 'counted'
+    },
   }
-  return { r, refusedFor }
+  return { r, refusedFor, reports }
 }
 
 async function gateway(go2rtcUrl: string, reg: RegistryClient, extra: { upstreamSilenceMs?: number } = {}) {
@@ -91,6 +104,45 @@ describe('the gateway and refused NVR logins', () => {
     expect(refusedFor).toEqual([t.sid])
     expect(t.texts.map((x) => JSON.parse(x).value)).toEqual([LOGIN_REFUSED_VALUE])
     expect(t.texts.join('')).not.toContain('user/pass')
+  })
+
+  // Round 2 (review M-7): the gateway cannot tell a CCTV-only viewer from the IT view, so what reaches every browser is neutral.
+  it('the close reason and the error value a browser sees name no NVR and no login', async () => {
+    const up = await fakeGo2rtc('once')
+    const { r } = registry('refused')
+    const g = await gateway(up.url, r)
+    const token = signStreamToken({ sid: randomUUID(), u: randomUUID(), c: randomUUID(), k: 'sub', exp: Math.floor(Date.now() / 1000) + 90 }, SECRET)
+    const ws = new WebSocket(`ws://127.0.0.1:${g.port}/g/ws?token=${encodeURIComponent(token)}`, { origin: APP })
+    const texts: string[] = []
+    ws.on('message', (d, bin) => { if (!bin) texts.push(d.toString()) })
+    ws.on('error', () => {})
+    cleanups.push(async () => ws.terminate())
+    const reason = await new Promise<string>((res) => ws.on('close', (_c, why) => res(why.toString())))
+    expect(`${reason} ${texts.join(' ')}`).not.toMatch(/nvr|login|password|refused/i)
+  })
+
+  // Round 2 (review M-8; NB-12): a failure text the gateway does not know is reported (hashed, never the text); the second identical one
+  // without video in between counts as a refused login and the tile is told, so an unknown wording cannot keep go2rtc dialling.
+  it('unknown go2rtc failures are reported hashed; the second identical one ends as a refused login', async () => {
+    const up = await fakeGo2rtc('odd')
+    const { r, reports } = registry('go')
+    const g = await gateway(up.url, r)
+    const first = tile(g.port)
+    expect(await first.closed).not.toBe(CLOSE_LOGIN_REFUSED)
+    const second = tile(g.port)
+    expect(await second.closed).toBe(CLOSE_LOGIN_REFUSED)
+    expect(reports.map((x) => x.kind)).toEqual(['unexplained', 'unexplained'])
+    expect(reports[0].hash).toMatch(/^[0-9a-f]{64}$/)
+    expect(reports[0].hash).toBe(reports[1].hash)
+    expect(JSON.stringify(reports)).not.toMatch(/unexpected answer/)
+  })
+
+  it('video from a stream is reported (at most once a minute per stream), which clears the count', async () => {
+    const up = await fakeGo2rtc('once')
+    const { r, reports } = registry('go')
+    const g = await gateway(up.url, r, { upstreamSilenceMs: 300 })
+    await tile(g.port).closed
+    expect(reports.map((x) => x.kind)).toEqual(['video'])
   })
 
   it('a picture whose video stopped is ended (so go2rtc stops retrying the NVR behind it)', async () => {

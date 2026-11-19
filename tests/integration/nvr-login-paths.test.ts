@@ -7,8 +7,10 @@ import { discoverRecorderCameras } from '@/lib/monitor/discovery'
 import { MSG_LOGIN_BACKOFF } from '@/lib/monitor/login-backoff'
 import { realProbes } from '@/lib/monitor/probes'
 import { clearPasswordCache, SupabaseMonitorDb } from '@/lib/monitor/supabase-db'
-import { MSG_CAMERA_NOT_AVAILABLE, MSG_NVR_LOGIN_REFUSED } from '@/lib/nvr/login-guard'
+import { MSG_CAMERA_NOT_AVAILABLE, MSG_NVR_LOGIN_CHECKING, MSG_NVR_LOGIN_REFUSED } from '@/lib/nvr/login-guard'
+import { Go2rtcClient } from '@/lib/streams/go2rtc'
 import { openStreams } from '@/lib/streams/open'
+import { openPlayback } from '@/lib/streams/playback'
 import { startFakeGo2rtc, type FakeGo2rtc } from '../helpers/fake-go2rtc'
 import { startFakeNvr, startFakeRtsp, type FakeNvr, type FakeRtsp } from '../helpers/fake-servers'
 import { adminClient, atLocation, CCTV_VIEW, cleanupOrg, createOrg, createSite, createUser, grant, READ_EVERYTHING, type TestUser } from '../setup/fixtures'
@@ -100,10 +102,83 @@ describe('the shared NVR login back-off across every path', () => {
       wall(viewer, s.cameraIds),
     ])
     vi.restoreAllMocks()
-    expect(s.logins()).toBeLessThanOrEqual(1)
+    // Round 2 (review M-9): exactly one: the claim lets one path try, and its refusal keeps every other path away.
+    expect(s.logins()).toBe(1)
     const st = await admin().from('nvr_login_state' as never).select('outcome').eq('recorder_id', s.recorderId).single()
-    expect(st.data).toEqual({ outcome: s.logins() === 1 ? 'refused' : null })
+    expect(st.data).toEqual({ outcome: 'refused' })
   })
+
+  // Round 2 (review I-1; ruling NB-7): a proof that gets no answer (a slow or hung NVR) does not open the wall: at most ONE go2rtc
+  // source (the one claimed attempt) until a login is proven; the other tiles say "Camera not available." and are asked for again later.
+  it('a slow NVR with a wrong password: 16 tiles from two people at once register at most one source and cost at most one login', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const rtsp = await startFakeRtsp('silent')
+    servers.push(rtsp)
+    const s = await createSite(orgId, { host: '127.0.0.1', httpPort: 1, rtspPort: rtsp.port, username: 'viewer', secret: 'wrong-pass', cameras: 16 })
+    await grant(orgId, viewer.id, CCTV_VIEW, atLocation(s.locationId))
+    const other = await createUser(orgId, 'user')
+    await grant(orgId, other.id, CCTV_VIEW, atLocation(s.locationId))
+    fake.seen.length = 0
+    const [a, b] = await Promise.all([wall(viewer, s.cameraIds), wall(other, s.cameraIds)])
+    vi.restoreAllMocks()
+    const puts = fake.seen.filter((x) => x.method === 'PUT' && s.cameraIds.some((c) => x.name?.includes(c)))
+    expect(puts.length).toBeLessThanOrEqual(1)
+    expect(rtsp.authorizations.length).toBeLessThanOrEqual(1)
+    const opened = [a, b].flatMap((r) => (r.ok ? r.streams : []))
+    expect(opened.length).toBeLessThanOrEqual(1)
+    for (const r of [a, b]) {
+      expect(r.ok).toBe(true)
+      if (!r.ok) continue
+      expect(r.streams.length + (r.unavailable?.length ?? 0)).toBe(16) // every tile is told something
+      expect(new Set(r.unavailable?.map((u) => u.message))).toEqual(new Set([MSG_CAMERA_NOT_AVAILABLE]))
+    }
+  }, 30_000)
+
+  // Round 2 (review M-1): cameras that are not opened (their NVR's login stands refused) never take a place under the stream cap.
+  it('refused cameras do not crowd out good ones under the stream cap, however often the wall asks again', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const bad = await nvrSite('wrong-pass')
+    const good = await nvrSite(RIGHT)
+    const watcher = await createUser(orgId, 'user')
+    await grant(orgId, watcher.id, CCTV_VIEW, [atLocation(bad.locationId), atLocation(good.locationId)])
+    const capped = (ids: string[]) => openStreams({ admin: admin(), rls: watcher.client, go2rtc: fake.client, env: { LIVE_MAX_STREAMS_PER_USER: '16' } }, { id: watcher.id, orgId }, ids, 'sub')
+    const ids = [...bad.cameraIds.slice(0, 10), ...good.cameraIds.slice(0, 10)]
+    await capped(bad.cameraIds.slice(0, 10)) // the wall's first opening finds the bad NVR's login refused
+    for (let round = 0; round < 3; round++) {
+      const res = await capped(ids)
+      vi.restoreAllMocks()
+      expect(res.ok).toBe(true)
+      if (!res.ok) continue
+      expect(res.streams.map((x) => x.cameraId).sort()).toEqual(good.cameraIds.slice(0, 10).sort())
+      expect(res.paused ?? []).toEqual([])
+      expect(res.unavailable?.map((u) => u.cameraId).sort()).toEqual(bad.cameraIds.slice(0, 10).sort())
+    }
+    expect(bad.logins()).toBe(1)
+  })
+
+  // Round 2 (review M-6): while another path holds the attempt, or the state cannot be read, the tiles say so plainly.
+  it('while another path is checking the login, the wall lists the cameras as "being checked" (IT view) or not available', async () => {
+    const s = await nvrSite('wrong-pass')
+    const held = await admin().rpc('nvr_login_gate' as never, { p_recorders: [s.recorderId], p_path: 'monitoring' } as never)
+    expect(((held.data as unknown as { claimed: boolean }[])[0]).claimed).toBe(true)
+    const [it, cctv] = await Promise.all([wall(it_admin, s.cameraIds), wall(viewer, s.cameraIds)])
+    expect(it.ok && new Set(it.unavailable?.map((u) => u.message))).toEqual(new Set([MSG_NVR_LOGIN_CHECKING]))
+    expect(cctv.ok && new Set(cctv.unavailable?.map((u) => u.message))).toEqual(new Set([MSG_CAMERA_NOT_AVAILABLE]))
+    expect(s.logins()).toBe(0)
+  }, 30_000)
+
+  // Round 2 (review M-5): an attempt claimed by a path that then sent nothing (go2rtc not answering) is given back at once.
+  it('1x playback that could not register its stream gives the claimed attempt back (no minute of "being checked")', async () => {
+    const rtsp = await startFakeRtsp('silent')
+    servers.push(rtsp)
+    const s = await createSite(orgId, { host: '127.0.0.1', httpPort: 1, rtspPort: rtsp.port, username: 'viewer', secret: 'any-pass', cameras: 1 })
+    await grant(orgId, viewer.id, CCTV_VIEW, atLocation(s.locationId))
+    const res = await openPlayback({ admin: admin(), rls: viewer.client, go2rtc: new Go2rtcClient('http://127.0.0.1:1'), env: {} }, { id: viewer.id, orgId }, s.cameraIds[0], new Date(Date.now() - 3_600_000), 5, 0)
+    expect(res).toEqual({ ok: false, error: 'The video server is not available.' })
+    const g = (await admin().rpc('nvr_login_gate' as never, { p_recorders: [s.recorderId], p_path: 'monitoring', p_claim: false } as never)).data as unknown as { decision: string }[]
+    expect(g[0].decision).toBe('probe') // not 'wait': nothing holds the attempt
+    expect(rtsp.authorizations).toHaveLength(0)
+  }, 30_000)
 
   it('a corrected password ends the back-off at once: the wall opens all 16 with no further refused login', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})

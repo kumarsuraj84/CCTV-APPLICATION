@@ -354,7 +354,14 @@ export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNv
  * needs-auth-basic-first / needs-auth-digest-first: the 401 lists both Basic and Digest, in that order (two WWW-Authenticate headers).
  * Basic is never accepted by the fake.
  */
-export type FakeRtspMode = 'open' | 'needs-auth' | 'refuse' | 'always-401' | 'needs-auth-basic-first' | 'needs-auth-digest-first'
+/**
+ * Final fix X round 2 (NB-7, NB-8): the one RTSP proof of live video and 1x playback, as a fake NVR that accepts the login after the
+ * Digest exchange. For tests about routing, access and sessions whose fake NVRs have no RTSP server (an NVR whose proof gets no answer
+ * gets one live source only, and keeps the claimed attempt).
+ */
+export const acceptingRtspProof = async () => ({ code: 200, authSent: true })
+
+export type FakeRtspMode = 'open' | 'needs-auth' | 'refuse' | 'always-401' | 'needs-auth-basic-first' | 'needs-auth-digest-first' | 'needs-auth-basic-only' | 'silent'
 export type FakeRtsp = Bound & {
   requests: string[]
   /** Every Authorization header received, in order. */
@@ -384,11 +391,13 @@ export async function startFakeRtsp(mode: FakeRtspMode, fixedPort = 0, credentia
         nonces.add(nonce)
         const digest = `WWW-Authenticate: Digest realm="${realm}", qop="auth", nonce="${nonce}"\r\n`
         const basic = `WWW-Authenticate: Basic realm="${realm}"\r\n`
-        const lines = mode === 'needs-auth-basic-first' ? basic + digest : mode === 'needs-auth-digest-first' ? digest + basic : digest
+        const lines = mode === 'needs-auth-basic-first' ? basic + digest : mode === 'needs-auth-digest-first' ? digest + basic : mode === 'needs-auth-basic-only' ? basic : digest
         return `RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\n${lines}\r\n`
       }
       const [method, uri] = requestLine.split(' ')
       const authorised = auth !== undefined && verifyDigest(auth, { user: credentials.username, pass: credentials.password, realm, method, uri, nonces })
+      // silent (final fix X round 2): accepts the connection, reads the request, never answers (a slow or hung NVR).
+      if (mode === 'silent') return
       if (mode === 'open') s.end('RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n')
       else if (mode === 'refuse') s.end('RTSP/1.0 404 Not Found\r\nCSeq: 1\r\n\r\n')
       else if (mode === 'always-401') s.end(challenge())

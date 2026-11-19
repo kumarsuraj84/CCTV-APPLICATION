@@ -71,6 +71,10 @@ const FAST_NOW = Date.UTC(2026, 9, 22, 10, 0, 0)
 const FAST_START = new Date('2026-10-22T09:20:00Z')
 const RECORDINGS = [{ start: '2026-10-22T09:00:00', end: '2026-10-22T10:00:00', channel: 1 }]
 const CLIP = makeFmp4({ fragments: 3, fragmentSec: 1, payloadBytes: 1000 })
+// Final fix X round 2 (NB-7, NB-8): the one RTSP proof of live video and 1x playback; most fake NVRs here have no RTSP server, and an
+// NVR whose proof gets no answer gets one source only. These tests are about permissions, so the proof is a fake NVR that accepts the
+// login after the Digest exchange.
+const acceptingNvr = async () => ({ code: 200, authSent: true })
 
 /** The person chooses their own password, as /change-password does (lib/actions/auth.ts): their own update, then the flag. */
 async function choosePassword(email: string, oneTime: string): Promise<{ client: ReturnType<typeof createClient<Database>> }> {
@@ -236,7 +240,7 @@ describe('Release 1 exit criteria (RELEASE-1.md)', () => {
       const stranger = people['other organisation'].u
       expect((await stranger.client.from('cameras').select('id').in('id', allIds())).data).toEqual([])
       for (const cap of CCTV) expect(await allowedBy(stranger, cap)).toEqual([])
-      const r = await openStreams({ admin: admin(), rls: stranger.client, go2rtc: go2rtc.client, env: {} }, { id: stranger.id, orgId: orgB }, allIds().slice(0, 10), 'sub')
+      const r = await openStreams({ admin: admin(), rls: stranger.client, go2rtc: go2rtc.client, env: {}, rtsp: acceptingNvr }, { id: stranger.id, orgId: orgB }, allIds().slice(0, 10), 'sub')
       expect(r).toEqual({ ok: true, streams: [] })
       expect((await people.organisation.u.client.from('cameras').select('id').eq('id', foreignCamera)).data).toEqual([])
       // Positive control: the stranger does see their own organisation's camera.
@@ -248,7 +252,7 @@ describe('Release 1 exit criteria (RELEASE-1.md)', () => {
       for (const p of Object.values(people)) {
         if (p.key === 'other organisation') continue
         go2rtc.seen.length = 0
-        const r = await openStreams({ admin: admin(), rls: p.u.client, go2rtc: go2rtc.client, env: {} }, { id: p.u.id, orgId: orgA }, allIds(), 'sub')
+        const r = await openStreams({ admin: admin(), rls: p.u.client, go2rtc: go2rtc.client, env: {}, rtsp: acceptingNvr }, { id: p.u.id, orgId: orgA }, allIds(), 'sub')
         if (!r.ok) throw new Error(`${p.key}: ${r.error}`)
         const got = sorted(r.streams.map((s) => s.cameraId))
         if (JSON.stringify(got) !== JSON.stringify(expected(p, LIVE))) wrong.push(`${p.key}: opened ${got.length}, oracle ${expected(p, LIVE).length}`)
@@ -266,7 +270,7 @@ describe('Release 1 exit criteria (RELEASE-1.md)', () => {
         const may = new Set(expected(p, PLAYBACK))
         const mayFile = new Set(expected(p, EXPORT).filter((c) => may.has(c)))
         for (const c of cams) {
-          const r = await openPlayback({ admin: admin(), rls: p.u.client, go2rtc: go2rtc.client, env: {} }, { id: p.u.id, orgId: orgA }, c.id, start, 5, 0)
+          const r = await openPlayback({ admin: admin(), rls: p.u.client, go2rtc: go2rtc.client, env: {}, rtsp: acceptingNvr }, { id: p.u.id, orgId: orgA }, c.id, start, 5, 0)
           if (r.ok !== may.has(c.id)) wrong.push(`${key} playback ${c.nvr}/${c.channel}: ${r.ok ? 'opened' : 'refused'}`)
           if (!r.ok) expect(r.error).toBe('Camera not found.')
           const q = parseVodQuery(new URLSearchParams(`camera=${c.id}&start=${start.toISOString().slice(0, 19)}Z&minutes=5&probe=1`))
@@ -290,7 +294,7 @@ describe('Release 1 exit criteria (RELEASE-1.md)', () => {
       expect(await allowedBy(p.u, LIVE)).toContain(cam)
       const who = { id: p.u.id, orgId: orgA }
       nvrC1.requests.length = 0
-      expect(await openPlayback({ admin: admin(), rls: p.u.client, go2rtc: go2rtc.client, env: {} }, who, cam, new Date(Date.now() - 3600_000), 5, 0)).toEqual({ ok: false, error: 'Camera not found.' })
+      expect(await openPlayback({ admin: admin(), rls: p.u.client, go2rtc: go2rtc.client, env: {}, rtsp: acceptingNvr }, who, cam, new Date(Date.now() - 3600_000), 5, 0)).toEqual({ ok: false, error: 'Camera not found.' })
       const fast = await openFastPlayback({ rls: p.u.client, admin: admin(), nvr: nvrClient, remux: fakeRemux('copy'), conversions: createConversionLimiter(), now: () => FAST_NOW, offsetMin: 0 }, who, cam, FAST_START, 5, 8)
       expect(fast).toEqual({ ok: false, error: 'Camera not found.' })
       // The same for a live-only camera on the reachable fake NVR: refused before any NVR request.
@@ -405,7 +409,7 @@ describe('Release 1 exit criteria (RELEASE-1.md)', () => {
       const l3 = cams.filter((c) => c.location === L.L3)
       expect(l3).toHaveLength(6)
       go2rtc.seen.length = 0
-      const r = await openStreams({ admin: admin(), rls: p.u.client, go2rtc: go2rtc.client, env: {} }, { id: p.u.id, orgId: orgA }, l3.map((c) => c.id), 'sub')
+      const r = await openStreams({ admin: admin(), rls: p.u.client, go2rtc: go2rtc.client, env: {}, rtsp: acceptingNvr }, { id: p.u.id, orgId: orgA }, l3.map((c) => c.id), 'sub')
       if (!r.ok) throw new Error(r.error)
       expect(sorted(r.streams.map((s) => s.cameraId))).toEqual(sorted(l3.map((c) => c.id)))
       for (const c of l3) {
@@ -480,7 +484,7 @@ describe('Release 1 exit criteria (RELEASE-1.md)', () => {
       return s
     }
     async function watchLive(u: TestUser, cameras: string[]) {
-      const r = await openStreams({ admin: admin(), rls: u.client, go2rtc: api.client, env: {} }, { id: u.id, orgId: orgA }, cameras, 'sub')
+      const r = await openStreams({ admin: admin(), rls: u.client, go2rtc: api.client, env: {}, rtsp: acceptingNvr }, { id: u.id, orgId: orgA }, cameras, 'sub')
       if (!r.ok) throw new Error(r.error)
       expect(r.streams).toHaveLength(cameras.length)
       return r.streams.map((s) => s.token)
@@ -549,14 +553,14 @@ describe('Release 1 exit criteria (RELEASE-1.md)', () => {
       const cam = cams.find((c) => c.nvr === 'c1' && c.channel === 1)!.id
       const who = { id: u.id, orgId: orgA }
       const [live] = await watchLive(u, [cam])
-      const pb = await openPlayback({ admin: admin(), rls: u.client, go2rtc: api.client, env: {} }, who, cam, new Date(Date.now() - 2 * 3600_000), 5, 0)
+      const pb = await openPlayback({ admin: admin(), rls: u.client, go2rtc: api.client, env: {}, rtsp: acceptingNvr }, who, cam, new Date(Date.now() - 2 * 3600_000), 5, 0)
       if (!pb.ok) throw new Error(pb.error)
       const limits = createConversionLimiter()
       const deps: FastDeps = { rls: u.client, admin: admin(), nvr: nvrClient, remux: fakeRemux('copy'), conversions: limits, now: () => FAST_NOW, offsetMin: 0, timing: { killGraceMs: 300 } }
       const fast = await openFastPlayback(deps, who, cam, FAST_START, 5, 8)
       if (!fast.ok) throw new Error(fast.error)
       // Positive control: a 1x playback token of the same person opens before any revocation.
-      const pbControl = await openPlayback({ admin: admin(), rls: u.client, go2rtc: api.client, env: {} }, who, cam, new Date(Date.now() - 3 * 3600_000), 5, 0)
+      const pbControl = await openPlayback({ admin: admin(), rls: u.client, go2rtc: api.client, env: {}, rtsp: acceptingNvr }, who, cam, new Date(Date.now() - 3 * 3600_000), 5, 0)
       if (!pbControl.ok) throw new Error(pbControl.error)
       const control = await open(pbControl.token)
       control.ws.close()
@@ -681,7 +685,7 @@ describe('Release 1 exit criteria (RELEASE-1.md)', () => {
         const wantLocations = sorted(new Set(await Promise.all(want[k].map(async (cam) => (await admin().from('cameras').select('location_id').eq('id', cam).single()).data!.location_id))))
         if (JSON.stringify(shownLocations) !== JSON.stringify(wantLocations)) wrong.push(`${k}: the Live tree lists ${shownLocations.length} locations, expected ${wantLocations.length}`)
         if (want[k].length > 0) {
-          const r = await openStreams({ admin: admin(), rls: c as never, go2rtc: go2rtc.client, env: {} }, { id: ids[k], orgId: orgP }, everything.slice(0, 20), 'sub')
+          const r = await openStreams({ admin: admin(), rls: c as never, go2rtc: go2rtc.client, env: {}, rtsp: acceptingNvr }, { id: ids[k], orgId: orgP }, everything.slice(0, 20), 'sub')
           if (!r.ok) throw new Error(`${k}: ${r.error}`)
           const opened = sorted(r.streams.map((s) => s.cameraId))
           const wantOpened = want[k].filter((x) => everything.slice(0, 20).includes(x))

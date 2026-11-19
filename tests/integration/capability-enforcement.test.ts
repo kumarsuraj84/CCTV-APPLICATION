@@ -11,7 +11,7 @@ import { listDaySegments, listRecordedDays, openPlayback } from '@/lib/streams/p
 import { createConversionLimiter, parseVodQuery, serveVod } from '@/lib/streams/vod'
 import { adminClient, atCamera, atLocation, cleanupOrg, createOrg, createSite, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
 import { fakeRemux } from '../helpers/fake-remux'
-import { startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
+import { acceptingRtspProof, startFakeNvr, type FakeNvr } from '../helpers/fake-servers'
 
 // P2-2 brief item 8: direct-call negative tests per operation. For each operation, a person holding only a DIFFERENT capability, the
 // right capability on a different location or camera, an expired grant, a revoked grant (revoked mid-test), a deactivated account or
@@ -117,7 +117,7 @@ describe('capability enforcement per operation (P2-2)', () => {
     switch (op) {
       case 'live':
       case 'refresh': {
-        const r = await openStreams({ ...d, go2rtc, env: {} }, actor, [c11], op === 'live' ? 'sub' : 'main')
+        const r = await openStreams({ ...d, go2rtc, env: {}, rtsp: acceptingRtspProof }, actor, [c11], op === 'live' ? 'sub' : 'main')
         if (!r.ok) throw new Error(r.error)
         return r.streams.length === 1
       }
@@ -132,7 +132,7 @@ describe('capability enforcement per operation (P2-2)', () => {
         return r.ok
       }
       case 'playback': {
-        const r = await openPlayback({ ...d, go2rtc, env: {} }, actor, c11, start(), 5, 0)
+        const r = await openPlayback({ ...d, go2rtc, env: {}, rtsp: acceptingRtspProof }, actor, c11, start(), 5, 0)
         if (!r.ok) expect(r.error).toBe('Camera not found.')
         return r.ok
       }
@@ -208,10 +208,10 @@ describe('capability enforcement per operation (P2-2)', () => {
 
   it('cross-store and camera-only: a grant for store E2 or camera c12 gives nothing on c11 / E1, and never another organisation', async () => {
     const other = people.otherStore.user
-    const r = await openStreams({ admin: admin(), rls: other.client, go2rtc, env: {} }, { id: other.id, orgId }, [c11, c21], 'sub')
+    const r = await openStreams({ admin: admin(), rls: other.client, go2rtc, env: {}, rtsp: acceptingRtspProof }, { id: other.id, orgId }, [c11, c21], 'sub')
     expect(r.ok && r.streams.map((s) => s.cameraId)).toEqual([c21])
     const cam = people.otherCamera.user
-    const c = await openStreams({ admin: admin(), rls: cam.client, go2rtc, env: {} }, { id: cam.id, orgId }, [c11, c12, c21], 'sub')
+    const c = await openStreams({ admin: admin(), rls: cam.client, go2rtc, env: {}, rtsp: acceptingRtspProof }, { id: cam.id, orgId }, [c11, c12, c21], 'sub')
     expect(c.ok && c.streams.map((s) => s.cameraId)).toEqual([c12])
     // An administrator of another organisation with admin.inventory there finds no store of ours.
     const stranger = await createUser(otherOrg, 'admin')

@@ -8,6 +8,7 @@ import { createTileConnection, type Connector, type TileConnection } from '@/lib
 import { gatewaySocketUrl } from '@/lib/streams/wall'
 import { startFakeGo2rtc, type FakeGo2rtc } from '../helpers/fake-go2rtc'
 import { startFakeGo2rtcWs, waitFor, type FakeGo2rtcWs } from '../helpers/fake-go2rtc-ws'
+import { acceptingRtspProof } from '../helpers/fake-servers'
 import { adminClient, cleanupOrg, createOrg, createSite, createUser, grant, ORG_SCOPE, type TestUser } from '../setup/fixtures'
 
 // P4-L1 brief item 2 ("cleanup on navigation: no leaked gateway sessions: test"). The wall's own connection logic
@@ -44,7 +45,7 @@ describe('the wall leaves nothing open behind it (P4-L1)', () => {
   }
   const upstreamOpen = () => video.connections.filter((c) => !c.closed).length
   async function tiles(cameraIds: string[]) {
-    const res = await openStreams({ admin: admin(), rls: viewer.client, go2rtc: api.client, env: {} }, { id: viewer.id, orgId }, cameraIds, 'sub')
+    const res = await openStreams({ admin: admin(), rls: viewer.client, go2rtc: api.client, env: {}, rtsp: acceptingRtspProof }, { id: viewer.id, orgId }, cameraIds, 'sub')
     if (!res.ok) throw new Error(res.error)
     const map = new Map<string, TileConnection>()
     for (const s of res.streams) {

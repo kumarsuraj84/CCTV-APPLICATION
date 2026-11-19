@@ -94,7 +94,8 @@ describe('a wrong password cannot be tried again and again through the video por
       expect(loginBackoffCount(d.db)).toBe(1)
     })
 
-    it('three silent cameras in a row: the video port is not answering logins at all, so the rest go side by side', async () => {
+    // Round 2 (review M-3): after silent cameras the rest stay one at a time until the login is proven (no parallel burst).
+    it('silent cameras first: every camera is still asked, one at a time, until one proves the login', async () => {
       const { d, asked } = await run([0, 0, 0, 200, 0])
       expect(asked.sort()).toEqual([1, 2, 3, 4, 5])
       expect(loginBackoffCount(d.db)).toBe(0)

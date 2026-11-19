@@ -90,13 +90,13 @@ describe('per-service database roles (P2-6, D-14)', () => {
       const described = await rest(key(), '/')
       const paths = Object.keys((described.body as { paths?: object }).paths ?? {}).sort()
       // Final fix X (NB-2, migration 0048): plus its two NVR login questions, by session id only.
-      expect(paths).toEqual(['/', '/rpc/media_session_close', '/rpc/media_session_login_check', '/rpc/media_session_login_refused', '/rpc/media_session_open', '/rpc/media_sessions_still_valid'])
+      expect(paths).toEqual(['/', '/rpc/media_session_close', '/rpc/media_session_login_check', '/rpc/media_session_login_refused', '/rpc/media_session_login_report', '/rpc/media_session_open', '/rpc/media_sessions_still_valid'])
     })
 
     it('cannot call any other function (catalogue) and is refused by a sample of them over HTTP', async () => {
       const { data } = await call(admin(), 'function_privileges', {})
       const mine = ((data ?? []) as { name: string; grantees: string[] }[]).filter((f) => f.grantees.includes('video_gateway')).map((f) => f.name).sort()
-      expect(mine).toEqual(['media_session_close', 'media_session_login_check', 'media_session_login_refused', 'media_session_open', 'media_sessions_still_valid'])
+      expect(mine).toEqual(['media_session_close', 'media_session_login_check', 'media_session_login_refused', 'media_session_login_report', 'media_session_open', 'media_sessions_still_valid'])
       const gw = serviceClient('video_gateway')
       const samples: [string, object][] = [
         ['recorder_read_credential', { p_recorder: recorderId }],

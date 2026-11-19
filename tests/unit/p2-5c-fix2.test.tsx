@@ -116,7 +116,7 @@ describe('A-N2: the merge sentence', () => {
 })
 
 describe('A-N3: a new password does not get around the back-off for ever', () => {
-  it('after 3 refused logins to one NVR within 30 minutes it is not asked again, whatever login is saved, until the window is over', async () => {
+  it('after 3 refused logins of one saved login within 30 minutes it is not asked again until the window is over; a new password is', async () => {
     // Final fix X (ruling NB-1): the same rule, now in the ONE shared back-off (lib/nvr/login-policy.ts, the database's nvr_login_gate).
     const { loginBlockMessage, MSG_LOGIN_BACKOFF, MSG_LOGIN_PAUSED, LOGIN_REFUSALS_ALLOWED, LOGIN_REFUSAL_WINDOW_SEC } = await import('@/lib/monitor/login-backoff')
     const { decideLogin, reportLogin } = await import('@/lib/nvr/login-policy')
@@ -133,17 +133,23 @@ describe('A-N3: a new password does not get around the back-off for ever', () =>
     }
     const note = (pw: string, e: unknown, at: number) => (s = reportLogin(s, pw, pw, outcomeOfNvrError(e), at, { baseSec: 60, maxSec: 60 }).state)
     const refused = new NvrError('auth', 'refused')
-    // Each wrong password waits out its own short back-off (60 s), then a new one is tried.
+    // Final fix X round 2 (review M-10; ruling NB-10, which replaces the "whatever login is saved" part of A-N3): three refusals of ONE
+    // saved login (each ended early by "Try again") pause the NVR; a NEW saved password lifts the pause and is tried at once.
+    const { tryAgain } = await import('@/lib/nvr/login-policy')
     expect(block('pw1', t0)).toBeNull()
     note('pw1', refused, t0)
     expect(block('pw1', t0 + 1000)).toBe(MSG_LOGIN_BACKOFF)
-    expect(block('pw2', t0 + 1000)).toBeNull()
-    note('pw2', refused, t0 + 2000)
-    expect(block('pw3', t0 + 3000)).toBeNull()
-    note('pw3', refused, t0 + 4000)
-    expect(block('pw4', t0 + 5000)).toBe(MSG_LOGIN_PAUSED)
-    expect(block('pw4', t0 + 10 * 60_000)).toBe(MSG_LOGIN_PAUSED)
-    expect(block('pw4', t0 + 1800_000 + 1000)).toBeNull()
+    s = tryAgain(s)
+    expect(block('pw1', t0 + 2000)).toBeNull()
+    note('pw1', refused, t0 + 2000)
+    s = tryAgain(s)
+    expect(block('pw1', t0 + 3000)).toBeNull()
+    note('pw1', refused, t0 + 4000)
+    s = tryAgain(s)
+    expect(block('pw1', t0 + 5000)).toBe(MSG_LOGIN_PAUSED)
+    expect(block('pw1', t0 + 10 * 60_000)).toBe(MSG_LOGIN_PAUSED)
+    expect(block('pw1', t0 + 1800_000 + 1000)).toBeNull()
+    expect(block('pw2', t0 + 6000)).toBeNull() // a corrected password is tried at once
     // A non-login failure does not count (another NVR is another state).
     s = undefined
     for (const [pw, e] of [['a', new NvrError('unreachable', 'down')], ['b', new NvrError('timeout', 'slow')], ['c', new NvrError('unreachable', 'down')]] as const) {
@@ -151,7 +157,7 @@ describe('A-N3: a new password does not get around the back-off for ever', () =>
       note(pw, e, t0)
     }
     expect(block('d', t0 + 1000)).toBeNull()
-    expect(MSG_LOGIN_PAUSED).toBe('This NVR refused 3 logins in the last 30 minutes. To keep its account from being locked it is not asked again for a while, even with a new password. Check the user name and password on the NVR itself, then try again later.')
+    expect(MSG_LOGIN_PAUSED).toBe('This NVR refused 3 logins in the last 30 minutes. To keep its account from being locked it is not asked again for a while. Saving a corrected password tries it at once; otherwise check the user name and password on the NVR itself.')
   })
 
   it('the "find cameras for all" page no longer promises that an account cannot be locked', async () => {

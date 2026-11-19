@@ -14,7 +14,7 @@ import { shownNowMs } from '@/lib/streams/timeline'
 import { serveVod } from '@/lib/streams/vod'
 import type { Database } from '@/types/database'
 import { startFakeGo2rtc, type FakeGo2rtc } from '../helpers/fake-go2rtc'
-import { closedPort, startCountingTcp, startFakeNvr, startFakeRtsp, type FakeNvr, type FakeRtsp } from '../helpers/fake-servers'
+import { acceptingRtspProof, closedPort, startCountingTcp, startFakeNvr, startFakeRtsp, type FakeNvr, type FakeRtsp } from '../helpers/fake-servers'
 import { fakeSpawn } from '../helpers/fake-spawn'
 import {
   ADMINISTRATOR_SET, adminClient, atLocation, CCTV_VIEW, cleanupOrg, createCamera, createLocation, createOrg, createRecorder, createUser, grant, type TestUser,
@@ -165,7 +165,7 @@ describe('a location with several NVRs, end to end', () => {
 
   it('live video opens each camera through ITS OWN recorder (address, video port, login, channel); never C, never the unlinked camera', async () => {
     const { client, calls } = recordingRpc()
-    const res = await openStreams({ admin: client, rls: viewer.client, go2rtc: go2rtc.client, env: {} }, { id: viewer.id, orgId }, [a1, b1, c1, unmapped], 'sub')
+    const res = await openStreams({ admin: client, rls: viewer.client, go2rtc: go2rtc.client, env: {}, rtsp: acceptingRtspProof }, { id: viewer.id, orgId }, [a1, b1, c1, unmapped], 'sub')
     expect(res.ok && res.streams.map((s) => [s.cameraId, s.channel])).toEqual([[a1, 1], [b1, 1]])
     const srcOf = (cam: string) => go2rtc.seen.find((s) => s.name === `cam_${cam}_sub`)!.src
     expect(srcOf(a1)).toBe(`rtsp://viewer:pass-a@127.0.0.1:${rtspA.port}/Streaming/Channels/102`)
@@ -175,14 +175,14 @@ describe('a location with several NVRs, end to end', () => {
     expect(reads.map((c) => c.name)).toEqual(['recorder_credential_read', 'recorder_credential_read']) // P2-6: logged, purpose live
     expect(reads.map((c) => c.args.p_recorder).sort()).toEqual([recA, recB].sort())
     // Only the switched-off camera, or only the unlinked one: a plain refusal and nothing registered.
-    expect(await openStreams({ admin: admin(), rls: viewer.client, go2rtc: go2rtc.client, env: {} }, { id: viewer.id, orgId }, [c1], 'sub')).toEqual({ ok: false, error: MSG_MONITORING_OFF })
-    expect(await openStreams({ admin: admin(), rls: viewer.client, go2rtc: go2rtc.client, env: {} }, { id: viewer.id, orgId }, [unmapped], 'sub')).toEqual({ ok: false, error: MSG_NOT_MAPPED })
+    expect(await openStreams({ admin: admin(), rls: viewer.client, go2rtc: go2rtc.client, env: {}, rtsp: acceptingRtspProof }, { id: viewer.id, orgId }, [c1], 'sub')).toEqual({ ok: false, error: MSG_MONITORING_OFF })
+    expect(await openStreams({ admin: admin(), rls: viewer.client, go2rtc: go2rtc.client, env: {}, rtsp: acceptingRtspProof }, { id: viewer.id, orgId }, [unmapped], 'sub')).toEqual({ ok: false, error: MSG_NOT_MAPPED })
     expect(go2rtc.seen.map((s) => s.name).sort()).toEqual([`cam_${a1}_sub`, `cam_${b1}_sub`].sort())
   })
 
   it('playback opens the right recorder and applies ITS clock offset (ruling R13: the NVR is asked for shown time minus the offset)', async () => {
     const start = new Date(Math.floor((shownNowMs(Date.now()) - 2 * 3600_000) / 1000) * 1000)
-    const deps = { admin: admin(), rls: viewer.client, go2rtc: go2rtc.client, env: {} }
+    const deps = { admin: admin(), rls: viewer.client, go2rtc: go2rtc.client, env: {}, rtsp: acceptingRtspProof }
     const nvrTime = (d: Date) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
     // A has no offset of its own: the default (here 30 minutes) applies. B has +3600 s of its own, whatever the default is.
     const pa = await openPlayback(deps, { id: viewer.id, orgId }, a1, start, 10, 30)
@@ -264,12 +264,12 @@ describe('a location with several NVRs, end to end', () => {
     const kept = (await admin().from('check_state').select('id').eq('target_id', b2).maybeSingle()).data
     expect(kept).not.toBeNull()
     expect(kept!.id).toBe(history.id)
-    const res = await openStreams({ admin: admin(), rls: viewer.client, go2rtc: go2rtc.client, env: {} }, { id: viewer.id, orgId }, [b2], 'main')
+    const res = await openStreams({ admin: admin(), rls: viewer.client, go2rtc: go2rtc.client, env: {}, rtsp: acceptingRtspProof }, { id: viewer.id, orgId }, [b2], 'main')
     expect(res.ok && res.streams.map((s) => [s.cameraId, s.channel])).toEqual([[b2, 4]])
     expect(go2rtc.seen[0]).toMatchObject({ name: `cam_${b2}_main`, src: `rtsp://viewer:pass-a@127.0.0.1:${rtspA.port}/Streaming/Channels/401` })
     // Review I-5: playback after the move goes to A as well: A's address and login, channel 4, A's clock offset (the default, 30 min).
     const start = new Date(Math.floor((shownNowMs(Date.now()) - 2 * 3600_000) / 1000) * 1000)
-    const pb = await openPlayback({ admin: admin(), rls: viewer.client, go2rtc: go2rtc.client, env: {} }, { id: viewer.id, orgId }, b2, start, 10, 30)
+    const pb = await openPlayback({ admin: admin(), rls: viewer.client, go2rtc: go2rtc.client, env: {}, rtsp: acceptingRtspProof }, { id: viewer.id, orgId }, b2, start, 10, 30)
     expect(pb.ok).toBe(true)
     const src = go2rtc.seen.find((s) => pb.ok && s.name === pb.name)!.src!
     const nvrTime = (d: Date) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
