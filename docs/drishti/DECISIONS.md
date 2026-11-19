@@ -182,12 +182,31 @@ except where these change them.
   the RTSP checks of that NVR stay one at a time until one answer proves the video login: at most one failed video login per NVR per round.
 - **NB-12 The gateway: neutral words and a fail-safe for unknown failures (M-7, M-8).** What reaches any browser names no NVR and no
   login: the close reason is "Camera not available" and the error value `camera_not_available` (the gateway cannot tell a CCTV-only
-  viewer from the IT view; the IT view reads the NVR's state on the Monitoring page). A go2rtc failure before any video that the gateway
-  cannot read (an error text other than "wrong user/pass", or a close other than a normal 1000/1001 one) is reported with `media_session_login_report` as a
-  SHA-256 hash only, never the text. Two identical ones for one NVR within 10 minutes without video in between count as a refused login
-  (`nvr_login_report` 'refused', path 'gateway'): fail safe, so another go2rtc build's wording for a wrong password cannot keep go2rtc
-  dialling. The gateway logs it (`login_refused`, reason `unexplained_failsafe`) for the pilot check. Video is reported at most once a
-  minute per stream and clears the count. Residual: two network failures in a row with identical text also pause the NVR for one window.
+  viewer from the IT view; the IT view reads the NVR's state on the Monitoring page). **Revised in round 3 (2026-11-19, pre-handover
+  review I-1):** the round-2 fail-safe let one dead camera channel (its tile reconnecting and failing the same way) or a dropped WAN
+  link refuse a whole healthy NVR for everybody, stop the worker's checks, escalate and pause it, and send IT to change a correct
+  password. Now (migration 0052, `media_session_login_report`):
+  - **Network failures are their own outcome.** go2rtc's words for a timeout, reset or refused connection, an unreachable host or
+    network, a DNS or TLS failure (`isNetworkFailureText` in `lib/streams/gateway.ts`), and a connection go2rtc cuts without a word
+    before video, are reported as 'network': only noted (`last_network_at`). They never open a window, never raise the level, never count
+    towards the 3-in-30-minutes pause and are never listed under "NVR login problems". The tile says "The video is not available." and
+    retries on its own back-off (2 s doubling to 30 s), so the NVR is not hammered.
+  - **A failure is the camera's own when the NVR is known to work.** When the NVR's current login was proven within the last 10 minutes
+    (worker, web server or a video proof) or any of its cameras played video within the last 10 minutes (the gateway now reports video
+    at most once a minute per stream WHILE it plays), an unexplained failure is that camera's failure ('camera'): nothing is counted.
+  - **Only different cameras count.** Otherwise an unexplained failure (any other text, reported as a SHA-256 hash only, never the text)
+    is counted per camera: the same camera failing again and again counts once. The same failure from TWO OR MORE DIFFERENT cameras of
+    the NVR within 10 minutes is the fail-safe: its own state "unexplained" (outcome refused, `last_refused_path`
+    'gateway_unexplained'): every path waits for the window (15 minutes, doubling while it repeats), so another go2rtc build's wording
+    for a wrong password cannot keep go2rtc dialling; it is NOT a refusal time (no 3-in-30-minutes pause). Monitoring lists it as "go2rtc
+    refused something we cannot explain: check the NVR password and the pilot log", with "Try again"; the IT words on tiles and playback
+    are the same; CCTV-only viewers see "Camera not available.". The gateway logs it (`login_refused`, reason `unexplained_failsafe`).
+  - **"wrong user/pass"** stays a refused login at once (path gateway), as before.
+  Residual (stated honestly): an NVR never proven and with no video in the last 10 minutes, on which two cameras fail with the same
+  unknown, non-network text (for example two dead channels answering the same 404 wording on an NVR whose login was never checked), is
+  put in the "unexplained" state: every path, the worker's checks included, waits for 15 minutes, doubling to 6 hours while it repeats,
+  until a check proves the login or an administrator presses Try again. A network wording the list does not know is treated as
+  unexplained in the same way. The pilot check (runbook) is there to find both.
 
 ## Rulings of the final fix round, builder Y (2026-11-11; release 1 final reviews A, B and C) — the owner may overrule any of these
 - **FY-1 Two-step sign-in is enforced by checks, not by a remembered step** (A I-1, B I-1). In production (`DRISHTI_ENV=production`) the

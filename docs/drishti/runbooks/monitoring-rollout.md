@@ -11,6 +11,7 @@ address, about 30 minutes). Drishti therefore:
   120, 240 and at most 360; at most one refused login per window; three refused logins in 30 minutes pause it until the oldest is 30
   minutes old or a corrected password is saved (round 2, NB-10);
 - registers at most one live source for an NVR whose login check got no answer yet (NB-7);
+- never takes a dead camera or a network failure for a wrong password (NB-12, round 3);
 - contacts at most 10 never-checked NVRs per camera round when the worker starts (doubling while they succeed).
 
 ## Before the first start of the services
@@ -29,10 +30,14 @@ address, about 30 minutes). Drishti therefore:
    password" means the same as step 5 (CCTV-only viewers see "Camera not available.").
 7. Pilot checks still to confirm on the real hardware (cannot be proven with the lab fakes): go2rtc's error text for a refused login
    (expected "wrong user/pass"; the gateway matches it), whether a viewer account gets 403 on the channel status (Drishti then checks by
-   RTSP), the lock policy observed in step 3. If go2rtc words a refused login differently, the gateway's fail-safe (NB-12) still stops
-   after two identical unexplained failures of one NVR within 10 minutes and logs `gateway_session` with outcome `login_refused`, reason
-   `unexplained_failsafe`: search the gateway log for it after the pilot and report any hit (the wording then needs adding to
-   `isGo2rtcLoginRefusal`). Lines with outcome `upstream_unexplained` are the single unexplained failures.
+   RTSP), the lock policy observed in step 3. If go2rtc words a refused login differently, the gateway's fail-safe (NB-12, revised in
+   round 3) still stops: when two DIFFERENT cameras of an NVR that was not proven and played no video in the last 10 minutes fail with
+   the same unknown text, the NVR waits for a window and Monitoring lists it as "go2rtc refused something we cannot explain: check the
+   NVR password and the pilot log" (Try again ends it). The gateway logs it as `gateway_session` with outcome `login_refused`, reason
+   `unexplained_failsafe`: search the gateway log for it after the pilot and report any hit (a wrong-password wording then needs adding
+   to `isGo2rtcLoginRefusal`, a network wording to `isNetworkFailureText`). Lines with outcome `upstream_unexplained` are single
+   unexplained failures (one camera: normally a dead channel); lines with `upstream_network` are network failures (never a login
+   problem, never listed). One dead camera, or a dropped WAN link, never puts an NVR in that list.
 
 ## Then by cluster and region
 8. Monitoring rollout → "A cluster" (the pilot's) → Switch on. NVRs never checked before are contacted 10 per round (every 5 minutes),
