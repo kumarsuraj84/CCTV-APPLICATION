@@ -118,8 +118,8 @@ built (two in-memory tables, one per process, a fixed 15-minute window). Where t
   path away for 15 minutes, doubling to at most 6 hours (`NVR_LOGIN_BACKOFF_SEC`, `NVR_LOGIN_BACKOFF_MAX_SEC`); when a window ends, or
   a login was never proven, exactly ONE caller may try (a one-minute claim) and everyone else waits for its answer, so there is at most
   one refused login per window across all paths; the level is reset only by a new saved login (password, user name or address; re-saving
-  the same password does not), a success, or an administrator's "Try again"; three refused logins within 30 minutes, whatever the login,
-  pause the NVR for every login until the oldest is 30 minutes old (Hikvision locks at 5-7); an NVR without a saved password is never
+  the same password does not), a success, or an administrator's "Try again"; three refused logins within 30 minutes pause the NVR for
+  every login until the oldest is 30 minutes old or a new login is saved (NB-10) (Hikvision locks at 5-7); an NVR without a saved password is never
   contacted; when the state cannot be read nothing is sent (fail closed). **"Forbidden" is not a refused login**: a 403 after the Digest
   login means the user name and password were accepted (a viewer account may not read the channel status); the worker then checks the
   cameras by RTSP, the first ones one at a time until one answer proves the video login. No RTSP login ever follows a refused ISAPI login.
@@ -134,7 +134,8 @@ built (two in-memory tables, one per process, a fixed 15-minute window). Where t
   within the last 10 minutes, tiles that reconnect in the same few seconds can each fail once before the first refusal is recorded.
 - **NB-3 "Try again".** Monitoring lists the NVRs whose login stands refused (from the shared state, linked to each NVR). "Try again"
   (administrators with admin.inventory for the organisation, fresh sign-in, audited `nvr_login_try_again`) ends the window and its level;
-  the 3-in-30-minutes pause still holds. Fixing the password on the NVR page needs no "Try again": a new saved login is tried at once.
+  the 3-in-30-minutes pause still holds after "Try again" (it ends only when the oldest refusal is 30 minutes old, or with a new saved
+  login, NB-10). Fixing the password on the NVR page needs no "Try again": a new saved login is tried at once.
 - **NB-4 Safe rollout.** (a) Staggered start: per camera round the worker contacts at most `MONITOR_NEW_RECORDERS_PER_ROUND` (default 10)
   NVRs whose login was never proven, doubling with the ones that succeed (10, 20, 40, 80 ...; 218 NVRs are all reached in the 5th round);
   NVRs proven before are checked every round. (b) Monitoring → Monitoring rollout switches the existing per-NVR switch
@@ -152,6 +153,41 @@ built (two in-memory tables, one per process, a fixed 15-minute window). Where t
   "offline stays offline however old" (lib/queries/status.ts) and changes every screen: owner decision. M-7 (estate-wide "Check now" for a
   location-scoped holder): with NB-1 an extra run can no longer cost refused logins; the per-person scope needs the shared check-now test
   rework of the other builder. M-3 / M-8: documentation only (admin guide, incidents runbook) for their owners. M-5 was fixed by P5.4.
+
+## Rulings NB-7..NB-12 (final fix X round 2, 2026-11-19): the review of final fix X
+Source: `.superpowers/sdd/drishti/final-fix-X-review.md` (I-1, I-2, M-1..M-10). Migration 0050 (`fx_nvr_login_round2`). NB-1..NB-6 stand
+except where these change them.
+- **NB-7 One source while the proof has no answer (I-1).** When the web server's single RTSP proof gets no answer (a slow or silent NVR),
+  the login is "unproven": live video registers at most ONE go2rtc source for that NVR until a proof arrives (the claim of NB-1 stays
+  with that attempt, so the next opening waits for its answer). The other tiles of that NVR say "Camera not available." to everybody
+  (neutral: nothing is known yet). Shown with a slow NVR with a wrong password and 16 tiles opened by two people at once: at most 1 login.
+  1x playback keeps the claim the same way, so for up to a minute after an unanswered proof other paths to that NVR wait (they say the
+  recordings cannot be reached right now) instead of dialling it again.
+- **NB-8 One classifier for a proven login (I-2, M-4).** `classifyLoginAnswer` and `classifyRtspCode` in `lib/nvr/login-policy.ts` decide
+  for the web paths and the worker alike. A login is proven only by an answer that came AFTER the password was sent (the Digest client
+  marks it; the RTSP DESCRIBE says `authSent`). A 403 or a 200 without a Digest exchange proves nothing (the NVR was not asked for the
+  password) and is not a success; a 403 after the password stays "accepted, not allowed" (NB-1). An RTSP 401 where no password was sent
+  (a Basic-only challenge the client will not answer) is "unproven", not refused.
+- **NB-9 Refused and unavailable cameras cost nothing (M-1, M-5, M-6).** openStreams asks the login gate per NVR BEFORE any media session
+  is made: cameras of an NVR that is refused, being checked ('wait'), unproven beyond the one source, or whose state cannot be read get no
+  session, do not count against the stream cap and are not reissued every 30 s; they are listed in `unavailable` with plain words (IT
+  view: "Login refused: ask an administrator to check the NVR password.", "The NVR login is being checked. Try again in a moment.",
+  "Could not check the NVR login state. Nothing was sent to the NVR; try again in a moment."; everybody else: "Camera not available.").
+  Every early return of playback, fast playback and the calendar / day search / oldest recording gives the claimed attempt back.
+- **NB-10 A new saved password lifts the pause (M-10).** A new saved login (a new vault secret, address, ports or user name) clears the
+  refusal times of the 3-in-30-minutes pause as well as the window, so a corrected password is tried at once even after 3 refusals.
+  The next failure of the new login starts at the first window (15 minutes) again. "Try again" does not lift the pause (NB-3).
+- **NB-11 The worker re-reads the gate per NVR and stays serialised (M-2, M-3).** In a round the worker asks the gate again (and claims
+  the attempt) right before each NVR's login, so a refusal found meanwhile by another path is respected. After cameras that did not answer
+  the RTSP checks of that NVR stay one at a time until one answer proves the video login: at most one failed video login per NVR per round.
+- **NB-12 The gateway: neutral words and a fail-safe for unknown failures (M-7, M-8).** What reaches any browser names no NVR and no
+  login: the close reason is "Camera not available" and the error value `camera_not_available` (the gateway cannot tell a CCTV-only
+  viewer from the IT view; the IT view reads the NVR's state on the Monitoring page). A go2rtc failure before any video that the gateway
+  cannot read (an error text other than "wrong user/pass", or a close other than a normal 1000/1001 one) is reported with `media_session_login_report` as a
+  SHA-256 hash only, never the text. Two identical ones for one NVR within 10 minutes without video in between count as a refused login
+  (`nvr_login_report` 'refused', path 'gateway'): fail safe, so another go2rtc build's wording for a wrong password cannot keep go2rtc
+  dialling. The gateway logs it (`login_refused`, reason `unexplained_failsafe`) for the pilot check. Video is reported at most once a
+  minute per stream and clears the count. Residual: two network failures in a row with identical text also pause the NVR for one window.
 
 ## Rulings of the final fix round, builder Y (2026-11-11; release 1 final reviews A, B and C) — the owner may overrule any of these
 - **FY-1 Two-step sign-in is enforced by checks, not by a remembered step** (A I-1, B I-1). In production (`DRISHTI_ENV=production`) the

@@ -8,7 +8,9 @@ The NVRs are real and their accounts lock after 5 to 7 refused logins (Hikvision
 address, about 30 minutes). Drishti therefore:
 - contacts nothing whose monitoring is switched off (no checks, no live video, no playback, no camera discovery);
 - keeps ONE login back-off for every path in the database: after a refused login an NVR is left alone for 15 minutes, then 30, 60,
-  120, 240 and at most 360; at most one refused login per window; three refused logins in 30 minutes pause it whatever password is saved;
+  120, 240 and at most 360; at most one refused login per window; three refused logins in 30 minutes pause it until the oldest is 30
+  minutes old or a corrected password is saved (round 2, NB-10);
+- registers at most one live source for an NVR whose login check got no answer yet (NB-7);
 - contacts at most 10 never-checked NVRs per camera round when the worker starts (doubling while they succeed).
 
 ## Before the first start of the services
@@ -22,12 +24,15 @@ address, about 30 minutes). Drishti therefore:
 4. Monitoring rollout → "One location" → the pilot location → "Switch on" → reason "Pilot". Start (or keep running) the services.
 5. Within 5 minutes Admin → Monitoring shows the location's cameras checked. If its NVR appears under **NVR login problems**, fix the
    password on the NVR page (a new password is tried at once) or on the NVR itself and press **Try again**. Do not press Try again
-   repeatedly: the third refusal in 30 minutes pauses the NVR.
+   repeatedly: the third refusal in 30 minutes pauses the NVR (saving a corrected password still tries it at once).
 6. Open the location's live wall and play back a recording. A tile that reads "Login refused: ask an administrator to check the NVR
-   password" means the same as step 5.
+   password" means the same as step 5 (CCTV-only viewers see "Camera not available.").
 7. Pilot checks still to confirm on the real hardware (cannot be proven with the lab fakes): go2rtc's error text for a refused login
    (expected "wrong user/pass"; the gateway matches it), whether a viewer account gets 403 on the channel status (Drishti then checks by
-   RTSP), the lock policy observed in step 3.
+   RTSP), the lock policy observed in step 3. If go2rtc words a refused login differently, the gateway's fail-safe (NB-12) still stops
+   after two identical unexplained failures of one NVR within 10 minutes and logs `gateway_session` with outcome `login_refused`, reason
+   `unexplained_failsafe`: search the gateway log for it after the pilot and report any hit (the wording then needs adding to
+   `isGo2rtcLoginRefusal`). Lines with outcome `upstream_unexplained` are the single unexplained failures.
 
 ## Then by cluster and region
 8. Monitoring rollout → "A cluster" (the pilot's) → Switch on. NVRs never checked before are contacted 10 per round (every 5 minutes),
