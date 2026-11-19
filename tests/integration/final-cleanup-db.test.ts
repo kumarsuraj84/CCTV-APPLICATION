@@ -4,7 +4,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Database } from '@/types/database'
 import {
-  adminClient, cleanupOrg, createCamera, createCluster, createLocation, createOrg, createRecorder, createRegion, createUser, grant, type TestUser,
+  adminClient, cleanupOrg, createCamera, createCluster, createLocation, createOrg, createRegion, createUser, grant, type TestUser,
 } from '../setup/fixtures'
 import { serviceClient } from '../setup/service-keys'
 import { MSG_PLAN_CHANGED, prepareImport, runImportPlan } from '@/lib/import/locations-import'

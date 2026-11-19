@@ -97,7 +97,8 @@ describe('group actions for an operator', () => {
   it('adding with something that is not a list asks the service for nothing', async () => {
     service.addCameras.mockResolvedValue({ ok: false, error: 'Choose at least one camera.' })
     await addCamerasAction('g', 'oops' as unknown as string[])
-    expect(service.addCameras).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'g', [])
+    // Final clean-up (C M-20): the action also asks for the ids it put in (for the undo of "Add by name").
+    expect(service.addCameras).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'g', [], { returnIds: true })
   })
 
   it('adding by word says so when more than 500 matched', async () => {
