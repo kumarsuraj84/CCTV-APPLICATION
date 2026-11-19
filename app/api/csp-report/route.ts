@@ -1,5 +1,6 @@
 import { logger } from '@/lib/observability/logger'
 import { rateLimit } from '@/lib/rate-limit'
+import { readBodyCapped } from '@/lib/web/body-limit'
 import { summariseReport } from '@/lib/web/csp-report'
 
 // P3-1 brief item 2: browsers post what the Content Security Policy blocked (or, with CSP_REPORT_ONLY=1, would block) here
@@ -20,28 +21,10 @@ function clientOf(request: Request): string {
   return parts.length >= hops ? parts[parts.length - hops].slice(0, 64) : 'noip'
 }
 
-async function readCapped(request: Request): Promise<string | null> {
-  if (!request.body) return ''
-  const reader = request.body.getReader()
-  const chunks: Uint8Array[] = []
-  let size = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    size += value.byteLength
-    if (size > MAX_BYTES) {
-      await reader.cancel().catch(() => {})
-      return null
-    }
-    chunks.push(value)
-  }
-  return Buffer.concat(chunks).toString('utf8')
-}
-
 export async function POST(request: Request): Promise<Response> {
   const declared = Number(request.headers.get('content-length') ?? '0')
   if (Number.isFinite(declared) && declared > MAX_BYTES) return new Response(null, { status: 413 })
-  const text = await readCapped(request)
+  const text = await readBodyCapped(request, MAX_BYTES) // the shared capped reader (final clean-up, Y-R7)
   if (text === null) return new Response(null, { status: 413 })
   const client = clientOf(request)
   if ((await rateLimit(`csp-report:${client}`, PER_CLIENT, 60_000)).limited || (await rateLimit('csp-report:all', IN_ALL, 60_000)).limited) {

@@ -44,6 +44,23 @@ describe('POST /api/live/release (fix round 2, N-1 / N-6)', () => {
     expect(h.calls).toEqual([{ actor: { id: 'u-1', orgId: 'o-1' }, tokens: ['t-one', 't-two'] }])
   })
 
+  it('final clean-up (Y-R7): a streamed body without a length is read only up to 16 KB, then refused (the rest is never read)', async () => {
+    let pulled = 0
+    const stream = new ReadableStream<Uint8Array>({
+      pull(c) {
+        pulled += 1
+        if (pulled > 1000) return c.close()
+        c.enqueue(new Uint8Array(1024).fill(0x20))
+      },
+    })
+    const r = new Request('http://drishti.test/api/live/release', {
+      method: 'POST', headers: { 'content-type': 'application/json', host: 'drishti.test', 'sec-fetch-site': 'same-origin' }, body: stream, duplex: 'half',
+    } as RequestInit)
+    expect((await POST(r)).status).toBe(413)
+    expect(pulled).toBeLessThan(40)
+    expect(h.calls).toEqual([])
+  })
+
   it('signed out: 401, nothing released', async () => {
     h.profile = null
     expect((await POST(req())).status).toBe(401)

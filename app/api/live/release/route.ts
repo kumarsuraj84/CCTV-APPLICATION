@@ -2,6 +2,7 @@ import { getCurrentProfile } from '@/lib/auth/profile'
 import { logger } from '@/lib/observability/logger'
 import { releaseStreams } from '@/lib/streams/open'
 import { createMediaClient } from '@/lib/supabase/service-clients'
+import { readBodyCapped } from '@/lib/web/body-limit'
 
 // P4-L1 fix round 2 (re-review N-1, N-6): what a Live page sends when it is left — pagehide, the tab hidden, a route change (fetch with
 // keepalive; best effort). Body: { tokens: string[] }, the live tokens the page holds. The unused ones (the one-minute renewal's) stop
@@ -36,8 +37,11 @@ export async function POST(request: Request) {
     if (!profile) return answer(401, 'Please sign in.')
     if (!sameOrigin(request)) return answer(403, 'Not allowed.')
     if (!(request.headers.get('content-type') ?? '').toLowerCase().startsWith('application/json')) return answer(415, 'JSON only.')
-    const text = await request.text()
-    if (text.length > MAX_BODY) return answer(413, 'Too large.')
+    // Final clean-up (Y-R7): capped while it is read, not after reading everything.
+    const declared = Number(request.headers.get('content-length') ?? '0')
+    if (Number.isFinite(declared) && declared > MAX_BODY) return answer(413, 'Too large.')
+    const text = await readBodyCapped(request, MAX_BODY)
+    if (text === null) return answer(413, 'Too large.')
     let body: unknown
     try {
       body = JSON.parse(text)
