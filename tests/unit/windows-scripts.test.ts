@@ -2,12 +2,14 @@
 // accounts, firewall, scheduled tasks or registry: the PowerShell parser on every script, the review rules PSScriptAnalyzer would
 // apply (it is not installed here and nothing is installed for this), and the dry runs (-WhatIf / -DryRun) of the install, the update
 // with its roll back, and the retention of backups. Every run uses a scratch configuration under the system temp folder.
-// P5.4 fix round 3 (the owner's antivirus): this default file never writes a script or a program, never compiles anything, never
-// changes an access list, never makes a junction or a hard link, never runs icacls, takeown, cmd or sc, and never uses
-// -ExecutionPolicy Bypass. PowerShell reads its commands from standard input (-Command -) and only parses, plans (-WhatIf / -DryRun)
-// or reads. The decisions themselves (links, owners, rebuild rules, retention, the update verdict, the service SIDs) are tested on
-// made-up data in one PowerShell process. Everything that touches the system is the lab suite: tests/windows-lab (opt-in,
-// DRISHTI_WINDOWS_LAB=1, run on the production server before the install).
+// P5.4 fix round 3 and re-review 3 m-f (the owner's antivirus), exactly what this default file does: it writes no script or program
+// file (only .psd1 data files and plain folders under the temp folder), compiles nothing, runs no icacls, takeown, sc, mklink or
+// whoami, makes no junction or hard link, grants nobody, and never uses -ExecutionPolicy Bypass, -EncodedCommand or Invoke-Expression.
+// PowerShell reads its commands from standard input (-Command -) and parses, plans (-WhatIf / -DryRun), reads, or runs the pure
+// decisions on made-up data with fake providers. A dry run may create its own scratch folders; nothing here changes an access list.
+// The behaviour on the real file system (locks, junctions, hard links, the service host) is the lab suite: tests/windows-lab (opt-in,
+// DRISHTI_WINDOWS_LAB=1, run on the production server before the install). Elsewhere in the default run, the integration backup test
+// lets backup.ps1 lock its own new folders under the temp folder through .NET (no icacls), and execSync starts cmd.exe as its shell.
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
@@ -189,6 +191,98 @@ describe.skipIf(!windows)('Windows deployment scripts (P5.4; nothing installed, 
     })
   })
 
+  // P5.4 fix round 4 (re-review 3 N-4, N-5, m-b): the lock's walk and reset, the allowed link, the services a repair must stop and
+  // the database outage after an update, decided on made-up data with fake providers (nothing on disk is read or changed).
+  describe('round 4 decisions, with fake providers', () => {
+    let out = ''
+    const line = (key: string) => (new RegExp(`^${key}=(.*)$`, 'm').exec(out)?.[1] ?? '<missing>').trim()
+    beforeAll(() => {
+      out = psCommon(String.raw`
+# N-5: the one link the installation makes, as Audit, Status and the plan see it.
+"allowed=$(@(Get-DrishtiAllowedLinks -InstallRoot 'C:\Drishti\') -join ',')"
+"links=$(@(Get-DrishtiLinkProblems -Links @('C:\Drishti\app\current', 'C:\DRISHTI\APP\CURRENT\', 'C:\Drishti\logs\DrishtiWeb\evil') -Allowed (Get-DrishtiAllowedLinks -InstallRoot 'C:\Drishti')) -join ' | ')"
+"planlinks=$(@((Get-DrishtiAclPlan -Config @{ InstallRoot = 'C:\Drishti'; ConfigDir = 'C:\Drishti\config'; DataDir = 'C:\Drishti\data'; LogDir = 'C:\Drishti\logs'; BackupDir = 'D:\B'; Go2rtcExe = '' } -Definitions @())[0].AllowedLinks) -join ',')"
+# N-4 (b): every walked item's owner, not only the top folder's.
+$tree = @([pscustomobject]@{Path='C:\D\app\a';IsDirectory=$true;IsReparse=$false;IsHardLink=$false;Error=$null;Owner='S-1-5-32-544'}, [pscustomobject]@{Path='C:\D\app\a\deep\x.js';IsDirectory=$false;IsReparse=$false;IsHardLink=$false;Error=$null;Owner='S-1-5-21-1-2-3-1001'}, [pscustomobject]@{Path='C:\D\app\svc.log';IsDirectory=$false;IsReparse=$false;IsHardLink=$false;Error=$null;Owner='S-1-5-80-7'}, [pscustomobject]@{Path='C:\D\app\b';IsDirectory=$true;IsReparse=$false;IsHardLink=$false;Error=$null;Owner='S-1-5-18'})
+"owners=$(@(Get-DrishtiTreeProblems -Entries $tree -TrustedOwners @('S-1-5-80-7')) -join ' | ')"
+# N-4 (c): just before each change, nothing between the root and the item may have become a link. The fake file system changes under
+# the reset: resetting C:\D\a swaps C:\D\b for a junction (as a service or an owner below could).
+$global:fs = @{ 'C:\D' = 'Directory'; 'C:\D\a' = 'Directory'; 'C:\D\a\f.txt' = 'Archive'; 'C:\D\b' = 'Directory'; 'C:\D\b\g.txt' = 'Archive'; 'C:\D\c.txt' = 'Archive' }
+$global:changed = New-Object System.Collections.Generic.List[string]
+$provider = @{ GetAttributes = { param($p) if ($global:fs.ContainsKey($p)) { [IO.FileAttributes]$global:fs[$p] } else { $null } }; NeedsReset = { param($e, $owner) $e.Path -ne 'C:\D\c.txt' }; Reset = { param($e, $owner) $global:changed.Add($e.Path); if ($e.Path -eq 'C:\D\a') { $global:fs['C:\D\b'] = 'Directory, ReparsePoint' } } }
+$walked = @('C:\D\a', 'C:\D\a\f.txt', 'C:\D\b', 'C:\D\b\g.txt', 'C:\D\c.txt') | ForEach-Object { [pscustomobject]@{ Path = $_; IsDirectory = -not $_.EndsWith('.txt'); IsReparse = $false; IsHardLink = $false; Error = $null; Owner = 'S-1-5-32-544' } }
+$r = Invoke-DrishtiTreeReset -Entries $walked -Root 'C:\D' -OwnerSid 'S-1-5-32-544' -Provider $provider
+"reset-changed=$($global:changed -join ',')"
+"reset-skipped=$(@($r.Problems) -join ' | ')"
+"inside=$((Test-DrishtiPathStillInside -Path 'C:\D\a\f.txt' -Root 'C:\D' -GetAttributes $provider.GetAttributes)),$((Test-DrishtiPathStillInside -Path 'C:\D\b\g.txt' -Root 'C:\D' -GetAttributes $provider.GetAttributes)),$((Test-DrishtiPathStillInside -Path 'C:\E\x' -Root 'C:\D' -GetAttributes $provider.GetAttributes)),$((Test-DrishtiPathStillInside -Path 'C:\D\gone' -Root 'C:\D' -GetAttributes $provider.GetAttributes))"
+# N-4 (a): folders a service may write are locked themselves only (never walked); every other folder is walked without the planned
+# folders below it (each has its own walk: nothing is walked twice).
+$plan = @([pscustomobject]@{ Path = 'C:\D'; Modify = @() }, [pscustomobject]@{ Path = 'C:\D\app'; Modify = @() }, [pscustomobject]@{ Path = 'C:\D\logs'; Modify = @() }, [pscustomobject]@{ Path = 'C:\D\logs\DrishtiWeb'; Modify = @('NT SERVICE\DrishtiWeb') }, [pscustomobject]@{ Path = 'C:\D\data\caddy'; Modify = @('NT SERVICE\DrishtiProxy') })
+"scope=$((Get-DrishtiLockScope -Plan $plan | ForEach-Object { $_.Path + ':' + $(if ($_.Walk) { 'walk' } else { 'self' }) + '[' + ($_.Exclude -join ';') + ']' }) -join ' ')"
+# N-4 (a): RepairAcl stops the services that write their own folders first, and refuses when one cannot be stopped.
+$svc = @([pscustomobject]@{ Name = 'DrishtiWeb'; Status = 'Running'; CanStop = $true }, [pscustomobject]@{ Name = 'DrishtiWorker'; Status = 'Stopped'; CanStop = $false }, [pscustomobject]@{ Name = 'DrishtiGateway'; Status = 'Running'; CanStop = $true })
+$s1 = Get-DrishtiRepairServiceSteps -Writers @('DrishtiWeb', 'DrishtiWorker', 'DrishtiGateway', 'DrishtiProxy') -Services $svc
+"repair=stop:$($s1.Stop -join ',') again:$($s1.StartAgain -join ',') refuse:$(@($s1.Refuse).Count)"
+$s2 = Get-DrishtiRepairServiceSteps -Writers @('DrishtiWeb', 'DrishtiGateway') -Services @([pscustomobject]@{ Name = 'DrishtiWeb'; Status = 'Running'; CanStop = $true }, [pscustomobject]@{ Name = 'DrishtiGateway'; Status = 'Running'; CanStop = $false })
+"repair-refuse=$($s2.Refuse -join ' | ')"
+# m-b: the database level cannot be read after an update: a database outage, not a broken release.
+$v = Get-DrishtiReleaseVerdictFrom -VersionAnswered $false -BuildId 'b9' -GatewayChecked $true -GatewayAnswered $true -DbLevel '' -Expected '20261021000047' -PublicStatus 'degraded'
+"verdict-nodb=$($v.Verdict):$($v.Reasons -join ' / ')"
+`.split('\n'))
+    })
+
+    it('N-5: the allowed link is <InstallRoot>\\app\\current, the same for the plan and the Audit; only other links are problems', () => {
+      expect(line('allowed'), out).toBe('C:\\Drishti\\app\\current')
+      expect(line('links')).toBe('C:\\Drishti\\logs\\DrishtiWeb\\evil: a junction or link the installation did not make')
+      expect(line('planlinks')).toBe('C:\\Drishti\\app\\current')
+    })
+
+    it('N-4: an item below with a foreign owner refuses the whole lock; SYSTEM, the Administrators and an allowed service are fine', () => {
+      expect(line('owners')).toBe('C:\\D\\app\\a\\deep\\x.js: belongs to S-1-5-21-1-2-3-1001, not to SYSTEM, the Administrators or TrustedInstaller (not changed)')
+    })
+
+    it('N-4: an item that became a link (or sits below one) between the walk and its reset is skipped and reported, never followed', () => {
+      expect(line('reset-changed')).toBe('C:\\D\\a,C:\\D\\a\\f.txt')
+      expect(line('reset-skipped')).toBe('C:\\D\\b: became a junction or link (or moved) after it was read: skipped, not followed | C:\\D\\b\\g.txt: became a junction or link (or moved) after it was read: skipped, not followed')
+      expect(line('inside')).toBe('True,False,False,False')
+    })
+
+    it('N-4: a folder a service may write is locked itself only; nothing is walked twice', () => {
+      expect(line('scope')).toBe('C:\\D:walk[C:\\D\\app;C:\\D\\logs;C:\\D\\data\\caddy] C:\\D\\app:walk[] C:\\D\\logs:walk[C:\\D\\logs\\DrishtiWeb] C:\\D\\logs\\DrishtiWeb:self[] C:\\D\\data\\caddy:self[]')
+    })
+
+    it('N-4: RepairAcl stops the running services that write their folders (and starts them again); one that cannot stop refuses it', () => {
+      expect(line('repair')).toBe('stop:DrishtiWeb,DrishtiGateway again:DrishtiWeb,DrishtiGateway refuse:0')
+      expect(line('repair-refuse')).toBe('DrishtiGateway is running and cannot be stopped: its folder would be changed while it writes there. Nothing was changed.')
+    })
+
+    it('m-b: a database that does not answer after an update is a problem of the server: nothing is rolled back', () => {
+      expect(line('verdict-nodb')).toBe('environment:the database does not answer (its level could not be read); the other checks depend on it: nothing was rolled back or restored')
+    })
+  })
+
+  // Re-review 3 m-c: the lock never comes back to a tool that follows junctions: no icacls, no takeown, no recursive copy or delete
+  // in the deployment scripts (the retention's rmdir /s /q never follows a link and is the one recursive delete).
+  it('m-c: no icacls, takeown, /T, /R or -Recurse in the deployment scripts', () => {
+    for (const f of scripts()) {
+      const code = readFileSync(f, 'utf8').replace(/<#[\s\S]*?#>/g, '').split(/\r?\n/).map((l) => l.replace(/(^|\s)#.*$/, '')).join('\n')
+      const name = path.basename(f)
+      expect(code, name).not.toMatch(/\b(icacls|takeown)(\.exe)?\b|IcaclsExe|TakeownExe/i)
+      expect(code, name).not.toMatch(/\s\/(T|R)(\s|'|"|$)/m)
+      expect(code, name).not.toMatch(/-Recurse\b/i)
+      expect(code, name).not.toMatch(/\/reset\b/i)
+    }
+    // Re-review 3 N-5: the Audit takes the allowed link from the same pure function as the plan (no hand-built path).
+    const services = readFileSync(path.join(WIN, 'drishti-services.ps1'), 'utf8')
+    expect(services).toMatch(/Get-DrishtiLinkProblems -Links @\(Get-DrishtiReparsePoints -Path \$p\) -Allowed \$allowed/)
+    expect(services).toMatch(/\$allowed = @\(Get-DrishtiAllowedLinks -InstallRoot \$config\.InstallRoot\)/)
+    expect(services).not.toMatch(/'appcurrent'|TrimEnd\(''\)/)
+    // Re-review 3 m-e: Caddy's admin API is off (a restart applies a changed Caddyfile).
+    const caddy = readFileSync(path.join(WIN, 'Caddyfile.example'), 'utf8').split(/\r?\n/).filter((l) => !/^\s*#/.test(l)).join('\n')
+    expect(caddy).toMatch(/^\s*admin off\s*$/m)
+    expect(caddy).not.toMatch(/admin\s+(localhost|127\.|:)/)
+  })
+
   // No service to stop is no service, not all (re-review 2 nit): a go2rtc-only configuration updates nothing else.
   it('an empty service list means no service, never all', () => {
     const only = path.join(dir, 'go2rtc-only.config.psd1')
@@ -230,7 +324,7 @@ describe.skipIf(!windows)('Windows deployment scripts (P5.4; nothing installed, 
     const created = new Set<string>()
     const firstUse = new Map<string, number>()
     lines.forEach((l, i) => {
-      const c = /would create (\S+)$/.exec(l)
+      const c = /would create (\S+) \(locked as it is made/.exec(l) // re-review 3 m-d: a folder is made with its own rules
       if (c) created.add(c[1])
       const u = /would (?:lock (\S+):|run: (?:robocopy \S+ ->|\S*csc\.exe .*\/out:)\s*(\S+))/.exec(l)
       const used = u && (u[1] ?? u[2])
@@ -239,7 +333,7 @@ describe.skipIf(!windows)('Windows deployment scripts (P5.4; nothing installed, 
     const root = path.join(dir, 'Drishti')
     for (const p of [root, ...['bin', 'services', 'scripts', 'app', 'config'].map((x) => path.join(root, x)), path.join(dir, 'logs'), path.join(dir, 'logs', 'DrishtiWeb'), path.join(dir, 'data'), path.join(dir, 'backups'), path.join(dir, 'keys')]) {
       expect(created.has(p), `created ${p}`).toBe(true)
-      const createdAt = lines.findIndex((l) => l.endsWith(`would create ${p}`))
+      const createdAt = lines.findIndex((l) => l.includes(`would create ${p} (locked as it is made`))
       const lockedAt = lines.findIndex((l) => l.includes(`would lock ${p}:`))
       expect(lockedAt, `locked ${p}`).toBeGreaterThan(createdAt)
     }
@@ -293,7 +387,7 @@ describe.skipIf(!windows)('Windows deployment scripts (P5.4; nothing installed, 
 
   // Review 2 nit: docker (and git) are never taken from PATH: a Container configuration without DockerExe is refused before anything runs.
   it('Container mode without DockerExe is refused (never docker from PATH)', () => {
-    const r = ps('backup.ps1', ['-ConfigPath', containerConfig('nodocker'), '-Tag', 'x'])
+    const r = ps('backup.ps1', ['-ConfigPath', containerConfig('nodocker'), '-Tag', 'x', '-DryRun'])
     expect(r.status).not.toBe(0)
     expect(r.out).toMatch(/DockerExe is not set in the configuration/)
     rmSync(path.join(dir, 'backups'), { recursive: true, force: true })
@@ -417,6 +511,11 @@ describe.skipIf(!windows)('Windows deployment scripts (P5.4; nothing installed, 
     expect(r.status, r.out).toBe(0)
     expect(r.out).not.toMatch(/would (stop|start) DrishtiWorker/)
     expect(r.out).toMatch(/would start DrishtiWeb/)
+    // Re-review 3 m-a: a roll back does not start it either.
+    const back = ps('update.ps1', ['-SourcePath', ROOT, '-ConfigPath', noWorker, '-BuildId', 'ci5d', '-DryRun', '-SimulateFailure', 'Health'])
+    const after = back.out.slice(back.out.indexOf('Rolling back'))
+    expect(after, back.out).toMatch(/would start DrishtiWeb/)
+    expect(after).not.toMatch(/would start DrishtiWorker/)
   })
 
   const day = (n: number) => {

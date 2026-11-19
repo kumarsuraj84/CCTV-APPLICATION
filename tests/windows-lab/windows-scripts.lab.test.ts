@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { assertLab, day, grant, ICACLS, icacls, junction, labConfig, ps, psCommon, removeScratch, ROOT, SC, scratch, sddl, unlink } from './lab'
+import { assertLab, CMD, day, grant, ICACLS, icacls, junction, labConfig, ps, psCommon, removeScratch, ROOT, SC, scratch, sddl, unlink } from './lab'
 
 assertLab()
 
@@ -245,6 +245,72 @@ describe('Windows lab: locks, links and retention on real folders (P5.4)', () =>
     expect(r.status).not.toBe(0)
     expect(r.out).toMatch(/Refused: others may change or read the key folder/)
     expect(readdirSync(keys)).toEqual([])
+  })
+
+  // Re-review 3 N-4, on the real file system: the real reset provider, with a swap injected between two resets (as a service or an
+  // owner below could do it): the swapped folder becomes a junction to a decoy; the decoy's rules must stay exactly as they were.
+  it('N-4: a folder swapped for a junction between the walk and its reset is skipped; the decoy is untouched', () => {
+    const q = path.join(dir, 'swap')
+    mkdirSync(path.join(q, 'a'), { recursive: true })
+    mkdirSync(path.join(q, 'b'))
+    writeFileSync(path.join(q, 'b', 'g.txt'), 'inside')
+    const decoy = path.join(dir, 'decoy-swap')
+    mkdirSync(decoy)
+    writeFileSync(path.join(decoy, 'keep.txt'), 'outside')
+    const before = { decoy: sddl(decoy), file: sddl(path.join(decoy, 'keep.txt')) }
+    const B = path.join(q, 'b')
+    const out = psCommon([
+      `$q = '${q}'`, `$b = '${B}'`, `$decoy = '${decoy}'`, `$cmd = '${CMD}'`,
+      '$tree = @(Get-DrishtiTreeEntries -Path $q)',
+      '$real = New-DrishtiTreeResetProvider',
+      // Force every item to be reset; after the first one, b is replaced by a junction to the decoy (rmdir b, then mklink /J b decoy).
+      "$global:swapped = $false",
+      '$p = @{ GetAttributes = $real.GetAttributes; NeedsReset = { param($e, $o) $true }; Reset = { param($e, $o) & $real.Reset $e $o; if (-not $global:swapped) { $global:swapped = $true; Remove-Item -LiteralPath (Join-Path $b \'g.txt\'); [IO.Directory]::Delete($b); & $cmd /d /c mklink /J "$b" "$decoy" | Out-Null } } }',
+      '$r = Invoke-DrishtiTreeReset -Entries $tree -Root $q -Provider $p',
+      '"changed=$($r.Changed -join \',\')"', '"problems=$($r.Problems -join \' | \')"',
+      '"isjunction=$([bool]([IO.File]::GetAttributes($b) -band [IO.FileAttributes]::ReparsePoint))"',
+    ])
+    expect(out).toMatch(/isjunction=True/)
+    expect(out).toMatch(/problems=.*\\b: became a junction or link \(or moved\) after it was read: skipped, not followed/)
+    expect(sddl(decoy)).toBe(before.decoy)
+    expect(sddl(path.join(decoy, 'keep.txt'))).toBe(before.file)
+    unlink(B)
+  })
+
+  // Re-review 3 N-4 (a): a folder its service may write is locked itself only; a junction inside it is neither walked nor changed.
+  it('N-4: -NoWalk locks the folder itself only; a junction inside it is never followed', () => {
+    const logs = path.join(dir, 'svc-logs')
+    mkdirSync(logs)
+    const decoy = path.join(dir, 'decoy-logs')
+    mkdirSync(decoy)
+    junction(path.join(logs, 'evil'), decoy)
+    const before = sddl(decoy)
+    const out = psCommon([`try { Set-DrishtiAcl -Path '${logs}' -ModifyAccounts @('*S-1-5-19') -NoWalk | Out-Null; 'locked' } catch { "refused: $($_.Exception.Message)" }`])
+    expect(out).toMatch(/^locked$/m)
+    expect(sddl(decoy)).toBe(before)
+    unlink(path.join(logs, 'evil'))
+  })
+
+  // Re-review 3 N-5: the Audit accepts the real app\current junction and reports any other link.
+  it('N-5: the Audit does not report a valid app\\current, and reports a foreign junction', () => {
+    const own = path.join(dir, 'audit')
+    mkdirSync(own)
+    const cfg = path.join(own, 'drishti.config.psd1')
+    writeFileSync(cfg, labConfig(own))
+    const root = path.join(own, 'Drishti')
+    mkdirSync(path.join(root, 'app', 'releases', 'b1'), { recursive: true })
+    junction(path.join(root, 'app', 'current'), path.join(root, 'app', 'releases', 'b1'))
+    const ok = ps('drishti-services.ps1', ['-Action', 'Audit', '-ConfigPath', cfg])
+    expect(ok.out).not.toMatch(/app\\current: a junction or link the installation did not make/)
+    const decoy = path.join(dir, 'decoy-audit')
+    mkdirSync(decoy)
+    mkdirSync(path.join(own, 'logs'), { recursive: true })
+    junction(path.join(own, 'logs', 'evil'), decoy)
+    const bad = ps('drishti-services.ps1', ['-Action', 'Audit', '-ConfigPath', cfg])
+    expect(bad.out).toMatch(/logs\\evil: a junction or link the installation did not make/)
+    expect(bad.out).not.toMatch(/app\\current: a junction or link the installation did not make/)
+    unlink(path.join(own, 'logs', 'evil'))
+    unlink(path.join(root, 'app', 'current'))
   })
 
   it('the lab writes only under its scratch folder', () => {
