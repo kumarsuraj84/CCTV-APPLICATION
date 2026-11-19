@@ -41,7 +41,7 @@ async function main() {
   if (!owner) throw new Error('No active platform owner found.')
   const actor = { id: owner.id, orgId: org.id, role: owner.role as Role }
   const started = Date.now()
-  const { preview, apply: plan } = await prepareImport(admin, actor, readFileSync(path!, 'utf8'), { skipBadRows, keepNames: process.argv.includes('--keep-names') })
+  const { preview, apply: plan, stamp } = await prepareImport(admin, actor, readFileSync(path!, 'utf8'), { skipBadRows, keepNames: process.argv.includes('--keep-names') })
   const c = preview.counts
   console.log(`Rows read: ${preview.rows}. Problems: ${preview.errors.length} (by column: ${byColumn(preview.errors)}). Worth a look: ${preview.warnings.length} (by column: ${byColumn(preview.warnings)}).`)
   console.log(`Locations: ${c.locationsNew} new, ${c.locationsChanged} changing, ${c.locationsUnchanged} unchanged, ${c.locationsSkipped} skipped.`)
@@ -58,7 +58,7 @@ async function main() {
   if (preview.errors.length > 0 && !skipBadRows) throw new Error('The file has problems; nothing written. Fix them or add --skip-bad-rows.')
   if (!preview.canApply) throw new Error('Nothing in this file can be imported.')
   const t = Date.now()
-  const done = await runImportPlan({ admin }, actor, plan, preview.warnings)
+  const done = await runImportPlan({ admin }, actor, plan, preview.warnings, stamp)
   if (!done.ok) throw new Error(done.error)
   const r = done.result
   console.log(`Saved in one go in ${Date.now() - t} ms: locations ${r.locationsCreated} added / ${r.locationsUpdated} changed; NVRs ${r.recordersCreated} added / ${r.recordersUpdated} changed; passwords given ${r.passwordsGiven} (written only where different); cameras ${r.camerasCreated} added, ${r.camerasRelinked} linked again.`)

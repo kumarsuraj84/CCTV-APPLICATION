@@ -465,6 +465,15 @@ describe('P2-5c-1 services', () => {
       expect(await saveRecorder(c(), actor, await createLocation(otherOrg), { ...input, password: 'secret-pass' })).toEqual({ ok: false, error: 'Location not found.' })
     })
 
+    it('final clean-up (C M-29): the NVR and its password are one transaction: a new NVR whose password is not saved leaves nothing, not even an archived row', async () => {
+      const loc = await createLocation(orgId, { code: 'NVRTX' })
+      const input = { name: 'Blank password', host: '192.0.2.163', httpPort: 80, rtspPort: 554, username: 'viewer', password: '   ', expectedChannels: 2, clockOffsetSec: '' }
+      const r = await saveRecorder(c(), actor, loc, input)
+      expect(r.ok).toBe(false)
+      expect((await admin().from('assets').select('id').eq('org_id', orgId).eq('ip', '192.0.2.163')).data).toEqual([])
+      expect((await admin().from('cameras').select('id').eq('location_id', loc)).data).toEqual([])
+    })
+
     it('switches monitoring off and on with a reason (audited)', async () => {
       const loc = await createLocation(orgId, { code: 'NVR2' })
       const rec = await createRecorder(orgId, loc, { host: '127.0.0.1' })

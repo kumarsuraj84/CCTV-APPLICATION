@@ -93,9 +93,21 @@ export async function prepareImport(admin: AdminClient, actor: Actor, text: stri
   return prepare(admin, actor, text, opts)
 }
 
+/**
+ * Final clean-up (review C M-30): the stamp of the inventory the plan is worked out from (inventory_import_stamp, a hash of what the
+ * snapshot reads), read BEFORE the snapshot, so a change made in between also makes the apply refuse (DR051) instead of applying a
+ * plan made from an older inventory.
+ */
+async function importStamp(admin: AdminClient, orgId: string): Promise<string> {
+  const { data, error } = await admin.rpc('inventory_import_stamp', { p_org: orgId })
+  if (error || typeof data !== 'string') throw new Error('The inventory could not be read.')
+  return data
+}
+
 async function prepare(admin: AdminClient, actor: Actor, text: string, opts: PlanOptions) {
+  const stamp = await importStamp(admin, actor.orgId)
   // Final fix X (NB-4): in production a new NVR without a monitoring value in the file starts switched off.
-  return planImport(parseLocationsCsv(text), await loadImportSnapshot(admin, actor.orgId), { newRecordersMonitored: !isProductionMode(), ...opts })
+  return { ...planImport(parseLocationsCsv(text), await loadImportSnapshot(admin, actor.orgId), { newRecordersMonitored: !isProductionMode(), ...opts }), stamp }
 }
 
 /** Validate + preview: reads the file and the inventory, writes nothing. The preview holds no password and compares none (B-I3). */
@@ -116,6 +128,7 @@ function refusal(e: { code?: string; message?: string; details?: string } | null
   const line = /import_line:(\d+)/.exec(e?.details ?? '')?.[1]
   const why = (() => {
     switch (e?.code) {
+      case 'DR051': return MSG_PLAN_CHANGED
       case 'DR010': return 'another NVR of this location already has this address and web port.'
       case '23505': return 'a code or an address is already used.'
       case '23514': return 'a value is not allowed there (check the kind and the lengths).'
@@ -152,15 +165,19 @@ export async function applyLocationImport(
   if (preview.errors.length > 0 && !skipBadRows) return { ok: false, error: MSG_FILE_PROBLEMS }
   if (archive && !preview.archiveAllowed) return { ok: false, error: MSG_ARCHIVE_NEEDS_CLEAN_FILE }
   if (!preview.canApply) return { ok: false, error: MSG_NOTHING }
-  const done = await runImportPlan(clients, actor, apply, preview.warnings)
+  const done = await runImportPlan(clients, actor, apply, preview.warnings, planned.stamp)
   return done.ok ? { ok: true, preview, result: done.result } : done
 }
 
-/** Carries out a plan in one transaction (inventory_import_apply checks the acting person itself), then the follow-ups. */
+/**
+ * Carries out a plan in one transaction, then the follow-ups. Final clean-up (review C M-30): through inventory_import_run, which
+ * checks the acting person, takes the organisation's import lock (one import at a time; a second one waits) and refuses the plan when
+ * the inventory is no longer the one stamped when the plan was worked out (DR051: MSG_PLAN_CHANGED).
+ */
 export async function runImportPlan(
-  clients: Pick<InventoryClients, 'admin' | 'go2rtc'>, actor: Actor, apply: ApplyPlan, warnings: ImportIssue[],
+  clients: Pick<InventoryClients, 'admin' | 'go2rtc'>, actor: Actor, apply: ApplyPlan, warnings: ImportIssue[], stamp: string,
 ): Promise<Result<{ result: ImportOutcome }>> {
-  const { data, error } = await clients.admin.rpc('inventory_import_apply', { p_org: actor.orgId, p_actor: actor.id, p_plan: apply as unknown as Json })
+  const { data, error } = await clients.admin.rpc('inventory_import_run', { p_org: actor.orgId, p_actor: actor.id, p_plan: apply as unknown as Json, p_stamp: stamp })
   if (error || !data) return { ok: false, error: refusal(error) }
   const r = data as Record<string, number> & { dropped_camera_ids?: string[] }
   // Archived cameras' live streams are removed from go2rtc (review M-4); never fatal.

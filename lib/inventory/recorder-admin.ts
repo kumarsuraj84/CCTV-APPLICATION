@@ -80,28 +80,21 @@ export async function saveRecorder(clients: InventoryClients, actor: Actor, loca
     if (!password && addressChanged(saved.assets.ip, saved.http_port, host, httpPort)) return { ok: false, error: MSG_PASSWORD_AGAIN }
   } else if (!password) return { ok: false, error: MSG_NEED_PASSWORD }
 
-  const { data: saved, error: saveError } = await admin.rpc('recorder_save', {
+  // Final clean-up (review C M-29): the NVR, its password and its clock offset in ONE database transaction (recorder_save_login):
+  // a new NVR whose password cannot be saved leaves nothing behind, and a new address never keeps the old password (DR011, the same
+  // rule as above, checked again under the row lock). The organisation and the actor are named; the database checks both and writes
+  // the recorder_created / _updated and recorder_password_set audit rows. The saved-login version follows the new secret (NB-10).
+  const { data: saved, error: saveError } = await admin.rpc('recorder_save_login', {
     p_org: actor.orgId, p_location: loc, p_recorder: current as string, p_host: host, p_http_port: httpPort, p_rtsp_port: rtspPort, p_username: username,
-    p_expected_channels: channels, p_name: name, p_actor: actor.id,
+    p_expected_channels: channels, p_name: name, p_actor: actor.id, p_secret: password as string, p_clock_offset_sec: offset.value as number,
   })
   if (saveError || !saved) {
     if (saveError?.code === 'DR010') return { ok: false, error: MSG_ADDRESS_TAKEN_HERE }
-    return { ok: false, error: sanitizeError(saveError, { route: 'saveRecorder', fallback: 'Could not save the NVR.' }) }
+    if (saveError?.code === 'DR011') return { ok: false, error: MSG_PASSWORD_AGAIN }
+    if (saveError?.code === 'P0002') return { ok: false, error: MSG_NVR_NOT_FOUND }
+    return { ok: false, error: sanitizeError(saveError, { route: 'saveRecorder', fallback: 'Could not save the NVR and its password. Nothing was changed.' }) }
   }
   const recorderId = saved as string
-  if (password) {
-    // Final fix Y (review A M-6): the web app's form names the organisation and the actor; the database checks both and writes the
-    // recorder_password_set audit row in the same transaction.
-    const cred = await admin.rpc('recorder_store_credential', { p_org: actor.orgId, p_recorder: recorderId, p_secret: password, p_actor: actor.id })
-    if (cred.error) {
-      // A new NVR without its password is not left behind (review M-7); archived, never deleted.
-      if (!current) await admin.rpc('inventory_archive', { p_org: actor.orgId, p_kind: 'recorder', p_id: recorderId, p_actor: actor.id })
-      return { ok: false, error: sanitizeError(cred.error, { route: 'saveRecorder.credential', fallback: 'Could not save the NVR password.' }) }
-    }
-  }
-  const { error: offErr } = await admin.from('recorders').update({ clock_offset_sec: offset.value, clock_offset_source: offset.value === null ? null : 'manual' })
-    .eq('id', recorderId).eq('org_id', actor.orgId)
-  if (offErr) return { ok: false, error: sanitizeError(offErr, { route: 'saveRecorder.offset', fallback: 'The NVR was saved, but its clock offset was not. Save it again.' }) }
   try {
     await ensurePlaceholderCameras(admin, actor.orgId, loc, recorderId, channels)
   } catch (e) {
