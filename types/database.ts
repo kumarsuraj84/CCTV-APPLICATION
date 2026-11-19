@@ -823,14 +823,14 @@ isOneToOne: false
                   ]
                 },"nvr_login_state": {
                   Row: {
-                    "attempt_path": string | null,"attempt_until": string | null,"ever_ok_at": string | null,"last_ok_at": string | null,"last_refused_at": string | null,"last_refused_path": string | null,"last_video_at": string | null,"level": number,"org_id": string,"outcome": string | null,"recorder_id": string,"refusals": (string)[],"refused_until": string | null,"unexplained": (string)[],"unexplained_hash": string | null,"updated_at": string,"version": string
+                    "attempt_path": string | null,"attempt_until": string | null,"ever_ok_at": string | null,"last_network_at": string | null,"last_ok_at": string | null,"last_refused_at": string | null,"last_refused_path": string | null,"last_video_at": string | null,"level": number,"org_id": string,"outcome": string | null,"recorder_id": string,"refusals": (string)[],"refused_until": string | null,"unexplained": (string)[],"unexplained_cameras": (string)[],"unexplained_hash": string | null,"updated_at": string,"version": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "attempt_path"?: string | null,"attempt_until"?: string | null,"ever_ok_at"?: string | null,"last_ok_at"?: string | null,"last_refused_at"?: string | null,"last_refused_path"?: string | null,"last_video_at"?: string | null,"level"?: number,"org_id": string,"outcome"?: string | null,"recorder_id": string,"refusals"?: (string)[],"refused_until"?: string | null,"unexplained"?: (string)[],"unexplained_hash"?: string | null,"updated_at"?: string,"version": string
+                    "attempt_path"?: string | null,"attempt_until"?: string | null,"ever_ok_at"?: string | null,"last_network_at"?: string | null,"last_ok_at"?: string | null,"last_refused_at"?: string | null,"last_refused_path"?: string | null,"last_video_at"?: string | null,"level"?: number,"org_id": string,"outcome"?: string | null,"recorder_id": string,"refusals"?: (string)[],"refused_until"?: string | null,"unexplained"?: (string)[],"unexplained_cameras"?: (string)[],"unexplained_hash"?: string | null,"updated_at"?: string,"version": string
                   }
                   Update: {
-                    "attempt_path"?: string | null,"attempt_until"?: string | null,"ever_ok_at"?: string | null,"last_ok_at"?: string | null,"last_refused_at"?: string | null,"last_refused_path"?: string | null,"last_video_at"?: string | null,"level"?: number,"org_id"?: string,"outcome"?: string | null,"recorder_id"?: string,"refusals"?: (string)[],"refused_until"?: string | null,"unexplained"?: (string)[],"unexplained_hash"?: string | null,"updated_at"?: string,"version"?: string
+                    "attempt_path"?: string | null,"attempt_until"?: string | null,"ever_ok_at"?: string | null,"last_network_at"?: string | null,"last_ok_at"?: string | null,"last_refused_at"?: string | null,"last_refused_path"?: string | null,"last_video_at"?: string | null,"level"?: number,"org_id"?: string,"outcome"?: string | null,"recorder_id"?: string,"refusals"?: (string)[],"refused_until"?: string | null,"unexplained"?: (string)[],"unexplained_cameras"?: (string)[],"unexplained_hash"?: string | null,"updated_at"?: string,"version"?: string
                   }
                   Relationships: [
                     {
@@ -1874,6 +1874,7 @@ isOneToOne: false
               "attempt_path": string | null,
 "attempt_until": string | null,
 "ever_ok_at": string | null,
+"last_network_at": string | null,
 "last_ok_at": string | null,
 "last_refused_at": string | null,
 "last_refused_path": string | null,
@@ -1885,6 +1886,7 @@ isOneToOne: false
 "refusals": (string)[],
 "refused_until": string | null,
 "unexplained": (string)[],
+"unexplained_cameras": (string)[],
 "unexplained_hash": string | null,
 "updated_at": string,
 "version": string

@@ -28,6 +28,8 @@ export type GatewayEvent = {
     | 'denied_session' | 'unverified' | 'revoked' | 'fail_closed' | 'check_failed' | 'login_refused' | 'upstream_silent'
     // Round 2 (review M-8): go2rtc failed before any video in a way the gateway cannot read (reported hashed, the tile is closed).
     | 'upstream_unexplained'
+    // Round 3 (pre-handover review I-1): go2rtc's source failed before any video for a network reason (reported as such, never a login).
+    | 'upstream_network'
   /** First 8 hex characters of the SHA-256 of the camera id; never the id, the stream name, the person or the token. */
   camera?: string
   kind?: StreamClaims['k']
@@ -183,6 +185,14 @@ function upstreamErrorText(data: Buffer): string | null {
     return null
   }
 }
+
+/**
+ * Round 3 (pre-handover review I-1; NB-12 as revised): go2rtc's words for a failure of the network between it and the NVR (a dial or
+ * read timeout, a reset or refused connection, an unreachable host or network, a DNS or TLS failure, a connection cut short). These are
+ * network failures, never "unexplained": they never count towards the fail-safe, never pause an NVR and never list it as a login problem.
+ */
+const NETWORK_FAILURE = /timeout|timed out|deadline exceeded|connection reset|reset by peer|connection refused|broken pipe|no route to host|network is unreachable|host is unreachable|unreachable|no such host|lookup |dns|tls|x509|certificate|handshake|\beof\b|use of closed network connection|dial tcp|dial udp/i
+export const isNetworkFailureText = (text: string) => NETWORK_FAILURE.test(text)
 
 const shortHash = (id: string) => createHash('sha256').update(id).digest('hex').slice(0, 8)
 /** Round 2 (review M-8): an unexplained failure is reported as this hash only, never its text (it may carry an address). */
@@ -635,27 +645,31 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     }
 
     /**
-     * Round 2 (review M-8, NB-12): go2rtc's source failed before any video and the gateway cannot read why (an error text it does not
-     * know, or a close). Reported as a hash (never the text); the database counts identical ones per NVR, and the second within its
-     * window stands as a refused login (fail safe: an unknown wording for a wrong password cannot keep go2rtc dialling the NVR). The
-     * tile is closed either way; the fail-safe is logged ('unexplained_failsafe') for the pilot check.
+     * Round 2 (review M-8, NB-12) and round 3 (pre-handover review I-1): go2rtc's source failed before any video. A network failure
+     * (isNetworkFailureText, or go2rtc cutting the connection without a word) is reported as 'network': the database only notes it.
+     * Any other text the gateway cannot read is reported as a hash (never the text). The database decides whether it is that camera's
+     * own failure ('counted', 'camera': a dead channel, an NVR proven or playing lately) or, the same failure from a second camera of
+     * an NVR never proven, the fail-safe ('unexplained': every path waits for the window, so an unknown wording for a wrong password
+     * cannot keep go2rtc dialling). The tile is closed either way, with the neutral words; the fail-safe is logged
+     * ('unexplained_failsafe') for the pilot check.
      */
-    function unexplainedFailure(text: string) {
+    function sourceFailure(text: string | null) {
       if (ended || failureReported) return
       failureReported = true // one report per socket (go2rtc's error is usually followed by its close)
-      if (!registry.loginReport) return end(1011, GENERIC_STREAM_ERROR, 'upstream_unexplained')
-      const hash = failureHash(text)
-      const asked = registry.loginReport(sid, 'unexplained', hash).catch(() => 'ignored')
-      // The tile is not told anything until the database answers (a few hundred ms at most); the socket is ended either way.
+      const network = text === null || isNetworkFailureText(text)
+      const outcome: GatewayEvent['outcome'] = network ? 'upstream_network' : 'upstream_unexplained'
+      if (!registry.loginReport) return end(1011, GENERIC_STREAM_ERROR, outcome)
+      const asked = (network ? registry.loginReport(sid, 'network') : registry.loginReport(sid, 'unexplained', failureHash(text))).catch(() => 'ignored')
+      // The socket is ended once the database has answered (a few hundred ms at most), either way.
       void withDeadline(asked).then(
         (answer) => {
-          if (answer === 'refused') {
+          if (answer === 'unexplained') {
             forgetLoginAnswer(name)
             return refuseLogin('unexplained_failsafe')
           }
-          end(1011, GENERIC_STREAM_ERROR, 'upstream_unexplained')
+          end(1011, GENERIC_STREAM_ERROR, outcome)
         },
-        () => end(1011, GENERIC_STREAM_ERROR, 'upstream_unexplained'),
+        () => end(1011, GENERIC_STREAM_ERROR, outcome),
       )
     }
 
@@ -716,7 +730,9 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
       up.on('message', (raw: RawData, isBinary: boolean) => {
         const data = toBuffer(raw)
         if (isBinary) {
-          if (lastVideoAt === 0) reportVideo(name, sid) // round 2 (M-8): video clears the count of unexplained failures
+          // Round 2 (M-8), round 3 (I-1): video is reported while it plays (at most once a minute per stream), so an NVR whose
+          // cameras play is never taken for one with a wrong password because one of its channels fails.
+          reportVideo(name, sid)
           lastVideoAt = Date.now()
           watchSilence()
         } else if (upstreamLoginRefusal(data)) {
@@ -725,12 +741,12 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
           forgetLoginAnswer(name)
           return refuseLogin()
         } else if (lastVideoAt === 0) {
-          // Round 2 (M-8): any other go2rtc error before video is a source failure the gateway cannot read.
+          // Round 2 (M-8), round 3 (I-1): any other go2rtc error before video is a source failure (network or unexplained).
           // The tile still gets the fixed sentence (never go2rtc's text), then the socket ends once the database has answered.
           const text = upstreamErrorText(data)
           if (text !== null) {
             toClient(data, isBinary)
-            return unexplainedFailure(text)
+            return sourceFailure(text)
           }
         }
         toClient(data, isBinary)
@@ -740,9 +756,9 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
       })
       up.on('close', (code) => {
         if (!upstreamOpen) end(1011, 'The video is not available.', 'upstream_failed')
-        // Round 2 (M-8): go2rtc broke the stream off (not a normal close) before any video, without a word: also a source failure the
-        // gateway cannot read. A normal close (1000/1001) is go2rtc ending the stream on purpose and is passed on as before.
-        else if (lastVideoAt === 0 && !ended && code !== 1000 && code !== 1001) unexplainedFailure(`closed ${code} before video`)
+        // Round 3 (I-1): go2rtc broke the stream off (not a normal close) before any video, without a word: a network failure, never
+        // an unexplained one. A normal close (1000/1001) is go2rtc ending the stream on purpose and is passed on as before.
+        else if (lastVideoAt === 0 && !ended && code !== 1000 && code !== 1001) sourceFailure(null)
         else end(code === 1000 || code === 1001 ? 1000 : 1011, code === 1000 || code === 1001 ? 'Video ended' : 'The video is not available.')
       })
     }

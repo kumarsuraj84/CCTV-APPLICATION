@@ -16,6 +16,8 @@ const STATE: Record<NvrLoginProblem['state'], string> = {
   refused: 'Login refused',
   paused: 'Refused 3 logins in 30 minutes',
   waiting: 'Login refused; one try at the next check',
+  // Round 3 (NB-12): the gateway's fail-safe, not a refused login.
+  unexplained: 'go2rtc refused something we cannot explain: check the NVR password and the pilot log',
 }
 
 export function NvrLoginProblems({ problems }: { problems: NvrLoginProblem[] }) {
@@ -27,7 +29,9 @@ export function NvrLoginProblems({ problems }: { problems: NvrLoginProblem[] }) 
       <p className="text-sm text-muted-foreground">
         These NVRs refused their saved user name or password. To protect their accounts nothing contacts them for a while (no checks,
         no live video, no playback). Fix the password on the NVR page (a new password is tried at once), or fix it on the NVR itself and
-        press Try again.
+        press Try again. An NVR marked &ldquo;go2rtc refused something we cannot explain&rdquo; did not refuse a password for certain:
+        two of its cameras failed the same way in words Drishti does not know, so it is left alone for a while to be safe; check its
+        password and the gateway log (see the monitoring rollout runbook), then press Try again.
       </p>
       <ul className="divide-y rounded-xl border bg-card text-sm">
         {problems.map((p) => (
@@ -39,7 +43,7 @@ export function NvrLoginProblems({ problems }: { problems: NvrLoginProblem[] }) 
               <span className="block text-muted-foreground">
                 {STATE[p.state]}
                 {p.until ? `, left alone until ${formatDateTime(p.until)}` : ''}
-                {p.level > 1 ? ` (refused ${p.level} times in a row)` : ''}
+                {p.level > 1 && p.state !== 'unexplained' ? ` (refused ${p.level} times in a row)` : ''}
               </span>
             </span>
             <Button

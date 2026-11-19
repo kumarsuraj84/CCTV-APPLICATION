@@ -3,7 +3,7 @@ import { auditAccess } from '@/lib/auth/access-audit'
 import { MSG_ACCESS_CHECK_FAILED } from '@/lib/auth/resource'
 import { MSG_MONITORING_OFF, MSG_NOT_MAPPED, type CameraRoute } from '@/lib/inventory/recorders'
 import { describeNvrError, MAX_DOWNLOAD_BYTES, MAX_DOWNLOAD_MS, NvrClient, NvrError, type NvrEndpoint } from '@/lib/nvr/client'
-import { guardNvrClient, MSG_LOGIN_STATE_UNREADABLE, MSG_NVR_LOGIN_CHECKING, MSG_NVR_LOGIN_REFUSED } from '@/lib/nvr/login-guard'
+import { guardNvrClient, MSG_LOGIN_STATE_UNREADABLE, MSG_NVR_LOGIN_CHECKING, MSG_NVR_LOGIN_REFUSED, MSG_NVR_LOGIN_UNEXPLAINED } from '@/lib/nvr/login-guard'
 import { clockOffsetMs, findSegments } from '@/lib/nvr/playback'
 import { logger } from '@/lib/observability/logger'
 import { processSingleton } from '@/lib/process-singleton'
@@ -264,7 +264,8 @@ export function cameraFailure(error: string): Response {
   if (error === MSG_MONITORING_OFF) return fail(409, error) // owner addition: the NVR is switched off, nothing was contacted
   if (error === MSG_NOT_MAPPED) return fail(409, error) // P2-5b: the camera has no active mapping, so there is no NVR to ask
   // Final fix X (NB-1): the NVR's login stands refused (shared back-off) or is being checked: NVR trouble, like the NVR's own refusal.
-  if (error === MSG_NVR_LOGIN_REFUSED || error === MSG_NVR_LOGIN_CHECKING || error === MSG_LOGIN_STATE_UNREADABLE) return fail(502, error)
+  // Round 3 (NB-12): also the words of an NVR that waits because of the gateway's fail-safe.
+  if (error === MSG_NVR_LOGIN_REFUSED || error === MSG_NVR_LOGIN_UNEXPLAINED || error === MSG_NVR_LOGIN_CHECKING || error === MSG_LOGIN_STATE_UNREADABLE) return fail(502, error)
   return fail(500, error)
 }
 

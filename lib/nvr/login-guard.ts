@@ -22,6 +22,26 @@ export const MSG_NVR_LOGIN_CHECKING = 'The NVR login is being checked. Try again
 /** Live video and 1x playback: a proven login older than this (10 minutes, two worker rounds) is proven again before go2rtc dials. */
 export const LIVE_LOGIN_FRESH_SEC = 600
 export const MSG_LOGIN_STATE_UNREADABLE = 'Could not check the NVR login state. Nothing was sent to the NVR; try again in a moment.'
+/**
+ * Round 3 (pre-handover review I-1; NB-12): the IT words while the NVR waits because of the gateway's fail-safe (two of its cameras
+ * failed in go2rtc in the same unknown way, its login never proven): not a refused password for certain.
+ */
+export const MSG_NVR_LOGIN_UNEXPLAINED = 'go2rtc refused something we cannot explain: check the NVR password and the pilot log.'
+/** The mark of the gateway's fail-safe in nvr_login_state.last_refused_path (migration 0052). */
+export const UNEXPLAINED_PATH = 'gateway_unexplained'
+
+/**
+ * The IT words for an NVR the gate answers 'refused': the fail-safe's own words when that is why it waits, else MSG_NVR_LOGIN_REFUSED.
+ * Read with the server's client; a read that fails gives the refused words (the NVR waits either way).
+ */
+export async function refusedWords(admin: AdminClient, recorderId: string): Promise<string> {
+  try {
+    const { data } = await admin.from('nvr_login_state').select('last_refused_path').eq('recorder_id', recorderId).maybeSingle()
+    return data?.last_refused_path === UNEXPLAINED_PATH ? MSG_NVR_LOGIN_UNEXPLAINED : MSG_NVR_LOGIN_REFUSED
+  } catch {
+    return MSG_NVR_LOGIN_REFUSED
+  }
+}
 
 type GateRow = { recorder_id: string; decision: LoginDecision; version: string | null; until: string | null; baselined: boolean; level: number; claimed: boolean }
 

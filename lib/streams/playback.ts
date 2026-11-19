@@ -8,7 +8,7 @@ import { realProbes } from '@/lib/monitor/probes'
 import type { Probes } from '@/lib/monitor/types'
 import {
   gateLoginPatiently, guardNvrClient, LIVE_LOGIN_FRESH_SEC, LoginTicket, mayLogIn, MSG_LOGIN_STATE_UNREADABLE, MSG_NVR_LOGIN_CHECKING, MSG_NVR_LOGIN_REFUSED,
-  proveVideoLogin,
+  proveVideoLogin, refusedWords,
 } from '@/lib/nvr/login-guard'
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
@@ -201,7 +201,8 @@ export async function readRecorderLogin(
   }
   if (gate.decision === 'no_password') return { ok: false, error: await recorderMessage(deps.rls, recorder.id, MSG_NO_LOGIN, 'no_saved_login') }
   if (!mayLogIn(gate)) {
-    const words = gate.decision === 'refused' || gate.decision === 'paused' ? MSG_NVR_LOGIN_REFUSED : MSG_NVR_LOGIN_CHECKING
+    // Round 3 (NB-12): an NVR that waits because of the gateway's fail-safe has its own words (not "login refused").
+    const words = gate.decision === 'paused' ? MSG_NVR_LOGIN_REFUSED : gate.decision === 'refused' ? await refusedWords(deps.admin, recorder.id) : MSG_NVR_LOGIN_CHECKING
     return { ok: false, error: await recorderMessage(deps.rls, recorder.id, words, `nvr_login_${gate.decision}`) }
   }
   const ticket = new LoginTicket(deps.admin, recorder.id, gate, o.purpose)

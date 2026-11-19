@@ -7,7 +7,7 @@ import { realProbes } from '@/lib/monitor/probes'
 import type { Probes } from '@/lib/monitor/types'
 import {
   gateLoginPatiently, LIVE_LOGIN_FRESH_SEC, LoginTicket, mayLogIn, MSG_CAMERA_NOT_AVAILABLE, MSG_LOGIN_STATE_UNREADABLE, MSG_NVR_LOGIN_CHECKING,
-  MSG_NVR_LOGIN_REFUSED, proveVideoLogin,
+  proveVideoLogin, refusedWords,
 } from '@/lib/nvr/login-guard'
 import { logger } from '@/lib/observability/logger'
 import { getSecret } from '@/lib/secrets'
@@ -287,7 +287,8 @@ export async function openStreams(
     if (w === 'unproven') return MSG_CAMERA_NOT_AVAILABLE
     if (!itView.has(recId)) itView.set(recId, await itViewOfRecorder(deps.rls, recId))
     if (!itView.get(recId)) return MSG_CAMERA_NOT_AVAILABLE
-    return w === 'refused' ? MSG_NVR_LOGIN_REFUSED : w === 'checking' ? MSG_NVR_LOGIN_CHECKING : MSG_LOGIN_STATE_UNREADABLE
+    // Round 3 (NB-12): an NVR that waits because of the gateway's fail-safe has its own words (not "login refused").
+    return w === 'refused' ? await refusedWords(deps.admin, recId) : w === 'checking' ? MSG_NVR_LOGIN_CHECKING : MSG_LOGIN_STATE_UNREADABLE
   }
   const toOpen: typeof registered = []
   const oneOnly = new Set<string>()

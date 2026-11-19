@@ -1,5 +1,6 @@
 import type { Actor, AdminClient, Result } from '@/lib/admin/types'
 import { cleanId, inventoryAdmin, type InventoryClients } from '@/lib/inventory/admin-gate'
+import { UNEXPLAINED_PATH } from '@/lib/nvr/login-guard'
 import { sanitizeError } from '@/lib/observability/sanitize-error'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 
@@ -59,8 +60,12 @@ export async function tryNvrLoginAgain(clients: InventoryClients, actor: Actor, 
 
 export type NvrLoginProblem = {
   recorderId: string; nvrName: string; locationId: string; locationCode: string; locationName: string
-  /** refused: in its window; paused: 3 refusals in 30 minutes; waiting: its window is over, the next check tries once. */
-  state: 'refused' | 'paused' | 'waiting'
+  /**
+   * refused: in its window; paused: 3 refusals in 30 minutes; waiting: its window is over, the next check tries once. unexplained
+   * (round 3, NB-12): the gateway's fail-safe, not a refused login: go2rtc failed the same way on two cameras of an NVR never proven, in
+   * words the gateway cannot read (in its window, or waiting for the next check's one try).
+   */
+  state: 'refused' | 'paused' | 'waiting' | 'unexplained'
   until: string | null; level: number; lastRefusedAt: string | null; lastPath: string | null
 }
 
@@ -89,7 +94,7 @@ export async function loadNvrLoginProblems(admin: AdminClient, orgId: string, no
       const inWindow = r.refused_until !== null && Date.parse(r.refused_until) > now.getTime()
       return {
         recorderId: r.recorder_id, nvrName: rec.assets.name, locationId: rec.location_id, locationCode: rec.locations.code, locationName: rec.locations.name,
-        state: paused ? 'paused' : inWindow ? 'refused' : 'waiting',
+        state: paused ? 'paused' : r.last_refused_path === UNEXPLAINED_PATH ? 'unexplained' : inWindow ? 'refused' : 'waiting',
         until: paused ? new Date(recent[recent.length - 3] + 1_800_000).toISOString() : inWindow ? r.refused_until : null,
         level: r.level, lastRefusedAt: r.last_refused_at, lastPath: r.last_refused_path,
       }

@@ -29,11 +29,12 @@ export type RegistryClient = {
   /** go2rtc said the NVR refused the login on this session's stream (media_session_login_refused). Never throws. */
   loginRefused?(sid: string): Promise<void>
   /**
-   * Round 2 (review M-8; NB-12): video played on this session's stream ('video'), or its go2rtc source failed in a way the gateway
-   * cannot read ('unexplained', `hash` = sha256 hex of the text, never the text). Answers 'refused' when that failure, repeated, now
-   * counts as a refused login (media_session_login_report). Never throws ('ignored' when it cannot be asked).
+   * Round 2 (review M-8; NB-12) and round 3 (pre-handover review I-1): video plays on this session's stream ('video'), its go2rtc
+   * source failed for a network reason ('network'), or in a way the gateway cannot read ('unexplained', `hash` = sha256 hex of the
+   * text, never the text). Answers (media_session_login_report) 'cleared', 'network', 'counted', 'camera' (that camera's own failure),
+   * 'unexplained' (the fail-safe: the NVR's logins wait for the window) or 'ignored'. Never throws ('ignored' when it cannot be asked).
    */
-  loginReport?(sid: string, kind: 'video' | 'unexplained', hash?: string): Promise<string>
+  loginReport?(sid: string, kind: 'video' | 'network' | 'unexplained', hash?: string): Promise<string>
 }
 
 type LoginCheckRow = { decision: string }
