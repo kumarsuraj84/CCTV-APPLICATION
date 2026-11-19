@@ -34,7 +34,7 @@ browser ──https/wss──► Caddy (443, the only listener on the network)
 3. The company's root certificate must be trusted by the PCs that open Drishti (normally already through Group Policy).
 4. Lab only: `tls internal` in the Caddyfile makes Caddy's own local CA sign a certificate (self-signed root). Trust that root on the
    test PCs only. Never use it for production.
-5. Renewal: before the certificate ends, replace the two files and reload Caddy (`caddy reload --config C:\Drishti\config\Caddyfile`).
+5. Renewal: before the certificate ends, replace the two files and restart the proxy (`Restart-Service DrishtiProxy`, elevated). The Caddyfile has `admin off` (P5.4 fix round 4, re-review 3 m-e): Caddy's admin API on loopback would let any local user or program load another configuration, for example one that serves the certificate folder, so `caddy reload` is not used; a restart takes a second or two.
 
 ## 3. Settings of the app and the gateway (production env file, outside the repository)
 

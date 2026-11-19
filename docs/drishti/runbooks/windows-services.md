@@ -33,13 +33,23 @@ but SYSTEM, the Administrators or TrustedInstaller; then it locks the folder its
 without following a link. Caddy can run as the `DrishtiProxy` service; the update rolls back only for a broken release (a problem of
 the server is reported and the release kept); the Health page has "Last backup".
 
+**Fix round 4 (re-review 3, 2026-11-19).** A folder a service may write (its log folder, `data\caddy`) is locked itself only and
+never walked: the service could otherwise swap an item for a junction between the walk and the change. `-Action RepairAcl` stops
+those services first (and refuses when one cannot be stopped), then starts them again. Every walked item's owner is checked, not only
+the top folder's, and each item is checked again just before its change. The Audit no longer reports the real `app\current`.
+A missing folder is created with its locked rules in the same call. Caddy's admin API is off.
+
 **Status, honestly: verified by design and unit-tested, lab verification pending on a real server.** The default test run of the
-development PC may not change access lists, plant junctions or compile programs (its antivirus quarantines such test helpers, and no
-exclusion can be added). So the default run tests the DECISIONS on made-up data (which links, hard links, owners and unreadable items
-refuse a lock, when an item is reset, which `app\current` is trusted, which backups retention removes, which update failures roll
-back, the virtual-account SIDs) and the plans (`-WhatIf` / `-DryRun`), while the BEHAVIOUR on the real file system and the service
-host (real locks, junctions and hard links to decoy folders, `statfs` under the List entry, retention with junctions, the compiled
-host) is checked by the Windows lab suite, which an administrator runs on the production server before the install (section 7.0).
+development PC writes no script or program file, compiles nothing, runs no icacls, takeown, sc or mklink, makes no junction or
+hard link, grants nobody and never uses `-ExecutionPolicy Bypass` (its antivirus quarantines such test helpers, and no exclusion can
+be added). It is not free of every side effect, exactly: the integration backup test lets backup.ps1 lock its OWN new folders under
+the temp folder through .NET, and `execSync` starts `cmd.exe` as its shell. It tests the DECISIONS on made-up data with fake
+providers (which links, hard links, owners and unreadable items refuse a lock, what a swapped-in junction does to the reset, which
+folders are walked, which services a repair stops, which `app\current` is trusted, which backups retention removes, which update
+failures roll back, the virtual-account SIDs) and the plans (`-WhatIf` / `-DryRun`). The BEHAVIOUR on the real file system and the
+service host (real locks, junctions and hard links to decoy folders, a junction swapped in during a reset, `statfs` under the List
+entry, retention with junctions, the Audit with a real `app\current`, the compiled host) is checked by the Windows lab suite,
+which an administrator runs on the production server before the install (section 7.0). It has not run anywhere yet.
 
 ## 1. What runs
 
@@ -122,11 +132,16 @@ anything, every Drishti folder is created if missing and locked:
 - then the folder ITSELF is locked first, in one call: the Administrators as owner, no inherited entry, no entry of anybody else;
   SYSTEM and Administrators full control (by their SIDs `*S-1-5-18` and `*S-1-5-32-544`, so it works on a Windows in any language),
   then only the entries below. From then on nobody else can add anything inside it;
+- a folder its service may WRITE (its log folder, Caddy's `data\caddy`) is locked itself only: nothing in it is walked or changed
+  (re-review 3 N-4: the service could swap an item for a junction between the read and the change, and the change would follow it);
+- every walked item's OWNER is checked too, not only the folder's: an item below that belongs to anybody but SYSTEM, the
+  Administrators or TrustedInstaller refuses the lock before anything changes (its owner could change it until it is reached);
 - only then everything below it is walked, again without following any link (`icacls /T` and `takeown /R` are no longer used: they
   follow junctions): each item gets the Administrators as owner and no entry of its own, so it inherits the new list. Elevated, the
   restore, take-ownership and backup privileges are switched on for this, so an item's own rules cannot keep the Administrators out
-  (and no `takeown /D` answer in the Windows language is needed). An item that already looks right is left alone. The sub-folders and
-  files that need their own entries are locked after their parent;
+  (and no `takeown /D` answer in the Windows language is needed). An item that already looks right is left alone. Each item is checked again just before its change (no part of its
+  path from the folder may have become a link meanwhile; such an item is skipped and reported). The planned sub-folders and files that
+  need their own entries are locked after their parent, each walked once by its own entry;
 - the virtual accounts are given by their SIDs, computed from the service names (as `sc.exe showsid` does, also for a service that
   does not exist yet), so the folders can be locked before the services exist.
 
@@ -152,8 +167,9 @@ secret paths (the configuration folder and file, every env file, `go2rtc.yaml`, 
 lets anybody else even READ, so `Users:(R)` on `web.env` fails it. It never trusts the person running it. A path whose rules it
 cannot read (not elevated) is reported as such; it also lists any junction or link in the installation other than the checked
 `app\current`. It ends with exit code 1 when there is a problem. `-Action Status` says `access rules: ok` or how many problems when it
-runs elevated, and `access rules: not checked (run elevated …)` otherwise (review 2 m4: no false problems from a normal prompt). Put them right with `-Action RepairAcl` (elevated): it applies the same plan again and
-removes foreign entries, so a repair really repairs. update.ps1, restore.ps1 and backup.ps1 refuse to run (`Run drishti-services.ps1 -Action RepairAcl`) while the configuration
+runs elevated, and `access rules: not checked (run elevated …)` otherwise (review 2 m4: no false problems from a normal prompt). Put them right with `-Action RepairAcl` (elevated): it stops the services that write a folder of the plan first (refused, with
+nothing changed, when one runs and cannot be stopped), applies the same plan again, removes foreign entries, and starts those services
+again. A short stop of every service: plan it outside opening hours. update.ps1, restore.ps1 and backup.ps1 refuse to run (`Run drishti-services.ps1 -Action RepairAcl`) while the configuration
 file or the scripts folder may be written by others.
 
 Named accounts instead (only if a policy requires it, for example a domain where the database is on another server and logs in with
@@ -201,7 +217,7 @@ which runs the install scripts of every dependency, here as an Administrator: us
    as `PGPASSWORD` of that child process only.
 4. The services: `.\deploy\windows\drishti-services.ps1 -Action Install -WhatIf` (read the plan), then without `-WhatIf`. In this
    order it creates and locks every folder (section 3), copies `deploy\windows` to `C:\Drishti\scripts`, compiles the host, writes the
-   `.conf` files, creates the four services (stopped; delayed automatic start, own account, restart on failure) and gives each service
+   `.conf` files, creates the Drishti services (four, five with `DrishtiProxy`; stopped; delayed automatic start, own account, restart on failure) and gives each service
    read access to its own env file only. They point at `C:\Drishti\app\current`, which step 8 creates. From here on, run the scripts
    from `C:\Drishti\scripts`. Now copy `go2rtc.exe` from your Downloads into the locked `C:\Drishti\go2rtc`.
 5. `C:\Drishti\scripts\drishti-services.ps1 -Action Audit` (elevated): it must say `access rules: ok`.
@@ -235,7 +251,7 @@ which runs the install scripts of every dependency, here as an Administrator: us
 
 ## 6. Uninstall
 
-`drishti-services.ps1 -Action Uninstall` stops and deletes the four services; releases, configuration, logs and backups stay. The virtual
+`drishti-services.ps1 -Action Uninstall` stops and deletes the Drishti services; releases, configuration, logs and backups stay. The virtual
 accounts disappear with their services.
 
 ## 7. First real installation (to do and record)
@@ -253,6 +269,10 @@ call `statfs` under a locked folder, and compile and run the service host. They 
 4. Expected: every test passes (`tests/windows-lab/windows-scripts.lab.test.ts`, `prod-env.lab.test.ts`,
    `windows-service-host.lab.test.ts`). Record the result with the date and Windows version in the tracker (LG-37, SO-11, SO-12).
    A failure stops the install: the locks or the host do not behave on this server as they were designed.
+5. Two things compile C# on the server at run time: the install builds the service host with the .NET Framework's own `csc.exe`, and
+   an elevated lock (install, RepairAcl, backup) compiles a small privilege helper with `Add-Type`. The server's antivirus policy must
+   allow both; the lab suite runs the first and, run elevated, the second. If the antivirus blocks them there, an exception for
+   `C:\Drishti\bin` and the scripts folder is a decision for the owner of that server, not something these scripts change.
 
 Then, on a test server (never the development computer): steps 1-10, then:
 
@@ -262,10 +282,10 @@ Then, on a test server (never the development computer): steps 1-10, then:
    the first proof that the real worker hands its lease back: after the stop, the Health page shows the lease "not held" at once (not
    after it runs out, 20 s later).
 2. Kill `node.exe` of the worker in Task Manager and check the host starts it again within 5 s.
-3. **A user signs out (review M-5):** sign in over VNC as a normal user and as an administrator, sign out, and check the four services
+3. **A user signs out (review M-5):** sign in over VNC as a normal user and as an administrator, sign out, and check the Drishti services
    are still running and their logs show no stop (Windows sends a sign-out notice to programs that have a console, and the programs
    run on the host's private console; how they react to it is not tested yet).
-4. **Reboot:** the four start by themselves; the worker's lease is either handed back before the shutdown (`worker_stopped` in the log)
+4. **Reboot:** all of them (four, five with `DrishtiProxy`) start by themselves; the worker's lease is either handed back before the shutdown (`worker_stopped` in the log)
    or runs out within 20 s, and the new worker takes it (the host cannot ask Windows for more shutdown time).
 5. Fill a log past 10 MB (or set `LogMaxBytes` low) and check it rolls; open the log in a viewer that holds it, and check the service
    keeps running and the host's line "the log could not be rolled" appears, then the roll happens once the viewer is closed.
