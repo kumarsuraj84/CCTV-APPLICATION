@@ -394,7 +394,10 @@ export async function deliverRecording(o: DeliverOptions): Promise<Response> {
 
   if (o.probe) {
     const peek = limits.peek(o.actorId, { ignoreOwn: true })
-    if (!peek.ok) return fail(429, MSG_SERVER_BUSY)
+    if (!peek.ok) {
+      await login.ticket?.close() // round 2 (review M-5): nothing was sent to the NVR: the claimed attempt is given back
+      return fail(429, MSG_SERVER_BUSY)
+    }
   } else {
     const stop = () => transfer.abort()
     let taken = limits.acquire(o.actorId, stop)
@@ -405,6 +408,7 @@ export async function deliverRecording(o: DeliverOptions): Promise<Response> {
     }
     if (!taken.ok) {
       endSession()
+      await login.ticket?.close() // round 2 (review M-5)
       logger.warn({ event: 'conversion_busy', pool: o.pool, reason: taken.reason, running: limits.running })
       return fail(429, taken.reason === 'person' ? MSG_ALREADY_RUNNING : MSG_SERVER_BUSY)
     }
@@ -513,6 +517,8 @@ export async function deliverRecording(o: DeliverOptions): Promise<Response> {
       endSession()
       slot?.release()
     }
+    // Round 2 (review M-5): an attempt that never reached the NVR (aborted, no remux) is given back; one that did is settled already.
+    await login.ticket?.close()
   }
 }
 

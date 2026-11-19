@@ -1,5 +1,5 @@
 import { isIP } from 'node:net'
-import { DigestInputError, DigestUnsupportedError, digestFetch } from '@/lib/nvr/digest'
+import { credentialsSent, DigestInputError, DigestUnsupportedError, digestFetch } from '@/lib/nvr/digest'
 import { parseChannels, parseChannelStatus, parseVideoInputChannels, type NvrChannel } from '@/lib/nvr/isapi'
 import { connectRefusal } from '@/lib/security/targets'
 
@@ -12,7 +12,11 @@ export type NvrErrorKind = 'unreachable' | 'timeout' | 'auth' | 'forbidden' | 'b
 export type NvrErrorReason = 'unsupported_login' | 'no_channels' | 'refused_target'
 
 export class NvrError extends Error {
-  constructor(public kind: NvrErrorKind, message: string, public reason?: NvrErrorReason) {
+  /**
+   * `credentialsSent` (final fix X round 2, review I-2): the answer came after the password was sent (a Digest login). False for an
+   * answer to the first, unauthenticated request (a 403 there proves nothing); undefined when not known.
+   */
+  constructor(public kind: NvrErrorKind, message: string, public reason?: NvrErrorReason, public credentialsSent?: boolean) {
     super(message)
     this.name = 'NvrError'
   }
@@ -78,6 +82,12 @@ export class NvrClient {
   // True private fields: logging, JSON or util.inspect of a client never shows the password.
   readonly #ep: NvrEndpoint
   readonly #opts: NvrClientOptions
+  #proven = false
+
+  /** True once an answer other than 401 came after the password was sent: the NVR accepted the saved login (review I-2). */
+  loginProven(): boolean {
+    return this.#proven
+  }
 
   constructor(ep: NvrEndpoint, opts: NvrClientOptions = {}) {
     this.#ep = { host: ep.host, port: ep.port, username: ep.username, password: ep.password }
@@ -149,9 +159,10 @@ export class NvrClient {
     try {
       const ep = this.#ep
       res = await digestFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/xml' }, body: xml, username: ep.username, password: ep.password, signal: stop.signal }, this.#opts.fetchImpl)
+      const sent = this.note(res)
       if (res.status !== 200) {
         await drop(res)
-        throw this.statusError(res.status)
+        throw this.statusError(res.status, sent)
       }
       const type = res.headers.get('content-type') ?? ''
       const length = Number(res.headers.get('content-length'))
@@ -225,10 +236,17 @@ export class NvrClient {
     return `http://${host}:${ep.port}${path}`
   }
 
-  private statusError(status: number): NvrError {
-    if (status === 401) return new NvrError('auth', 'login refused')
-    if (status === 403) return new NvrError('forbidden', 'not allowed')
-    return new NvrError('bad_response', `status ${status}`)
+  private statusError(status: number, sent: boolean): NvrError {
+    if (status === 401) return new NvrError('auth', 'login refused', undefined, sent)
+    if (status === 403) return new NvrError('forbidden', 'not allowed', undefined, sent)
+    return new NvrError('bad_response', `status ${status}`, undefined, sent)
+  }
+
+  /** Whether this answer came after the password was sent; an accepted login is remembered (loginProven). */
+  private note(res: Response): boolean {
+    const sent = credentialsSent(res)
+    if (sent && res.status !== 401) this.#proven = true
+    return sent
   }
 
   private toNvrError(e: unknown): NvrError {
@@ -249,9 +267,10 @@ export class NvrClient {
         { method, headers: body === undefined ? undefined : { 'Content-Type': 'application/xml' }, body, username: ep.username, password: ep.password, signal },
         this.#opts.fetchImpl,
       )
+      const sent = this.note(res)
       if (res.status !== 200) {
         await drop(res)
-        throw this.statusError(res.status)
+        throw this.statusError(res.status, sent)
       }
       return await readCapped(res)
     } catch (e) {

@@ -69,12 +69,33 @@ export type BackoffConfig = { baseSec: number; maxSec: number }
 
 export const fresh = (version: string): LoginState => ({ version, outcome: null, level: 0, refusedUntil: null, lastOkAt: null, everOkAt: null, attemptUntil: null, refusals: [] })
 
-/** The state for the current version: a new saved login starts from nothing (but keeps the refusal times and whether it ever worked). */
+/**
+ * The state for the current version: a new saved login starts from nothing but keeps whether any login ever worked. Round 2 (review
+ * M-10; ruling NB-10): the refusal times go too, so a corrected password lifts the 3-in-30-minutes pause and is tried at once; if it is
+ * refused as well, the first window (15 minutes) follows.
+ */
 function current(s: LoginState | undefined, version: string): LoginState {
   if (!s) return fresh(version)
   if (s.version === version) return s
-  return { ...fresh(version), everOkAt: s.everOkAt, lastOkAt: null, refusals: s.refusals }
+  return { ...fresh(version), everOkAt: s.everOkAt }
 }
+
+/**
+ * Round 2 (review I-2, M-4; ruling NB-8): the ONE classifier of what an NVR answer says about its saved login, used by the worker and the
+ * web paths alike. `credentialsSent`: the answer came after the password was actually sent (a Digest login was answered). Without that,
+ * nothing is proven or refused: a 403 or 200 before any login (an IP filter, a lock page, another device at that address) and a 401
+ * that was never answered (Basic only, a password a Digest header cannot carry) are "unknown".
+ */
+export type LoginAnswer = { status: 'success' | 'refused' | 'forbidden' | 'other'; credentialsSent: boolean }
+export function classifyLoginAnswer(a: LoginAnswer): LoginOutcome {
+  if (!a.credentialsSent) return 'unknown'
+  if (a.status === 'refused') return 'refused'
+  if (a.status === 'success' || a.status === 'forbidden') return 'ok'
+  return 'unknown'
+}
+/** An RTSP DESCRIBE answer (0 = nothing answered): 401 refused, any other answer success, each only after the password was sent. */
+export const classifyRtspCode = (code: number, credentialsSent: boolean): LoginOutcome =>
+  classifyLoginAnswer({ status: code === 401 ? 'refused' : code === 0 ? 'other' : 'success', credentialsSent })
 
 /** The length of the window after the `level`-th refusal in a row: base, doubling, at most max. */
 export function backoffSeconds(level: number, cfg: BackoffConfig = { baseSec: DEFAULT_BACKOFF_SEC, maxSec: DEFAULT_BACKOFF_MAX_SEC }): number {

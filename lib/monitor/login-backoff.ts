@@ -13,7 +13,7 @@ export const MSG_LOGIN_BACKOFF = 'The NVR refused this login a short while ago. 
 export const LOGIN_REFUSALS_ALLOWED = 3
 export const LOGIN_REFUSAL_WINDOW_SEC = 1800
 export const MSG_LOGIN_PAUSED =
-  'This NVR refused 3 logins in the last 30 minutes. To keep its account from being locked it is not asked again for a while, even with a new password. Check the user name and password on the NVR itself, then try again later.'
+  'This NVR refused 3 logins in the last 30 minutes. To keep its account from being locked it is not asked again for a while. Saving a corrected password tries it at once; otherwise check the user name and password on the NVR itself.'
 
 /** Why an administrator's action may not log in to this NVR now (plain words), or null when it may. */
 export function loginBlockMessage(g: LoginGate): string | null {

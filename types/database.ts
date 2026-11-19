@@ -823,14 +823,14 @@ isOneToOne: false
                   ]
                 },"nvr_login_state": {
                   Row: {
-                    "attempt_path": string | null,"attempt_until": string | null,"ever_ok_at": string | null,"last_ok_at": string | null,"last_refused_at": string | null,"last_refused_path": string | null,"level": number,"org_id": string,"outcome": string | null,"recorder_id": string,"refusals": (string)[],"refused_until": string | null,"updated_at": string,"version": string
+                    "attempt_path": string | null,"attempt_until": string | null,"ever_ok_at": string | null,"last_ok_at": string | null,"last_refused_at": string | null,"last_refused_path": string | null,"last_video_at": string | null,"level": number,"org_id": string,"outcome": string | null,"recorder_id": string,"refusals": (string)[],"refused_until": string | null,"unexplained": (string)[],"unexplained_hash": string | null,"updated_at": string,"version": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "attempt_path"?: string | null,"attempt_until"?: string | null,"ever_ok_at"?: string | null,"last_ok_at"?: string | null,"last_refused_at"?: string | null,"last_refused_path"?: string | null,"level"?: number,"org_id": string,"outcome"?: string | null,"recorder_id": string,"refusals"?: (string)[],"refused_until"?: string | null,"updated_at"?: string,"version": string
+                    "attempt_path"?: string | null,"attempt_until"?: string | null,"ever_ok_at"?: string | null,"last_ok_at"?: string | null,"last_refused_at"?: string | null,"last_refused_path"?: string | null,"last_video_at"?: string | null,"level"?: number,"org_id": string,"outcome"?: string | null,"recorder_id": string,"refusals"?: (string)[],"refused_until"?: string | null,"unexplained"?: (string)[],"unexplained_hash"?: string | null,"updated_at"?: string,"version": string
                   }
                   Update: {
-                    "attempt_path"?: string | null,"attempt_until"?: string | null,"ever_ok_at"?: string | null,"last_ok_at"?: string | null,"last_refused_at"?: string | null,"last_refused_path"?: string | null,"level"?: number,"org_id"?: string,"outcome"?: string | null,"recorder_id"?: string,"refusals"?: (string)[],"refused_until"?: string | null,"updated_at"?: string,"version"?: string
+                    "attempt_path"?: string | null,"attempt_until"?: string | null,"ever_ok_at"?: string | null,"last_ok_at"?: string | null,"last_refused_at"?: string | null,"last_refused_path"?: string | null,"last_video_at"?: string | null,"level"?: number,"org_id"?: string,"outcome"?: string | null,"recorder_id"?: string,"refusals"?: (string)[],"refused_until"?: string | null,"unexplained"?: (string)[],"unexplained_hash"?: string | null,"updated_at"?: string,"version"?: string
                   }
                   Relationships: [
                     {
@@ -1722,6 +1722,9 @@ isOneToOne: false
 "media_session_login_refused":
 { Args: { "p_sid": string }; Returns: boolean
                            },
+"media_session_login_report":
+{ Args: { "p_hash"?: string,"p_kind": string,"p_sid": string }; Returns: string
+                           },
 "media_session_open":
 { Args: { "p_camera": string,"p_kind": string,"p_sid": string,"p_stream": string,"p_user": string }; Returns: {
               "expires_at": string,"kind": string,"ok": boolean,"reason": string,"stream": string
@@ -1865,12 +1868,15 @@ isOneToOne: false
 "last_ok_at": string | null,
 "last_refused_at": string | null,
 "last_refused_path": string | null,
+"last_video_at": string | null,
 "level": number,
 "org_id": string,
 "outcome": string | null,
 "recorder_id": string,
 "refusals": (string)[],
 "refused_until": string | null,
+"unexplained": (string)[],
+"unexplained_hash": string | null,
 "updated_at": string,
 "version": string
             }

@@ -23,8 +23,11 @@ export function reconnectDelayMs(failures: number, afterNormalRun: boolean): num
 
 /** `refused` (final fix X, review C I-2): the gateway said the camera's NVR login stands refused; the tile waits for a new token. */
 export type TileView = 'connecting' | 'playing' | 'reconnecting' | 'unavailable' | 'paused' | 'refused'
-/** The gateway's one error value for an NVR whose login stands refused (lib/streams/gateway.ts LOGIN_REFUSED_VALUE). */
-export const LOGIN_REFUSED_REASON = 'nvr_login_refused'
+/**
+ * The gateway's one error value for an NVR whose login stands refused (lib/streams/gateway.ts LOGIN_REFUSED_VALUE). Round 2 (review M-7,
+ * NB-12): neutral, as every browser sees it and the gateway cannot tell a CCTV-only viewer from the IT view.
+ */
+export const LOGIN_REFUSED_REASON = 'camera_not_available'
 /** The neutral words for a camera whose NVR login stands refused (CCTV-only viewers; also the tile's own view of a gateway refusal). */
 export const MSG_CAMERA_NOT_AVAILABLE = 'Camera not available.'
 export type Connector = (url: string, events: { onPlaying: () => void; onEnded: (reason?: string) => void }) => () => void

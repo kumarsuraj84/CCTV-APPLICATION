@@ -28,6 +28,12 @@ export type RegistryClient = {
   loginCheck?(sid: string): Promise<'go' | 'refused'>
   /** go2rtc said the NVR refused the login on this session's stream (media_session_login_refused). Never throws. */
   loginRefused?(sid: string): Promise<void>
+  /**
+   * Round 2 (review M-8; NB-12): video played on this session's stream ('video'), or its go2rtc source failed in a way the gateway
+   * cannot read ('unexplained', `hash` = sha256 hex of the text, never the text). Answers 'refused' when that failure, repeated, now
+   * counts as a refused login (media_session_login_report). Never throws ('ignored' when it cannot be asked).
+   */
+  loginReport?(sid: string, kind: 'video' | 'unexplained', hash?: string): Promise<string>
 }
 
 type LoginCheckRow = { decision: string }
@@ -135,12 +141,23 @@ export function createRestRegistry(o: { url: string; serviceKey: string; timeout
         // best effort: the worker and the web server's next proof find the refused login too
       }
     },
+    async loginReport(sid, kind, hash) {
+      try {
+        const answer = await rpc('media_session_login_report', { p_sid: sid, p_kind: kind, ...(hash ? { p_hash: hash } : {}) })
+        return typeof answer === 'string' ? answer : 'ignored'
+      } catch {
+        return 'ignored'
+      }
+    },
   }
 }
 
 /** The same registry through the web app's service-role client (the fast-playback route). */
 export function adminRegistry(admin: AdminClient, timeoutMs = REGISTRY_TIMEOUT_MS): RegistryClient {
-  const call = async (name: 'media_session_open' | 'media_sessions_still_valid' | 'media_session_close' | 'media_session_login_check' | 'media_session_login_refused', args: Record<string, unknown>) => {
+  const call = async (
+    name: 'media_session_open' | 'media_sessions_still_valid' | 'media_session_close' | 'media_session_login_check' | 'media_session_login_refused' | 'media_session_login_report',
+    args: Record<string, unknown>,
+  ) => {
     const { data, error } = await admin.rpc(name, args as never).abortSignal(AbortSignal.timeout(timeoutMs))
     if (error) throw new Error(`The access registry refused the request (${error.code ?? 'error'}).`)
     return data as unknown
@@ -167,6 +184,14 @@ export function adminRegistry(admin: AdminClient, timeoutMs = REGISTRY_TIMEOUT_M
         await call('media_session_login_refused', { p_sid: sid })
       } catch {
         // best effort
+      }
+    },
+    async loginReport(sid, kind, hash) {
+      try {
+        const answer = await call('media_session_login_report', { p_sid: sid, p_kind: kind, ...(hash ? { p_hash: hash } : {}) })
+        return typeof answer === 'string' ? answer : 'ignored'
+      } catch {
+        return 'ignored'
       }
     },
   }

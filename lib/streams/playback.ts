@@ -276,6 +276,8 @@ export async function listRecordedDays(deps: LookupDeps, actor: Who, cameraId: s
     return { ok: true, days }
   } catch (e) {
     return await nvrFailure(e, 'playback_days_failed', deps.rls, recorder.id)
+  } finally {
+    await c.ticket?.close() // round 2 (review M-5): an attempt that sent nothing (no month to ask) is given back
   }
 }
 
@@ -295,6 +297,8 @@ export async function listOldestRecording(deps: LookupDeps, actor: Who, cameraId
     return { ok: true, oldest: oldest ? oldest.toISOString() : null }
   } catch (e) {
     return await nvrFailure(e, 'playback_oldest_failed', deps.rls, recorder.id)
+  } finally {
+    await c.ticket?.close()
   }
 }
 
@@ -327,6 +331,8 @@ export async function listDaySegments(
     }
   } catch (e) {
     return await nvrFailure(e, 'playback_segments_failed', deps.rls, recorder.id)
+  } finally {
+    await c.ticket?.close()
   }
 }
 
@@ -362,6 +368,15 @@ export async function openPlayback(deps: OpenPlaybackDeps, actor: Who, cameraId:
     const proof = await proveVideoLogin(c.ticket, () => (deps.rtsp ?? realProbes.rtsp)({ host: recorder.host!, port: recorder.rtsp_port, username: recorder.username, password: password!, channel: camera.channel }))
     if (proof === 'refused') return { ok: false, error: await recorderMessage(deps.rls, recorder.id, MSG_NVR_LOGIN_REFUSED, 'nvr_login_refused') }
   }
+  // Round 2 (review M-5): when nothing is registered (go2rtc busy or not answering, no session), nothing dials the NVR: a claimed attempt
+  // is given back at once instead of keeping every other path waiting for a minute. A registered source keeps it (its dial is the attempt).
+  let registered = false
+  try {
+    return await openPlaybackStream()
+  } finally {
+    if (!registered) await c.ticket?.close()
+  }
+  async function openPlaybackStream(): Promise<Result<{ token: string; name: string }>> {
   try {
     let unreadable = 0
     for (let shift = 0; shift < MAX_START_SHIFTS; shift++) {
@@ -394,6 +409,7 @@ export async function openPlayback(deps: OpenPlaybackDeps, actor: Who, cameraId:
             start: new Date(s * 1000), end: new Date(e * 1000), ...recorderOffset(recorder, offsetMin),
           })
       await deps.go2rtc.register(name, src, { keepExisting: demo })
+      registered = true
       const token = signStreamToken({ sid, u: actor.id, c: camera.id, k: 'pb', exp: Math.floor(now() / 1000) + TOKEN_LIFETIME_SEC, s, e }, secret)
       // Streams nobody has watched for a long time are removed from go2rtc (at most once a minute; never waits, never fails the request).
       // (go2rtc's idle clock is the machine clock, so the real time is used here, not the injected one.)
@@ -404,5 +420,6 @@ export async function openPlayback(deps: OpenPlaybackDeps, actor: Who, cameraId:
   } catch {
     logger.error({ event: 'open_playback_failed', location: camera.code, recorder: recorder.id, channel: camera.channel }) // no address, no error text: they can carry a password
     return { ok: false, error: MSG_UNAVAILABLE }
+  }
   }
 }

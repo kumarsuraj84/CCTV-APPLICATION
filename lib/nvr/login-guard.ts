@@ -1,7 +1,7 @@
 import type { AdminClient } from '@/lib/admin/types'
 import { loadMonitorConfig } from '@/lib/monitor/config'
 import { NvrError } from '@/lib/nvr/client'
-import type { BackoffConfig, LoginDecision, LoginGate, LoginOutcome, LoginPath } from '@/lib/nvr/login-policy'
+import { classifyLoginAnswer, classifyRtspCode, type BackoffConfig, type LoginDecision, type LoginGate, type LoginOutcome, type LoginPath } from '@/lib/nvr/login-policy'
 import { logger } from '@/lib/observability/logger'
 
 // Final fix X (release 1 review C I-1, I-2; ruling NB-1): the ONE NVR login back-off of every process, in the database
@@ -89,13 +89,26 @@ export async function reportNvrLogin(client: AdminClient, recorderId: string, ve
  * answer, a refused address): not known.
  */
 export function outcomeOfNvrError(e: unknown): LoginOutcome {
-  if (e instanceof NvrError && e.kind === 'auth') return 'refused'
-  if (e instanceof NvrError && e.kind === 'forbidden') return 'ok'
+  // Round 2 (review I-2; ruling NB-8): the shared classifier; only an answer after the password was sent counts (undefined: a fake or
+  // an older caller that does not say, taken as sent).
+  if (!(e instanceof NvrError)) return 'unknown'
+  const credentialsSent = e.credentialsSent !== false
+  if (e.kind === 'auth') return classifyLoginAnswer({ status: 'refused', credentialsSent })
+  if (e.kind === 'forbidden') return classifyLoginAnswer({ status: 'forbidden', credentialsSent })
   return 'unknown'
 }
 
-/** What an RTSP DESCRIBE answer says about the login: 401 refused, nothing (0) not known, any other answer: the login was accepted. */
-export const outcomeOfRtspCode = (code: number): LoginOutcome => (code === 401 ? 'refused' : code === 0 ? 'unknown' : 'ok')
+/**
+ * What an RTSP DESCRIBE answer says about the login: 401 refused, nothing (0) not known, any other answer: the login was accepted —
+ * each only when the password was sent (round 2, review M-4: a 401 to a request that carried no login refused nobody).
+ */
+export const outcomeOfRtspCode = (code: number, authSent?: boolean): LoginOutcome => classifyRtspCode(code, authSent !== false)
+
+/** Whether a client says its saved login was accepted (NvrClient.loginProven); a client that cannot say is taken as proven. */
+const provenBy = (client: object): boolean => {
+  const f = (client as { loginProven?: unknown }).loginProven
+  return typeof f === 'function' ? (f as () => boolean).call(client) === true : true
+}
 
 /**
  * go2rtc's error text for a refused RTSP login (go2rtc 1.9: "wrong user/pass", or "user/pass not provided"; a raw 401 is matched too).
@@ -142,16 +155,18 @@ export class LoginTicket {
  * DESCRIBE of one channel BEFORE any go2rtc source is registered, and reports it: a wrong password then costs one refused login, not
  * sixteen. Answers the outcome; 'ok' when there was nothing to prove (a fresh proof exists).
  */
-export async function proveVideoLogin(ticket: LoginTicket, describe: () => Promise<{ code: number }>): Promise<LoginOutcome> {
+export async function proveVideoLogin(ticket: LoginTicket, describe: () => Promise<{ code: number; authSent?: boolean }>): Promise<LoginOutcome> {
   if (!ticket.gate.claimed) return 'ok'
-  let code = 0
+  let answer: { code: number; authSent?: boolean } = { code: 0, authSent: false }
   try {
-    code = (await describe()).code
+    answer = await describe()
   } catch {
-    code = 0
+    answer = { code: 0, authSent: false }
   }
-  const outcome = outcomeOfRtspCode(code)
-  await ticket.settle(outcome)
+  const outcome = outcomeOfRtspCode(answer.code, answer.authSent)
+  // Round 2 (review I-1; ruling NB-7): an inconclusive proof (no answer, or an answer nobody logged in for) keeps the claim: the caller
+  // lets at most ONE go2rtc source dial as the attempt, and every other caller waits for the claim to end.
+  if (outcome !== 'unknown') await ticket.settle(outcome)
   return outcome
 }
 
@@ -172,7 +187,8 @@ export function guardNvrClient<T extends object>(client: T, ticket: LoginTicket)
         if (!(r instanceof Promise)) return r
         return r.then(
           async (v) => {
-            await ticket.settle('ok')
+            // Round 2 (review I-2): an answer nobody logged in for proves nothing (unknown gives the attempt back).
+            await ticket.settle(classifyLoginAnswer({ status: 'success', credentialsSent: provenBy(target) }))
             return v
           },
           async (e) => {

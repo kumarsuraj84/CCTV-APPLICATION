@@ -28,13 +28,17 @@ function statusLine(text: string, password: string): string {
  * One DESCRIBE on the camera's sub-stream (Hikvision: channel*100 + 2). Returns the final status code (0 = no answer) and what happened.
  * The login is Digest only: the password is never sent in clear. The password is never written into the URL, the trace or an error.
  */
-export async function rtspDescribe(t: RtspTarget): Promise<{ code: number; trace: string[] }> {
+/**
+ * `authSent` (final fix X round 2, review M-4): the final answer came after the password was sent (a Digest login). A 401 with authSent
+ * false (no Digest offered, or a login value a header cannot carry) refused nobody's password.
+ */
+export async function rtspDescribe(t: RtspTarget): Promise<{ code: number; trace: string[]; authSent: boolean }> {
   if (!isValidHost(t.host) || !isValidPort(t.port) || !Number.isInteger(t.channel) || t.channel < 1 || t.channel > 4096) {
-    return { code: 0, trace: ['The camera address is not valid.'] }
+    return { code: 0, trace: ['The camera address is not valid.'], authSent: false }
   }
   // P2-6 (SO-4): the backstop in front of every socket (lib/security/targets.ts).
   const refused = connectRefusal(t.host)
-  if (refused) return { code: 0, trace: [refused] }
+  if (refused) return { code: 0, trace: [refused], authSent: false }
   const hostInUri = isIP(t.host) === 6 ? `[${t.host}]` : t.host
   const uri = `rtsp://${hostInUri}:${t.port}/Streaming/Channels/${t.channel}02`
   const timeout = t.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : clampMs(t.timeoutMs, DEFAULT_TIMEOUT_MS)
@@ -72,6 +76,7 @@ export async function rtspDescribe(t: RtspTarget): Promise<{ code: number; trace
 
   const code = (text: string) => Number(/^RTSP\/1\.\d (\d{3})/.exec(text)?.[1] ?? 0)
   const trace: string[] = []
+  let authSent = false
   try {
     let text = await ask()
     trace.push(statusLine(text, t.password))
@@ -86,15 +91,16 @@ export async function rtspDescribe(t: RtspTarget): Promise<{ code: number; trace
         } catch (e) {
           if (!(e instanceof DigestInputError)) throw e
           trace.push('The login details cannot be used.')
-          return { code: 401, trace }
+          return { code: 401, trace, authSent: false }
         }
+        authSent = true
         text = await ask(header401)
         trace.push('digest: ' + statusLine(text, t.password))
       } else {
         trace.push('The camera does not offer a supported login method.')
       }
     }
-    return { code: code(text), trace }
+    return { code: code(text), trace, authSent }
   } catch (e) {
     if (e instanceof RtspTimeout) trace.push('The camera took too long to answer.')
     else if (e instanceof RtspTooLarge) trace.push('The camera sent an answer that was too large.')
@@ -103,7 +109,7 @@ export async function rtspDescribe(t: RtspTarget): Promise<{ code: number; trace
       const c = (e as NodeJS.ErrnoException).code
       trace.push(c === 'ECONNREFUSED' ? 'The camera port refused the connection.' : `The check failed (${typeof c === 'string' && /^[A-Z0-9_]+$/.test(c) ? c : 'error'}).`)
     }
-    return { code: 0, trace }
+    return { code: 0, trace, authSent }
   }
 }
 

@@ -83,8 +83,10 @@ export interface MonitorDb {
 export type Probes = {
   tcp: (host: string, port: number, timeoutMs?: number) => Promise<ProbeResult>
   icmp: (host: string, timeoutMs?: number) => Promise<ProbeResult>
-  rtsp: (t: RtspTarget) => Promise<{ code: number }>
-  nvr: (ep: NvrEndpoint, opts?: { timeoutMs?: number }) => { channelStatus(): Promise<Map<number, boolean>>; channels(): Promise<NvrChannel[]> }
+  /** `authSent` (round 2, review M-4): the answer came after the password was sent; left out by fakes (taken as sent). */
+  rtsp: (t: RtspTarget) => Promise<{ code: number; authSent?: boolean }>
+  /** `loginProven` (round 2, review I-2): an answer came after the password was sent and was not a refusal; left out by fakes. */
+  nvr: (ep: NvrEndpoint, opts?: { timeoutMs?: number }) => { channelStatus(): Promise<Map<number, boolean>>; channels(): Promise<NvrChannel[]>; loginProven?: () => boolean }
 }
 
 export type MonitorConfig = {

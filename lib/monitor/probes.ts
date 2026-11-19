@@ -13,14 +13,16 @@ const target = (host: string, port: number | null, purpose: TargetPurpose) => ch
 /** An NVR client that asks first; the same two reads the checks and discovery use. */
 function guardedNvr(ep: Parameters<Probes['nvr']>[0], opts?: { timeoutMs?: number }): ReturnType<Probes['nvr']> {
   let client: Promise<NvrClient> | undefined
+  let made: NvrClient | undefined
   const ready = () =>
     (client ??= target(ep.host, ep.port, 'nvr_http').then((t) => {
-      if (!t.ok) throw new NvrError('unreachable', 'address not allowed', 'refused_target')
-      return new NvrClient({ ...ep, host: t.address }, { timeoutMs: opts?.timeoutMs })
+      if (!t.ok) throw new NvrError('unreachable', 'address not allowed', 'refused_target', false)
+      return (made = new NvrClient({ ...ep, host: t.address }, { timeoutMs: opts?.timeoutMs }))
     }))
   return {
     channelStatus: async () => (await ready()).channelStatus(),
     channels: async () => (await ready()).channels(),
+    loginProven: () => made?.loginProven() === true,
   }
 }
 
@@ -36,7 +38,9 @@ export const realProbes: Probes = {
   // Only the status code leaves this module; the trace stays behind.
   rtsp: async (r) => {
     const t = await target(r.host, r.port, 'nvr_rtsp')
-    return t.ok ? { code: (await rtspDescribe({ ...r, host: t.address })).code } : { code: 0 }
+    if (!t.ok) return { code: 0, authSent: false }
+    const a = await rtspDescribe({ ...r, host: t.address })
+    return { code: a.code, authSent: a.authSent }
   },
   nvr: (ep, opts) => guardedNvr(ep, opts),
 }

@@ -26,6 +26,8 @@ export type GatewayEvent = {
   outcome:
     | 'started' | 'ended' | 'denied_origin' | 'denied_token' | 'denied_message' | 'rate_limited' | 'full' | 'upstream_failed' | 'backpressure' | 'stalled'
     | 'denied_session' | 'unverified' | 'revoked' | 'fail_closed' | 'check_failed' | 'login_refused' | 'upstream_silent'
+    // Round 2 (review M-8): go2rtc failed before any video in a way the gateway cannot read (reported hashed, the tile is closed).
+    | 'upstream_unexplained'
   /** First 8 hex characters of the SHA-256 of the camera id; never the id, the stream name, the person or the token. */
   camera?: string
   kind?: StreamClaims['k']
@@ -151,8 +153,12 @@ function allowedBrowserMessage(data: Buffer, isBinary: boolean): boolean {
 const GENERIC_STREAM_ERROR = 'The video is not available.'
 /** Final fix X: the close of a socket whose NVR's login stands refused, and the one error value the tile understands for it. */
 export const CLOSE_LOGIN_REFUSED = 4401
-export const LOGIN_REFUSED_VALUE = 'nvr_login_refused'
-const MSG_LOGIN_REFUSED = 'NVR login refused'
+// Round 2 (review M-7, NB-12): what reaches the browser names no NVR and no login; the gateway cannot tell a CCTV-only viewer from the
+// IT view. The IT view reads the NVR's login state on the Monitoring page instead.
+export const LOGIN_REFUSED_VALUE = 'camera_not_available'
+const MSG_LOGIN_REFUSED = 'Camera not available'
+/** Round 2 (review M-8): video is reported at most once a minute per stream (it clears the count of unexplained failures). */
+const VIDEO_REPORT_MS = 60_000
 export const DEFAULT_UPSTREAM_SILENCE_MS = 30_000
 /** How long one answer of the NVR login question is reused for the same stream. */
 const LOGIN_ANSWER_MS = 5_000
@@ -168,7 +174,22 @@ function upstreamLoginRefusal(data: Buffer): boolean {
   }
 }
 
+/** go2rtc's error text from an upstream text message ({"type":"error","value":"..."}), or null for anything else. */
+function upstreamErrorText(data: Buffer): string | null {
+  if (data.length === 0 || data.length > 8192 || data[0] !== 0x7b) return null
+  try {
+    const o: unknown = JSON.parse(data.toString('utf8'))
+    if (typeof o !== 'object' || o === null || (o as { type?: unknown }).type !== 'error') return null
+    const v = (o as { value?: unknown }).value
+    return typeof v === 'string' ? v : ''
+  } catch {
+    return null
+  }
+}
+
 const shortHash = (id: string) => createHash('sha256').update(id).digest('hex').slice(0, 8)
+/** Round 2 (review M-8): an unexplained failure is reported as this hash only, never its text (it may carry an address). */
+const failureHash = (text: string) => createHash('sha256').update(text).digest('hex')
 
 /** The part of the request target before any `?`, exactly as sent; null for anything that is not an origin-form target. */
 function pathOf(url: string | undefined): string | null {
@@ -367,6 +388,17 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     return answer
   }
   const forgetLoginAnswer = (stream: string) => loginAnswers.delete(stream)
+  // Round 2 (review M-8): the last time video was reported per stream (at most once a minute).
+  const videoReportedAt = new Map<string, number>()
+  const reportVideo = (stream: string, sid: string) => {
+    if (!registry.loginReport) return
+    const t = Date.now()
+    const last = videoReportedAt.get(stream)
+    if (last !== undefined && t - last < VIDEO_REPORT_MS) return
+    if (videoReportedAt.size > 5000) videoReportedAt.clear()
+    videoReportedAt.set(stream, t)
+    void registry.loginReport(sid, 'video').catch(() => {})
+  }
   const checkTimer = opts.autoValidate === false ? null : setInterval(() => void validateNow().catch(() => {}), validateEveryMs)
   checkTimer?.unref()
 
@@ -562,6 +594,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     // Final fix X (review C I-2): a picture that played and then got no video for upstreamSilenceMs is ended, so the viewer's tile
     // reconnects through the login check instead of go2rtc retrying the NVR (with a login that may now be wrong) behind an open socket.
     let lastVideoAt = 0
+    let failureReported = false
     let silenceTimer: NodeJS.Timeout | undefined
     const watchSilence = () => {
       if (silenceTimer || ended) return
@@ -658,10 +691,35 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
     )
 
     /** The NVR's login stands refused: one fixed message the player understands, then the close (no NVR detail, no go2rtc text). */
-    function refuseLogin() {
+    function refuseLogin(why?: string) {
       if (ended) return
       if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: 'error', value: LOGIN_REFUSED_VALUE }))
-      end(CLOSE_LOGIN_REFUSED, MSG_LOGIN_REFUSED, 'login_refused')
+      end(CLOSE_LOGIN_REFUSED, MSG_LOGIN_REFUSED, 'login_refused', why)
+    }
+
+    /**
+     * Round 2 (review M-8, NB-12): go2rtc's source failed before any video and the gateway cannot read why (an error text it does not
+     * know, or a close). Reported as a hash (never the text); the database counts identical ones per NVR, and the second within its
+     * window stands as a refused login (fail safe: an unknown wording for a wrong password cannot keep go2rtc dialling the NVR). The
+     * tile is closed either way; the fail-safe is logged ('unexplained_failsafe') for the pilot check.
+     */
+    function unexplainedFailure(text: string) {
+      if (ended || failureReported) return
+      failureReported = true // one report per socket (go2rtc's error is usually followed by its close)
+      if (!registry.loginReport) return end(1011, GENERIC_STREAM_ERROR, 'upstream_unexplained')
+      const hash = failureHash(text)
+      const asked = registry.loginReport(sid, 'unexplained', hash).catch(() => 'ignored')
+      // The tile is not told anything until the database answers (a few hundred ms at most); the socket is ended either way.
+      void withDeadline(asked).then(
+        (answer) => {
+          if (answer === 'refused') {
+            forgetLoginAnswer(name)
+            return refuseLogin('unexplained_failsafe')
+          }
+          end(1011, GENERIC_STREAM_ERROR, 'upstream_unexplained')
+        },
+        () => end(1011, GENERIC_STREAM_ERROR, 'upstream_unexplained'),
+      )
     }
 
     /** Sends one message across; if the other side falls behind, the source is paused until it catches up, or the session is cut. */
@@ -721,6 +779,7 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
       up.on('message', (raw: RawData, isBinary: boolean) => {
         const data = toBuffer(raw)
         if (isBinary) {
+          if (lastVideoAt === 0) reportVideo(name, sid) // round 2 (M-8): video clears the count of unexplained failures
           lastVideoAt = Date.now()
           watchSilence()
         } else if (upstreamLoginRefusal(data)) {
@@ -728,6 +787,14 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
           void registry.loginRefused?.(sid)
           forgetLoginAnswer(name)
           return refuseLogin()
+        } else if (lastVideoAt === 0) {
+          // Round 2 (M-8): any other go2rtc error before video is a source failure the gateway cannot read.
+          // The tile still gets the fixed sentence (never go2rtc's text), then the socket ends once the database has answered.
+          const text = upstreamErrorText(data)
+          if (text !== null) {
+            toClient(data, isBinary)
+            return unexplainedFailure(text)
+          }
         }
         toClient(data, isBinary)
       })
@@ -736,6 +803,9 @@ export function createGateway(opts: GatewayOptions): GatewayServer {
       })
       up.on('close', (code) => {
         if (!upstreamOpen) end(1011, 'The video is not available.', 'upstream_failed')
+        // Round 2 (M-8): go2rtc broke the stream off (not a normal close) before any video, without a word: also a source failure the
+        // gateway cannot read. A normal close (1000/1001) is go2rtc ending the stream on purpose and is passed on as before.
+        else if (lastVideoAt === 0 && !ended && code !== 1000 && code !== 1001) unexplainedFailure(`closed ${code} before video`)
         else end(code === 1000 || code === 1001 ? 1000 : 1011, code === 1000 || code === 1001 ? 'Video ended' : 'The video is not available.')
       })
     }

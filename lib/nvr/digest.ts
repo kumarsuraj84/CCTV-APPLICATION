@@ -113,9 +113,15 @@ export type DigestRequest = {
   signal?: AbortSignal
 }
 
+/** Final fix X round 2 (review I-2): set on a response that answered a request carrying the Digest login (the password was sent). */
+const CREDENTIALS_SENT = Symbol('drishti.credentialsSent')
+/** True when this response came after the password was sent (the second request of a Digest exchange). */
+export const credentialsSent = (res: Response): boolean => (res as unknown as Record<symbol, boolean>)[CREDENTIALS_SENT] === true
+
 /**
  * One request with Digest login: asks, answers the challenge once, and returns the final response.
  * Never sends credentials in clear: when no usable Digest challenge is offered it throws DigestUnsupportedError.
+ * A response to the first, unauthenticated request (anything but 401) comes back as it is: credentialsSent(res) is then false.
  */
 export async function digestFetch(url: string, req: DigestRequest, fetchImpl: typeof fetch = fetch): Promise<Response> {
   if (!isHeaderSafe(req.username)) throw new DigestInputError()
@@ -131,5 +137,7 @@ export async function digestFetch(url: string, req: DigestRequest, fetchImpl: ty
   await first.body?.cancel().catch(() => {})
   const challenge = parseDigestChallenge(header)
   if (!challenge) throw new DigestUnsupportedError()
-  return call({ Authorization: buildDigestHeader(challenge, { username: req.username, password: req.password, method, uri }) })
+  const second = await call({ Authorization: buildDigestHeader(challenge, { username: req.username, password: req.password, method, uri }) })
+  Object.defineProperty(second, CREDENTIALS_SENT, { value: true, enumerable: false })
+  return second
 }

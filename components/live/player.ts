@@ -36,7 +36,7 @@ export function loadPlayer(): Promise<void> {
 export type PlayerEvents = {
   /** The picture is moving. */
   onPlaying: () => void
-  /** The socket closed or go2rtc reported an error; `reason`: the gateway's own error value (final fix X: 'nvr_login_refused'). */
+  /** The socket closed or go2rtc reported an error; `reason`: the gateway's own error value (final fix X, round 2: 'camera_not_available'). */
   onEnded: (reason?: string) => void
   /** The picture element, as soon as it exists (its currentTime says how far the picture has played). */
   onVideo?: (video: HTMLVideoElement) => void

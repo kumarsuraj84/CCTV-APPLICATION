@@ -2,7 +2,8 @@ import { isIP } from 'node:net'
 import { mapLimit } from '@/lib/async/pool'
 import { isLeaseLost } from '@/lib/monitor/lease'
 import { describeNvrError, NvrError } from '@/lib/nvr/client'
-import type { LoginGate, LoginOutcome } from '@/lib/nvr/login-policy'
+import { outcomeOfNvrError as outcomeOfLoginError, outcomeOfRtspCode } from '@/lib/nvr/login-guard'
+import { classifyLoginAnswer, type LoginGate, type LoginOutcome } from '@/lib/nvr/login-policy'
 import { logger } from '@/lib/observability/logger'
 import { isValidHost, isValidPort } from '@/lib/probes'
 import type { CheckResult, MonitorConfig, MonitorDb, Probes, RecorderJob } from '@/lib/monitor/types'
@@ -212,15 +213,17 @@ async function runRecorderCameras(deps: Deps, s: RecorderJob, gate: Gate, deferr
     logger.warn({ event: 'nvr_no_password', location: s.code, recorder: s.id, message: `NVR ${s.name} at location ${s.code} has no saved password, so it is not contacted` })
     return null
   }
-  let g = gate
-  if (g.decision === 'probe') {
-    // Nobody knows whether this login works: this round must be the ONE attempt (the web server may be trying right now).
-    try {
-      g = (await deps.db.loginGate([s.id], { claim: true, now: deps.clock().getTime() })).get(s.id) ?? g
-    } catch (e) {
-      logger.error({ event: 'nvr_login_state_unreadable', recorder: s.id, error: e })
-      return null
-    }
+  if (!mayLogIn(gate) && gate.decision !== 'probe') return null
+  // Round 2 (review M-2): the state read at the start of the round can be minutes old; it is read again right before the login (and
+  // the ONE attempt is taken when nobody knows whether the login works: the web server may be trying right now).
+  let g: LoginGate
+  try {
+    const fresh = (await deps.db.loginGate([s.id], { claim: true, now: deps.clock().getTime() })).get(s.id)
+    if (!fresh) return null
+    g = fresh
+  } catch (e) {
+    logger.error({ event: 'nvr_login_state_unreadable', recorder: s.id, error: e })
+    return null
   }
   if (!mayLogIn(g) || g.version === null) return null
   const version = g.version
@@ -264,22 +267,30 @@ async function runRecorderCameras(deps: Deps, s: RecorderJob, gate: Gate, deferr
   // The camera list is worth asking for after a good status answer, or after one that could not be read. Not after a timeout or an
   // unreachable recorder (the second question would only wait as long as the first), nor after "forbidden" (the user may not read it).
   let askForChannels = true
+  // Round 2 (review I-2; NB-8): what an answer says about the login comes from the ONE classifier the web paths use too: only an answer
+  // after the password was sent proves (or refuses) anything.
+  let webProven = false
+  let webAccepted = false
   try {
     for (const [ch, on] of await nvr.channelStatus()) {
       online.set(ch, on)
       listed.add(ch)
     }
     method = 'isapi'
-    await settle('ok')
+    webProven = classifyLoginAnswer({ status: 'success', credentialsSent: nvr.loginProven ? nvr.loginProven() : true }) === 'ok'
+    if (webProven) await settle('ok')
   } catch (e) {
     nvrProblem = describeNvrError(e)
-    if (e instanceof NvrError && e.kind === 'auth') {
+    const outcome = outcomeOfLoginError(e)
+    if (outcome === 'refused') {
       // Review I-1: a refused web login is never followed by a video login with the same password. No results (no false outages).
       await refusedNow('web')
       return 'refused'
     }
-    // Review I-3: "forbidden" means the user name and password were accepted and only this request is not allowed (a viewer account):
-    // not a refused login. The cameras are then checked by RTSP, the first one alone, so that a refused VIDEO login still stops at one.
+    // Review I-3: "forbidden" after the login means the user name and password were accepted and only this request is not allowed (a
+    // viewer account): not a refused login. The cameras are then checked by RTSP one at a time, so a refused VIDEO login still stops at
+    // one; the login counts as proven only when the video does not refuse it.
+    if (e instanceof NvrError && e.kind === 'forbidden' && outcome === 'ok') webAccepted = true
     if (e instanceof NvrError && (e.kind === 'timeout' || e.kind === 'unreachable' || e.kind === 'forbidden')) askForChannels = false
   }
   if (askForChannels) {
@@ -292,9 +303,11 @@ async function runRecorderCameras(deps: Deps, s: RecorderJob, gate: Gate, deferr
       // Camera addresses are a bonus here; names and channels come from discovery.
     }
   }
-  // The web login worked, so a refused video login below is about that camera alone. Without it, a refused video login is a login problem.
-  const verified = method === 'isapi'
+  // The web login was proven, so a refused video login below is about that camera alone. Without that proof, a refused video login is a
+  // login problem.
+  const verified = webProven
   const unconfirmed = s.cameras.filter((c) => online.get(c.channel) !== true)
+  let cannotLogIn = false
   if (unconfirmed.length > 0) {
     // After the first refused video login no other camera is tried: every try with a wrong password counts against the recorder's account.
     let stopRtsp = false
@@ -307,7 +320,15 @@ async function runRecorderCameras(deps: Deps, s: RecorderJob, gate: Gate, deferr
         return
       }
       try {
-        const { code } = await deps.probes.rtsp({ host: s.ip, port: s.rtsp_port, username: s.username, password, channel: c.channel })
+        const { code, authSent } = await deps.probes.rtsp({ host: s.ip, port: s.rtsp_port, username: s.username, password, channel: c.channel })
+        if (code === 401 && authSent === false) {
+          // Round 2 (review M-4): a 401 to a request that carried no login (no Digest offered, a password a header cannot carry): nobody's
+          // password was refused, and no camera can be checked this way. Nothing is recorded; the attempt is given back.
+          cannotLogIn = true
+          stopRtsp = true
+          skipped.add(c.channel)
+          return
+        }
         if (code === 401 && !verified && !loginProven) {
           // Nothing has proven the login yet, and the recorder refused it: stop trying other cameras. Whether this is a login problem is
           // decided below, once every answer is in: any answer that is not a refusal proves the login works.
@@ -316,8 +337,9 @@ async function runRecorderCameras(deps: Deps, s: RecorderJob, gate: Gate, deferr
           skipped.add(c.channel)
           return
         }
-        // Any answer from a camera other than "nothing" or "refused" shows the saved login is accepted. A refusal after that is that camera's own.
-        if (code !== 0 && code !== 401) loginProven = true
+        // Any answer from a camera other than "nothing" or "refused" after the password was sent shows the saved login is accepted. A refusal
+        // after that is that camera's own.
+        if (outcomeOfRtspCode(code, authSent) === 'ok') loginProven = true
         rtspCode.set(c.channel, code)
         online.set(c.channel, code === 200)
       } catch (e) {
@@ -325,14 +347,12 @@ async function runRecorderCameras(deps: Deps, s: RecorderJob, gate: Gate, deferr
         logger.error({ event: 'camera_rtsp_failed', location: s.code, recorder: s.id, channel: c.channel, error: e })
       }
     }
-    // Without a working web login the cameras go one at a time until one answer proves the login (final fix X: so a wrong password
-    // costs at most ONE refused video login, also when the first cameras do not answer at all); then the rest side by side. After three
-    // silent cameras in a row the NVR's video port is not answering logins at all (a refusal would have come), so the rest go side by
-    // side too rather than one 5-second wait after another.
+    // Without a proven login the cameras go one at a time until one answer proves it (final fix X; round 2, review M-3: also after silent
+    // cameras, so a wrong password costs at most ONE refused video login per NVR and round); then the rest side by side.
     if (verified) await mapLimit(unconfirmed, deps.cfg.rtspPerRecorder, probe)
     else {
       let next = 0
-      while (next < unconfirmed.length && next < 3 && !loginProven && !stopRtsp) await probe(unconfirmed[next++])
+      while (next < unconfirmed.length && !loginProven && !stopRtsp) await probe(unconfirmed[next++])
       await mapLimit(unconfirmed.slice(next), deps.cfg.rtspPerRecorder, probe)
     }
     method = method === 'isapi' ? 'isapi+rtsp' : 'rtsp'
@@ -344,6 +364,7 @@ async function runRecorderCameras(deps: Deps, s: RecorderJob, gate: Gate, deferr
     }
     if (loginProven) await settle('ok')
   }
+  if (webAccepted && !cannotLogIn) await settle('ok')
   // Nothing proved or refused the login (no answer at all): the one attempt is given back.
   await settle('unknown')
 
