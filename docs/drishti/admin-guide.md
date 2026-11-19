@@ -123,10 +123,12 @@ separate (live does not give playback).
 
 ## 9. Two-step sign-in (multi-factor)
 
-Required for administrators and super administrators once it is switched on; optional for everybody else (Security page → "Set up
-two-step sign-in" with an authenticator app). Switching it on is a server step for the owner (runbook-tls.md section 5): every
-administrator sets up their app **before** the switch (the Users page shows who has), then the owner switches it on per organisation.
-A lost phone: a super administrator resets it (§7.3).
+Required in production for administrators, super administrators and everybody who may export or holds a high-risk IT capability;
+optional for everybody else (Security page → "Set up two-step sign-in" with an authenticator app). On a production server it is on
+by default: an administrator sets up the app at the first sign-in. It can only be switched off with a recorded reason (the Health page,
+for a super administrator), which shows as a warning until it is on again; the web app refuses to start while it is off without one
+(runbook-tls.md section 5). Ten wrong codes in a row lock the code step for a while; a super administrator unlocks it on the People page
+("Unlock code step…", with a reason). A lost phone: a super administrator resets it (§7.3).
 
 ## 10. Checking on the system
 

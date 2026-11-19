@@ -4,7 +4,7 @@ Files:    video-rtc.js (VideoRTC v1.6.0) and video-stream.js in this folder, cop
 Project:  go2rtc, https://github.com/AlexxIT/go2rtc
 Version:  1.9.9 (the same version as the alexxit/go2rtc:1.9.9 image that Drishti runs)
 Licence:  MIT License
-Author:   Alexey Khit (AlexxIT), as named by the project
+Author:   the go2rtc project of AlexxIT (the copyright holder's exact name is in the upstream LICENSE: see the TODO)
 
 The MIT License requires its copyright notice and permission notice to accompany copies of the software.
 

@@ -19,7 +19,8 @@ back plans, the retention junction trap and the host's log-roll failure are test
 folders of the test run, never to a real `C:\Drishti`.
 
 **Fix round 2 (re-review of 2026-10-23).** A lock now takes ownership and rebuilds the list from nothing (a foreign entry, read or
-write, does not survive RepairAcl), and the Audit also reports foreign owners and any read entry on the secret paths (tested on real
+write, does not survive RepairAcl; since fix round 4 this holds for everything except what is INSIDE a folder a service writes,
+see fix round 5), and the Audit also reports foreign owners and any read entry on the secret paths (tested on real
 scratch folders: an explicit `Authenticated Users:M`, `Users:R` on `web.env` and `Everyone:F` below are all gone after a second lock;
 a planted junction is refused). Taking ownership needs elevation, so in the tests (not elevated) that step is shown in the plan only.
 The web account may read the free space of the data and backup disks (proved with a real `statfs` call under the same entry). The
@@ -38,6 +39,16 @@ never walked: the service could otherwise swap an item for a junction between th
 those services first (and refuses when one cannot be stopped), then starts them again. Every walked item's owner is checked, not only
 the top folder's, and each item is checked again just before its change. The Audit no longer reports the real `app\current`.
 A missing folder is created with its locked rules in the same call. Caddy's admin API is off.
+
+**Fix round 5 (re-review 4, 2026-11-19).** Locking a folder makes Windows pass the folder's inheritable entries down to everything in
+it (for a log folder, the service's own Modify entry among them). So a folder a service writes is now READ before its lock, without
+following any link: a junction or link, a hard link, or an item of anybody but SYSTEM, the Administrators, TrustedInstaller or that
+service refuses the lock, with nothing changed. Nothing in it is reset: entries the service itself gave its own files there remain
+(the Audit checks the folder's own rules, not its contents' entries). Such a folder that exists already is read and locked FIRST,
+before the folders above it, so their locks pass nothing into it. Only its own service is stopped, only for that folder (seconds),
+and started again at once; the long walk of the other folders runs with every service up. After each lock the tree is read again,
+so an item made in between refuses. Whether Windows' propagation itself would ever go through a junction is measured by the lab suite
+(section 7.0), not assumed.
 
 **Status, honestly: verified by design and unit-tested, lab verification pending on a real server.** The default test run of the
 development PC writes no script or program file, compiles nothing, runs no icacls, takeown, sc or mklink, makes no junction or
@@ -132,8 +143,11 @@ anything, every Drishti folder is created if missing and locked:
 - then the folder ITSELF is locked first, in one call: the Administrators as owner, no inherited entry, no entry of anybody else;
   SYSTEM and Administrators full control (by their SIDs `*S-1-5-18` and `*S-1-5-32-544`, so it works on a Windows in any language),
   then only the entries below. From then on nobody else can add anything inside it;
-- a folder its service may WRITE (its log folder, Caddy's `data\caddy`) is locked itself only: nothing in it is walked or changed
-  (re-review 3 N-4: the service could swap an item for a junction between the read and the change, and the change would follow it);
+- a folder its service may WRITE (its log folder, Caddy's `data\caddy`) is locked itself only: nothing in it is changed (re-review 3
+  N-4: the service could swap an item for a junction between the read and the change). It is READ first, with that service stopped,
+  without following any link: a junction, a hard link or an item of anybody but SYSTEM, the Administrators, TrustedInstaller or that
+  service refuses the lock (re-review 4 N-4r: the lock makes Windows pass the folder's entries down into what is in it). An existing one
+  is locked before the folders above it, so their locks pass nothing into it;
 - every walked item's OWNER is checked too, not only the folder's: an item below that belongs to anybody but SYSTEM, the
   Administrators or TrustedInstaller refuses the lock before anything changes (its owner could change it until it is reached);
 - only then everything below it is walked, again without following any link (`icacls /T` and `takeown /R` are no longer used: they
@@ -167,9 +181,13 @@ secret paths (the configuration folder and file, every env file, `go2rtc.yaml`, 
 lets anybody else even READ, so `Users:(R)` on `web.env` fails it. It never trusts the person running it. A path whose rules it
 cannot read (not elevated) is reported as such; it also lists any junction or link in the installation other than the checked
 `app\current`. It ends with exit code 1 when there is a problem. `-Action Status` says `access rules: ok` or how many problems when it
-runs elevated, and `access rules: not checked (run elevated …)` otherwise (review 2 m4: no false problems from a normal prompt). Put them right with `-Action RepairAcl` (elevated): it stops the services that write a folder of the plan first (refused, with
-nothing changed, when one runs and cannot be stopped), applies the same plan again, removes foreign entries, and starts those services
-again. A short stop of every service: plan it outside opening hours. update.ps1, restore.ps1 and backup.ps1 refuse to run (`Run drishti-services.ps1 -Action RepairAcl`) while the configuration
+runs elevated, and `access rules: not checked (run elevated …)` otherwise (review 2 m4: no false problems from a normal prompt). Put them right with `-Action RepairAcl` (elevated): it applies the same plan again and removes foreign entries. Each service is
+stopped only for the read and lock of its own log folder (and Caddy for `data\caddy`), a few seconds each, and started again at once;
+the walk of the other folders, which with several releases' `node_modules` (about 40,000 items each) takes several minutes, runs with
+every service up. A service that runs and cannot be stopped refuses the repair of its folder, with nothing changed. A service that does
+not start again ends the run with "THESE SERVICES ARE STOPPED: …" and exit code 1: start them with `-Action Start`. If the run itself
+is killed (Task Manager, a closed window) between a stop and its start, nothing can say so: afterwards always run `-Action Status`,
+and `-Action Start` for any service shown `Stopped`. update.ps1, restore.ps1 and backup.ps1 refuse to run (`Run drishti-services.ps1 -Action RepairAcl`) while the configuration
 file or the scripts folder may be written by others.
 
 Named accounts instead (only if a policy requires it, for example a domain where the database is on another server and logs in with
@@ -268,7 +286,10 @@ call `statfs` under a locked folder, and compile and run the service host. They 
    gen-secrets refuses inside the checkout); both are removed afterwards. Nothing is installed: no service, account, task or rule.
 4. Expected: every test passes (`tests/windows-lab/windows-scripts.lab.test.ts`, `prod-env.lab.test.ts`,
    `windows-service-host.lab.test.ts`). Record the result with the date and Windows version in the tracker (LG-37, SO-11, SO-12).
-   A failure stops the install: the locks or the host do not behave on this server as they were designed.
+   A failure stops the install: the locks or the host do not behave on this server as they were designed. Two of the tests are a
+   HARD GATE before the first install (re-review 4 N-4r): "-NoWalk refuses a junction or a hard link in a service folder" and
+   "Windows passing a folder's entries down never goes through a junction inside it (measured)". If the second one fails, do not
+   install: the read before the lock is then the only protection of the log folders, and the owner must decide.
 5. Two things compile C# on the server at run time: the install builds the service host with the .NET Framework's own `csc.exe`, and
    an elevated lock (install, RepairAcl, backup) compiles a small privilege helper with `Add-Type`. The server's antivirus policy must
    allow both; the lab suite runs the first and, run elevated, the second. If the antivirus blocks them there, an exception for

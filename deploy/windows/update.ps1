@@ -284,7 +284,7 @@ try {
   if ($verdict.Verdict -eq 'environment' -and $verdict.ContainsKey('Database') -and $verdict.Database) {
     # Re-review 3 m-b: stop here and report; a restore would need the very database that does not answer.
     $environmentProblem = $true
-    Write-DrishtiStep -Kind fail -Message "the update to $BuildId is in place, but the database does not answer, so the release could not be checked. Nothing was rolled back or restored. Bring the database back (docs/drishti/runbooks/incidents.md), then look at /admin/health; if the release then fails, roll back by hand (docs/drishti/runbooks/update-rollback.md section 3)."
+    Write-DrishtiStep -Kind fail -Message "the update to $BuildId is in place, but the database does not answer, so the release could not be checked ($($verdict.Reasons -join '; ')). The new release stays switched in with its services started. Nothing was rolled back or restored. Bring the database back (docs/drishti/runbooks/incidents.md), then look at /admin/health; if the release then fails, roll back by hand (docs/drishti/runbooks/update-rollback.md section 3)."
   } elseif ($verdict.Verdict -eq 'environment') {
     $environmentProblem = $true
     Write-DrishtiStep -Kind warn -Message "updated to $BuildId, which works; but the Health page reports a problem of the server, not of the release ($($verdict.Reasons -join '; ')). Nothing was rolled back. Look at /admin/health and docs/drishti/runbooks/incidents.md."

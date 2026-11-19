@@ -42,6 +42,7 @@ browser ──https/wss──► Caddy (443, the only listener on the network)
 |---|---|---|
 | `NEXT_PUBLIC_APP_URL` | `https://drishti.citykart.local` | turns on HSTS, `upgrade-insecure-requests` and secure cookies |
 | `NEXT_PUBLIC_STREAM_GATEWAY_URL=/` | `/` | the gateway is on the same address (`/g/*`); the pages derive `wss://<name>` themselves. It is built into the pages: rebuild after a change |
+| `GATEWAY_HEALTH_URL` | `http://127.0.0.1:3412` (written by gen-secrets) | where the server reads the gateway's `/g/health` for the Health and Monitoring pages: on this computer, never through Caddy (which does not pass `/g/health` on). Needed when the video address is an explicit `wss://`/`https://` address; the production web app warns at start without it (P5.4 fix round 5) |
 | `GATEWAY_ALLOWED_ORIGINS` | `https://drishti.citykart.local` | the gateway accepts sockets only from the app's address |
 | `GATEWAY_HOST` | `127.0.0.1` | the gateway listens on this computer only (default `0.0.0.0`) |
 | `TRUSTED_PROXY_HOPS` | `1` | the app believes the client address Caddy adds (sign-in delays per IP). Set it in the **gateway's** environment too (P5.5): without it every video socket comes from 127.0.0.1 and the gateway's per-address limits (100 open videos, 240 attempts a minute) apply to all users together |
@@ -98,40 +99,60 @@ PC). `GATEWAY_ALLOWED_ORIGINS` must still list every address people type (for ex
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`.
 - Cookies: the sign-in cookies and the activity record are `HttpOnly`, `SameSite=Lax`, and `Secure` on https.
 
-## 5. Switch multi-factor on (production checklist)
+## 5. Two-step sign-in in production (the procedure since the final fixes, migration 20261021000049)
 
-1. Make sure TOTP is on in the auth server: `[auth.mfa.totp] enroll_enabled = true, verify_enabled = true` (`supabase/config.toml`
-   for the local stack, the project's auth settings when hosted). The local stack picks it up after `npm run db:stop` / `npm run db:start`.
-2. Every administrator sets up an authenticator app first (Security page → "Set up two-step sign-in"), so nobody is locked out, and
-   **before** the switch (review I-4): count who still has none — the Users page shows "Two-step sign-in: on, set up <date> IST from
-   <address>" per person — or as the database owner:
+Two-step sign-in (an authenticator-app code, "aal2") is required in production for administrators, super administrators and everybody
+holding `admin.*`, `cctv.export` or a high-risk IT/Wi-Fi capability (decision D-10a; DECISIONS.md FY-1). It is enforced by checks,
+never by a remembered manual step: in production (`DRISHTI_ENV=production`) the web app **refuses to start**, and the Health page's
+"Two-step sign-in" check fails, while any active organisation has it switched off **without an audited reason**. Every change goes
+through `public.security_set_mfa` and is written to the audit log with who did it and why. Never write `security_settings` by hand: a
+row switched off without a reason is exactly what refuses the start.
+
+1. **The auth server.** TOTP must be on: `[auth.mfa.totp] enroll_enabled = true, verify_enabled = true` (`supabase/config.toml` for
+   the local stack, the project's auth settings when hosted). The local stack picks it up after `npm run db:stop` / `npm run db:start`.
+2. **The first production start.** The update (`deploy\windows\update.ps1`) marks the database as a production one
+   (`test_fixture_switch.production`). From then on an organisation with no settings row, and every new settings row, has two-step
+   sign-in ON by default; administrators are sent to set up their app at their first sign-in. So:
+   - create the first organisation and its super administrators AFTER the first update has run (the normal order of
+     `windows-services.md` section 4): nothing to do, it is on;
+   - if the web app refuses to start with "... two-step sign-in switched off with no recorded reason", the start-up line names the
+     exact statement. As the database owner (psql on the database host), either switch it on:
+     `SELECT public.security_set_mfa('<organisation id>', NULL, true);`
+     or record why it stays off for now (a warning at every start and on the Health page until it is on):
+     `SELECT public.security_set_mfa('<organisation id>', NULL, false, '<reason, 10 to 500 characters>');`
+     A super administrator does the same on the Health page (after a fresh sign-in); the database owner or the service key may do it
+     with no person (`NULL`), and it is audited all the same.
+3. **Before switching it on for an organisation that had it off:** every administrator sets up an authenticator app first (Security
+   page → "Set up two-step sign-in"), so nobody is locked out. Count who still has none: the People page shows "Two-step sign-in: on,
+   set up <date> IST from <address>" per person, or as the database owner:
    `SELECT p.email FROM public.profiles p WHERE p.org_id = '<org>' AND p.is_active AND (p.role IN ('admin','platform_owner')
    OR EXISTS (SELECT 1 FROM public.access_grants_eval(p.id, now(), false, true, true) g JOIN public.capabilities c ON c.key = g.capability
    WHERE c.requires_mfa)) AND p.id NOT IN (SELECT user_id FROM public.mfa_factor_people('<org>'));` must return no row.
-   (Release 1, re-review N-3: the same rule as the app's gate, `my_session_status().privileged` — an administrative role OR any live
-   grant of a capability that needs two-step sign-in: every `admin.*`, `cctv.export` and the high-risk IT capabilities.)
    Setting up an app needs a fresh sign-in (the password within the last 10 minutes), so a stolen session alone cannot bind a phone.
    **Remaining risk:** whoever knows a privileged person's password before that person has set up an app (a new account's one-time
-   password, a promoted person, anyone not yet enrolled when the switch goes on) can sign in and bind their own phone first. Mitigations:
-   enrol everybody before the switch; give one-time passwords in person and have the new administrator sign in and set up the app at
-   once; look at the set-up date and address on the Users page after creating or promoting someone (each set-up is in `auth_events` as
-   `mfa_enrolled` with the address; there is no e-mail notice: the app has no mail path of its own); reset at once what you did not expect.
-3. As the database owner (psql on the database host; never through the API — not even the service key may write this table):
-
-```sql
-INSERT INTO public.security_settings (org_id, mfa_enforced, note)
-VALUES ('<organisation id>', true, 'multi-factor required for administrators')
-ON CONFLICT (org_id) DO UPDATE SET mfa_enforced = true, updated_at = now();
-```
-
-   From then on administrators, super administrators and everybody holding `admin.*`, `cctv.export` or a high-risk IT/Wi-Fi capability
-   must finish the code (aal2) before any page; without an app they are sent to set one up; viewers may set one up but need not.
-   In an aal1 session the database itself leaves those capabilities out (`access_grants_eval`).
-4. Lost phone: a super administrator opens Users → "Reset two-step sign-in…" with a reason (audited before anything changes); the
+   password, a promoted person) can sign in and bind their own phone first. Give one-time passwords in person, have the new
+   administrator sign in and set up the app at once, and look at the set-up date and address on the People page afterwards (each
+   set-up is in `auth_events` as `mfa_enrolled` with the address; there is no e-mail notice).
+4. **Wrong codes (DECISIONS.md FY-2).** 10 wrong codes in a row lock that person's code step for 15 minutes; each further 10 double it
+   (at most 24 hours); 100 lock it until a super administrator unlocks it on the People page ("Unlock code step…", with a reason;
+   `mfa_code_lock_clear`), or resets the person's two-step sign-in. Nobody unlocks their own. Locks and unlocks are audited
+   (`auth_events` `mfa_locked`, `mfa_locked_for_good`, `mfa_lock_cleared`; `admin_audit_log` `mfa_code_lock_cleared`).
+5. **Lost phone.** A super administrator opens People → "Reset two-step sign-in…" with a reason (audited before anything changes); the
    person is signed out everywhere and sets up a new app at the next sign-in. A super administrator who lost their own phone needs
-   another super administrator (keep at least two). Last resort, as the database owner: `UPDATE public.security_settings SET
-   mfa_enforced = false WHERE org_id = '…';`, sign in, set up a new app, switch it back on.
-5. Undo: the same statement with `false`.
+   another super administrator: keep at least two.
+6. **Break-glass (nobody left who can sign in with a code).** Today, as the database owner only:
+   `SELECT public.security_set_mfa('<organisation id>', NULL, false, 'break-glass: <who, why, ticket>');` (audited; the web app starts
+   with a warning), sign in, set up a new app, then switch it on again with `SELECT public.security_set_mfa('<organisation id>', NULL, true);`
+   and check the audit log. A dedicated break-glass function (one person, time-limited, audited) is **planned** for a later clean-up
+   round; until it exists, use only the statement above.
+7. **Sign-in rate limits.** The app's own limit is the sign-in gate (per e-mail address and client address: from the third failure
+   the next try waits 5 s, 10 s, ... 5 minutes; with `TRUSTED_PROXY_HOPS=1` also 100 tries in 15 minutes per client address). The auth
+   server sees every sign-in as coming from the web server, so its own per-address limit is one counter for the whole installation:
+   set the sign-in limit to at least 1000 per 5 minutes (hosted project: the auth rate limits; local stack: `[auth.rate_limit]
+   sign_in_sign_ups`) and the code check likewise (`token_verifications`). A busy auth server is answered "Sign-in is busy, please
+   try again in a moment" and is not counted as a wrong password (`runbooks/secret-rotation.md` section 5a).
+8. **Switching it off on purpose** is only ever `security_set_mfa(..., false, '<reason>')` (the Health page, or the database owner):
+   never an `UPDATE` or `INSERT` on `security_settings`.
 
 ## 6. First run through Caddy (to do and record)
 
