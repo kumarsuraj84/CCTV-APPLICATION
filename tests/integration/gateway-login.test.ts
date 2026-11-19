@@ -20,7 +20,7 @@ afterEach(async () => {
 })
 
 /** go2rtc: `refuse` sends go2rtc's refused-login error as soon as a viewer asks for the stream; `once` sends one video frame, then nothing. */
-async function fakeGo2rtc(mode: 'refuse' | 'once' | 'odd') {
+async function fakeGo2rtc(mode: 'refuse' | 'once' | 'odd' | 'dead' | 'network' | 'drop') {
   const connections: string[] = []
   const server = http.createServer((_req, res) => res.writeHead(404).end())
   const wss = new WebSocketServer({ server, path: '/api/ws' })
@@ -31,6 +31,11 @@ async function fakeGo2rtc(mode: 'refuse' | 'once' | 'odd') {
       if (mode === 'refuse') socket.send(JSON.stringify({ type: 'error', value: 'streams: wrong user/pass' }))
       // odd (round 2, M-8): a failure text the gateway does not know (another go2rtc build's wording for a refused login, say).
       else if (mode === 'odd') socket.send(JSON.stringify({ type: 'error', value: 'streams: rtsp: unexpected answer to the login (build x)' }))
+      // dead (round 3): the camera behind one channel is gone; the NVR answers that channel with 404, every time.
+      else if (mode === 'dead') socket.send(JSON.stringify({ type: 'error', value: 'streams: rtsp: 404 Not Found' }))
+      // network (round 3): the branch's WAN link dropped.
+      else if (mode === 'network') socket.send(JSON.stringify({ type: 'error', value: 'streams: dial tcp 10.9.8.7:554: i/o timeout' }))
+      else if (mode === 'drop') socket.terminate()
       else socket.send(Buffer.alloc(32, 1), { binary: true })
     })
   })
@@ -41,22 +46,34 @@ async function fakeGo2rtc(mode: 'refuse' | 'once' | 'odd') {
 
 function registry(decision: 'go' | 'refused') {
   const refusedFor: string[] = []
-  const reports: { sid: string; kind: string; hash?: string }[] = []
-  let unexplained = 0
+  const reports: { sid: string; kind: string; hash?: string; camera?: string }[] = []
+  const cameraOf = new Map<string, string>()
+  let seen: { hash: string; cameras: Set<string> } | null = null
+  let videoAt = 0
   const r: RegistryClient = {
-    open: async (_sid, e) => ({ ok: true, kind: e.kind, stream: e.stream }),
+    open: async (sid, e) => {
+      cameraOf.set(sid, e.camera)
+      return { ok: true, kind: e.kind, stream: e.stream }
+    },
     stillValid: async () => new Map(),
     close: async () => {},
     loginCheck: async () => decision,
     loginRefused: async (sid) => void refusedFor.push(sid),
-    // Like media_session_login_report: the second identical unexplained failure counts as a refused login.
+    // Like media_session_login_report (round 3): network failures are their own; video clears; the same unexplained failure from two
+    // DIFFERENT cameras of the NVR (never proven, no video lately) is the fail-safe.
     loginReport: async (sid, kind, hash) => {
-      reports.push({ sid, kind, hash })
+      const camera = cameraOf.get(sid)
+      reports.push({ sid, kind, hash, camera })
+      if (kind === 'network') return 'network'
       if (kind === 'video') {
-        unexplained = 0
+        videoAt = Date.now()
+        seen = null
         return 'cleared'
       }
-      return ++unexplained >= 2 ? 'refused' : 'counted'
+      if (Date.now() - videoAt < 600_000) return 'camera'
+      if (!seen || seen.hash !== hash) seen = { hash: hash!, cameras: new Set() }
+      seen.cameras.add(camera!)
+      return seen.cameras.size >= 2 ? 'unexplained' : 'counted'
     },
   }
   return { r, refusedFor, reports }
@@ -70,8 +87,8 @@ async function gateway(go2rtcUrl: string, reg: RegistryClient, extra: { upstream
   return { port, events }
 }
 
-function tile(port: number, sid = randomUUID()) {
-  const token = signStreamToken({ sid, u: randomUUID(), c: randomUUID(), k: 'sub', exp: Math.floor(Date.now() / 1000) + 90 }, SECRET)
+function tile(port: number, sid = randomUUID(), camera = randomUUID()) {
+  const token = signStreamToken({ sid, u: randomUUID(), c: camera, k: 'sub', exp: Math.floor(Date.now() / 1000) + 90 }, SECRET)
   const ws = new WebSocket(`ws://127.0.0.1:${port}/g/ws?token=${encodeURIComponent(token)}`, { origin: APP })
   const texts: string[] = []
   ws.on('message', (d, bin) => { if (!bin) texts.push(d.toString()) })
@@ -121,9 +138,10 @@ describe('the gateway and refused NVR logins', () => {
     expect(`${reason} ${texts.join(' ')}`).not.toMatch(/nvr|login|password|refused/i)
   })
 
-  // Round 2 (review M-8; NB-12): a failure text the gateway does not know is reported (hashed, never the text); the second identical one
-  // without video in between counts as a refused login and the tile is told, so an unknown wording cannot keep go2rtc dialling.
-  it('unknown go2rtc failures are reported hashed; the second identical one ends as a refused login', async () => {
+  // Round 2 (review M-8; NB-12) and round 3 (pre-handover review I-1): a failure text the gateway does not know is reported (hashed,
+  // never the text); the same one from a SECOND camera of the NVR is the fail-safe and the tile is told, so an unknown wording for a
+  // wrong password cannot keep go2rtc dialling.
+  it('unknown go2rtc failures are reported hashed; the same one from a second camera ends as the fail-safe (logged for the pilot)', async () => {
     const up = await fakeGo2rtc('odd')
     const { r, reports } = registry('go')
     const g = await gateway(up.url, r)
@@ -135,6 +153,50 @@ describe('the gateway and refused NVR logins', () => {
     expect(reports[0].hash).toMatch(/^[0-9a-f]{64}$/)
     expect(reports[0].hash).toBe(reports[1].hash)
     expect(JSON.stringify(reports)).not.toMatch(/unexpected answer/)
+    expect(g.events.filter((e) => e.outcome === 'login_refused').map((e) => e.reason)).toEqual(['unexplained_failsafe'])
+  })
+
+  // Round 3 (pre-handover review I-1, scenario 1): one dead camera channel. Its tile reconnects every few seconds and fails the same
+  // way each time; that is the camera's failure: the tile is told "not available" (and retries on its own back-off), the NVR is not.
+  it('one dead camera failing again and again never ends as the fail-safe: every close is the plain one', async () => {
+    const up = await fakeGo2rtc('dead')
+    const { r, reports } = registry('go')
+    const g = await gateway(up.url, r)
+    const camera = randomUUID()
+    const codes: number[] = []
+    for (let i = 0; i < 4; i++) {
+      const t = tile(g.port, randomUUID(), camera)
+      codes.push(await t.closed)
+      expect(t.texts.map((x) => JSON.parse(x).value)).toEqual(['The video is not available.'])
+    }
+    expect(codes).toEqual([1011, 1011, 1011, 1011])
+    expect(reports.map((x) => x.kind)).toEqual(['unexplained', 'unexplained', 'unexplained', 'unexplained'])
+    expect(g.events.some((e) => e.outcome === 'login_refused')).toBe(false)
+  })
+
+  // Round 3 (pre-handover review I-1, scenario 2): the branch WAN drops. go2rtc's dial timeout (or a reset, an unreachable host, a DNS
+  // or TLS failure, a connection cut without a word) is a network failure: reported as such (no hash needed), never "unexplained".
+  it('network failures are reported as network failures, from any number of cameras, and never end as the fail-safe', async () => {
+    for (const mode of ['network', 'drop'] as const) {
+      const up = await fakeGo2rtc(mode)
+      const { r, reports } = registry('go')
+      const g = await gateway(up.url, r)
+      const codes = [await tile(g.port).closed, await tile(g.port).closed, await tile(g.port).closed]
+      expect(codes.every((c) => c === 1011), mode).toBe(true)
+      expect(reports.map((x) => x.kind), mode).toEqual(['network', 'network', 'network'])
+      expect(reports.every((x) => x.hash === undefined), mode).toBe(true)
+      expect(g.events.some((e) => e.outcome === 'login_refused'), mode).toBe(false)
+    }
+  })
+
+  it('a real wrong password (go2rtc\'s "wrong user/pass") still counts as a refused login at once', async () => {
+    const up = await fakeGo2rtc('refuse')
+    const { r, refusedFor, reports } = registry('go')
+    const g = await gateway(up.url, r)
+    const t = tile(g.port)
+    expect(await t.closed).toBe(CLOSE_LOGIN_REFUSED)
+    expect(refusedFor).toEqual([t.sid])
+    expect(reports).toEqual([])
   })
 
   it('video from a stream is reported (at most once a minute per stream), which clears the count', async () => {

@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { adminClient, cleanupOrg, createCamera, createCluster, createOrg, createRegion, createSite, createUser, grant, type TestUser } from '../setup/fixtures'
 import { serviceClient } from '../setup/service-keys'
+import { loadNvrLoginProblems } from '@/lib/inventory/monitoring-rollout'
+import { MSG_NVR_LOGIN_REFUSED, MSG_NVR_LOGIN_UNEXPLAINED, refusedWords } from '@/lib/nvr/login-guard'
 
 // Final fix X (release 1 review C I-1, I-2, I-4; rulings NB-1..NB-4): the shared NVR login state in the database. The same scenarios as
 // tests/unit/nvr-login-policy.test.ts (lib/nvr/login-policy.ts), against nvr_login_gate / nvr_login_report; time passes through the
@@ -197,26 +199,107 @@ describe('the shared NVR login state (nvr_login_gate / nvr_login_report)', () =>
     expect(((await gw.rpc('media_session_login_check' as never, { p_sid: randomUUID() } as never)).data as unknown as { decision: string }[])[0].decision).toBe('no_session')
   })
 
-  it('round 2 (review M-8; NB-12): two identical unexplained go2rtc failures without video in between count as a refused login', async () => {
-    const s = await site()
-    await grant(orgId, actor.id, 'cctv.live')
-    const made = await admin().rpc('media_session_create', { p_org: orgId, p_user: actor.id, p_kind: 'live', p_cameras: s.cameraIds, p_streams: [`cam_${s.cameraIds[0]}_sub`] })
-    const sid = (made.data as { sid: string }[])[0].sid
-    const gw = serviceClient('video_gateway')
-    await gw.rpc('media_session_open', { p_sid: sid, p_user: actor.id, p_camera: s.cameraIds[0], p_kind: 'live', p_stream: `cam_${s.cameraIds[0]}_sub` })
-    const say = async (kind: string, hash?: string) =>
-      (await gw.rpc('media_session_login_report' as never, { p_sid: sid, p_kind: kind, ...(hash ? { p_hash: hash } : {}) } as never)).data as unknown as string
-    const h1 = 'a'.repeat(64)
-    const h2 = 'b'.repeat(64)
-    expect(await say('unexplained', h1)).toBe('counted')
-    expect(await say('video')).toBe('cleared') // a picture played: the failure is explained by something else
-    expect(await say('unexplained', h1)).toBe('counted')
-    expect(await say('unexplained', h2)).toBe('counted') // a different failure starts again
-    expect(await say('unexplained', h2)).toBe('refused')
-    expect(await gate(s.recorderId)).toMatchObject({ decision: 'refused', level: 1 })
-    const st = await admin().from('nvr_login_state' as never).select('last_refused_path').eq('recorder_id', s.recorderId).single()
-    expect(st.data).toEqual({ last_refused_path: 'gateway' })
-    expect((await gw.rpc('media_session_login_report' as never, { p_sid: sid, p_kind: 'other' } as never)).error?.code).toBe('22023')
+  // Round 3 (pre-handover review I-1; NB-12 as revised): the gateway's fail-safe for go2rtc failures it cannot read. A session per
+  // camera, opened the way the gateway opens it; `say` is what the gateway reports for that session.
+  describe('the gateway fail-safe (media_session_login_report)', () => {
+    const gw = () => serviceClient('video_gateway')
+    const H1 = 'a'.repeat(64)
+    const H2 = 'b'.repeat(64)
+    async function nvr(cameras = 3) {
+      const s = await createSite(orgId, { host: '127.0.0.1', secret: 'pw-fs', cameras })
+      sites.push(s.recorderId)
+      await grant(orgId, actor.id, 'cctv.live')
+      /** A new gateway session for camera i (a tile that reconnects gets a new one). */
+      const session = async (i: number) => {
+        const cam = s.cameraIds[i]
+        const made = await admin().rpc('media_session_create', { p_org: orgId, p_user: actor.id, p_kind: 'live', p_cameras: [cam], p_streams: [`cam_${cam}_sub`] })
+        const sid = (made.data as { sid: string }[])[0].sid
+        const opened = await gw().rpc('media_session_open', { p_sid: sid, p_user: actor.id, p_camera: cam, p_kind: 'live', p_stream: `cam_${cam}_sub` })
+        expect((opened.data as { ok: boolean }[])[0].ok).toBe(true)
+        return sid
+      }
+      const say = async (i: number, kind: string, hash?: string) => {
+        const { data, error } = await gw().rpc('media_session_login_report' as never, { p_sid: await session(i), p_kind: kind, ...(hash ? { p_hash: hash } : {}) } as never)
+        if (error) throw new Error(error.message)
+        return data as unknown as string
+      }
+      const state = async () =>
+        (await admin().from('nvr_login_state' as never).select('outcome, level, last_refused_path, refusals, last_network_at').eq('recorder_id', s.recorderId).single()).data as unknown as
+          { outcome: string | null; level: number; last_refused_path: string | null; refusals: string[]; last_network_at: string | null }
+      const problems = async () => (await loadNvrLoginProblems(admin(), orgId)).filter((p) => p.recorderId === s.recorderId)
+      return { s, say, state, problems }
+    }
+
+    it('one dead camera failing again and again (each reconnect a new session) is that camera\'s failure, never the NVR\'s', async () => {
+      const n = await nvr()
+      for (let i = 0; i < 4; i++) expect(await n.say(0, 'unexplained', H1)).toBe('counted')
+      expect(await gate(n.s.recorderId)).toMatchObject({ decision: 'probe', level: 0 })
+      expect(await n.problems()).toEqual([])
+    })
+
+    it('the same unexplained failure from two different cameras of an NVR never proven: its own state "unexplained", not a refused login', async () => {
+      const n = await nvr()
+      expect(await n.say(0, 'unexplained', H1)).toBe('counted')
+      expect(await n.say(0, 'unexplained', H1)).toBe('counted')
+      expect(await n.say(1, 'unexplained', H2)).toBe('counted') // another text: not the same failure
+      expect(await n.say(2, 'unexplained', H2)).toBe('unexplained')
+      // Every path waits for the window (the bound on dialling), but it is not a refused login: not in the 3-in-30 count.
+      expect(await gate(n.s.recorderId)).toMatchObject({ decision: 'refused', level: 1 })
+      expect(await n.state()).toMatchObject({ outcome: 'refused', last_refused_path: 'gateway_unexplained', refusals: [] })
+      expect((await n.problems()).map((p) => p.state)).toEqual(['unexplained'])
+      expect(await refusedWords(admin(), n.s.recorderId)).toBe(MSG_NVR_LOGIN_UNEXPLAINED) // the IT words on tiles and playback
+      expect(await n.say(1, 'unexplained', H2)).toBe('ignored') // in its window: nothing more is counted
+      // "Try again" ends it like any window.
+      await serviceClient('app_web').rpc('nvr_login_try_again' as never, { p_org: orgId, p_recorder: n.s.recorderId, p_actor: actor.id } as never)
+      expect(await gate(n.s.recorderId)).toMatchObject({ decision: 'probe', level: 0 })
+      expect(await n.problems()).toEqual([])
+    })
+
+    it('a real refused login afterwards is a login refusal again (listed as one)', async () => {
+      const n = await nvr()
+      await n.say(0, 'unexplained', H1)
+      expect(await n.say(1, 'unexplained', H1)).toBe('unexplained')
+      await age(n.s.recorderId, 16 * 60)
+      const g = await gate(n.s.recorderId, { client: media(), path: 'live' })
+      await report(n.s.recorderId, g.version!, 'refused', media())
+      expect(await n.state()).toMatchObject({ outcome: 'refused', level: 2, last_refused_path: 'monitoring' })
+      expect((await n.problems()).map((p) => p.state)).toEqual(['refused'])
+      expect(await refusedWords(admin(), n.s.recorderId)).toBe(MSG_NVR_LOGIN_REFUSED)
+    })
+
+    it('a login proven within 10 minutes: failures are the cameras\' own, never the NVR\'s (and after 10 minutes the bound applies again)', async () => {
+      const n = await nvr()
+      await report(n.s.recorderId, (await gate(n.s.recorderId)).version!, 'ok')
+      for (const i of [0, 1, 2, 0]) expect(await n.say(i, 'unexplained', H1)).toBe('camera')
+      expect(await gate(n.s.recorderId)).toMatchObject({ decision: 'go' })
+      await age(n.s.recorderId, 11 * 60)
+      expect(await n.say(0, 'unexplained', H1)).toBe('counted')
+      expect(await n.say(1, 'unexplained', H1)).toBe('unexplained')
+    })
+
+    it('video from any camera of the NVR within 10 minutes: failures are the cameras\' own', async () => {
+      const n = await nvr()
+      expect(await n.say(2, 'video')).toBe('cleared')
+      for (const i of [0, 1, 0]) expect(await n.say(i, 'unexplained', H1)).toBe('camera')
+      expect(await gate(n.s.recorderId)).toMatchObject({ decision: 'probe', level: 0 })
+    })
+
+    it('network failures (timeout, reset, unreachable): their own outcome; no window, no level, no pause, not listed', async () => {
+      const n = await nvr()
+      for (const i of [0, 1, 2, 0, 1, 2]) expect(await n.say(i, 'network')).toBe('network')
+      expect(await gate(n.s.recorderId)).toMatchObject({ decision: 'probe', level: 0 })
+      const st = await n.state()
+      expect(st).toMatchObject({ outcome: null, level: 0, refusals: [], last_refused_path: null })
+      expect(st.last_network_at).not.toBeNull()
+      expect(await n.problems()).toEqual([])
+    })
+
+    it('anything else is refused as a bad request', async () => {
+      const n = await nvr(1)
+      const sid = (await admin().rpc('media_session_create', { p_org: orgId, p_user: actor.id, p_kind: 'live', p_cameras: n.s.cameraIds, p_streams: [`cam_${n.s.cameraIds[0]}_sub`] })).data as { sid: string }[]
+      expect((await gw().rpc('media_session_login_report' as never, { p_sid: sid[0].sid, p_kind: 'other' } as never)).error?.code).toBe('22023')
+      expect((await gw().rpc('media_session_login_report' as never, { p_sid: sid[0].sid, p_kind: 'unexplained' } as never)).error?.code).toBe('22023')
+    })
   })
 
   it('the rollout: monitoring switched on or off for a region, a cluster, a location or the organisation, each NVR audited', async () => {
