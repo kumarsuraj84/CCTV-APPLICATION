@@ -13,7 +13,11 @@ import { cspReportOnly } from '@/lib/web/csp'
 type Env = Record<string, string | undefined>
 export type Findings = { problems: string[]; warnings: string[] }
 /** One row of security_mfa_overview() (migration 20261021000049). */
-export type MfaOverviewRow = { org_id: string; enforced: boolean; opted_out: boolean; reason: string | null; off_at: string | null }
+export type MfaOverviewRow = { org_id: string; slug: string; enforced: boolean; opted_out: boolean; reason: string | null; off_at: string | null }
+
+/** Final clean-up (Y-R9): an organisation is named by its slug (not sensitive; the id means nothing to the operator). Quotes doubled. */
+const sqlSlug = (slug: string) => `(SELECT id FROM public.organizations WHERE slug = '${String(slug).replace(/'/g, "''")}')`
+const MAX_NAMED = 20
 
 const LOOPBACK = new Set(['127.0.0.1', '::1'])
 const RUNBOOK = 'docs/drishti/runbook-tls.md'
@@ -65,10 +69,13 @@ export function mfaStartupFindings(rows: MfaOverviewRow[]): Findings {
   const off = rows.filter((r) => !r.enforced && !r.opted_out)
   const opted = rows.filter((r) => !r.enforced && r.opted_out)
   if (off.length > 0) {
-    out.problems.push(`${off.length} ${off.length === 1 ? 'organisation has' : 'organisations have'} two-step sign-in switched off with no recorded reason. Production requires it for administrators and for exports (decision D-10a). Switch it on (Health page, or as the database owner: SELECT public.security_set_mfa('<organisation id>', NULL, true);) after the administrators have set up their authenticator apps, or record why it stays off: SELECT public.security_set_mfa('<organisation id>', NULL, false, '<reason, 10 to 500 characters>'); (docs/drishti/runbook-tls.md section 5).`)
+    const named = off.slice(0, MAX_NAMED).map((r) => r.slug)
+    const more = off.length > MAX_NAMED ? ` and ${off.length - MAX_NAMED} more` : ''
+    const first = named[0]
+    out.problems.push(`${off.length} ${off.length === 1 ? 'organisation has' : 'organisations have'} two-step sign-in switched off with no recorded reason (${named.join(', ')}${more}). Production requires it for administrators and for exports (decision D-10a). Switch it on (Health page, or as the database owner in psql, per organisation: SELECT public.security_set_mfa(${sqlSlug(first)}, NULL, true);) after the administrators have set up their authenticator apps, or record why it stays off: SELECT public.security_set_mfa(${sqlSlug(first)}, NULL, false, '<reason, 10 to 500 characters>'); (docs/drishti/runbook-tls.md section 5).`)
   }
   for (const r of opted) {
-    out.warnings.push(`Two-step sign-in is switched off on purpose for organisation ${r.org_id} (since ${r.off_at ?? 'an unknown time'}; the reason is in the audit log): administrators and exports work with a password only until it is switched on again.`)
+    out.warnings.push(`Two-step sign-in is switched off on purpose for organisation ${r.slug} (since ${r.off_at ?? 'an unknown time'}; the reason is in the audit log): administrators and exports work with a password only until it is switched on again.`)
   }
   return out
 }

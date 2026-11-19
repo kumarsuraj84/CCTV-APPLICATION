@@ -51,6 +51,20 @@ describe('parseDevicesCsv', () => {
     for (const v of ['toaster-9z', '999.1.1.1-secret', 'HYPERLINK', '+cmd']) expect(text).not.toContain(v)
   })
 
+  it('final clean-up (Y-R8): an unknown column is named by its position, never by its text; a leading tab or carriage return is a formula too', () => {
+    const r = parseDevicesCsv('name,type,ip,secret-column-text\nA,server,192.0.2.1,x\n')
+    expect(r.warnings).toEqual([{ line: 1, column: 'column 4', message: 'This column is not used.' }])
+    expect(JSON.stringify(r.warnings)).not.toContain('secret-column-text')
+    const tabbed = parseDevicesCsv('name,type,ip,notes,location_code\n"\tcmd",server,192.0.2.1,,\nC,server,192.0.2.3,"\t=1+1",\nE,server,192.0.2.5,,"\tJCL"\nD,server,192.0.2.4,fine,\n')
+    expect(tabbed.rows.map((x) => x.name)).toEqual(['D'])
+    expect(tabbed.errors.map((e) => [e.line, e.column])).toEqual([[2, 'name'], [3, 'notes'], [4, 'location_code']])
+    expect(tabbed.errors[0].message).toMatch(/tab/)
+    // A carriage return inside a quoted value is refused as a line break inside a value.
+    const cr = parseDevicesCsv('name,type,ip,notes\nB,server,192.0.2.2,"\rcalc"\n')
+    expect(cr.rows).toEqual([])
+    expect(cr.errors).toHaveLength(1)
+  })
+
   it('the same address and port twice in one file is refused (the second line names the first)', () => {
     const r = parseDevicesCsv('name,type,ip,port\nA,server,192.0.2.1,22\nB,server,192.0.2.1,22\nC,server,192.0.2.1,23\n')
     expect(r.rows.map((x) => x.name)).toEqual(['A', 'C'])

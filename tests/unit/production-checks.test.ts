@@ -7,7 +7,7 @@ import { mfaHealthCheck, productionConfigFindings, securityStartupProblems, type
 const prodWeb = {
   DRISHTI_ENV: 'production', NEXT_PUBLIC_APP_URL: 'https://drishti.example.test', NEXT_PUBLIC_STREAM_GATEWAY_URL: '/',
 }
-const org = (o: Partial<MfaOverviewRow> = {}): MfaOverviewRow => ({ org_id: '11111111-1111-4111-8111-111111111111', enforced: true, opted_out: false, reason: null, off_at: null, ...o })
+const org = (o: Partial<MfaOverviewRow> = {}): MfaOverviewRow => ({ org_id: '11111111-1111-4111-8111-111111111111', slug: 'org-one', enforced: true, opted_out: false, reason: null, off_at: null, ...o })
 
 describe('production configuration (B minor 3)', () => {
   it('the web app needs its https address, a policy that blocks, and a video address over TLS', () => {
@@ -46,6 +46,23 @@ describe('two-step sign-in at start-up (A I-1, B I-1)', () => {
     const opted = await securityStartupProblems(prodWeb, deps([org({ enforced: false, opted_out: true, reason: 'Staged roll-out this week', off_at: '2026-11-11T05:00:00Z' })]))
     expect(opted.problems).toEqual([])
     expect(opted.warnings.join(' ')).toMatch(/switched off on purpose/)
+  })
+
+  it('final clean-up (Y-R9): the refusal names the organisations by slug (never by id) and prints the owner\'s line for each', async () => {
+    const off = await securityStartupProblems(prodWeb, deps([
+      org({ org_id: '22222222-2222-4222-8222-222222222222', slug: 'citykart', enforced: false }),
+      org({ org_id: '33333333-3333-4333-8333-333333333333', slug: 'second-org', enforced: false }),
+      org({ slug: 'all-good' }),
+    ]))
+    const text = off.problems.join(' ')
+    expect(text).toMatch(/2 organisations/)
+    expect(text).toContain('citykart, second-org')
+    expect(text).toContain("SELECT public.security_set_mfa((SELECT id FROM public.organizations WHERE slug = 'citykart'), NULL, true);")
+    expect(text).not.toContain('22222222-2222')
+    expect(text).not.toContain('all-good')
+    const opted = await securityStartupProblems(prodWeb, deps([org({ org_id: '22222222-2222-4222-8222-222222222222', slug: 'citykart', enforced: false, opted_out: true, reason: 'x', off_at: '2026-11-11T05:00:00Z' })]))
+    expect(opted.warnings.join(' ')).toContain('organisation citykart')
+    expect(opted.warnings.join(' ')).not.toContain('22222222')
   })
 
   it('production: an unreadable answer refuses (fail closed); the configuration problems come too', async () => {

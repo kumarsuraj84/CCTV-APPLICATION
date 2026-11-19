@@ -99,7 +99,7 @@ PC). `GATEWAY_ALLOWED_ORIGINS` must still list every address people type (for ex
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`.
 - Cookies: the sign-in cookies and the activity record are `HttpOnly`, `SameSite=Lax`, and `Secure` on https.
 
-## 5. Two-step sign-in in production (the procedure since the final fixes, migration 20261021000049)
+## 5. Two-step sign-in in production (the procedure since the final fixes, migrations 20261021000049 and 20261021000051)
 
 Two-step sign-in (an authenticator-app code, "aal2") is required in production for administrators, super administrators and everybody
 holding `admin.*`, `cctv.export` or a high-risk IT/Wi-Fi capability (decision D-10a; DECISIONS.md FY-1). It is enforced by checks,
@@ -115,13 +115,15 @@ row switched off without a reason is exactly what refuses the start.
    sign-in ON by default; administrators are sent to set up their app at their first sign-in. So:
    - create the first organisation and its super administrators AFTER the first update has run (the normal order of
      `windows-services.md` section 4): nothing to do, it is on;
-   - if the web app refuses to start with "... two-step sign-in switched off with no recorded reason", the start-up line names the
-     exact statement. As the database owner (psql on the database host), either switch it on:
-     `SELECT public.security_set_mfa('<organisation id>', NULL, true);`
+   - if the web app refuses to start with "... two-step sign-in switched off with no recorded reason (<slugs>)", the start-up line
+     names the organisations by their slug and prints the exact statement. As the database owner (psql on the database host), either
+     switch it on:
+     `SELECT public.security_set_mfa((SELECT id FROM public.organizations WHERE slug = '<slug>'), NULL, true);`
      or record why it stays off for now (a warning at every start and on the Health page until it is on):
-     `SELECT public.security_set_mfa('<organisation id>', NULL, false, '<reason, 10 to 500 characters>');`
-     A super administrator does the same on the Health page (after a fresh sign-in); the database owner or the service key may do it
-     with no person (`NULL`), and it is audited all the same.
+     `SELECT public.security_set_mfa((SELECT id FROM public.organizations WHERE slug = '<slug>'), NULL, false, '<reason, 10 to 500 characters>');`
+     A super administrator does the same on the Health page (after a fresh sign-in). With no person (`NULL`) only the **database
+     owner** may do it (psql as `postgres`); the service key cannot (final clean-up, Y-R1). Either way it is audited (the database
+     user is recorded).
 3. **Before switching it on for an organisation that had it off:** every administrator sets up an authenticator app first (Security
    page → "Set up two-step sign-in"), so nobody is locked out. Count who still has none: the People page shows "Two-step sign-in: on,
    set up <date> IST from <address>" per person, or as the database owner:
@@ -135,16 +137,22 @@ row switched off without a reason is exactly what refuses the start.
    set-up is in `auth_events` as `mfa_enrolled` with the address; there is no e-mail notice).
 4. **Wrong codes (DECISIONS.md FY-2).** 10 wrong codes in a row lock that person's code step for 15 minutes; each further 10 double it
    (at most 24 hours); 100 lock it until a super administrator unlocks it on the People page ("Unlock code step…", with a reason;
-   `mfa_code_lock_clear`), or resets the person's two-step sign-in. Nobody unlocks their own. Locks and unlocks are audited
+   `mfa_code_lock_clear`), or resets the person's two-step sign-in. Nobody unlocks their own (the only super administrator: item 6). Locks and unlocks are audited
    (`auth_events` `mfa_locked`, `mfa_locked_for_good`, `mfa_lock_cleared`; `admin_audit_log` `mfa_code_lock_cleared`).
 5. **Lost phone.** A super administrator opens People → "Reset two-step sign-in…" with a reason (audited before anything changes); the
    person is signed out everywhere and sets up a new app at the next sign-in. A super administrator who lost their own phone needs
    another super administrator: keep at least two.
-6. **Break-glass (nobody left who can sign in with a code).** Today, as the database owner only:
-   `SELECT public.security_set_mfa('<organisation id>', NULL, false, 'break-glass: <who, why, ticket>');` (audited; the web app starts
-   with a warning), sign in, set up a new app, then switch it on again with `SELECT public.security_set_mfa('<organisation id>', NULL, true);`
-   and check the audit log. A dedicated break-glass function (one person, time-limited, audited) is **planned** for a later clean-up
-   round; until it exists, use only the statement above.
+6. **Break-glass, as the database owner only (psql as `postgres` on the database host; no API key can call these).**
+   - *The only super administrator's code step is locked for good* (100 wrong codes; nobody else can unlock it on the People page):
+     `SELECT public.mfa_code_lock_owner_clear((SELECT id FROM public.organizations WHERE slug = '<slug>'), '<person id>', '<who, why, ticket: 10 to 500 characters>');`
+     It clears that one person's count and lock and writes `mfa_lock_cleared` (`auth_events`, path `database_owner`) and
+     `mfa_code_lock_cleared` (`admin_audit_log`, with the reason and the database user). Find the person id with
+     `SELECT id, email FROM public.profiles WHERE email = '<e-mail>';`. Then have a second super administrator made.
+   - *Nobody left who can produce a code* (the phones are lost):
+     `SELECT public.security_set_mfa((SELECT id FROM public.organizations WHERE slug = '<slug>'), NULL, false, 'break-glass: <who, why, ticket>');`
+     (audited; the web app starts with a warning), sign in, set up a new app, then switch it on again with
+     `SELECT public.security_set_mfa((SELECT id FROM public.organizations WHERE slug = '<slug>'), NULL, true);` and check the audit log.
+   Never change `mfa_code_failures` or `security_settings` with a hand-written `UPDATE` / `DELETE`: it would leave no audit row.
 7. **Sign-in rate limits.** The app's own limit is the sign-in gate (per e-mail address and client address: from the third failure
    the next try waits 5 s, 10 s, ... 5 minutes; with `TRUSTED_PROXY_HOPS=1` also 100 tries in 15 minutes per client address). The auth
    server sees every sign-in as coming from the web server, so its own per-address limit is one counter for the whole installation:
