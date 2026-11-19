@@ -14,9 +14,11 @@
   Review C-2: before anything is written, Install creates and LOCKS the installation's folders (InstallRoot, bin, services, scripts,
   app, ConfigDir, DataDir, LogDir and each log folder, BackupDir, the key folder, go2rtc's folder): inherited entries removed, SYSTEM
   and Administrators only, then exactly the service accounts' reads and their own log folder's modify. The scripts are copied to
-  <InstallRoot>\scripts (the copy the scheduled backup runs). Fix round 2 (review N-1): each lock takes ownership for the
-  Administrators and rebuilds the access list from nothing (no explicit entry of anybody else survives, nothing below keeps its own
-  entries); a folder that existed already with another owner is named in a warning; a junction inside one is refused. -Action Audit
+  <InstallRoot>\scripts (the copy the scheduled backup runs). Fix rounds 2-5: each lock takes ownership for the
+  Administrators and rebuilds the folder's own list from nothing; below it, every item gets the Administrators as owner and no entry of
+  its own, EXCEPT inside the folders a service writes (its log folder, data\caddy): those are read and checked (a junction, a hard
+  link or an item of anybody but the Administrators, SYSTEM, TrustedInstaller or that service refuses) but nothing in them is
+  changed, so entries the service itself gave its own files there remain. A folder that existed already with another owner is refused. -Action Audit
   (run it elevated) lists every foreign owner, every entry that lets anybody else write, and on the secret paths every entry that lets
   anybody else read; -Action RepairAcl applies the locks again; -Action Status shows the services, the health and the audit's verdict.
   Why not NSSM: it is a separate download and global install, and it keeps the environment (the secrets) in the registry; the host
@@ -71,26 +73,46 @@ $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 
 function Set-DrishtiFolderLocks {
   # Every folder created and locked BEFORE anything is written into it (review C-2, I-3).
-  # Re-review 3 N-4: a folder its service may write is locked itself only (never walked); every other folder is walked without the
-  # planned folders below it (they follow, each with its own walk).
+  # Re-review 3 N-4 and re-review 4 N-4r / o-1: a folder its service may write is read without following any link and locked itself
+  # only (refused on a junction, a hard link or an item of another owner); one that exists already is locked FIRST, so the locks above
+  # it never pass anything down into it. Only its own service is stopped, only for that folder's read and lock, and started again at
+  # once (Get-DrishtiLockSteps, Get-DrishtiRepairServiceSteps). Every other folder is walked without the planned folders below it.
   $plan = @(Get-DrishtiAclPlan -Config $config -Definitions $allDefs)
-  $scope = @(Get-DrishtiLockScope -Plan $plan)
-  for ($i = 0; $i -lt $plan.Count; $i++) {
-    $p = $plan[$i]
-    Set-DrishtiAcl -Path $p.Path -ReadAccounts $p.Read -ModifyAccounts $p.Modify -ListAccounts $p.List -AllowedLinks $p.AllowedLinks -InstallRoot $config.InstallRoot -Exclude $scope[$i].Exclude -NoWalk:(-not $scope[$i].Walk) -DryRun:$dry
+  $writers = @{}
+  foreach ($d in $allDefs) { $writers[(Get-DrishtiServiceAccount -Config $config -Name $d.Name)] = $d.Name }
+  $steps = @(Get-DrishtiLockSteps -Plan $plan -Scope @(Get-DrishtiLockScope -Plan $plan) -Writers $writers -Exists { param($p) Test-Path -LiteralPath $p })
+  foreach ($st in $steps) {
+    $p = $st.Entry
+    $stopped = $null
+    if ($st.Service -and (Test-Path -LiteralPath $p.Path)) {
+      $svc = Get-Service -Name $st.Service -ErrorAction SilentlyContinue
+      $state = if ($svc) { @([pscustomobject]@{ Name = $st.Service; Status = [string]$svc.Status; CanStop = [bool]$svc.CanStop }) } else { @() }
+      $one = Get-DrishtiRepairServiceSteps -Writers @($st.Service) -Services $state
+      if (@($one.Refuse).Count -gt 0) { throw "Refused: $($one.Refuse -join ' ')" }
+      if (@($one.Stop).Count -gt 0) {
+        if ($dry) { Write-DrishtiStep -Kind plan -Message "would stop $($st.Service) for the read and lock of $($p.Path) only, and start it again at once" }
+        else {
+          try { Stop-Service -Name $st.Service; (Get-Service -Name $st.Service).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60)) }
+          catch { throw "Refused: $($st.Service) did not stop ($($_.Exception.Message)); $($p.Path) was not changed." }
+          if (@($one.StartAgain) -contains $st.Service) { $stopped = $st.Service; $script:DrishtiStoppedByRepair += $st.Service }
+        }
+      }
+    }
+    try {
+      Set-DrishtiAcl -Path $p.Path -ReadAccounts $p.Read -ModifyAccounts $p.Modify -ListAccounts $p.List -AllowedLinks $p.AllowedLinks -InstallRoot $config.InstallRoot -Exclude $st.Exclude -NoWalk:(-not $st.Walk) -DryRun:$dry
+    } finally {
+      if ($stopped) {
+        try {
+          Start-Service -Name $stopped
+          (Get-Service -Name $stopped).WaitForStatus('Running', [TimeSpan]::FromSeconds(60))
+          $script:DrishtiStoppedByRepair = @($script:DrishtiStoppedByRepair | Where-Object { $_ -ne $stopped })
+          Write-DrishtiStep -Kind ok -Message "$stopped started again"
+        } catch { Write-DrishtiStep -Kind fail -Message "$stopped did not start again: $($_.Exception.Message)" }
+      }
+    }
   }
 }
 
-<# Re-review 3 N-4: the services that write a folder of the plan (their log folder, Caddy's data), which RepairAcl stops first. #>
-function Get-DrishtiWriterServices {
-  $writers = @()
-  $plan = @(Get-DrishtiAclPlan -Config $config -Definitions $allDefs)
-  foreach ($d in $allDefs) {
-    $account = Get-DrishtiServiceAccount -Config $config -Name $d.Name
-    if (@($plan | Where-Object { @($_.Modify) -contains $account }).Count -gt 0) { $writers += $d.Name }
-  }
-  return $writers
-}
 
 function Set-DrishtiFileLocks {
   foreach ($d in $allDefs) {
@@ -188,7 +210,8 @@ function Get-DrishtiAuditProblems {
   # allowed path and the comparison are the pure Get-DrishtiAllowedLinks / Get-DrishtiLinkProblems, the same as the plan's.
   $allowed = @()
   try { if (Get-DrishtiCurrentRelease -InstallRoot $config.InstallRoot) { $allowed = @(Get-DrishtiAllowedLinks -InstallRoot $config.InstallRoot) } } catch { $problems += $_.Exception.Message }
-  foreach ($p in @($config.InstallRoot, $config.LogDir, $config.DataDir, $config.BackupDir) | Select-Object -Unique) {
+  $keyDir = if ($config.ContainsKey('VaultKey') -and $config.VaultKey -and $config.VaultKey.KeyBackupDir) { [string]$config.VaultKey.KeyBackupDir } else { $null }
+  foreach ($p in @($config.InstallRoot, $config.LogDir, $config.DataDir, $config.BackupDir, $keyDir) | Where-Object { $_ } | Select-Object -Unique) {
     if (-not (Test-Path -LiteralPath $p)) { continue }
     try { $problems += @(Get-DrishtiLinkProblems -Links @(Get-DrishtiReparsePoints -Path $p) -Allowed $allowed) }
     catch { $problems += "$($p): its contents cannot be read from here (run elevated)" }
@@ -222,6 +245,10 @@ function Start-DrishtiServices {
   }
 }
 
+# Re-review 4 o-2: the services a folder lock stopped and that did not start again. A finally (also on Ctrl+C) names them, and the run
+# ends with exit code 1; a process killed outright cannot say it: -Action Status shows them stopped (windows-services.md section 5).
+$script:DrishtiStoppedByRepair = @()
+try {
 switch ($Action) {
   'Install' {
     Assert-DrishtiConfigConsistent -Config $config # review M-13
@@ -234,26 +261,8 @@ switch ($Action) {
     Write-DrishtiStep -Kind ok -Message 'installed; check with -Action Audit, then start them with -Action Start (go2rtc, worker, gateway, web app)'
   }
   'RepairAcl' {
-    # Re-review 3 N-4: a service that writes a folder of the plan is stopped first (its folder is never changed while it runs), and
-    # started again afterwards; one that runs and cannot be stopped refuses the repair before anything is changed.
-    $states = @($script:DrishtiStopOrder | ForEach-Object { $s = Get-Service -Name $_ -ErrorAction SilentlyContinue; if ($s) { [pscustomobject]@{ Name = $_; Status = [string]$s.Status; CanStop = [bool]$s.CanStop } } })
-    $steps = Get-DrishtiRepairServiceSteps -Writers @(Get-DrishtiWriterServices) -Services $states
-    if (@($steps.Refuse).Count -gt 0) { throw "Refused: $($steps.Refuse -join ' ')" }
-    $stopped = @()
-    try {
-      foreach ($n in $steps.Stop) {
-        if ($dry) { Write-DrishtiStep -Kind plan -Message "would stop $n before its folders are locked (started again afterwards)"; continue }
-        try { Stop-Service -Name $n; (Get-Service -Name $n).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60)); $stopped += $n }
-        catch { throw "Refused: $n did not stop ($($_.Exception.Message)); nothing was changed." }
-      }
-      Set-DrishtiFolderLocks
-      Set-DrishtiFileLocks
-    } finally {
-      foreach ($n in @($script:DrishtiStartOrder | Where-Object { $steps.StartAgain -contains $_ })) {
-        if ($dry) { Write-DrishtiStep -Kind plan -Message "would start $n again"; continue }
-        if ($stopped -contains $n) { try { Start-Service -Name $n; Write-DrishtiStep -Kind ok -Message "$n started again" } catch { Write-DrishtiStep -Kind fail -Message "$n did not start again: $($_.Exception.Message)" } }
-      }
-    }
+    Set-DrishtiFolderLocks
+    Set-DrishtiFileLocks
     Write-DrishtiStep -Kind ok -Message 'access rules applied again; -Action Audit checks them'
   }
   'Audit' {
@@ -293,5 +302,11 @@ switch ($Action) {
       $problems = @(Get-DrishtiAuditProblems)
       Write-Output $(if ($problems.Count -eq 0) { 'access rules: ok' } else { "access rules: $($problems.Count) problem(s), see -Action Audit" })
     }
+  }
+}
+} finally {
+  if (@($script:DrishtiStoppedByRepair).Count -gt 0) {
+    Write-DrishtiStep -Kind fail -Message "THESE SERVICES ARE STOPPED: $($script:DrishtiStoppedByRepair -join ', '). Start them by hand: .\drishti-services.ps1 -Action Start, then -Action Status."
+    exit 1
   }
 }

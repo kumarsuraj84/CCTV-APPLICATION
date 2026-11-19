@@ -580,6 +580,62 @@ function Get-DrishtiRepairServiceSteps {
 }
 
 <#
+  Re-review 4 N-4r (pure): what refuses the lock of a folder its service writes (a log folder, data\caddy). Its contents are read
+  without following any link (Get-DrishtiTreeEntries) and nothing in it is changed; but locking the folder makes Windows pass the
+  folder's inheritable entries (the service's Modify among them) down to everything in it. So, before the lock: a junction or link
+  (Windows could pass the entries through it), a hard link (one security descriptor shared with another file) or an item of anybody but
+  SYSTEM, the Administrators, TrustedInstaller or the folder's own service (-ServiceSids; -Operator in tests) refuses. Plain strings.
+#>
+function Get-DrishtiServiceFolderProblems {
+  param([object[]]$Entries = @(), [string[]]$ServiceSids = @(), [string[]]$Operator = @())
+  $owners = @($script:SidSystem, $script:SidAdmins, $script:SidTrustedInstaller) + @($ServiceSids) + @($Operator)
+  $out = @()
+  foreach ($e in $Entries) {
+    if ($e.Error) { $out += "$($e.Path): $($e.Error)"; continue }
+    if ($e.IsReparse) { $out += "$($e.Path): a junction or link in a folder its service writes (not followed; nothing was changed)"; continue }
+    if ($e.IsHardLink) { $out += "$($e.Path): has more than one name, a hard link (not changed)"; continue }
+    $own = if ($e.PSObject.Properties['Owner']) { [string]$e.Owner } else { '' }
+    if ($own -and $owners -notcontains $own) { $out += "$($e.Path): belongs to $own, not to SYSTEM, the Administrators, TrustedInstaller or the folder's own service (not changed)" }
+  }
+  return $out
+}
+
+<#
+  Re-review 4 N-4r and o-1 (pure): the order of the folder locks and the one service to stop around each. A folder its service writes
+  that exists already is scanned and locked FIRST (and not again later), so the locks of the folders above it never pass anything down
+  into it (a locked folder takes nothing from its parent); its own service only is stopped for that scan and lock. Then the plan in its
+  order (parents before children). -Writers: account -> service name; -Exists: a path -> $true when it is there. Records Path, Walk,
+  Exclude, Service, Entry.
+#>
+function Get-DrishtiLockSteps {
+  param([object[]]$Plan = @(), [object[]]$Scope = @(), [hashtable]$Writers = @{}, [Parameter(Mandatory)][scriptblock]$Exists)
+  $serviceOf = { param($entry) foreach ($a in @($entry.Modify)) { if ($a -and $Writers.ContainsKey([string]$a)) { return $Writers[[string]$a] } }; return $null }
+  $first = @()
+  $rest = @()
+  for ($i = 0; $i -lt $Plan.Count; $i++) {
+    $p = $Plan[$i]
+    $s = $Scope[$i]
+    $svc = if ($s.Walk) { $null } else { & $serviceOf $p }
+    $step = [pscustomobject]@{ Path = $p.Path; Walk = [bool]$s.Walk; Exclude = @($s.Exclude); Service = $svc; Entry = $p }
+    if (-not $s.Walk -and (& $Exists $p.Path)) { $first += $step } else { $rest += $step }
+  }
+  return @($first) + @($rest)
+}
+
+<#
+  Re-review 4 n-2 (pure): a folder this run made carries exactly what it was given: a protected list, only the wanted accounts (an
+  account may appear in more than one entry), and the wanted owner when one is wanted. A folder that appeared between the check and the
+  creation (.NET accepts an existing one silently) does not, and is refused.
+#>
+function Test-DrishtiCreatedLocked {
+  param([bool]$Protected, [string[]]$RuleSids = @(), [string[]]$WantedSids = @(), [string]$Owner, [string]$WantedOwner)
+  if (-not $Protected) { return $false }
+  foreach ($s in $RuleSids) { if ($WantedSids -notcontains $s) { return $false } }
+  if ($WantedOwner -and $Owner -ne $WantedOwner) { return $false }
+  return $true
+}
+
+<#
   Pure: is a link the junction update.ps1 makes? A junction whose target is a folder directly under the releases folder (and that
   target exists and is not itself a link: checked by the caller and passed in).
 #>
@@ -679,6 +735,9 @@ function Set-DrishtiAcl {
   }
 
   $tree = @()
+  $links = @()
+  $serviceSids = @($ModifyAccounts | ForEach-Object { ConvertTo-DrishtiSid -Account $_ })
+  $wantedSids = @($entries | ForEach-Object { ConvertTo-DrishtiSid -Account $_[0] })
   if ($exists) {
     $item = Get-Item -LiteralPath $Path -Force
     if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Refused: $Path is a junction or link, not a folder or file the installation made. Look at it, remove it, and run this again." }
@@ -689,9 +748,14 @@ function Set-DrishtiAcl {
     }
     if ($leaf) {
       if (Test-DrishtiHardLink -Path $Path) { throw "Refused: $Path has more than one name (a hard link): it may be another file. Look at it, remove it, and run this again." }
-    } elseif (-not $NoWalk) {
+    } elseif ($NoWalk) {
+      # Re-review 4 N-4r: read (never through a link, nothing changed) before the lock passes the folder's entries down into it.
+      $tree = @(Get-DrishtiTreeEntries -Path $Path)
+      $found = @(Get-DrishtiServiceFolderProblems -Entries $tree -ServiceSids $serviceSids -Operator $operator)
+      if ($found.Count -gt 0) { throw "Refused in $Path, a folder its service writes (nothing was changed; nothing was followed): $($found -join '; '). Stop that service, look at each one, remove it, and run this again." }
+      $tree = @() # nothing in it is reset
+    } else {
       # The one link the installation makes, checked before anything is done (review 2 N-3).
-      $links = @()
       if ($InstallRoot) {
         foreach ($l in $AllowedLinks) {
           $full = [IO.Path]::GetFullPath($l).TrimEnd('\')
@@ -708,12 +772,27 @@ function Set-DrishtiAcl {
     [IO.File]::SetAccessControl($Path, $sec)
   } else {
     [IO.Directory]::CreateDirectory($Path, $sec) | Out-Null # new: locked from its creation, and empty (nothing below it to walk)
+    # Re-review 4 n-2: .NET accepts a folder that appeared meanwhile; it must carry exactly what was given, or it was not made here.
+    $made = [IO.Directory]::GetAccessControl($Path, [Security.AccessControl.AccessControlSections]'Access, Owner')
+    $ruleSids = @($made.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value })
+    $madeOwner = try { $made.GetOwner([Security.Principal.SecurityIdentifier]).Value } catch { '' }
+    $wantedOwner = if ($admin) { $script:SidAdmins } else { '' }
+    if (-not (Test-DrishtiCreatedLocked -Protected $made.AreAccessRulesProtected -RuleSids $ruleSids -WantedSids $wantedSids -Owner $madeOwner -WantedOwner $wantedOwner)) {
+      throw "Refused: $Path appeared while it was being made (its rules or owner are not the ones given): somebody else made it. Look at it, remove it, and run this again."
+    }
   }
   Write-DrishtiStep -Message "locked ${Path}: $shown$(if ($NoWalk -and -not $leaf) { ' (the folder only: its service writes in it)' })"
   if ($tree.Count -gt 0) {
     $ownerSid = if ($admin) { $script:SidAdmins } else { $null }
     $r = Invoke-DrishtiTreeReset -Entries $tree -Root ([IO.Path]::GetFullPath($Path)) -OwnerSid $ownerSid -Provider (New-DrishtiTreeResetProvider)
     if (@($r.Problems).Count -gt 0) { throw "Refused below $Path (the folder itself is locked; nothing was followed): $($r.Problems -join '; '). Look at each one, and run this again." }
+  }
+  # Re-review 4 m4-1: after the lock, read again (read only): an item made between the first read and the lock was never checked. Once
+  # the folder is locked nobody else can add anything, so this second read is complete.
+  if ($exists -and -not $leaf) {
+    $again = @(Get-DrishtiTreeEntries -Path $Path -Exclude $Exclude)
+    $late = if ($NoWalk) { @(Get-DrishtiServiceFolderProblems -Entries $again -ServiceSids $serviceSids -Operator $operator) } else { @(Get-DrishtiTreeProblems -Entries $again -AllowedLinks $links -TrustedOwners $operator) }
+    if ($late.Count -gt 0) { throw "Refused below $Path (found after the lock; the folder itself is locked; nothing was followed): $($late -join '; '). Look at each one, and run -Action RepairAcl again." }
   }
 }
 
@@ -894,7 +973,13 @@ function Get-DrishtiReleaseVerdictFrom {
   if ($GatewayChecked -and -not $GatewayAnswered) { $reasons += 'the gateway does not answer its /g/health' }
   # Re-review 3 m-b: a database that does not answer is a problem of the server (the web app and the checks depend on it), never a
   # broken release: a roll back would restore into a database that does not answer.
-  if (-not $DbLevel) { return @{ Verdict = 'environment'; Database = $true; Reasons = @('the database does not answer (its level could not be read); the other checks depend on it: nothing was rolled back or restored') } }
+  # Re-review 4 o-4: what else was seen is named too (it may only be the outage's effect).
+  if (-not $DbLevel) {
+    $seen = @($reasons)
+    $all = @('the database does not answer (its level could not be read); the other checks depend on it: nothing was rolled back or restored')
+    if ($seen.Count -gt 0) { $all += "also seen, perhaps only because of the database: $($seen -join '; ')" }
+    return @{ Verdict = 'environment'; Database = $true; Reasons = $all }
+  }
   if ($Expected -and $DbLevel -lt $Expected) { $reasons += "the database is at $DbLevel, the release needs $Expected" }
   if ($reasons.Count -gt 0) { return @{ Verdict = 'release'; Reasons = $reasons } }
   if ($PublicStatus -eq 'ok') { return @{ Verdict = 'ok'; Reasons = @() } }
