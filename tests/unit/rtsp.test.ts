@@ -51,6 +51,24 @@ describe('rtsp check', () => {
     expect(r.trace).toHaveLength(2)
     expect(s.requests).toHaveLength(2)
   })
+  it('answers the login challenge on the SAME connection (a real NVR ties the challenge to the connection)', async () => {
+    // Regression 2026-11-20: HO and ABD answered 200 to a correct login on the connection that got the challenge and 401 on a new one;
+    // the check used a new one and so reported "login refused" for every Hikvision NVR.
+    const s = await startFakeRtsp('needs-auth-same-connection')
+    running.push(s)
+    const r = await rtspDescribe(target(s.port))
+    expect(r.code).toBe(200)
+    expect(r.authSent).toBe(true)
+    expect(s.requests).toHaveLength(2)
+    expect(await rtspOk(target(s.port))).toBe(true)
+  })
+  it('still refuses a wrong password on a connection-bound NVR', async () => {
+    const s = await startFakeRtsp('needs-auth-same-connection')
+    running.push(s)
+    const r = await rtspDescribe({ ...target(s.port), password: 'wrong' })
+    expect(r.code).toBe(401)
+    expect(r.authSent).toBe(true)
+  })
   it('is not ok when the stream is missing or the login is refused', async () => {
     const missing = await startFakeRtsp('refuse')
     const refused = await startFakeRtsp('always-401')

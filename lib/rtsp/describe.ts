@@ -44,41 +44,85 @@ export async function rtspDescribe(t: RtspTarget): Promise<{ code: number; trace
   const timeout = t.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : clampMs(t.timeoutMs, DEFAULT_TIMEOUT_MS)
   const deadline = Date.now() + timeout // one deadline for the whole check, both requests together
 
-  const ask = (auth?: string) =>
+  // The login answer goes over the SAME connection as the challenge it answers. Real Hikvision NVRs tie the Digest challenge (the nonce)
+  // to the TCP connection: an answer sent on a new connection is refused with 401 even when the password is right, which showed up as
+  // "Login refused" for every NVR (seen on HO and ABD, 2026-11-20: same login, 200 on the same connection, 401 on a new one). Only when
+  // the camera has closed the connection after its challenge (some cameras do) is a new one opened, as before.
+  let conn: net.Socket | null = null
+  let seq = 0
+  const closeConn = () => {
+    conn?.destroy()
+    conn = null
+  }
+  const ask = (auth: string | undefined, waitForBody: boolean, allowFresh = true): Promise<string> =>
     new Promise<string>((resolve, reject) => {
       const remaining = deadline - Date.now()
       if (remaining <= 0) return reject(new RtspTimeout())
-      const socket = net.connect({ host: t.host, port: t.port })
-      const chunks: Buffer[] = []
-      let size = 0
+      const reused = conn !== null && !conn.destroyed && conn.writable && !conn.readableEnded
+      const socket = reused ? conn! : net.connect({ host: t.host, port: t.port })
+      if (!reused) socket.on('error', () => {}) // between two requests nobody else listens; a failure shows on the next one
+      conn = socket
+      let buf = Buffer.alloc(0)
       let settled = false
-      const end = (fn: () => void) => {
+      const finish = (fn: () => void, keep: boolean) => {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        socket.destroy()
+        socket.off('data', onData)
+        socket.off('close', onClose)
+        socket.off('error', onError)
+        if (!keep) {
+          socket.destroy()
+          if (conn === socket) conn = null
+        }
         fn()
       }
-      const timer = setTimeout(() => end(() => reject(new RtspTimeout())), remaining)
-      socket.once('connect', () =>
-        socket.write(`DESCRIBE ${uri} RTSP/1.0\r\nCSeq: 1\r\nAccept: application/sdp\r\nUser-Agent: network-hub\r\n${auth ? `Authorization: ${auth}\r\n` : ''}\r\n`),
-      )
-      socket.on('data', (d: Buffer) => {
-        chunks.push(d)
-        size += d.length
-        const text = Buffer.concat(chunks).toString('latin1')
-        if (text.includes('\r\n\r\n')) return end(() => resolve(text.slice(0, text.indexOf('\r\n\r\n'))))
-        if (size > MAX_RTSP_RESPONSE_BYTES) end(() => reject(new RtspTooLarge()))
-      })
-      socket.once('close', () => end(() => resolve(Buffer.concat(chunks).toString('latin1'))))
-      socket.on('error', (e: NodeJS.ErrnoException) => end(() => reject(e)))
+      const timer = setTimeout(() => finish(() => reject(new RtspTimeout()), false), remaining)
+      const send = () =>
+        socket.write(`DESCRIBE ${uri} RTSP/1.0\r\nCSeq: ${++seq}\r\nAccept: application/sdp\r\nUser-Agent: network-hub\r\n${auth ? `Authorization: ${auth}\r\n` : ''}\r\n`)
+      const onData = (d: Buffer) => {
+        buf = Buffer.concat([buf, d])
+        const text = buf.toString('latin1')
+        const at = text.indexOf('\r\n\r\n')
+        if (at >= 0) {
+          const head = text.slice(0, at)
+          if (waitForBody) {
+            // The challenge may carry a body; it is read (and dropped) so the next answer on this connection starts clean.
+            const len = Number(/^Content-Length:[ \t]*(\d{1,6})[ \t]*$/im.exec(head)?.[1] ?? 0)
+            if (len > MAX_RTSP_RESPONSE_BYTES) return finish(() => reject(new RtspTooLarge()), false)
+            if (buf.length < at + 4 + len) return
+          }
+          return finish(() => resolve(head), true)
+        }
+        if (buf.length > MAX_RTSP_RESPONSE_BYTES) finish(() => reject(new RtspTooLarge()), false)
+      }
+      const onClose = () => {
+        // A reused connection the camera had already closed, before any answer: start again on a new one (once).
+        if (reused && allowFresh && buf.length === 0) {
+          finish(() => ask(auth, waitForBody, false).then(resolve, reject), false)
+          return
+        }
+        finish(() => resolve(buf.toString('latin1')), false)
+      }
+      const onError = (e: NodeJS.ErrnoException) => {
+        if (reused && allowFresh && buf.length === 0) {
+          finish(() => ask(auth, waitForBody, false).then(resolve, reject), false)
+          return
+        }
+        finish(() => reject(e), false)
+      }
+      socket.on('data', onData)
+      socket.once('close', onClose)
+      socket.on('error', onError)
+      if (reused) send()
+      else socket.once('connect', send)
     })
 
   const code = (text: string) => Number(/^RTSP\/1\.\d (\d{3})/.exec(text)?.[1] ?? 0)
   const trace: string[] = []
   let authSent = false
   try {
-    let text = await ask()
+    let text = await ask(undefined, true)
     trace.push(statusLine(text, t.password))
     if (code(text) === 401) {
       // All WWW-Authenticate lines, so a Digest offer is found even when Basic is listed first. Basic is never answered.
@@ -94,7 +138,10 @@ export async function rtspDescribe(t: RtspTarget): Promise<{ code: number; trace
           return { code: 401, trace, authSent: false }
         }
         authSent = true
-        text = await ask(header401)
+        // One turn of the event loop: a camera that closes the connection right after its challenge has its FIN noticed by now, and the
+        // answer goes to a new connection instead of a closing one (it would be sent twice otherwise).
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        text = await ask(header401, false)
         trace.push('digest: ' + statusLine(text, t.password))
       } else {
         trace.push('The camera does not offer a supported login method.')
@@ -110,6 +157,8 @@ export async function rtspDescribe(t: RtspTarget): Promise<{ code: number; trace
       trace.push(c === 'ECONNREFUSED' ? 'The camera port refused the connection.' : `The check failed (${typeof c === 'string' && /^[A-Z0-9_]+$/.test(c) ? c : 'error'}).`)
     }
     return { code: 0, trace, authSent }
+  } finally {
+    closeConn()
   }
 }
 

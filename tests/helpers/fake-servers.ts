@@ -361,7 +361,7 @@ export async function startFakeNvr(options: FakeNvrOptions = {}): Promise<FakeNv
  */
 export const acceptingRtspProof = async () => ({ code: 200, authSent: true })
 
-export type FakeRtspMode = 'open' | 'needs-auth' | 'refuse' | 'always-401' | 'needs-auth-basic-first' | 'needs-auth-digest-first' | 'needs-auth-basic-only' | 'silent'
+export type FakeRtspMode = 'open' | 'needs-auth' | 'refuse' | 'always-401' | 'needs-auth-basic-first' | 'needs-auth-digest-first' | 'needs-auth-basic-only' | 'silent' | 'needs-auth-same-connection'
 export type FakeRtsp = Bound & {
   requests: string[]
   /** Every Authorization header received, in order. */
@@ -379,9 +379,29 @@ export async function startFakeRtsp(mode: FakeRtspMode, fixedPort = 0, credentia
     s.on('close', () => sockets.delete(s))
     s.on('error', () => {})
     let buf = ''
+    // 'needs-auth-same-connection' behaves like a real Hikvision NVR: the challenge (nonce) is valid only on the connection that got it,
+    // and the connection stays open after each answer. An answer on a new connection is refused with 401, however right the password.
+    const ownNonces = new Set<string>()
     s.on('data', (d) => {
       buf += d.toString()
       if (!buf.includes('\r\n\r\n')) return
+      if (mode === 'needs-auth-same-connection') {
+        const head = buf.slice(0, buf.indexOf('\r\n\r\n'))
+        buf = buf.slice(buf.indexOf('\r\n\r\n') + 4)
+        const line = head.split('\r\n')[0]
+        requests.push(line)
+        const a = /\r\nAuthorization:[ \t]*([^\r\n]*)/i.exec(head)?.[1]
+        if (a !== undefined) authorizations.push(a)
+        const [m, u] = line.split(' ')
+        if (a !== undefined && verifyDigest(a, { user: credentials.username, pass: credentials.password, realm, method: m, uri: u, nonces: ownNonces })) {
+          s.write('RTSP/1.0 200 OK\r\nCSeq: 2\r\n\r\n')
+        } else {
+          const nonce = randomBytes(8).toString('hex')
+          ownNonces.add(nonce)
+          s.write(`RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\nWWW-Authenticate: Digest realm="${realm}", qop="auth", nonce="${nonce}"\r\n\r\n`)
+        }
+        return
+      }
       const requestLine = buf.split('\r\n')[0]
       requests.push(requestLine)
       const auth = /\r\nAuthorization:[ \t]*([^\r\n]*)/i.exec(buf)?.[1]
