@@ -11,6 +11,13 @@ describe('StatusBadge', () => {
     expect(html({ status: undefined })).toContain('Not checked yet')
   })
 
+  it('reads OK / NOT OK on the Device Dashboard (plainWords) and keeps the other words', () => {
+    expect(html({ status: 'up', plainWords: true })).toContain('>OK<')
+    expect(html({ status: 'down', plainWords: true })).toContain('>NOT OK<')
+    expect(html({ status: 'up', stale: true, plainWords: true })).toContain('Not checked lately')
+    expect(html({ status: undefined, plainWords: true })).toContain('Not checked yet')
+  })
+
   it('shows "Not checked lately" for a stale live result, with its own look and an explanation', () => {
     const stale = html({ status: 'up', stale: true })
     expect(stale).toContain('Not checked lately')

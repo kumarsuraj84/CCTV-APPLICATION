@@ -20,23 +20,25 @@ export type NavItem = {
   href: string
   label: string
   icon: 'home' | 'location' | 'server' | 'users' | 'upload' | 'building' | 'activity' | 'grid' | 'video' | 'history' | 'network' | 'boxes'
-  group: 'Monitoring' | 'Admin'
+  group: 'Overview' | 'CCTV Monitoring' | 'Device Monitoring' | 'Admin'
   needs?: NavNeed
   mobile?: true
+  /** A shorter name for the phone's bottom bar, where room is tight. */
+  mobileLabel?: string
 }
 
 export type NavViewer = { role: Role; capabilities: Capabilities }
 
 // One list for the sidebar and the mobile bar. Hiding a link is not a security control: every page and action checks again.
 export const NAV: NavItem[] = [
-  { href: '/home', label: 'Home', icon: 'home', group: 'Monitoring', mobile: true },
-  { href: '/locations', label: 'Locations', icon: 'location', group: 'Monitoring', needs: { anyLocationGrant: true }, mobile: true },
-  { href: '/devices', label: 'Devices', icon: 'server', group: 'Monitoring', needs: { anyOf: [...IT_VIEW] }, mobile: true },
-  { href: '/live', label: 'Live', icon: 'video', group: 'Monitoring', needs: { anyOf: ['cctv.live'] }, mobile: true },
-  { href: '/playback', label: 'Playback', icon: 'history', group: 'Monitoring', needs: { anyOf: ['cctv.playback'] } },
-  { href: '/groups', label: 'Groups', icon: 'grid', group: 'Monitoring', needs: { anyOf: [...CCTV_CAPABILITIES] } },
+  { href: '/home', label: 'Home', icon: 'home', group: 'Overview', mobile: true },
+  { href: '/locations', label: 'Locations', icon: 'location', group: 'Overview', needs: { anyLocationGrant: true }, mobile: true },
+  { href: '/devices', label: 'Device Dashboard', mobileLabel: 'Devices', icon: 'server', group: 'Device Monitoring', needs: { anyOf: [...IT_VIEW] }, mobile: true },
+  { href: '/live', label: 'Camera Live', mobileLabel: 'Live', icon: 'video', group: 'CCTV Monitoring', needs: { anyOf: ['cctv.live'] }, mobile: true },
+  { href: '/playback', label: 'Camera Playback', icon: 'history', group: 'CCTV Monitoring', needs: { anyOf: ['cctv.playback'] } },
+  { href: '/groups', label: 'Camera Grouping', icon: 'grid', group: 'CCTV Monitoring', needs: { anyOf: [...CCTV_CAPABILITIES] } },
   // P2-5c-2: access points, routers and switches with their documented capabilities (wifi.inventory.view, at the places granted).
-  { href: '/locations/wifi', label: 'Wi-Fi inventory', icon: 'network', group: 'Monitoring', needs: { anyOf: ['wifi.inventory.view'] } },
+  { href: '/locations/wifi', label: 'Wi-Fi inventory', icon: 'network', group: 'Device Monitoring', needs: { anyOf: ['wifi.inventory.view'] } },
   { href: '/admin/users', label: 'Users', icon: 'users', group: 'Admin', needs: { admin: 'admin.users' } },
   // P2-3 review: the review of migrated grants (the editor itself is opened from Users). No count here: the items are static data.
   { href: '/admin/access-review', label: 'Access review', icon: 'users', group: 'Admin', needs: { admin: 'admin.access' } },
@@ -46,9 +48,11 @@ export const NAV: NavItem[] = [
   // P2-5c-1: the hierarchy, NVRs, mapping editor and reconciliation; the asset inventory. T-1: the old "Manage stores" page is gone;
   // /admin/stores redirects to /admin/locations.
   { href: '/admin/locations', label: 'Locations and NVRs', icon: 'building', group: 'Admin', needs: { admin: 'admin.inventory' } },
+  // Add NVR: pick the cluster and the location, then the NVR's name, address and login (the same form as on the location page).
+  { href: '/admin/nvrs/new', label: 'Add NVR', icon: 'server', group: 'CCTV Monitoring', needs: { admin: 'admin.inventory' } },
   { href: '/admin/regions', label: 'Regions and clusters', icon: 'network', group: 'Admin', needs: { admin: 'admin.inventory' } },
   { href: '/admin/assets', label: 'Assets', icon: 'boxes', group: 'Admin', needs: { admin: 'admin.inventory' } },
-  { href: '/admin/devices', label: 'Manage devices', icon: 'server', group: 'Admin', needs: { admin: 'admin.inventory' } },
+  { href: '/admin/devices', label: 'Add Device', icon: 'server', group: 'Device Monitoring', needs: { admin: 'admin.inventory' } },
   { href: '/admin/import', label: 'Import', icon: 'upload', group: 'Admin', needs: { admin: 'admin.inventory' } },
   // P5.4 brief item 5: the audit log (admin_audit_log and sign-in events) with filters and search.
   { href: '/admin/audit', label: 'Audit log', icon: 'history', group: 'Admin', needs: { admin: 'admin.audit.read' } },

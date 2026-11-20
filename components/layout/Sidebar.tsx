@@ -11,7 +11,7 @@ import { ICONS } from './icons'
 // the navigation items and their capability gating are unchanged (lib/nav.ts).
 export function Sidebar({ items }: { items: NavItem[] }) {
   const pathname = usePathname()
-  const groups = ['Monitoring', 'Admin'] as const
+  const groups = ['Overview', 'CCTV Monitoring', 'Device Monitoring', 'Admin'] as const
   return (
     // P3-1: stays in view, full height, while a long page scrolls (it used to end after one screen).
     <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col self-start border-r bg-sidebar text-sidebar-foreground md:flex">
@@ -26,7 +26,7 @@ export function Sidebar({ items }: { items: NavItem[] }) {
           if (list.length === 0) return null
           return (
             <div key={group}>
-              <div className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{group}</div>
+              {group !== 'Overview' && <div className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{group}</div>}
               <ul className="space-y-0.5">
                 {list.map((item) => {
                   const Icon = ICONS[item.icon]

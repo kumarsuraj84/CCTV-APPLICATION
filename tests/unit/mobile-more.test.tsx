@@ -22,8 +22,8 @@ describe('the phone menu (C M-14)', () => {
 
   it('renders as a named disclosure with real links, the current page marked', async () => {
     const { MobileNav } = await import('@/components/layout/MobileNav')
-    const bar: NavItem[] = [{ href: '/home', label: 'Home', icon: 'home', group: 'Monitoring', mobile: true }]
-    const more: NavItem[] = [{ href: '/groups', label: 'Groups', icon: 'grid', group: 'Monitoring' }, { href: '/admin/users', label: 'Users', icon: 'users', group: 'Admin' }]
+    const bar: NavItem[] = [{ href: '/home', label: 'Home', icon: 'home', group: 'Overview', mobile: true }]
+    const more: NavItem[] = [{ href: '/groups', label: 'Groups', icon: 'grid', group: 'CCTV Monitoring' }, { href: '/admin/users', label: 'Users', icon: 'users', group: 'Admin' }]
     const html = renderToStaticMarkup(<MobileNav items={bar} more={more} />)
     expect(html).toContain('<summary')
     expect(html).toMatch(/More/)

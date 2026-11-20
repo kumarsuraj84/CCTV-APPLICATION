@@ -18,8 +18,9 @@ const ICONS = { up: CircleCheck, down: CircleX, unknown: CircleHelp, stale: Cloc
 /**
  * The status as a word and an icon, never colour alone. `stale` (only for a live result) means it has not been checked for longer than
  * the limit: it then reads "Not checked lately", with a clock icon and an explanation as hover text.
+ * `plainWords` (the Device Dashboard): a device that answers its check reads "OK" and one that does not reads "NOT OK".
  */
-export function StatusBadge({ status, stale = false, className }: { status: Status | null | undefined; stale?: boolean; className?: string }) {
+export function StatusBadge({ status, stale = false, className, plainWords = false }: { status: Status | null | undefined; stale?: boolean; className?: string; plainWords?: boolean }) {
   const s: Status = status ?? 'unknown'
   const kind: Kind = s === 'up' && stale ? 'stale' : s
   const Icon = ICONS[kind]
@@ -32,7 +33,7 @@ export function StatusBadge({ status, stale = false, className }: { status: Stat
         : kind === 'unreachable' ? 'The recorder this camera is on cannot be reached, so whether the camera itself works is not known.' : undefined}
     >
       <Icon aria-hidden="true" className="size-3 shrink-0" />
-      {statusLabel(s, stale)}
+      {plainWords && kind === 'up' ? 'OK' : plainWords && kind === 'down' ? 'NOT OK' : statusLabel(s, stale)}
     </span>
   )
 }

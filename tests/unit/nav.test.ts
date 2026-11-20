@@ -46,16 +46,16 @@ describe('navigation by capability', () => {
 
   it('administrative capabilities show admin pages only together with an administrative role, and never data pages', () => {
     const adminSet = caps(['admin.users', 'admin.access', 'admin.inventory'], ORG)
-    expect(hrefs('admin', adminSet)).toEqual(['/home', '/admin/users', '/admin/access-review', '/admin/monitoring', '/admin/locations', '/admin/regions', '/admin/assets', '/admin/devices', '/admin/import'])
+    expect(hrefs('admin', adminSet)).toEqual(['/home', '/admin/users', '/admin/access-review', '/admin/monitoring', '/admin/locations', '/admin/nvrs/new', '/admin/regions', '/admin/assets', '/admin/devices', '/admin/import'])
     // P5.4 brief item 3 (replaces "a super administrator sees exactly the administrator's list"): the Health page is for super
     // administrators only, next to Monitoring.
-    expect(hrefs('platform_owner', adminSet)).toEqual(['/home', '/admin/users', '/admin/access-review', '/admin/monitoring', '/admin/health', '/admin/locations', '/admin/regions', '/admin/assets', '/admin/devices', '/admin/import'])
+    expect(hrefs('platform_owner', adminSet)).toEqual(['/home', '/admin/users', '/admin/access-review', '/admin/monitoring', '/admin/health', '/admin/locations', '/admin/nvrs/new', '/admin/regions', '/admin/assets', '/admin/devices', '/admin/import'])
     for (const role of ['user', 'operator', 'manager'] as const) expect(hrefs(role, adminSet), role).toEqual(['/home'])
   })
 
   it('each admin page needs its own capability, organisation-wide', () => {
     expect(hrefs('admin', caps(['admin.users'], ORG))).toEqual(['/home', '/admin/users'])
-    expect(hrefs('admin', caps(['admin.inventory'], ORG))).toEqual(['/home', '/admin/monitoring', '/admin/locations', '/admin/regions', '/admin/assets', '/admin/devices', '/admin/import'])
+    expect(hrefs('admin', caps(['admin.inventory'], ORG))).toEqual(['/home', '/admin/monitoring', '/admin/locations', '/admin/nvrs/new', '/admin/regions', '/admin/assets', '/admin/devices', '/admin/import'])
     // P2-3 review: "Access review" for admin.access (the editor itself is reached from Users).
     expect(hrefs('admin', caps(['admin.access'], ORG))).toEqual(['/home', '/admin/access-review'])
     expect(NAV.find((i) => i.href === '/admin/access-review')?.label).toBe('Access review')
@@ -137,5 +137,16 @@ describe('mobile navigation', () => {
     expect(mobileNavFor({ role: 'user', capabilities: everything }).map((i) => i.href)).toEqual(['/home', '/locations', '/devices', '/live'])
     expect(mobileNavFor({ role: 'user', capabilities: caps(['cctv.playback']) }).map((i) => i.href)).toEqual(['/home', '/locations'])
     expect(mobileNavFor({ role: 'admin', capabilities: NONE }).map((i) => i.href)).toEqual(['/home'])
+  })
+
+  it('has the two sections the owner asked for, with their pages', () => {
+    const names = (group: string) => NAV.filter((i) => i.group === group).map((i) => `${i.label} ${i.href}`)
+    expect(names('CCTV Monitoring')).toEqual(['Camera Live /live', 'Camera Playback /playback', 'Camera Grouping /groups', 'Add NVR /admin/nvrs/new'])
+    expect(names('Device Monitoring')).toEqual(['Device Dashboard /devices', 'Wi-Fi inventory /locations/wifi', 'Add Device /admin/devices'])
+    // Add NVR and Add Device are administration: they need an administrative role AND admin.inventory.
+    expect(NAV.find((i) => i.href === '/admin/nvrs/new')?.needs).toEqual({ admin: 'admin.inventory' })
+    expect(NAV.find((i) => i.href === '/admin/devices')?.needs).toEqual({ admin: 'admin.inventory' })
+    // The phone bar keeps short names.
+    expect(NAV.filter((i) => i.mobileLabel).map((i) => i.mobileLabel)).toEqual(['Devices', 'Live'])
   })
 })

@@ -18,13 +18,13 @@ export function MobileNav({ items, more = [] }: { items: NavItem[]; more?: NavIt
   const MoreIcon = ICONS.grid
   return (
     <nav aria-label="Main" className="fixed inset-x-0 bottom-0 z-40 flex border-t bg-background pb-[env(safe-area-inset-bottom)] md:hidden">
-      {items.map(({ href, label, icon }) => {
+      {items.map(({ href, label, mobileLabel, icon }) => {
         const Icon = ICONS[icon]
         const active = href === current
         return (
           <Link key={href} href={href} aria-current={active ? 'page' : undefined} className={cn(ITEM, active && 'font-medium text-foreground')}>
             <Icon aria-hidden="true" className="size-5" />
-            {label}
+            {mobileLabel ?? label}
           </Link>
         )
       })}
